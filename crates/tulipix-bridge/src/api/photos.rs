@@ -576,7 +576,7 @@ const MISSING: &str = "\u{2014}";
 
 /// Scaled unit plus the thousands-separated raw count, exactly as
 /// `tulipix_common::human_size` renders it. That crate links slint too.
-fn human_size(bytes: u64) -> String {
+pub(crate) fn human_size(bytes: u64) -> String {
     let b = bytes as f64;
     let (val, unit) = if b >= 1_073_741_824.0 {
         (b / 1_073_741_824.0, "GB")

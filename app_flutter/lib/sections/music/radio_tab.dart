@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
+import 'music_dialogs.dart';
 import 'music_widgets.dart';
 
 class RadioTab extends StatefulWidget {
@@ -23,25 +24,18 @@ class RadioTab extends StatefulWidget {
 }
 
 class _RadioTabState extends State<RadioTab> {
-  final _search = TextEditingController();
-
-  @override
-  void dispose() {
-    _search.dispose();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
     final c = widget.controller;
     final st = c.state;
     if (st == null) return const Center(child: CircularProgressIndicator());
-    final t = context.tokens;
 
     return Column(
       children: [
         SizedBox(
-          height: 52,
+          // 57, matching My Music's row 2 -- the two sections' second bars sit
+          // at the same height whichever tab is open.
+          height: 57,
           child: Row(
             children: [
               const SizedBox(width: 20),
@@ -54,40 +48,25 @@ class _RadioTabState extends State<RadioTab> {
                   padding: const EdgeInsets.symmetric(horizontal: 4),
                   child: MusicChip(
                     label: tab.$2,
+                    icon: switch (tab.$1) {
+                      'favourites' => Icons.favorite,
+                      'recent' => Icons.history,
+                      _ => Icons.travel_explore,
+                    },
                     active: !st.radioCatOpen && st.radioTab == tab.$1,
                     tint: const Color(0xFF06B6D4),
                     tint2: const Color(0xFF3B82F6),
+                    minWidth: 118,
                     onTap: () => c.send(MusicCmd.radioSetTab(name: tab.$1)),
                   ),
                 ),
-              const SizedBox(width: 16),
-              SizedBox(
-                width: 260,
-                child: TextField(
-                  controller: _search,
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    prefixIcon: Icon(Icons.search, size: 18),
-                    hintText: 'Search stations',
-                    border: OutlineInputBorder(),
-                  ),
-                  onSubmitted: (q) => c.send(MusicCmd.radioSearch(query: q)),
-                ),
-              ),
               const Spacer(),
-              Text('${st.radioTotal} cached',
-                  style: TextStyle(fontSize: 12, color: t.nInk2)),
-              TextButton.icon(
-                icon: const Icon(Icons.refresh, size: 16),
-                label: const Text('Refresh all'),
-                onPressed: () => c.send(const MusicCmd.radioRefresh()),
-              ),
-              FilledButton.icon(
-                icon: const Icon(Icons.add, size: 16),
-                label: const Text('Add station'),
-                onPressed: () => _addStation(context, c),
-              ),
-              const SizedBox(width: 12),
+              // Nothing else. The search box was a second one -- the header's
+              // pill searches stations while this tab is open -- and Add
+              // station is the header's `+ Add`, which is where every other
+              // tab's is. "N cached" is the header's count pill.
+              _RefreshPill(controller: c),
+              const SizedBox(width: 20),
             ],
           ),
         ),
@@ -101,8 +80,11 @@ class _RadioTabState extends State<RadioTab> {
       return _StationList(controller: c, st: st, title: st.radioCatTitle);
     }
     if (st.radioTab == 'home') {
+      // 240, not 160. A category tile is an emoji, a name and a count -- three
+      // things and a lot of air -- and at 160 a wide window drew eleven columns
+      // of mostly nothing. Six or seven big ones read as a menu.
       return CardGrid(
-        min: 160,
+        min: 240,
         children: [
           for (var i = 0; i < st.radioCategories.length; i++)
             _CategoryTile(
@@ -116,6 +98,90 @@ class _RadioTabState extends State<RadioTab> {
       controller: c,
       st: st,
       title: st.radioTab == 'favourites' ? 'Favourites' : 'Recently played',
+    );
+  }
+}
+
+/// Refresh all, as a pill that becomes its own progress bar.
+///
+/// The refresh walks fourteen curated queries against radio-browser and takes
+/// the better part of a minute on a cold cache; the port fired it off a text
+/// button and gave no sign it was running, so it looked broken and got clicked
+/// again. `ScanProgress` already carries the category and the count -- the
+/// scan strip at the top of the section reads the same events -- so the fill
+/// is the real position, not an indeterminate spinner.
+class _RefreshPill extends StatelessWidget {
+  const _RefreshPill({required this.controller});
+
+  static const Color _tint = Color(0xFF06B6D4);
+
+  final MusicController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final p = controller.progress;
+    final running = p != null && p.total > 0;
+    final frac = running ? (p.done / p.total).clamp(0.0, 1.0) : 0.0;
+    return SizedBox(
+      height: 34,
+      width: 188,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(17),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: running
+              ? null
+              : () => controller.send(const MusicCmd.radioRefresh()),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color:
+                  running ? Colors.transparent : _tint.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(17),
+              border: Border.all(color: _tint, width: 1.5),
+            ),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // The fill. An `Align` with a factor rather than a
+                // LinearProgressIndicator so it keeps the pill's own radius and
+                // the label stays legible over it.
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: FractionallySizedBox(
+                    widthFactor: frac,
+                    child: ColoredBox(color: _tint.withValues(alpha: 0.55)),
+                  ),
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(running ? Icons.downloading : Icons.refresh,
+                        size: 16, color: running ? Colors.white : _tint),
+                    const SizedBox(width: 7),
+                    Flexible(
+                      child: Text(
+                        running
+                            ? '${p.done} / ${p.total}  ${p.label}'
+                            : 'Refresh all',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: Tokens.fontFamily,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: running ? Colors.white : t.nInk,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -141,19 +207,23 @@ class _CategoryTile extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(category.icon, style: const TextStyle(fontSize: 32)),
-            const SizedBox(height: 8),
+            Text(category.icon, style: const TextStyle(fontSize: 48)),
+            const SizedBox(height: 10),
             Text(category.label,
                 textAlign: TextAlign.center,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w600, color: t.nInk)),
+                    fontFamily: Tokens.fontFamily,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: t.nInk)),
+            const SizedBox(height: 2),
             Text(
               // Zero means "never fetched", not "no stations" — Refresh is
               // what fills the cache, and saying so is more useful than "0".
               category.count > 0 ? '${category.count} stations' : 'not cached',
-              style: TextStyle(fontSize: 11, color: t.nInk2),
+              style: TextStyle(fontSize: 12, color: t.nInk2),
             ),
           ],
         ),
@@ -224,8 +294,15 @@ class _StationList extends StatelessWidget {
               ),
             if (st.radioTab == 'recent')
               TextButton(
-                onPressed: () =>
-                    controller.send(const MusicCmd.radioClearRecent()),
+                onPressed: () => confirmThen(
+                  context,
+                  controller,
+                  title: 'Clear recently played stations?',
+                  body: 'The list of what you have tuned into is forgotten. '
+                      'Your favourites are untouched.',
+                  action: 'Clear',
+                  cmd: const MusicCmd.radioClearRecent(),
+                ),
                 child: const Text('Clear'),
               ),
             const SizedBox(width: 16),
@@ -322,7 +399,10 @@ class _StationRow extends StatelessWidget {
   }
 }
 
-Future<void> _addStation(BuildContext context, MusicController c) async {
+/// Save a stream URL as a favourite station. Reached from the header's `+ Add`
+/// while Radio is open -- the tab's own row has no room for it and every other
+/// tab's add is in the same place.
+Future<void> addStation(BuildContext context, MusicController c) async {
   final name = TextEditingController();
   final url = TextEditingController();
   final ok = await showDialog<bool>(

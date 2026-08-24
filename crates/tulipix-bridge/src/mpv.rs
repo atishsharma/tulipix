@@ -142,6 +142,12 @@ pub fn now_playing() -> NowPlaying {
 }
 
 pub fn set_now_playing(np: NowPlaying) {
+    // Every player in the section lands here, which makes this the one place
+    // that knows a track changed — so it is where the desktop's media applet
+    // and the tray menu are told. The length is not known yet (Dart reports it
+    // on the first tick); `report` republishes once it arrives.
+    crate::shellsurface::set_track(&np.title, &np.artist, &np.album, &np.art, 0.0);
+    LAST_DUR.store(0, Ordering::SeqCst);
     if let Ok(mut g) = now().lock() {
         *g = np;
     }
@@ -175,6 +181,10 @@ pub fn stop() {
     if let Ok(mut g) = slot().lock() {
         *g = Slot::Idle;
     }
+    // Tell the applet the music stopped, or the desktop keeps drawing a paused
+    // track that is no longer on the deck.
+    crate::shellsurface::set_progress(false, 0.0);
+    LAST_DUR.store(0, Ordering::SeqCst);
     emit(MusicEvent::AudioStop);
 }
 
@@ -186,6 +196,25 @@ pub fn stop() {
 /// answer for a volume slider dragged before the first track.
 pub fn set_property(name: &str, value: &str) {
     emit(MusicEvent::AudioProp { name: name.to_string(), value: value.to_string() });
+}
+
+/// Pause or resume the deck, and record it here in the same breath.
+///
+/// Dart owns the player, so the truth about `paused` normally arrives on its
+/// next report -- but the snapshot the command returns is built before that,
+/// and every player in the app reads `playing` off that snapshot. Setting the
+/// property alone meant the button was still drawing the state the deck had a
+/// moment ago, and Dart's reports are throttled on change, so a pause produced
+/// no further report to correct it: the icon stayed wrong until something else
+/// moved. The deck is being *told* what to do here, so this is not a guess.
+pub fn set_paused(paused: bool) {
+    let pos = {
+        let Ok(mut g) = obs().lock() else { return };
+        g.paused = paused;
+        g.pos
+    };
+    set_property("pause", if paused { "true" } else { "false" });
+    crate::shellsurface::set_progress(!paused, pos as f32);
 }
 
 pub fn seek_absolute(secs: f64) {
@@ -270,12 +299,35 @@ pub fn report(
         g.media_title = media_title;
         g.clone()
     };
+    // Keep the applet's clock and scrubber honest. souvlaki compares against
+    // what it last published, so a report that moved nothing costs nothing --
+    // and Dart already throttles these to one a second.
+    crate::shellsurface::set_progress(!current.paused, current.pos as f32);
+    // The length arrives on the first tick, not with the track: publish the
+    // metadata again the first time it is known, or every remote draws a
+    // scrubber with no end.
+    if current.dur > 0.0 && LAST_DUR.swap(current.dur.to_bits(), Ordering::SeqCst)
+        != current.dur.to_bits()
+    {
+        let np = now_playing();
+        crate::shellsurface::set_track(
+            &np.title,
+            &np.artist,
+            &np.album,
+            &np.art,
+            current.dur as f32,
+        );
+    }
     if let Ok(g) = hooks().lock() {
         if let Some(h) = g.as_ref().filter(|h| h.generation as i64 == token) {
             (h.on_prop)(&current);
         }
     }
 }
+
+/// The duration last published to the OS, as raw bits so it fits an atomic.
+/// Zero until the first tick of a source reports one.
+static LAST_DUR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Dart reached the end of the source. Runs `on_eof` once — which is what
 /// advances the queue — and only for the source that is still current.

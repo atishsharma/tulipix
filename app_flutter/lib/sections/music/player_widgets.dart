@@ -12,6 +12,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../design/tokens.dart';
+import '../../src/rust/api/music.dart';
+import 'music_controller.dart';
 
 /// A round icon button. `active` lights it in the accent; that is the only
 /// state these carry.
@@ -38,12 +40,20 @@ class PlayerBtn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    // Outlined, as in Slint: `border-width: 1px` with the accent at half
+    // strength when active and the hairline otherwise. A bare glyph on a
+    // washed bar does not read as a thing you can press — which is what the
+    // transport looked like, seven marks floating in a gap.
     final button = SizedBox(
       width: size,
       height: size,
       child: Material(
         color: active ? accent.withValues(alpha: 0.18) : Colors.transparent,
-        shape: const CircleBorder(),
+        shape: CircleBorder(
+          side: BorderSide(
+            color: active ? accent.withValues(alpha: 0.5) : t.nHair,
+          ),
+        ),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onTap,
@@ -164,12 +174,15 @@ class _SeekPillState extends State<SeekPill> {
     );
 
     return Container(
-      height: 26 * s,
-      padding: EdgeInsets.symmetric(horizontal: 10 * s),
+      height: 30 * s,
+      padding: EdgeInsets.symmetric(horizontal: 12 * s),
       decoration: BoxDecoration(
-        color: t.nChip,
-        borderRadius: BorderRadius.circular(13 * s),
-        border: Border.all(color: t.nHair),
+        // The pill wears the record's colour too, at a fifth: Slint's is
+        // `accent.with-alpha(0.20)` over a `0.45` outline, and a neutral chip
+        // under a coloured fill made the bar look bolted on.
+        color: widget.accent.withValues(alpha: 0.20),
+        borderRadius: BorderRadius.circular(15 * s),
+        border: Border.all(color: widget.accent.withValues(alpha: 0.45)),
       ),
       child: Row(
         children: [
@@ -199,54 +212,12 @@ class _SeekPillState extends State<SeekPill> {
                     widget.onSeek(v);
                   },
                   child: SizedBox(
-                    height: 26 * s,
+                    height: 30 * s,
                     child: Center(
-                      child: Stack(
-                        clipBehavior: Clip.none,
-                        alignment: Alignment.centerLeft,
-                        children: [
-                          Container(
-                            height: 4 * s,
-                            decoration: BoxDecoration(
-                              color: t.nHover,
-                              borderRadius: BorderRadius.circular(2 * s),
-                            ),
-                          ),
-                          FractionallySizedBox(
-                            widthFactor: (shown / dur).clamp(0.0, 1.0),
-                            child: Container(
-                              height: 4 * s,
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(colors: [
-                                  widget.accent.withValues(alpha: 0.65),
-                                  widget.accent,
-                                ]),
-                                borderRadius: BorderRadius.circular(2 * s),
-                              ),
-                            ),
-                          ),
-                          Align(
-                            alignment: Alignment(
-                              ((shown / dur).clamp(0.0, 1.0)) * 2 - 1,
-                              0,
-                            ),
-                            child: Container(
-                              width: 10 * s,
-                              height: 10 * s,
-                              decoration: BoxDecoration(
-                                color: widget.accent,
-                                shape: BoxShape.circle,
-                                boxShadow: [
-                                  BoxShadow(
-                                    color:
-                                        widget.accent.withValues(alpha: 0.55),
-                                    blurRadius: 6 * s,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
+                      child: TrackBar(
+                        frac: (shown / dur).clamp(0.0, 1.0),
+                        accent: widget.accent,
+                        scale: s,
                       ),
                     ),
                   ),
@@ -258,6 +229,87 @@ class _SeekPillState extends State<SeekPill> {
           Text(_clock(widget.dur), style: label),
         ],
       ),
+    );
+  }
+}
+
+/// The filled bar every player draws — seek, volume, crossfade.
+///
+/// The fill is a gradient, not a flat colour. Slint's scrubber runs
+/// `@linear-gradient(90deg, fill, fill.brighter(0.3))` and the port had one
+/// flat theme colour, which on a coloured pill reads as a block rather than a
+/// level. It runs the record's own accent into the section's violet, so it is
+/// visibly a gradient at any width and still changes with the record.
+class TrackBar extends StatelessWidget {
+  const TrackBar({
+    super.key,
+    required this.frac,
+    required this.accent,
+    this.scale = 1.0,
+    this.thickness = 8,
+  });
+
+  final double frac;
+  final Color accent;
+  final double scale;
+
+  /// 8 at full size — double the 4 the port was drawing, and the thickness
+  /// Slint's pill scrubber uses.
+  final double thickness;
+
+  @override
+  Widget build(BuildContext context) {
+    final h = thickness * scale;
+    final r = BorderRadius.circular(h / 2);
+    final f = frac.clamp(0.0, 1.0);
+    return Stack(
+      clipBehavior: Clip.none,
+      alignment: Alignment.centerLeft,
+      children: [
+        Container(
+          height: h,
+          decoration: BoxDecoration(
+            color: accent.withValues(alpha: 0.22),
+            borderRadius: r,
+          ),
+        ),
+        FractionallySizedBox(
+          widthFactor: f,
+          child: Container(
+            height: h,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [accent, Color.lerp(accent, Tokens.brand, 0.75)!],
+              ),
+              borderRadius: r,
+              boxShadow: [
+                BoxShadow(
+                  color: accent.withValues(alpha: 0.5),
+                  blurRadius: 5 * scale,
+                ),
+              ],
+            ),
+          ),
+        ),
+        Align(
+          alignment: Alignment(f * 2 - 1, 0),
+          child: Container(
+            width: (thickness + 4) * scale,
+            height: (thickness + 4) * scale,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
+              border: Border.all(color: accent, width: 2 * scale),
+              boxShadow: [
+                BoxShadow(
+                  color: accent.withValues(alpha: 0.55),
+                  blurRadius: 6 * scale,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -287,14 +339,15 @@ class VolPill extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final s = scale;
+    final tint = muted ? t.nInk2 : accent;
     return Container(
       width: width,
-      height: 26 * s,
-      padding: EdgeInsets.only(left: 4 * s, right: 10 * s),
+      height: 30 * s,
+      padding: EdgeInsets.only(left: 6 * s, right: 10 * s),
       decoration: BoxDecoration(
-        color: t.nChip,
-        borderRadius: BorderRadius.circular(13 * s),
-        border: Border.all(color: t.nHair),
+        color: tint.withValues(alpha: 0.20),
+        borderRadius: BorderRadius.circular(15 * s),
+        border: Border.all(color: tint.withValues(alpha: 0.45)),
       ),
       child: Row(
         children: [
@@ -311,26 +364,38 @@ class VolPill extends StatelessWidget {
               color: muted ? t.nInk2 : accent,
             ),
           ),
-          SizedBox(width: 2 * s),
+          SizedBox(width: 6 * s),
           Expanded(
-            child: SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                trackHeight: 3 * s,
-                thumbShape: RoundSliderThumbShape(enabledThumbRadius: 5 * s),
-                overlayShape: RoundSliderOverlayShape(overlayRadius: 10 * s),
-                activeTrackColor: muted ? t.nInk2 : accent,
-                inactiveTrackColor: t.nHover,
-                thumbColor: muted ? t.nInk2 : accent,
-              ),
-              // 130, not 100: mpv's softvol goes past unity and quiet rips need
-              // it. The Slint build allows the same headroom.
-              child: Slider(
-                value: volume.clamp(0, 130),
-                max: 130,
-                onChanged: onVolume,
-              ),
+            // The same bar as the seek pill, not a Material `Slider`: a
+            // SliderTheme cannot carry a gradient on its active track, which
+            // is the whole point. 130, not 100 — mpv's softvol goes past unity
+            // and quiet rips need it; the Slint build allows the same
+            // headroom.
+            child: LayoutBuilder(
+              builder: (context, box) {
+                void to(double dx) =>
+                    onVolume((dx / box.maxWidth).clamp(0.0, 1.0) * 130);
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: (d) => to(d.localPosition.dx),
+                  onHorizontalDragStart: (d) => to(d.localPosition.dx),
+                  onHorizontalDragUpdate: (d) => to(d.localPosition.dx),
+                  child: SizedBox(
+                    height: 30 * s,
+                    child: Center(
+                      child: TrackBar(
+                        frac: volume.clamp(0, 130) / 130,
+                        accent: tint,
+                        scale: s,
+                        thickness: 6,
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
           ),
+          SizedBox(width: 6 * s),
           SizedBox(
             width: 26 * s,
             child: Text(
@@ -354,6 +419,140 @@ class VolPill extends StatelessWidget {
 /// Titles here are song titles: eliding them hides the part that distinguishes
 /// two live versions of the same song, which is exactly the part you were
 /// reading.
+/// The two now-playing lines, wherever they appear.
+///
+/// They are links. In Slint every player — the bar, the zen page, the mini —
+/// wraps the title in a TouchArea that opens the album and the subtitle in one
+/// that opens the artist, and both go pink under the pointer. That is the only
+/// route from "what is this" to "what else is on it" that does not go through
+/// a search box, and the port had it in none of the three.
+///
+/// The ids are not on `NowPlaying`; `MusicCmd.openNowAlbum` / `openNowArtist`
+/// look them up from the deck's item. So this needs nothing but the controller.
+class NowPlayingLines extends StatefulWidget {
+  const NowPlayingLines({
+    super.key,
+    required this.controller,
+    required this.now,
+    required this.live,
+    this.titleSize = 15,
+    this.subSize = 12,
+    this.centred = false,
+    this.marquee = true,
+  });
+
+  final MusicController controller;
+  final NowPlaying now;
+
+  /// A radio stream's ICY title is the actual song; the station name is ours
+  /// and sits on the line below.
+  final bool live;
+
+  final double titleSize;
+  final double subSize;
+  final bool centred;
+
+  /// Off for the zen page, whose type is too big to scroll and whose lines
+  /// elide instead.
+  final bool marquee;
+
+  @override
+  State<NowPlayingLines> createState() => _NowPlayingLinesState();
+}
+
+class _NowPlayingLinesState extends State<NowPlayingLines> {
+  bool _titleHover = false;
+  bool _subHover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final now = widget.now;
+    final c = widget.controller;
+    // Only library audio has an album and an artist page to land on. A station
+    // and a video do not, so there is nothing to link and no pointer change.
+    final linked = now.itemId != 0 && now.mode == 'music';
+
+    final title = widget.live && now.streamTitle.isNotEmpty
+        ? now.streamTitle
+        : (now.title.isEmpty ? 'Nothing playing' : now.title);
+    final sub = now.title.isEmpty
+        ? 'Pick a track'
+        : [now.artist, now.album].where((s) => s.isNotEmpty).join('  ·  ');
+
+    Widget line({
+      required String text,
+      required double size,
+      required FontWeight weight,
+      required Color colour,
+      required bool hovered,
+      required void Function(bool) onHover,
+      required VoidCallback onTap,
+      required double height,
+    }) {
+      final label = widget.marquee
+          ? Marquee(
+              text: text,
+              speed: size >= 15 ? 34 : 26,
+              style: TextStyle(
+                fontFamily: Tokens.fontFamily,
+                fontSize: size,
+                fontWeight: weight,
+                color: hovered && linked ? Tokens.secMusic : colour,
+              ),
+            )
+          : Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: widget.centred ? TextAlign.center : TextAlign.start,
+              style: TextStyle(
+                fontFamily: Tokens.fontFamily,
+                fontSize: size,
+                fontWeight: weight,
+                color: hovered && linked ? Tokens.secMusic : colour,
+              ),
+            );
+      final box = SizedBox(height: height, child: label);
+      if (!linked) return box;
+      return MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => onHover(true),
+        onExit: (_) => onHover(false),
+        child: GestureDetector(onTap: onTap, child: box),
+      );
+    }
+
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment:
+          widget.centred ? CrossAxisAlignment.center : CrossAxisAlignment.start,
+      children: [
+        line(
+          text: title,
+          size: widget.titleSize,
+          weight: FontWeight.w700,
+          colour: t.nInk,
+          hovered: _titleHover,
+          onHover: (v) => setState(() => _titleHover = v),
+          onTap: () => c.openNowDetail(album: true),
+          height: widget.titleSize + 5,
+        ),
+        line(
+          text: sub,
+          size: widget.subSize,
+          weight: FontWeight.w400,
+          colour: t.nInk2,
+          hovered: _subHover,
+          onHover: (v) => setState(() => _subHover = v),
+          onTap: () => c.openNowDetail(album: false),
+          height: widget.subSize + 4,
+        ),
+      ],
+    );
+  }
+}
+
 class Marquee extends StatefulWidget {
   const Marquee({
     super.key,
@@ -375,30 +574,73 @@ class Marquee extends StatefulWidget {
 }
 
 class _MarqueeState extends State<Marquee> with SingleTickerProviderStateMixin {
-  late final Ticker _ticker;
+  late final Ticker _ticker = createTicker(_tick);
   double _offset = 0;
   double _overflow = 0;
-  Duration _last = Duration.zero;
 
-  @override
-  void initState() {
-    super.initState();
-    _ticker = createTicker(_tick)..start();
-  }
+  /// Null until the first tick. `Ticker` counts from when it started, so the
+  /// first callback's elapsed time is the whole gap since then — taken as a
+  /// delta it would fling the text off in one frame.
+  Duration? _last;
+
+  /// What [_overflow] was measured against. Laying out a string is one of the
+  /// more expensive things in a frame and this one does not change between
+  /// them: it used to be re-measured on every vsync, for both the title and
+  /// the artist, for as long as anything was playing.
+  String? _forText;
+  TextStyle? _forStyle;
+  double _forWidth = -1;
 
   void _tick(Duration now) {
-    if (_overflow <= 0) {
-      if (_offset != 0) setState(() => _offset = 0);
-      _last = now;
-      return;
-    }
-    final dt = (now - _last).inMicroseconds / 1e6;
+    final last = _last;
     _last = now;
+    if (last == null || _overflow <= 0) return;
+    final dt = (now - last).inMicroseconds / 1e6;
     // A pause at each end: text that never stops moving is unreadable.
     final span = _overflow + 64;
     var next = _offset + widget.speed * dt;
     if (next > span) next = -32;
     setState(() => _offset = next);
+  }
+
+  /// Run the ticker only while there is something to scroll. A title that fits
+  /// its box has nothing to move, and a Ticker that is merely *running* asks
+  /// the engine for a frame at every vsync regardless — which is what kept the
+  /// whole window rebuilding at the display's rate whenever the player bar was
+  /// on screen, whether or not either line was long enough to travel.
+  void _sync() {
+    if (_overflow > 0) {
+      if (!_ticker.isActive) {
+        _last = null;
+        _ticker.start();
+      }
+    } else if (_ticker.isActive) {
+      _ticker.stop();
+      _last = null;
+      if (_offset != 0) setState(() => _offset = 0);
+    }
+  }
+
+  void _measure(double maxWidth) {
+    if (_forText == widget.text &&
+        _forStyle == widget.style &&
+        _forWidth == maxWidth) {
+      return;
+    }
+    _forText = widget.text;
+    _forStyle = widget.style;
+    _forWidth = maxWidth;
+    final painter = TextPainter(
+      text: TextSpan(text: widget.text, style: widget.style),
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+    )..layout();
+    _overflow = math.max(0.0, painter.width - maxWidth);
+    // Not during the build this was called from — starting a ticker schedules
+    // a frame and stopping one can want a setState.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _sync();
+    });
   }
 
   @override
@@ -417,26 +659,26 @@ class _MarqueeState extends State<Marquee> with SingleTickerProviderStateMixin {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, box) {
-        final painter = TextPainter(
-          text: TextSpan(text: widget.text, style: widget.style),
-          textDirection: TextDirection.ltr,
-          maxLines: 1,
-        )..layout();
-        _overflow = math.max(0, painter.width - box.maxWidth);
+        _measure(box.maxWidth);
         final shift = _overflow <= 0 ? 0.0 : -_offset.clamp(0.0, _overflow);
-        return ClipRect(
-          child: Align(
-            alignment: _overflow > 0
-                ? Alignment.centerLeft
-                : (widget.centred ? Alignment.center : Alignment.centerLeft),
-            child: Transform.translate(
-              offset: Offset(shift, 0),
-              child: Text(
-                widget.text,
-                maxLines: 1,
-                softWrap: false,
-                overflow: TextOverflow.visible,
-                style: widget.style,
+        // RepaintBoundary: while the text is travelling this repaints every
+        // frame, and what it sits on is the glass bar's blur and the cover
+        // wash. Confine it.
+        return RepaintBoundary(
+          child: ClipRect(
+            child: Align(
+              alignment: _overflow > 0
+                  ? Alignment.centerLeft
+                  : (widget.centred ? Alignment.center : Alignment.centerLeft),
+              child: Transform.translate(
+                offset: Offset(shift, 0),
+                child: Text(
+                  widget.text,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.visible,
+                  style: widget.style,
+                ),
               ),
             ),
           ),

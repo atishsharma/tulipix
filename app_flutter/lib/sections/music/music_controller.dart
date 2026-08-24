@@ -14,9 +14,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
+import '../../design/pick.dart';
+import '../../design/tokens.dart';
 import '../../playback/audio_deck.dart';
 import '../../src/rust/api/music.dart';
+import '../../shell/shell_controller.dart';
+import '../../shell/window.dart';
 import 'music_accent.dart';
+import 'music_viz.dart' show visStyleNames;
 
 /// One of the five top-level categories. `view` on the Slint page.
 class MusicView {
@@ -30,40 +35,56 @@ class MusicView {
 }
 
 /// The order, icons and per-tab gradients ui/page_music.slint gives its top
-/// category row. Slint paints each with a two-stop gradient; `tint` is the
-/// first stop and `tint2` the second.
+/// category row. Slint paints each with a `@linear-gradient(120deg, tint,
+/// tint2)`; the same pair also colours the chip at rest, as a wash and an
+/// outline, which is what makes a row of five read as five things.
 const List<MusicView> musicViews = [
   MusicView('mymusic', 'My Music', Icons.library_music_outlined,
-      Color(0xFFEC4899), Color(0xFF8B5CF6)),
-  MusicView('podcasts', 'Podcasts', Icons.podcasts_outlined, Color(0xFFF97316),
-      Color(0xFFEC4899)),
-  MusicView('audiobooks', 'Audiobooks', Icons.auto_stories_outlined,
-      Color(0xFF10B981), Color(0xFF14B8A6)),
-  MusicView('radio', 'Radio', Icons.radio_outlined, Color(0xFF06B6D4),
-      Color(0xFF3B82F6)),
-  MusicView('youtube', 'YouTube', Icons.smart_display_outlined,
-      Color(0xFFF43F5E), Color(0xFFF97316)),
+      Color(0xFFEC4899), Color(0xFFF43F5E)),
+  MusicView('podcasts', 'Podcasts', Icons.mic_none_outlined, Color(0xFF8B5CF6),
+      Color(0xFF6366F1)),
+  MusicView('audiobooks', 'Audiobooks', Icons.menu_book_outlined,
+      Color(0xFF3B82F6), Color(0xFF06B6D4)),
+  MusicView('radio', 'Radio', Icons.radio_outlined, Color(0xFF14B8A6),
+      Color(0xFF22C55E)),
+  MusicView('youtube', 'YouTube', Icons.play_arrow_rounded, Color(0xFFEF4444),
+      Color(0xFFF59E0B)),
 ];
 
-/// My Music's own sub-tabs — `lib-tab` on the Slint page, all nine of them.
+/// My Music's own sub-tabs — `lib-tab` on the Slint page, all ten of them.
 class LibTab {
-  const LibTab(this.id, this.label, this.icon);
+  const LibTab(this.id, this.label, this.icon, this.tint, this.tint2);
   final String id;
   final String label;
   final IconData icon;
+  final Color tint;
+  final Color tint2;
 }
 
+/// Ten more gradients, walking the same wheel the row above does. These chips
+/// are collapsible in Slint: icon only until hovered or active, which is how
+/// ten of them fit on one row without a scrollbar.
 const List<LibTab> libTabs = [
-  LibTab('home', 'Home', Icons.dashboard_outlined),
-  LibTab('songs', 'Songs', Icons.music_note_outlined),
-  LibTab('albums', 'Albums', Icons.album_outlined),
-  LibTab('artists', 'Artists', Icons.person_outline),
-  LibTab('genres', 'Genres', Icons.category_outlined),
-  LibTab('playlists', 'Playlists', Icons.queue_music_outlined),
-  LibTab('folders', 'Folders', Icons.folder_outlined),
-  LibTab('favorites', 'Favourites', Icons.favorite_outline),
-  LibTab('history', 'History', Icons.history),
-  LibTab('downloader', 'Downloader', Icons.download_outlined),
+  LibTab('home', 'Home', Icons.home_outlined, Color(0xFFEC4899),
+      Color(0xFFF43F5E)),
+  LibTab('songs', 'Songs', Icons.music_note_outlined, Color(0xFF8B5CF6),
+      Color(0xFF6366F1)),
+  LibTab('albums', 'Albums', Icons.grid_view_outlined, Color(0xFF3B82F6),
+      Color(0xFF06B6D4)),
+  LibTab('artists', 'Artists', Icons.person_outline, Color(0xFF06B6D4),
+      Color(0xFF14B8A6)),
+  LibTab('genres', 'Genres', Icons.library_music_outlined, Color(0xFF14B8A6),
+      Color(0xFF22C55E)),
+  LibTab('playlists', 'Playlists', Icons.queue_music_outlined,
+      Color(0xFF22C55E), Color(0xFF84CC16)),
+  LibTab('folders', 'Folders', Icons.folder_outlined, Color(0xFFF59E0B),
+      Color(0xFFF97316)),
+  LibTab('favorites', 'Loved', Icons.favorite, Color(0xFFF43F5E),
+      Color(0xFFEC4899)),
+  LibTab('history', 'History', Icons.rotate_left, Color(0xFFA855F7),
+      Color(0xFF8B5CF6)),
+  LibTab('downloader', 'Downloader', Icons.download_outlined, Color(0xFFEC4899),
+      Color(0xFF8B5CF6)),
 ];
 
 class MusicController extends ChangeNotifier {
@@ -123,15 +144,25 @@ class MusicController extends ChangeNotifier {
   bool miniBubble = false;
 
   /// Where the mini sits and how big it is. Null position means "not placed
-  /// yet"; the host puts it bottom-right on first open.
+  /// yet"; the host centres it on first open, as main.slint does.
   Offset? miniPos;
   double miniScale = 1.0;
+
+  /// How far down the right wall the minimised bubble sits. Null is
+  /// main.slint's `music-bubble-y < 0px`: uninitialised, so the host centres
+  /// it vertically until it is dragged.
+  double? bubbleY;
 
   /// "" art | queue | lyrics — the mini's square flips to show these.
   String miniFace = '';
 
   /// Zen: inline three-line lyrics, and the slide-in queue panel.
-  bool zenLyrics = false;
+  ///
+  /// On by default, which is what "auto-show when available" means here: the
+  /// zen page only draws the lines when the track actually has words, so a
+  /// default of off meant pressing L on every song that did. Toggling it still
+  /// sticks for the session.
+  bool zenLyrics = true;
   String zenPanel = '';
 
   /// Visualizer style (0..5, matching the style list) and whether it is drawn
@@ -164,6 +195,12 @@ class MusicController extends ChangeNotifier {
       case MusicEvent_ScanProgress(:final root, :final done, :final total):
         progress = (label: root, done: done, total: total);
         notifyListeners();
+      case MusicEvent_Stale():
+        // Something behind the page filled itself in — an artist biography that
+        // had to be fetched. Nothing about the player changed, so this is a
+        // plain re-read rather than the accent-and-artwork reload a track
+        // change gets.
+        refresh();
       case MusicEvent_ScanFinished():
         progress = null;
         refresh();
@@ -192,6 +229,54 @@ class MusicController extends ChangeNotifier {
         AudioDeck.instance.setProperty(name, value);
       case MusicEvent_AudioSeek(:final secs):
         AudioDeck.instance.seek(secs);
+      case MusicEvent_Remote(:final action, :final value):
+        _remote(action, value);
+    }
+  }
+
+  /// A command from outside the app — a media key, the desktop's media applet,
+  /// a Bluetooth remote, the tray menu.
+  ///
+  /// Rust does not act on any of these: the deck is here, so a media key has to
+  /// arrive as an event and leave as a `MusicCmd`, exactly as if the matching
+  /// button had been clicked. That also means the whole transport is honoured
+  /// for free — shuffle, repeat, the queue, the sleep timer.
+  void _remote(String action, double value) {
+    switch (action) {
+      case 'toggle':
+        send(const MusicCmd.playPause());
+      case 'play':
+        if (!tickPlaying) send(const MusicCmd.playPause());
+      case 'pause':
+        if (tickPlaying) send(const MusicCmd.playPause());
+      case 'stop':
+        send(const MusicCmd.stop());
+      case 'next':
+        send(const MusicCmd.next());
+      case 'prev':
+        send(const MusicCmd.prev());
+      case 'shuffle':
+        send(const MusicCmd.toggleShuffle());
+      case 'repeat':
+        // The tray submenu names the target state rather than asking for a
+        // step, so cycle until it matches. Three states, at most two steps.
+        final want = ['off', 'all', 'one'][value.round().clamp(0, 2)];
+        for (var i = 0; i < 3 && (state?.repeat ?? 'off') != want; i++) {
+          send(const MusicCmd.cycleRepeat());
+        }
+      case 'seek':
+        send(MusicCmd.seek(secs: value));
+      case 'seekby':
+        send(MusicCmd.seek(secs: (tickPos + value).clamp(0, tickDur)));
+      case 'volume':
+        send(MusicCmd.setVolume(volume: value.clamp(0, 130)));
+      case 'raise':
+        presentWindow();
+      case 'mini':
+        presentWindow();
+        if (!miniOpen) toggleMini();
+      case 'quit':
+        closeWindow();
     }
   }
 
@@ -218,19 +303,52 @@ class MusicController extends ChangeNotifier {
     }
   }
 
+  /// The zen theme button was pressed: the page follows the app from here on.
+  void takeZenTheme() {
+    zenThemed = true;
+    notifyListeners();
+  }
+
   Future<void> refresh() => send(const MusicCmd.refresh());
 
+  /// The header's `+ Add`, and the empty state's. The chooser is opened here
+  /// rather than in the bridge, so a cancelled one dispatches nothing at all.
+  Future<void> addFolder() async {
+    final path = await pickDirectory();
+    if (path == null) return;
+    await send(MusicCmd.addFolder(path: path));
+  }
+
   // --- the players ----------------------------------------------------------
+
+  /// Has the zen theme button been pressed since this zen session opened?
+  ///
+  /// Zen opens dark whatever the app is, but the button at its top right has to
+  /// do something visible — so once it is pressed the page follows the app's
+  /// theme for the rest of the session. Reset on every open, because "always
+  /// starts dark" is the rule the light palette is unreadable without.
+  bool zenThemed = false;
 
   void openZen() {
     zenOpen = true;
     miniOpen = false;
+    zenThemed = false;
+    // Spectrum on the way in. Zen gives the bars the middle of a fullscreen
+    // window, and the shape that earns that much room is the one with the most
+    // in it — Bars is what the 290px strip in the player used to draw.
+    visStyle = visStyleNames.length - 1;
+    visOn = true;
+    // Real fullscreen, not a page that happens to fill the window. Slint's
+    // `music_enter_zen` calls `set_fullscreen(true)` on the toplevel; the
+    // title bar going away is most of what makes zen feel like stopping.
+    setWindowFullscreen(true);
     notifyListeners();
   }
 
   void closeZen() {
     zenOpen = false;
     zenPanel = '';
+    setWindowFullscreen(false);
     notifyListeners();
   }
 
@@ -252,6 +370,14 @@ class MusicController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void moveBubble(double y) {
+    bubbleY = y;
+    notifyListeners();
+  }
+
+  /// 1.0-3.0, the clamp on `music-mini-scale` in ui/main.slint. Not the
+  /// 0.7-3.0 of `tulipix_music::mini_player` — that is the separate
+  /// always-on-top widget window, a different thing entirely.
   void scaleMini(double to) {
     miniScale = to.clamp(1.0, 3.0);
     notifyListeners();
@@ -329,6 +455,30 @@ class MusicController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Open the album or artist page of what is playing.
+  ///
+  /// The click can come from anywhere — the bar, the zen page, the mini
+  /// floating over Photos — so getting to the page is three steps, not one:
+  /// leave zen if it is up, put the shell on Music and Music on My Music, and
+  /// only then ask the bridge to open the detail. Without the first two the
+  /// page opens correctly and behind whatever you were looking at.
+  Future<void> openNowDetail({required bool album}) async {
+    if (zenOpen) closeZen();
+    ShellController.instance.go(Section.music);
+    if (view != 'mymusic') await send(const MusicCmd.setView(name: 'mymusic'));
+    await send(
+        album ? const MusicCmd.openNowAlbum() : const MusicCmd.openNowArtist());
+  }
+
+  /// Switch the docked panel without the toggle. The chips at its head pick
+  /// between Queue and Lyrics; picking the one already showing should not
+  /// close the panel you are looking at.
+  void showPanel(String which) {
+    if (panel == which) return;
+    panel = which;
+    notifyListeners();
+  }
+
   /// Artwork for one thing, resolved once and remembered. Returns null on the
   /// first call and notifies when the answer arrives, which is what lets a
   /// cold library paint progressively instead of blocking on ffmpeg.
@@ -350,6 +500,17 @@ class MusicController extends ChangeNotifier {
       });
     }
     return null;
+  }
+
+  /// Set (or clear) the picture for one album, artist, genre or playlist.
+  ///
+  /// The eviction is the whole point of routing this through the controller:
+  /// `artFor` remembers every answer it has ever had, including the misses, so
+  /// a new cover written straight through `send` would not appear until the app
+  /// was restarted.
+  Future<void> setCardArt(String kind, String key, String path) async {
+    _art.remove('$kind:$key');
+    await send(MusicCmd.setCardArt(kind: kind, key: key, path: path));
   }
 
   // --- shorthands the widgets use constantly --------------------------------

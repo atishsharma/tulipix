@@ -1,10 +1,14 @@
 // Downloader — My Music's eighth sub-tab.
 //
-// Four stacked cards, top to bottom: where the music comes from, how it should
-// land on disk, the queue itself, and the activity log. The Slint page paged
-// the queue at 25 rows because a Slint model of 500 is expensive; a
-// `ListView.builder` is not, so the whole queue is one list here and the pager
-// is gone with it.
+// Two blocks side by side, which is Slint's layout: the work on the left — a
+// header strip carrying the run's counters and its buttons, and under it the
+// entries table filling the rest of the height — and a fixed rail on the right
+// holding the three forms (where the music comes from, how it lands on disk,
+// and the activity log). The Slint page paged the queue at 25 rows because a
+// Slint model of 500 is expensive; a `ListView.builder` is not, so the whole
+// queue is one list here and the pager is gone with it.
+
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 // frb's Int64List, not dart:typed_data's — they are different types and
@@ -72,48 +76,85 @@ class _DownloaderTabState extends State<DownloaderTab> {
         if (st == null) {
           return const Center(child: CircularProgressIndicator());
         }
-        return ListView(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 40),
-          children: [
-            _Head(controller: _c, state: st),
-            const SizedBox(height: 14),
-            if (_c.error != null) ...[
-              _Bar(
-                text: '${_c.error}',
-                tint: Tokens.error,
-                onClose: _c.clearError,
+        // Two blocks, as in Slint: the work on the left, the settings on the
+        // right. The port stacked all five cards in one scrolling column, so
+        // the queue — the thing you are actually reading — started below the
+        // fold behind two forms you had already filled in, and the table never
+        // got more than the height of one screenful of rows.
+        return LayoutBuilder(
+          builder: (context, box) {
+            // min(377, 44.5%) — Slint's rail. Capped as a fraction too, or a
+            // narrow window leaves the table a sliver.
+            final railW = math.min(377.0, box.maxWidth * 0.445);
+            return Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _Head(controller: _c, state: st),
+                        const SizedBox(height: 14),
+                        if (_c.error != null) ...[
+                          _Bar(
+                            text: '${_c.error}',
+                            tint: Tokens.error,
+                            onClose: _c.clearError,
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        if (st.error.isNotEmpty) ...[
+                          _Bar(
+                              text: st.error,
+                              tint: Tokens.error,
+                              onClose: null),
+                          const SizedBox(height: 12),
+                        ],
+                        if (st.ytWarn) ...[
+                          const _Bar(
+                            text: 'That YouTube link carries no album tag, so '
+                                'it may be a video rather than a track. It '
+                                'will still download — the cover and album '
+                                'will just be whatever YouTube had.',
+                            tint: Color(0xFFF59E0B),
+                            onClose: null,
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        Expanded(child: _Tables(controller: _c, state: st)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  SizedBox(
+                    width: railW,
+                    child: ListView(
+                      padding: EdgeInsets.zero,
+                      children: [
+                        _Source(controller: _c, state: st, url: _url),
+                        const SizedBox(height: 14),
+                        _Output(controller: _c, state: st, dest: _dest),
+                        const SizedBox(height: 14),
+                        _Cli(controller: _c),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Audio comes from YouTube; the title, artist, album '
+                          'and cover come from '
+                          '${st.providerBadge.isEmpty ? "the provider" : st.providerBadge}. '
+                          'Finished tracks are added to the library straight '
+                          'away — no rescan.',
+                          style: TextStyle(
+                              fontSize: 11.5, color: t.textDim, height: 1.5),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 12),
-            ],
-            if (st.error.isNotEmpty) ...[
-              _Bar(text: st.error, tint: Tokens.error, onClose: null),
-              const SizedBox(height: 12),
-            ],
-            if (st.ytWarn) ...[
-              const _Bar(
-                text: 'That YouTube link carries no album tag, so it may be a '
-                    'video rather than a track. It will still download — the '
-                    'cover and album will just be whatever YouTube had.',
-                tint: Color(0xFFF59E0B),
-                onClose: null,
-              ),
-              const SizedBox(height: 12),
-            ],
-            _Source(controller: _c, state: st, url: _url),
-            const SizedBox(height: 14),
-            _Output(controller: _c, state: st, dest: _dest),
-            const SizedBox(height: 14),
-            _Tables(controller: _c, state: st),
-            const SizedBox(height: 14),
-            _Cli(controller: _c),
-            const SizedBox(height: 8),
-            Text(
-              'Audio comes from YouTube; the title, artist, album and cover '
-              'come from ${st.providerBadge.isEmpty ? "the provider" : st.providerBadge}. '
-              'Finished tracks are added to the library straight away — no rescan.',
-              style: TextStyle(fontSize: 11.5, color: t.textDim, height: 1.5),
-            ),
-          ],
+            );
+          },
         );
       },
     );
@@ -131,61 +172,122 @@ class _Head extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final busy = state.status == 'downloading' || state.status == 'resolving';
-    return Row(
-      children: [
-        Container(
-          width: 38,
-          height: 38,
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(colors: [kMdlAccent, kMdlAccent2]),
-            borderRadius: BorderRadius.circular(11),
-          ),
-          child: const Icon(Icons.download, color: Colors.white, size: 20),
+    final running = state.status == 'downloading';
+    final denom = state.selected > 0 ? state.selected : state.rows.length;
+    final moved = controller.done + controller.skipped;
+    return Container(
+      height: 76,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      decoration: BoxDecoration(
+        color: t.panel,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: running ? const Color(0xFF22C55E) : t.outline,
+          width: 1.5,
         ),
-        const SizedBox(width: 12),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('Music Downloader',
-                style: TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.w800, color: t.text)),
-            Text(
-              state.title.isEmpty
-                  ? 'Paste a link or search, then pick what to keep'
-                  : '${state.title} · ${state.rows.length} track'
-                      '${state.rows.length == 1 ? "" : "s"}',
-              style: TextStyle(fontSize: 12, color: t.textDim),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(colors: [kMdlAccent, kMdlAccent2]),
+              borderRadius: BorderRadius.circular(13),
             ),
-          ],
-        ),
-        const Spacer(),
-        if (busy)
-          const Padding(
-            padding: EdgeInsets.only(right: 12),
-            child: SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2)),
+            child: const Icon(Icons.download, color: Colors.white, size: 21),
           ),
-        _StatusPill(state: state, controller: controller),
-        if (state.rows.isNotEmpty) ...[
+          const SizedBox(width: 12),
+          // Flexible, not a Spacer after it: a resolved album title is
+          // arbitrary length and this row has four fixed-width controls on its
+          // right that must not be pushed off the end.
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text('Music Downloader',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontFamily: Tokens.fontFamily,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: t.text)),
+                const SizedBox(height: 2),
+                Text(
+                  state.status == 'resolving'
+                      ? 'Resolving…'
+                      : state.rows.isEmpty
+                          ? 'Paste a link or search — tracks land in your '
+                              'library with full metadata'
+                          : '${state.title.isEmpty ? "" : "${state.title}  ·  "}'
+                              '${state.rows.length} tracks resolved',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11.5, color: t.textDim),
+                ),
+              ],
+            ),
+          ),
+          const Spacer(),
+          _Counters(state: state, controller: controller),
+          const SizedBox(width: 10),
+          // The run's progress, over what is *selected* rather than over the
+          // whole queue — the selection is what will actually download.
+          _DlPill(
+            active: running,
+            frac: denom > 0 ? (moved / denom).clamp(0.0, 1.0) : 0,
+            fill: denom > 0 && moved >= denom
+                ? const Color(0xFF22C55E)
+                : kMdlAccent2,
+            label: '$moved / $denom '
+                '${running ? "downloading" : "downloaded"}',
+          ),
+          const SizedBox(width: 10),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF22C55E),
+              foregroundColor: const Color(0xFF07120B),
+            ),
+            onPressed: state.rows.isEmpty || running
+                ? null
+                : () {
+                    controller.setPane(MdlPane.queue);
+                    controller.send(const MdlCmd.download());
+                  },
+            icon: const Icon(Icons.download, size: 17),
+            label: Text(
+                state.selected > 0 ? 'Download ${state.selected}' : 'Download'),
+          ),
           const SizedBox(width: 8),
-          TextButton.icon(
-            onPressed: () => controller.send(const MdlCmd.clearAll()),
-            icon: const Icon(Icons.clear_all, size: 16),
-            label: const Text('Clear'),
+          IconButton(
+            tooltip: 'Cancel',
+            onPressed: running
+                ? () => controller.send(const MdlCmd.cancel())
+                : () => controller.send(const MdlCmd.cancelResolve()),
+            icon: const Icon(Icons.close, size: 18),
+            color: Tokens.error,
+          ),
+          IconButton(
+            tooltip: 'Rescan the library',
+            // The downloader adds finished tracks itself, so this is for files
+            // that arrived some other way — a copy into the watched folder.
+            onPressed: () =>
+                MusicController.instance.send(const MusicCmd.scan()),
+            icon: const Icon(Icons.refresh, size: 18),
+            color: t.textDim,
           ),
         ],
-      ],
+      ),
     );
   }
 }
 
-/// The run counters, or the plain status when nothing has run yet.
-class _StatusPill extends StatelessWidget {
-  const _StatusPill({required this.state, required this.controller});
+/// Four numbers with their own icon, in one pill. Queued, done, skipped,
+/// failed — Slint's counter chip, which has height for one line only.
+class _Counters extends StatelessWidget {
+  const _Counters({required this.state, required this.controller});
 
   final MdlState state;
   final MdlController controller;
@@ -193,33 +295,94 @@ class _StatusPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final total = state.rows.length;
-    final moved = controller.done + controller.skipped + controller.failed;
-    if (moved == 0) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-        decoration: BoxDecoration(
-          color: t.panel,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: t.outline),
-        ),
-        child: Text(controller.status,
-            style: TextStyle(
-                fontSize: 11.5, fontWeight: FontWeight.w600, color: t.textDim)),
-      );
-    }
+    Widget one(IconData icon, Color tint, int n) => Padding(
+          padding: const EdgeInsets.only(right: 12),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 12, color: tint),
+              const SizedBox(width: 5),
+              Text('$n',
+                  style: TextStyle(
+                      fontFamily: Tokens.fontFamily,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: t.text)),
+            ],
+          ),
+        );
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+      height: 34,
+      padding: const EdgeInsets.only(left: 13, right: 1),
       decoration: BoxDecoration(
-        color: kMdlAccent.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: kMdlAccent.withValues(alpha: 0.4)),
+        color: t.panel2,
+        borderRadius: BorderRadius.circular(17),
+        border: Border.all(color: t.outline),
       ),
-      child: Text(
-        '${controller.done} done · ${controller.skipped} skipped · '
-        '${controller.failed} failed  of $total',
-        style: const TextStyle(
-            fontSize: 11.5, fontWeight: FontWeight.w700, color: kMdlAccent),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          one(Icons.queue_music, kMdlAccent, state.selected),
+          one(Icons.check, const Color(0xFF22C55E), controller.done),
+          one(Icons.skip_next, const Color(0xFF64748B), controller.skipped),
+          one(Icons.close, const Color(0xFFEF4444), controller.failed),
+        ],
+      ),
+    );
+  }
+}
+
+/// Slint's `DlPill` — a rounded strip that is its own progress bar, so the
+/// number and the fill are the same control rather than a label above a track.
+class _DlPill extends StatelessWidget {
+  const _DlPill({
+    required this.active,
+    required this.frac,
+    required this.fill,
+    required this.label,
+  });
+
+  final bool active;
+  final double frac;
+  final Color fill;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      width: 208,
+      height: 34,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: t.panel2,
+        borderRadius: BorderRadius.circular(17),
+        border: Border.all(color: active ? fill : t.outline),
+      ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: FractionallySizedBox(
+              widthFactor: frac.clamp(0.0, 1.0),
+              child: ColoredBox(color: fill.withValues(alpha: 0.5)),
+            ),
+          ),
+          Center(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontFamily: Tokens.fontFamily,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: t.text,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -265,11 +428,20 @@ class _Bar extends StatelessWidget {
 // ── cards ───────────────────────────────────────────────────────────────────
 
 class _Card extends StatelessWidget {
-  const _Card({required this.title, required this.child, this.trailing});
+  const _Card({
+    required this.title,
+    required this.child,
+    this.trailing,
+    this.fill = false,
+  });
 
   final String title;
   final Widget child;
   final Widget? trailing;
+
+  /// Take the height the parent offers rather than the height of the content.
+  /// The entries table does; the rail's three forms do not.
+  final bool fill;
 
   @override
   Widget build(BuildContext context) {
@@ -283,7 +455,7 @@ class _Card extends StatelessWidget {
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
+        mainAxisSize: fill ? MainAxisSize.max : MainAxisSize.min,
         children: [
           Row(
             children: [
@@ -297,7 +469,7 @@ class _Card extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          child,
+          if (fill) Expanded(child: child) else child,
         ],
       ),
     );
@@ -748,6 +920,7 @@ class _Tables extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = controller;
     return _Card(
+      fill: true,
       title: switch (c.pane) {
         MdlPane.queue => 'Queue',
         MdlPane.downloaded => 'Downloaded',
@@ -791,19 +964,17 @@ class _Queue extends StatelessWidget {
             'here for you to pick over before anything is downloaded.',
       );
     }
-    final running = controller.status == 'downloading';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
       children: [
-        _QueueBar(controller: controller, state: st, running: running),
+        _QueueBar(controller: controller, state: st),
         const SizedBox(height: 10),
-        // Bounded so the queue scrolls inside the card rather than making the
-        // page taller than the window on a 500-track playlist.
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 520),
+        // The card is as tall as the column now, so the list takes what is
+        // left of it. It used to be capped at 520 and shrink-wrapped, because
+        // it sat in a page-length scroll view where an unbounded list would
+        // have made the page taller than the window.
+        Expanded(
           child: ListView.separated(
-            shrinkWrap: true,
             itemCount: st.rows.length,
             separatorBuilder: (_, __) => Divider(height: 1, color: t.nHair),
             itemBuilder: (context, i) => _Row(
@@ -821,15 +992,10 @@ class _Queue extends StatelessWidget {
 
 /// Select-all, the bulk primary-artist menu, the sort keys, and Download.
 class _QueueBar extends StatelessWidget {
-  const _QueueBar({
-    required this.controller,
-    required this.state,
-    required this.running,
-  });
+  const _QueueBar({required this.controller, required this.state});
 
   final MdlController controller;
   final MdlState state;
-  final bool running;
 
   @override
   Widget build(BuildContext context) {
@@ -872,21 +1038,8 @@ class _QueueBar extends StatelessWidget {
                     : Icons.arrow_downward,
             onTap: () => controller.send(MdlCmd.sortBy(key: key)),
           ),
-        if (running)
-          OutlinedButton.icon(
-            onPressed: () => controller.send(const MdlCmd.cancel()),
-            icon: const Icon(Icons.stop, size: 16),
-            label: const Text('Cancel'),
-          )
-        else
-          FilledButton.icon(
-            onPressed: st.selected == 0
-                ? null
-                : () => controller.send(const MdlCmd.download()),
-            style: FilledButton.styleFrom(backgroundColor: kMdlAccent),
-            icon: const Icon(Icons.download, size: 17),
-            label: Text('Download ${st.selected}'),
-          ),
+        // Download and Cancel are in the header strip, with the counters and
+        // the progress they belong to. This row is what you do *to the list*.
       ],
     );
   }
@@ -1085,54 +1238,62 @@ class _History extends StatelessWidget {
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
       children: [
-        for (final r in st.history)
-          ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            title: Text(r.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 13, color: t.text)),
-            subtitle: Text(
-              [
-                r.artists,
-                if (r.album.isNotEmpty) r.album,
-                if (r.provider.isNotEmpty) r.provider,
-                r.when,
-              ].join(' · '),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 11.5, color: t.textDim),
-            ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  tooltip: 'Play',
-                  icon: const Icon(Icons.play_arrow, size: 18),
-                  // -1 means the file is no longer in the library — the row
-                  // stays, but there is nothing to play.
-                  onPressed: r.itemId < 0
-                      ? null
-                      : () => MusicController.instance.send(
-                            MusicCmd.playList(
-                              itemIds: Int64List.fromList([r.itemId]),
-                              index: 0,
-                              source: 'downloads',
-                            ),
-                          ),
+        // Scrolls inside the card. The pane is as tall as the column now, and
+        // twenty-five rows plus a pager is taller than that on a short window.
+        Expanded(
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              for (final r in st.history)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(r.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 13, color: t.text)),
+                  subtitle: Text(
+                    [
+                      r.artists,
+                      if (r.album.isNotEmpty) r.album,
+                      if (r.provider.isNotEmpty) r.provider,
+                      r.when,
+                    ].join(' · '),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11.5, color: t.textDim),
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: 'Play',
+                        icon: const Icon(Icons.play_arrow, size: 18),
+                        // -1 means the file is no longer in the library — the row
+                        // stays, but there is nothing to play.
+                        onPressed: r.itemId < 0
+                            ? null
+                            : () => MusicController.instance.send(
+                                  MusicCmd.playList(
+                                    itemIds: Int64List.fromList([r.itemId]),
+                                    index: 0,
+                                    source: 'downloads',
+                                  ),
+                                ),
+                      ),
+                      IconButton(
+                        tooltip: 'Show the file',
+                        icon: const Icon(Icons.folder_open, size: 18),
+                        onPressed: () =>
+                            controller.send(MdlCmd.revealFile(path: r.path)),
+                      ),
+                    ],
+                  ),
                 ),
-                IconButton(
-                  tooltip: 'Show the file',
-                  icon: const Icon(Icons.folder_open, size: 18),
-                  onPressed: () =>
-                      controller.send(MdlCmd.revealFile(path: r.path)),
-                ),
-              ],
-            ),
+            ],
           ),
+        ),
         const SizedBox(height: 6),
         Row(
           children: [
@@ -1173,27 +1334,33 @@ class _Searches extends StatelessWidget {
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
       children: [
-        for (final r in st.searches)
-          ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            onTap: () => controller.send(MdlCmd.useSearch(url: r.url)),
-            title: Text(r.title.isEmpty ? r.url : r.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 13, color: t.text)),
-            subtitle: Text(
-              [
-                r.kind,
-                if (r.provider.isNotEmpty) r.provider,
-                r.when,
-              ].join(' · '),
-              style: TextStyle(fontSize: 11.5, color: t.textDim),
-            ),
-            trailing: const Icon(Icons.north_east, size: 16),
+        Expanded(
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              for (final r in st.searches)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  onTap: () => controller.send(MdlCmd.useSearch(url: r.url)),
+                  title: Text(r.title.isEmpty ? r.url : r.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 13, color: t.text)),
+                  subtitle: Text(
+                    [
+                      r.kind,
+                      if (r.provider.isNotEmpty) r.provider,
+                      r.when,
+                    ].join(' · '),
+                    style: TextStyle(fontSize: 11.5, color: t.textDim),
+                  ),
+                  trailing: const Icon(Icons.north_east, size: 16),
+                ),
+            ],
           ),
+        ),
         const SizedBox(height: 6),
         Row(
           children: [

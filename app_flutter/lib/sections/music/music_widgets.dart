@@ -13,6 +13,7 @@ import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
 import 'music_dialogs.dart';
+import 'song_menu.dart';
 
 /// Artwork with a fallback glyph. `kind`/`key` are what `music_ensure_art`
 /// takes; a null answer paints the placeholder rather than a broken image.
@@ -72,9 +73,37 @@ class MusicArt extends StatelessWidget {
   }
 }
 
+/// Rows per page on the Songs tab. `SONGS_PAGE` in
+/// crates/tulipix-bridge/src/api/music.rs — eight columns by four rows. The
+/// page index has to be multiplied by it to turn a row's place on the page
+/// into its place in the library.
+const int kSongsPerPage = 32;
+
+/// Loved and History are lists, not grids — `LIST_ROWS` in the bridge.
+const int kListRows = 25;
+
+/// How wide a collapsed [MusicChip] is.
+///
+/// Slint's `min-width` for a collapsed tab is 44, which is square at the 36px
+/// chip height — a circle, in other words, and at the port's scale a row of
+/// them read as a row of icon buttons rather than as tabs. 56 is a pill: wide
+/// enough that the shape says "tab" before the label appears on hover. A
+/// deliberate divergence, asked for.
+const double kChipCollapsed = 56;
+
 /// A pill in any of the section's chip rows. `tint`/`tint2` give it the
 /// two-stop gradient the Slint chips carry when active.
-class MusicChip extends StatelessWidget {
+/// A header tab, ported from `HdrChip` with `has-grad` in ui/section_header.slint.
+///
+/// The point of the colour is that a row of these reads as five (or ten)
+/// distinct things at a glance, not as one selected thing and a queue of grey.
+/// So the tint is on the chip at rest too — a wash of it behind, an outline of
+/// it around, and the label inked in it — and going active only turns the wash
+/// into the full gradient.
+///
+/// [collapsible] is how ten of them fit on one row: icon only until the pointer
+/// is on it or it is the open tab.
+class MusicChip extends StatefulWidget {
   const MusicChip({
     super.key,
     required this.label,
@@ -84,6 +113,9 @@ class MusicChip extends StatelessWidget {
     this.tint,
     this.tint2,
     this.badge,
+    this.collapsible = false,
+    this.minWidth = 104,
+    this.expand = false,
   });
 
   final String label;
@@ -94,64 +126,139 @@ class MusicChip extends StatelessWidget {
   final Color? tint2;
   final String? badge;
 
+  /// Icon-only at rest, label revealed on hover or when active.
+  final bool collapsible;
+
+  /// The expanded width. A collapsed chip is [kChipCollapsed] wide.
+  final double minWidth;
+
+  /// Fill whatever the parent gives it, rather than hugging its label. For the
+  /// two chips at the head of the docked panel, which are its tabs.
+  final bool expand;
+
+  @override
+  State<MusicChip> createState() => _MusicChipState();
+}
+
+class _MusicChipState extends State<MusicChip> {
+  bool _hovered = false;
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final a = tint ?? Tokens.secMusic;
-    final b = tint2 ?? Tokens.brand;
-    const r = 18.0;
-    return Material(
-      color: active ? Colors.transparent : t.nChip,
-      borderRadius: BorderRadius.circular(r),
-      child: Ink(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(r),
-          gradient: active
-              ? LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [a, b],
-                )
-              : null,
-        ),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(r),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (icon != null) ...[
-                  Icon(icon, size: 16, color: active ? Colors.white : t.nInk2),
-                  const SizedBox(width: 6),
-                ],
+    final a = widget.tint ?? Tokens.secMusic;
+    final b = widget.tint2 ?? Tokens.brand;
+    final active = widget.active;
+    final shown = !widget.collapsible || active || _hovered;
+
+    // `tint.mix(#000000, 0.72)` / `tint.mix(#ffffff, 0.5)` — Slint's mix is
+    // factor * self + (1 - factor) * other, so these are lerps *from* the
+    // second colour. A raw tint on a pale canvas is unreadable at 13px.
+    final ink = active
+        ? Colors.white
+        : (t.dark
+            ? Color.lerp(Colors.white, a, 0.5)!
+            : Color.lerp(Colors.black, a, 0.72)!);
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: t.reduceMotion
+              ? Duration.zero
+              : const Duration(milliseconds: 140),
+          curve: Curves.easeOut,
+          height: 36,
+          width:
+              widget.expand ? double.infinity : (shown ? null : kChipCollapsed),
+          constraints: shown
+              ? BoxConstraints(minWidth: widget.minWidth)
+              : const BoxConstraints(),
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            gradient: active
+                ? LinearGradient(
+                    // Slint's 120deg, which runs down-and-right rather than
+                    // corner to corner.
+                    begin: const Alignment(-1, -0.58),
+                    end: const Alignment(1, 0.58),
+                    colors: [a, b],
+                  )
+                : null,
+            color: active
+                ? null
+                : a.withValues(
+                    alpha: _hovered
+                        ? (t.dark ? 0.30 : 0.34)
+                        : (t.dark ? 0.15 : 0.20),
+                  ),
+            border: active
+                ? null
+                : Border.all(
+                    color: a.withValues(alpha: t.dark ? 0.55 : 0.85),
+                  ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: widget.expand ? MainAxisSize.max : MainAxisSize.min,
+            children: [
+              if (widget.icon != null) Icon(widget.icon, size: 15, color: ink),
+              if (shown && widget.label.isNotEmpty) ...[
+                if (widget.icon != null) const SizedBox(width: 7),
                 Text(
-                  label,
+                  widget.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.clip,
+                  softWrap: false,
                   style: TextStyle(
+                    fontFamily: Tokens.fontFamily,
                     fontSize: 13,
-                    fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-                    color: active ? Colors.white : t.nInk,
+                    fontWeight: FontWeight.w700,
+                    color: ink,
                   ),
                 ),
-                if (badge != null) ...[
-                  const SizedBox(width: 6),
-                  Text(
-                    badge!,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: active ? Colors.white70 : t.nInk2,
-                    ),
-                  ),
-                ],
               ],
-            ),
+              if (shown && widget.badge != null) ...[
+                const SizedBox(width: 6),
+                Text(
+                  widget.badge!,
+                  style: TextStyle(
+                    fontFamily: Tokens.fontFamily,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w800,
+                    color: ink.withValues(alpha: 0.6),
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
       ),
     );
   }
 }
+
+/// The chrome under a tile's artwork, as a fixed reservation.
+///
+/// Guessing the height of text is the bug these replace. 13px is a 19px line in
+/// one font and a 21px line in another, and a shelf that reserved "30 for a gap
+/// and a label" was a pixel over in one locale and six over in the next — which
+/// is a `RenderFlex overflowed` under every tile on the page. The lines are
+/// drawn in boxes of exactly these heights now, so a shelf reserving the same
+/// numbers is doing arithmetic rather than taking a measurement.
+const double kCardGap = 8;
+const double kCardTitleLine = 20;
+const double kCardSubLine = 17;
+
+/// What a shelf reserves under a tile that carries a title only.
+const double kCardLabelOne = kCardGap + kCardTitleLine;
+
+/// ...and under one that carries a subtitle as well. Nearly every grid in the
+/// section does: an album needs its artist, an artist needs its track count.
+const double kCardLabelTwo = kCardLabelOne + kCardSubLine;
 
 /// A square tile: album, artist, genre, playlist, folder, podcast, book.
 class MusicCard extends StatefulWidget {
@@ -170,6 +277,13 @@ class MusicCard extends StatefulWidget {
     this.badge,
     this.progress,
     this.fallback = Icons.album_outlined,
+    this.count = 0,
+    this.loved,
+    this.stars,
+    this.onFav,
+    this.onRate,
+    this.centred = false,
+    this.lyrics = '',
   });
 
   final MusicController controller;
@@ -192,6 +306,29 @@ class MusicCard extends StatefulWidget {
   final double? progress;
   final IconData fallback;
 
+  /// How many tracks are behind this tile. Drawn top-right in a gradient disc,
+  /// always visible, because it is the one number that tells you whether an
+  /// album is an album or a single stray file.
+  final int count;
+
+  /// The heart, top-left. Null hides it entirely — Slint's `fav-enabled`.
+  final bool? loved;
+
+  /// 0..5, on the bottom strip. Null hides it, as above.
+  final int? stars;
+  final VoidCallback? onFav;
+  final void Function(int)? onRate;
+
+  /// Centre the label under the art. Circular tiles want it; a grid of squares
+  /// reads better ranged left.
+  final bool centred;
+
+  /// "" | plain | synced. A song tile wears a mark in the top-right corner when
+  /// its words are stored, filled when they are timed — the one thing about a
+  /// track you cannot tell from its cover, and the reason the Tags & Lyrics
+  /// manager exists.
+  final String lyrics;
+
   @override
   State<MusicCard> createState() => _MusicCardState();
 }
@@ -202,83 +339,299 @@ class _MusicCardState extends State<MusicCard> {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    final w = widget;
+    final showFav = w.loved != null;
+    final showRate = w.stars != null;
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: GestureDetector(
-        onTap: widget.onTap,
-        onSecondaryTap: widget.onMenu,
+        onTap: w.onTap,
+        onSecondaryTap: w.onMenu,
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment:
+              w.centred ? CrossAxisAlignment.center : CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            AspectRatio(
-              aspectRatio: 1,
-              child: LayoutBuilder(
-                builder: (context, box) => Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    MusicArt(
-                      controller: widget.controller,
-                      kind: widget.artKind,
-                      artKey: widget.artKey,
-                      direct: widget.direct,
-                      size: box.maxWidth,
-                      radius: widget.round ? box.maxWidth / 2 : 10,
-                      fallback: widget.fallback,
-                    ),
-                    if (widget.badge != null)
-                      Positioned(
-                        top: 6,
-                        left: 6,
-                        child: _Badge(text: widget.badge!),
+            // Flexible, not a bare AspectRatio: every shelf that draws these
+            // sizes its tile as `art + 42`, and the two text lines under the
+            // art are 43 -- 8 gap + 19 title + 16 subtitle -- so all 45 cards
+            // on screen overflowed their column by exactly one pixel. Guessing
+            // the height of text is the bug, not the constant: the same sum
+            // moves again with the font, the locale, or the reader's text
+            // scale. Loose fit, so the square gives up the pixel instead. With
+            // an unbounded height (no shelf caps it) RenderFlex lays a loose
+            // flex child out as an ordinary one, so this stays width x width.
+            Flexible(
+              child: AspectRatio(
+                aspectRatio: 1,
+                child: LayoutBuilder(
+                  builder: (context, box) {
+                    final side = box.maxWidth;
+                    final radius = w.round ? side / 2 : 10.0;
+                    return DecoratedBox(
+                      // Hover elevation: a 2px accent ring and a coloured glow,
+                      // drawn outside the clip so neither eats into the art.
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(radius),
+                        border: _hovered
+                            ? Border.all(color: Tokens.secMusic, width: 2)
+                            : null,
+                        boxShadow: _hovered
+                            ? const [
+                                BoxShadow(
+                                  color: Color(0xAAEC4899),
+                                  blurRadius: 28,
+                                )
+                              ]
+                            : null,
                       ),
-                    if (widget.progress != null && widget.progress! > 0)
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        child: LinearProgressIndicator(
-                          value: widget.progress!.clamp(0.0, 1.0),
-                          minHeight: 3,
-                          backgroundColor: Colors.black26,
-                          valueColor:
-                              const AlwaysStoppedAnimation(Tokens.secMusic),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(radius),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            MusicArt(
+                              controller: w.controller,
+                              kind: w.artKind,
+                              artKey: w.artKey,
+                              direct: w.direct,
+                              size: side,
+                              radius: 0,
+                              fallback: w.fallback,
+                            ),
+                            if (_hovered)
+                              ColoredBox(
+                                color: const Color(0x55000000),
+                                child: Center(
+                                  child: _PlayFab(
+                                    onPressed: w.onPlay ?? w.onTap,
+                                  ),
+                                ),
+                              ),
+                            if (w.badge != null)
+                              Positioned(
+                                top: 6,
+                                left: 6,
+                                child: _Badge(text: w.badge!),
+                              ),
+                            // The heart sits on the art rather than beside the
+                            // label, so a wall of tiles shows what is loved
+                            // without a second row of chrome under each one.
+                            if (showFav && (_hovered || w.loved!))
+                              Positioned(
+                                top: 8,
+                                left: 8,
+                                child: _Disc(
+                                  icon: w.loved!
+                                      ? Icons.favorite
+                                      : Icons.favorite_border,
+                                  colour:
+                                      w.loved! ? Tokens.secMusic : Colors.white,
+                                  onTap: w.onFav,
+                                ),
+                              ),
+                            if (w.count > 0)
+                              Positioned(
+                                top: 8,
+                                right: 8,
+                                child: _CountDisc(count: w.count),
+                              ),
+                            if (w.lyrics.isNotEmpty)
+                              Positioned(
+                                top: 8,
+                                right: 8,
+                                child: _LyricDisc(synced: w.lyrics == 'synced'),
+                              ),
+                            if (showRate && (_hovered || w.stars! > 0))
+                              Positioned(
+                                left: 0,
+                                right: 0,
+                                bottom: 2,
+                                child: _RateStrip(
+                                  stars: w.stars!,
+                                  onSet: w.onRate,
+                                ),
+                              ),
+                            if (w.progress != null && w.progress! > 0)
+                              Positioned(
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                child: LinearProgressIndicator(
+                                  value: w.progress!.clamp(0.0, 1.0),
+                                  minHeight: 3,
+                                  backgroundColor: Colors.black26,
+                                  valueColor: const AlwaysStoppedAnimation(
+                                      Tokens.secMusic),
+                                ),
+                              ),
+                          ],
                         ),
                       ),
-                    if (_hovered && widget.onPlay != null)
-                      Positioned(
-                        right: 8,
-                        bottom: 8,
-                        child: _PlayFab(onPressed: widget.onPlay!),
-                      ),
-                  ],
+                    );
+                  },
                 ),
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              widget.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: t.nInk,
+            const SizedBox(height: kCardGap),
+            SizedBox(
+              height: kCardTitleLine,
+              child: Align(
+                alignment: w.centred ? Alignment.center : Alignment.centerLeft,
+                child: Text(
+                  w.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: w.centred ? TextAlign.center : TextAlign.start,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: t.nInk,
+                  ),
+                ),
               ),
             ),
-            if (widget.subtitle.isNotEmpty)
-              Text(
-                widget.subtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 11, color: t.nInk2),
+            if (w.subtitle.isNotEmpty)
+              SizedBox(
+                height: kCardSubLine,
+                child: Align(
+                  alignment:
+                      w.centred ? Alignment.center : Alignment.centerLeft,
+                  child: Text(
+                    w.subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: w.centred ? TextAlign.center : TextAlign.start,
+                    style: TextStyle(fontSize: 11, color: t.nInk2),
+                  ),
+                ),
               ),
           ],
         ),
       ),
     );
   }
+}
+
+/// The lyric mark in a song tile's top-right corner. Filled in the section's
+/// pink when the words are timed to the music, outlined when they are only
+/// stored — which is the difference between a sheet you can sing along to and
+/// a block of text.
+class _LyricDisc extends StatelessWidget {
+  const _LyricDisc({required this.synced});
+
+  final bool synced;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: synced ? 'Synced lyrics' : 'Lyrics stored',
+        child: Container(
+          width: 26,
+          height: 26,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: synced ? Tokens.secMusic : const Color(0xAA000000),
+          ),
+          child: Icon(
+            synced ? Icons.lyrics : Icons.lyrics_outlined,
+            size: 14,
+            color: Colors.white,
+          ),
+        ),
+      );
+}
+
+/// A 30px black disc with a glyph in it — the tile's fav corner.
+class _Disc extends StatelessWidget {
+  const _Disc({required this.icon, required this.colour, this.onTap});
+
+  final IconData icon;
+  final Color colour;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: 30,
+        height: 30,
+        child: Material(
+          color: const Color(0xAA000000),
+          shape: const CircleBorder(),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            child: Icon(icon, size: 16, color: colour),
+          ),
+        ),
+      );
+}
+
+/// The track count, top-right, in the section gradient. Always on: it is the
+/// difference between an album and one stray file that happens to have art.
+class _CountDisc extends StatelessWidget {
+  const _CountDisc({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: 28,
+        height: 28,
+        alignment: Alignment.center,
+        decoration: const BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFFEC4899), Color(0xFF8B5CF6)],
+          ),
+          boxShadow: [BoxShadow(color: Color(0x88000000), blurRadius: 8)],
+        ),
+        child: Text(
+          '$count',
+          style: TextStyle(
+            fontFamily: Tokens.fontFamily,
+            fontSize: count > 99 ? 10 : 12,
+            fontWeight: FontWeight.w800,
+            color: Colors.white,
+          ),
+        ),
+      );
+}
+
+/// Five stars across the foot of a tile. Clicking star n rates n; clicking the
+/// star that is already the rating clears it.
+class _RateStrip extends StatelessWidget {
+  const _RateStrip({required this.stars, this.onSet});
+
+  final int stars;
+  final void Function(int)? onSet;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        height: 28,
+        color: const Color(0xAA000000),
+        child: Row(
+          children: [
+            for (var n = 1; n <= 5; n++)
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap:
+                      onSet == null ? null : () => onSet!(stars == n ? 0 : n),
+                  child: Icon(
+                    stars >= n ? Icons.star : Icons.star_border,
+                    size: 13,
+                    color: stars >= n
+                        ? const Color(0xFFE5A00D)
+                        : const Color(0xCCFFFFFF),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
 }
 
 class _Badge extends StatelessWidget {
@@ -307,16 +660,16 @@ class _PlayFab extends StatelessWidget {
   final VoidCallback onPressed;
 
   @override
-  Widget build(BuildContext context) => Material(
-        color: Tokens.secMusic,
-        shape: const CircleBorder(),
-        elevation: 4,
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: onPressed,
-          child: const Padding(
-            padding: EdgeInsets.all(8),
-            child: Icon(Icons.play_arrow, size: 20, color: Colors.white),
+  Widget build(BuildContext context) => SizedBox(
+        width: 44,
+        height: 44,
+        child: Material(
+          color: Tokens.secMusic,
+          shape: const CircleBorder(),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onPressed,
+            child: const Icon(Icons.play_arrow, size: 20, color: Colors.white),
           ),
         ),
       );
@@ -336,6 +689,8 @@ class TrackRow extends StatefulWidget {
     this.onRemove,
     this.showArt = true,
     this.dense = false,
+    this.compact = false,
+    this.draggable = false,
   });
 
   final MusicController controller;
@@ -347,6 +702,18 @@ class TrackRow extends StatefulWidget {
   final bool showArt;
   final bool dense;
 
+  /// The dashboard shape: artwork, two lines, a duration, and nothing else.
+  /// The full row's number column, lyric badge, heart, stars and overflow menu
+  /// belong to a list you are working in, not to a rail you are glancing at.
+  final bool compact;
+
+  /// This row lives in a `ReorderableListView`, which paints its own drag
+  /// handle over the trailing edge. The handle is drawn *on top* of the row
+  /// rather than beside it, so without a gap reserved for it the grip sits on
+  /// the duration -- two things in the same 24 pixels, and the one you can read
+  /// is the one you cannot grab.
+  final bool draggable;
+
   @override
   State<TrackRow> createState() => _TrackRowState();
 }
@@ -354,136 +721,204 @@ class TrackRow extends StatefulWidget {
 class _TrackRowState extends State<TrackRow> {
   bool _hovered = false;
 
+  /// The now-playing green, from `#22c55e1f` / `#22c55e66` / `#22c55e` in
+  /// ui/page_music.slint. Deliberately not the section pink: the row you are
+  /// hearing has to be findable in a list where pink is already the accent.
+  static const Color _np = Color(0xFF22C55E);
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
     final tr = widget.track;
     final playing = widget.controller.now?.itemId == tr.itemId &&
         (widget.controller.now?.loaded ?? false);
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: InkWell(
-        onTap: widget.onPlay,
-        child: Container(
-          height: widget.dense ? 44 : 56,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          color: _hovered ? t.nHover : Colors.transparent,
-          child: Row(
-            children: [
-              SizedBox(
-                width: 28,
-                child: playing
-                    ? const Icon(Icons.equalizer,
-                        size: 16, color: Tokens.secMusic)
-                    : Text(
-                        '${widget.index + 1}',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 12, color: t.nInk2),
+    final art = widget.dense ? 32.0 : 40.0;
+    // The same menu the Songs grid has. Slint puts it on both — a row and a
+    // tile are two drawings of one song, and the things you can do to it do
+    // not change with the drawing.
+    return SongContextMenu(
+      controller: widget.controller,
+      track: tr,
+      onPlay: widget.onPlay,
+      onQueue: widget.onQueue,
+      onRemove: widget.onRemove,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: GestureDetector(
+          onTap: widget.onPlay,
+          child: Container(
+            // 52 dense, not 44. The queue is a list you drag rows around in,
+            // and a 44px row with a 32px thumbnail in it leaves six pixels of
+            // margin to grab.
+            height: widget.dense ? 52 : 56,
+            padding: EdgeInsets.only(
+              left: widget.compact ? 10 : 12,
+              right: widget.compact ? 16 : 12,
+            ),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              color: playing
+                  ? _np.withValues(alpha: 0.12)
+                  : (_hovered ? t.nHover : Colors.transparent),
+              border: playing
+                  ? Border.all(color: _np.withValues(alpha: 0.4))
+                  : null,
+            ),
+            child: Row(
+              children: [
+                if (!widget.compact)
+                  SizedBox(
+                    width: 28,
+                    child: playing
+                        ? const Icon(Icons.equalizer, size: 16, color: _np)
+                        : Text(
+                            '${widget.index + 1}',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 12, color: t.nInk2),
+                          ),
+                  ),
+                if (widget.showArt) ...[
+                  // Playing beats hover: the marker stays while the pointer is
+                  // over the row you are already hearing, so it never flickers.
+                  Stack(
+                    children: [
+                      MusicArt(
+                        controller: widget.controller,
+                        kind: 'track',
+                        artKey: '${tr.itemId}',
+                        direct: tr.art,
+                        size: art,
+                        radius: 5,
                       ),
-              ),
-              if (widget.showArt) ...[
-                MusicArt(
-                  controller: widget.controller,
-                  kind: 'track',
-                  artKey: '${tr.itemId}',
-                  direct: tr.art,
-                  size: widget.dense ? 32 : 40,
-                  radius: 6,
-                ),
-                const SizedBox(width: 12),
-              ],
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      tr.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: playing ? FontWeight.w600 : FontWeight.w400,
-                        color: playing ? Tokens.secMusic : t.nInk,
-                      ),
-                    ),
-                    if (tr.artist.isNotEmpty || tr.album.isNotEmpty)
+                      if (playing || _hovered)
+                        Positioned.fill(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(5),
+                            child: ColoredBox(
+                              color: Color(playing ? 0xAA000000 : 0x88000000),
+                              child: Icon(
+                                playing ? Icons.equalizer : Icons.play_arrow,
+                                size: 15,
+                                color: playing ? _np : Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(width: 12),
+                ],
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
                       Text(
-                        [tr.artist, tr.album]
-                            .where((s) => s.isNotEmpty)
-                            .join(' · '),
+                        tr.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 11, color: t.nInk2),
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: playing ? _np : t.nInk,
+                        ),
                       ),
-                  ],
-                ),
-              ),
-              if (tr.lyrics.isNotEmpty)
-                Tooltip(
-                  message:
-                      tr.lyrics == 'synced' ? 'Synced lyrics' : 'Lyrics stored',
-                  child: Icon(
-                    Icons.lyrics_outlined,
-                    size: 15,
-                    color: tr.lyrics == 'synced' ? Tokens.secMusic : t.nInk2,
+                      const SizedBox(height: 2),
+                      if (tr.artist.isNotEmpty || tr.album.isNotEmpty)
+                        Text(
+                          widget.compact
+                              ? tr.artist
+                              : [tr.artist, tr.album]
+                                  .where((s) => s.isNotEmpty)
+                                  .join(' · '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 11, color: t.nInk2),
+                        ),
+                    ],
                   ),
                 ),
-              const SizedBox(width: 8),
-              IconButton(
-                iconSize: 17,
-                visualDensity: VisualDensity.compact,
-                tooltip: tr.loved ? 'Remove from favourites' : 'Favourite',
-                icon: Icon(
-                  tr.loved ? Icons.favorite : Icons.favorite_border,
-                  color: tr.loved ? Tokens.secMusic : t.nInk2,
-                ),
-                onPressed: () =>
-                    widget.controller.send(MusicCmd.love(itemId: tr.itemId)),
-              ),
-              _Stars(
-                stars: tr.stars,
-                onSet: (n) => widget.controller
-                    .send(MusicCmd.rate(itemId: tr.itemId, stars: n)),
-              ),
-              const SizedBox(width: 8),
-              SizedBox(
-                width: 48,
-                child: Text(
-                  fmtClock(tr.durationS),
-                  textAlign: TextAlign.right,
-                  style: TextStyle(fontSize: 12, color: t.nInk2),
-                ),
-              ),
-              PopupMenuButton<String>(
-                iconSize: 18,
-                tooltip: 'More',
-                onSelected: (v) => _menu(context, v),
-                itemBuilder: (_) => [
-                  if (widget.onQueue != null)
-                    const PopupMenuItem(
-                        value: 'queue', child: Text('Add to queue')),
-                  const PopupMenuItem(
-                      value: 'playlist', child: Text('Add to playlist…')),
-                  const PopupMenuItem(value: 'tags', child: Text('Edit tags…')),
-                  if (widget.onRemove != null)
-                    const PopupMenuItem(
-                        value: 'remove', child: Text('Remove from this list')),
-                  const PopupMenuItem(
-                      value: 'delete', child: Text('Delete from disk…')),
+                // None of this in the queue. A 432px panel has to spend its
+                // width on the two things you are reading — the song and who
+                // made it — and the marks belong to a list you are working in.
+                // They are all still on the right-click menu.
+                if (!widget.compact && !widget.dense) ...[
+                  if (tr.lyrics.isNotEmpty)
+                    Tooltip(
+                      message: tr.lyrics == 'synced'
+                          ? 'Synced lyrics'
+                          : 'Lyrics stored',
+                      child: Icon(
+                        Icons.lyrics_outlined,
+                        size: 15,
+                        color:
+                            tr.lyrics == 'synced' ? Tokens.secMusic : t.nInk2,
+                      ),
+                    ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    iconSize: 17,
+                    visualDensity: VisualDensity.compact,
+                    tooltip: tr.loved ? 'Remove from favourites' : 'Favourite',
+                    icon: Icon(
+                      tr.loved ? Icons.favorite : Icons.favorite_border,
+                      color: tr.loved ? Tokens.secMusic : t.nInk2,
+                    ),
+                    onPressed: () => widget.controller
+                        .send(MusicCmd.love(itemId: tr.itemId)),
+                  ),
+                  _Stars(
+                    stars: tr.stars,
+                    onSet: (n) => widget.controller
+                        .send(MusicCmd.rate(itemId: tr.itemId, stars: n)),
+                  ),
+                  const SizedBox(width: 8),
                 ],
-              ),
-            ],
+                SizedBox(
+                  width: 48,
+                  child: Text(
+                    fmtClock(tr.durationS),
+                    textAlign: TextAlign.right,
+                    style: TextStyle(fontSize: 12, color: t.nInk2),
+                  ),
+                ),
+                if (widget.draggable) const SizedBox(width: 34),
+                // Not in the queue: the panel is 432px, this menu duplicates
+                // the right-click one exactly, and a column of three-dot
+                // buttons down the side of a queue is the widest thing in it
+                // that does the least.
+                if (!widget.compact && !widget.dense)
+                  PopupMenuButton<String>(
+                    iconSize: 18,
+                    tooltip: 'More',
+                    onSelected: (v) => _menu(context, v),
+                    itemBuilder: (_) => [
+                      if (widget.onQueue != null)
+                        const PopupMenuItem(
+                            value: 'queue', child: Text('Add to queue')),
+                      const PopupMenuItem(
+                          value: 'playlist', child: Text('Add to playlist…')),
+                      const PopupMenuItem(
+                          value: 'tags', child: Text('Edit tags…')),
+                      if (widget.onRemove != null)
+                        const PopupMenuItem(
+                            value: 'remove',
+                            child: Text('Remove from this list')),
+                      const PopupMenuItem(
+                          value: 'delete', child: Text('Delete from disk…')),
+                    ],
+                  ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  /// The row's context menu. Everything here needs a dialog, a controller or
-  /// both, which is why it is a method on the state rather than callbacks the
-  /// six call sites would each have to wire.
+  /// The three-dot menu's actions. The same list the right-click menu offers,
+  /// reached from the button on the row itself.
   Future<void> _menu(BuildContext context, String choice) async {
     final tr = widget.track;
     switch (choice) {
@@ -544,16 +979,58 @@ class Pager extends StatelessWidget {
     required this.page,
     required this.pages,
     required this.onGo,
+    this.compact = false,
   });
 
   final int page;
   final int pages;
   final void Function(int) onGo;
 
+  /// Docked in a header row rather than centred under a list — no vertical
+  /// padding, and 28px discs instead of full IconButtons.
+  final bool compact;
+
   @override
   Widget build(BuildContext context) {
     if (pages <= 1) return const SizedBox.shrink();
     final t = context.tokens;
+    if (compact) {
+      // Filled, not a chip: a pager sitting at the end of a row of coloured
+      // action pills in the section's own accent was two grey discs nobody
+      // found. The disabled end of the range keeps the chip grey, so the pager
+      // still says which way it can go.
+      Widget btn(IconData icon, int to, bool on) => SizedBox(
+            width: 28,
+            height: 28,
+            child: Material(
+              color: on ? Tokens.secMusic : t.nChip,
+              shape: const CircleBorder(),
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                onTap: on ? () => onGo(to) : null,
+                child: Icon(icon, size: 15, color: on ? Colors.white : t.nInk3),
+              ),
+            ),
+          );
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          btn(Icons.chevron_left, page - 1, page > 0),
+          const SizedBox(width: 8),
+          Text(
+            '${page + 1} / $pages',
+            style: TextStyle(
+              fontFamily: Tokens.fontFamily,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: t.nInk,
+            ),
+          ),
+          const SizedBox(width: 8),
+          btn(Icons.chevron_right, page + 1, page + 1 < pages),
+        ],
+      );
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 16),
       child: Row(
@@ -561,12 +1038,14 @@ class Pager extends StatelessWidget {
         children: [
           IconButton(
             icon: const Icon(Icons.chevron_left),
+            color: page > 0 ? Tokens.secMusic : t.nInk3,
             onPressed: page > 0 ? () => onGo(page - 1) : null,
           ),
           Text('${page + 1} / $pages',
-              style: TextStyle(fontSize: 13, color: t.nInk2)),
+              style: TextStyle(fontSize: 13, color: t.nInk)),
           IconButton(
             icon: const Icon(Icons.chevron_right),
+            color: page + 1 < pages ? Tokens.secMusic : t.nInk3,
             onPressed: page + 1 < pages ? () => onGo(page + 1) : null,
           ),
         ],
@@ -614,7 +1093,11 @@ class MusicEmpty extends StatelessWidget {
           ),
           if (action != null) ...[
             const SizedBox(height: 18),
-            FilledButton(onPressed: action!.$2, child: Text(action!.$1)),
+            FilledButton(
+              style: musicFilledStyle(),
+              onPressed: action!.$2,
+              child: Text(action!.$1),
+            ),
           ],
         ],
       ),
@@ -708,4 +1191,563 @@ class CardGrid extends StatelessWidget {
         itemCount: children.length,
         itemBuilder: (_, i) => children[i],
       );
+}
+
+/// The edge-to-edge grid every browse page in ui/page_music.slint uses.
+///
+/// The cell is the unit, not the tile: `cols = floor(width / target)` clamped,
+/// `cell = width / cols`, and the tile is the cell less its inset. That is why
+/// the grids hold their rhythm as the window moves — the tile size drifts
+/// within a column count instead of the column count jumping about. A
+/// SliverGrid with a max extent gives the opposite behaviour, which is what
+/// made the port's pages feel unrelated to the Slint ones.
+class MusicGrid extends StatelessWidget {
+  const MusicGrid({
+    super.key,
+    required this.count,
+    required this.builder,
+    this.target = 150,
+    this.maxCols = 7,
+    this.minCols = 1,
+    this.inset = 8,
+    this.labelHeight = kCardLabelTwo,
+  });
+
+  final int count;
+  final Widget Function(BuildContext, int) builder;
+
+  /// The cell width to aim for. Slint drives this off the density slider on
+  /// the songs grid and hard-codes 150 (or 170) everywhere else.
+  final double target;
+  final int maxCols;
+  final int minCols;
+  final double inset;
+
+  /// What the row keeps for the label under each tile. Defaults to two lines,
+  /// because nearly every grid in the section draws a subtitle; pass
+  /// [kCardLabelOne] for the ones that do not.
+  final double labelHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    if (count == 0) return const SizedBox.shrink();
+    return LayoutBuilder(
+      builder: (context, box) {
+        final cols = (box.maxWidth / target).floor().clamp(minCols, maxCols);
+        final cell = box.maxWidth / cols;
+        final rows = (count / cols).ceil();
+        return Column(
+          children: [
+            for (var r = 0; r < rows; r++)
+              SizedBox(
+                height: cell + labelHeight,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (var c = 0; c < cols; c++)
+                      SizedBox(
+                        width: cell,
+                        child: r * cols + c < count
+                            ? Padding(
+                                padding:
+                                    EdgeInsets.symmetric(horizontal: inset),
+                                child: builder(context, r * cols + c),
+                              )
+                            : null,
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// The 40px action pill above the Playlists and Folders grids.
+class BrowseChip extends StatefulWidget {
+  const BrowseChip({
+    super.key,
+    required this.label,
+    required this.onTap,
+    this.icon,
+    this.dot = false,
+  });
+
+  final String label;
+  final VoidCallback onTap;
+  final IconData? icon;
+
+  /// A filled accent dot ahead of the label — Slint's `on`.
+  final bool dot;
+
+  @override
+  State<BrowseChip> createState() => _BrowseChipState();
+}
+
+class _BrowseChipState extends State<BrowseChip> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          height: 40,
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          decoration: BoxDecoration(
+            color: _hovered ? t.nHover : t.nChip,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: t.nHair),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (widget.dot) ...[
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Tokens.secMusic,
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
+              if (widget.icon != null) ...[
+                Icon(widget.icon, size: 14, color: t.nInk2),
+                const SizedBox(width: 8),
+              ],
+              Text(
+                widget.label,
+                style: TextStyle(
+                  fontFamily: Tokens.fontFamily,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: t.nInk2,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A 28px sort pill. `dir` is Slint's: 0 none, 1 ascending, 2 descending, and
+/// the arrow is what tells you a second click on the active chip flips it.
+/// One sort control, shaped like the pills beside it.
+///
+/// Every list in My Music sorts, and each one had grown its own control — a
+/// popup on Songs, a pair of chips on the browse grids. One shape, so row 2
+/// reads the same wherever you are: the field you are sorting by, an arrow for
+/// which way, and picking the field you are already on flips it.
+class SortMenu extends StatelessWidget {
+  const SortMenu({
+    super.key,
+    required this.modes,
+    required this.mode,
+    required this.dir,
+    required this.onPick,
+  });
+
+  final Map<String, String> modes;
+  final String mode;
+
+  /// asc | desc
+  final String dir;
+  final void Function(String) onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final up = dir != 'desc';
+    return PopupMenuButton<String>(
+      tooltip: 'Sort',
+      position: PopupMenuPosition.under,
+      onSelected: onPick,
+      itemBuilder: (_) => [
+        for (final e in modes.entries)
+          PopupMenuItem(
+            value: e.key,
+            height: 34,
+            child: Row(
+              children: [
+                if (e.key == mode)
+                  Icon(up ? Icons.arrow_upward : Icons.arrow_downward,
+                      size: 14, color: Tokens.secMusic)
+                else
+                  const SizedBox(width: 14),
+                const SizedBox(width: 8),
+                Text(e.value, style: const TextStyle(fontSize: 13)),
+              ],
+            ),
+          ),
+      ],
+      child: Container(
+        height: 38,
+        padding: const EdgeInsets.only(left: 14, right: 12),
+        decoration: BoxDecoration(
+          color: t.nChip,
+          borderRadius: BorderRadius.circular(19),
+          border: Border.all(color: t.nHair),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.sort, size: 15, color: t.nInk2),
+            const SizedBox(width: 8),
+            Text(
+              modes[mode] ?? mode,
+              style: TextStyle(
+                fontFamily: Tokens.fontFamily,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: t.nInk2,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Icon(up ? Icons.arrow_upward : Icons.arrow_downward,
+                size: 13, color: Tokens.secMusic),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class SortChip extends StatelessWidget {
+  const SortChip({
+    super.key,
+    required this.label,
+    required this.active,
+    required this.onTap,
+    this.dir = 0,
+    this.icon,
+  });
+
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+  final int dir;
+  final IconData? icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final fg = active ? Tokens.secMusic : t.nInk2;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 28,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: active
+              ? Tokens.secMusic.withValues(alpha: 0.15)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: active ? Tokens.secMusic.withValues(alpha: 0.4) : t.nHair,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[
+              Icon(icon, size: 13, color: fg),
+              const SizedBox(width: 6),
+            ],
+            Text(
+              label,
+              style: TextStyle(
+                fontFamily: Tokens.fontFamily,
+                fontSize: 12,
+                fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                color: fg,
+              ),
+            ),
+            if (dir > 0) ...[
+              const SizedBox(width: 6),
+              Icon(
+                dir == 1 ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                size: 12,
+                color: fg,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The 38px pill in a detail page's action row.
+class DetailActionBtn extends StatefulWidget {
+  const DetailActionBtn({
+    super.key,
+    this.icon,
+    required this.label,
+    required this.onTap,
+    this.tint,
+  });
+
+  /// Optional: a row of these inside a list wants the words, not a wall of
+  /// glyphs.
+  final IconData? icon;
+  final String label;
+  final VoidCallback onTap;
+
+  /// Paint it. A row of five identical grey pills gives the eye nothing to
+  /// aim at; Slint colours the ones that *do* something to the whole page —
+  /// Play all, Shuffle, the manager — and leaves the rest neutral.
+  final Color? tint;
+
+  @override
+  State<DetailActionBtn> createState() => _DetailActionBtnState();
+}
+
+class _DetailActionBtnState extends State<DetailActionBtn> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final tint = widget.tint;
+    final ink = tint == null
+        ? t.nInk2
+        : (t.dark
+            ? Color.lerp(Colors.white, tint, 0.55)!
+            : Color.lerp(Colors.black, tint, 0.72)!);
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          height: 38,
+          padding: const EdgeInsets.only(left: 15, right: 16),
+          decoration: BoxDecoration(
+            color: tint == null
+                ? (_hovered ? t.nHover : t.nChip)
+                : tint.withValues(
+                    alpha: _hovered
+                        ? (t.dark ? 0.34 : 0.36)
+                        : (t.dark ? 0.18 : 0.22),
+                  ),
+            borderRadius: BorderRadius.circular(19),
+            border: Border.all(
+              color: tint == null
+                  ? t.nHair
+                  : tint.withValues(alpha: t.dark ? 0.55 : 0.85),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (widget.icon != null) ...[
+                Icon(widget.icon,
+                    size: 15,
+                    color: tint == null
+                        ? (_hovered ? Tokens.secMusic : t.nInk2)
+                        : ink),
+                const SizedBox(width: 8),
+              ],
+              Text(
+                widget.label,
+                style: TextStyle(
+                  fontFamily: Tokens.fontFamily,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: ink,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The gradient tile Playlists and Folders use in place of artwork. Neither
+/// has a cover of its own by nature, and a grid of grey squares with a glyph
+/// in the middle is what those pages look like without this.
+class TileCard extends StatefulWidget {
+  const TileCard({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.onTap,
+    this.art,
+    this.controller,
+    this.artKind = '',
+    this.artKey = '',
+    this.onMenu,
+    this.hint,
+    this.footer,
+    this.strong = true,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+  final String? art;
+  final MusicController? controller;
+  final String artKind;
+  final String artKey;
+  final VoidCallback? onMenu;
+
+  /// Small white line revealed over the tile on hover.
+  final String? hint;
+
+  /// Pinned to the bottom-left of the tile — the folder pages' section chip.
+  final Widget? footer;
+
+  /// Playlists get the full pink-to-violet; folders get it at a third, so a
+  /// wall of folders does not read as a wall of playlists.
+  final bool strong;
+
+  @override
+  State<TileCard> createState() => _TileCardState();
+}
+
+class _TileCardState extends State<TileCard> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final w = widget;
+    // A playlist and a folder have no cover of their own, so they borrow one —
+    // a playlist wears the newest thing in it. Asking the resolver here rather
+    // than only when a path is already known is what starts that lookup; a
+    // miss leaves the gradient tile alone instead of painting a grey box over
+    // it, which is what handing an unresolved key to MusicArt would do.
+    final borrowed = (w.art ?? '').isNotEmpty
+        ? w.art
+        : (w.controller != null && w.artKind.isNotEmpty
+            ? w.controller!.artFor(w.artKind, w.artKey)
+            : null);
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: w.onTap,
+        onSecondaryTap: w.onMenu,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: AspectRatio(
+                aspectRatio: 1,
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: w.strong
+                          ? const [Color(0xFFEC4899), Color(0xFF7C3AED)]
+                          : const [Color(0x55EC4899), Color(0x557C3AED)],
+                    ),
+                    border: _hovered
+                        ? Border.all(color: Tokens.secMusic, width: 2)
+                        : null,
+                    boxShadow: _hovered
+                        ? const [
+                            BoxShadow(color: Color(0xAAEC4899), blurRadius: 26)
+                          ]
+                        : null,
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (borrowed != null && borrowed.isNotEmpty)
+                        MusicArt(
+                          controller: w.controller!,
+                          kind: w.artKind,
+                          artKey: w.artKey,
+                          direct: borrowed,
+                          size: 400,
+                          radius: 0,
+                          fallback: w.icon,
+                        )
+                      else
+                        Center(
+                          child: Icon(w.icon,
+                              size: 40, color: const Color(0xDDFFFFFF)),
+                        ),
+                      if (_hovered)
+                        ColoredBox(
+                          color: const Color(0x44000000),
+                          child: w.hint == null
+                              ? const Align(
+                                  alignment: Alignment(0.62, 0.62),
+                                  child: _PlayFab2(),
+                                )
+                              : Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8),
+                                    child: Text(
+                                      w.hint!,
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                        fontFamily: Tokens.fontFamily,
+                                        fontSize: 9,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                        ),
+                      if (w.footer != null)
+                        Positioned(left: 6, bottom: 6, child: w.footer!),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              w.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontFamily: Tokens.fontFamily,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: t.nInk,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PlayFab2 extends StatelessWidget {
+  const _PlayFab2();
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      width: 38,
+      height: 38,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(shape: BoxShape.circle, color: t.nInk),
+      child: Icon(Icons.play_arrow, size: 16, color: t.nCard),
+    );
+  }
 }

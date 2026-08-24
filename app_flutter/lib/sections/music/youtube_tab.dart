@@ -211,8 +211,15 @@ class _Home extends StatelessWidget {
                     onTap: () => controller.send(MusicCmd.ytSearch(query: q)),
                   ),
                 TextButton(
-                  onPressed: () =>
-                      controller.send(const MusicCmd.ytClearRecent()),
+                  onPressed: () => confirmThen(
+                    context,
+                    controller,
+                    title: 'Clear recent searches?',
+                    body: 'The list of what you have searched for is '
+                        'forgotten. Nothing downloaded is touched.',
+                    action: 'Clear',
+                    cmd: const MusicCmd.ytClearRecent(),
+                  ),
                   child: const Text('Clear'),
                 ),
               ],

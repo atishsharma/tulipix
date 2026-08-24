@@ -20,18 +20,30 @@
 
 use anyhow::Result;
 use flutter_rust_bridge::frb;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use crate::api::photos::human_size;
 use crate::db::{music_pool, podcasts_pool, radio_pool, youtube_pool};
 use crate::frb_generated::StreamSink;
 use crate::mpv;
 
-/// Songs list page. The Slint build pages at 100 and so does this; a library
-/// of 40,000 tracks is one `LIMIT`, not one model.
-const SONGS_PAGE: i64 = 100;
-/// Album / artist / genre / folder grids.
-const BROWSE_PAGE: i64 = 60;
+/// Songs list page. Eight across, four down -- the grid on the Songs tab is
+/// pinned to eight columns, so a page is exactly the four rows that fit above
+/// the fold and the pager in row 2 steps a screen at a time. A library of
+/// 40,000 tracks is one `LIMIT`, not one model.
+const SONGS_PAGE: i64 = 32;
+/// Album / artist / genre / folder grids. Seven across, four down — the same
+/// arithmetic the Songs grid uses, against the seven columns Slint pins these
+/// to.
+const BROWSE_PAGE: i64 = 28;
+/// The Folders grid. Seven across, three down -- a folder tile is taller than
+/// an album's, and the fourth row would be under the fold.
+const FOLDER_PAGE: i64 = 21;
+/// Loved and History, which are lists rather than grids: twenty-five rows is
+/// about a screen of them.
+const LIST_ROWS: i64 = 25;
 /// Podcast episode lists, YouTube download lists, radio station lists.
 const LIST_PAGE: i64 = 30;
 /// Home rails. Two rows of seven on a wide window, and nothing below the fold
@@ -96,6 +108,24 @@ pub struct Stats {
     pub total: String,
     pub genre: String,
     pub streak: String,
+}
+
+/// One song in the Tags & Lyrics manager, with the coverage verdict that the
+/// list's filter and status pill are drawn from.
+#[derive(Debug, Clone)]
+pub struct MgrRow {
+    pub track: Track,
+    /// Lyrics tab: Synced | Normal | Missing. Tags tab: Tagged | Missing.
+    pub status: String,
+}
+
+/// One LRCLIB candidate, as offered in the manager's search results.
+#[derive(Debug, Clone)]
+pub struct LyricHit {
+    pub title: String,
+    pub sub: String,
+    /// Synced | Plain -- whether it carries timestamps.
+    pub kind: String,
 }
 
 #[derive(Debug, Clone)]
@@ -309,6 +339,52 @@ pub struct MusicState {
     /// The watched roots themselves, as opposed to the folders tracks were
     /// found in — the Library tab lists these and the Folders tab lists those.
     pub roots: Vec<BrowseCard>,
+    /// Every playlist, whatever tab is open.
+    ///
+    /// `cards` only holds playlists while the Playlists tab is the one showing,
+    /// so "add this to a playlist" had to switch the tab, read the cards and
+    /// switch back — which reloaded the library twice and left the section on
+    /// whatever tab lost the race. The list is a dozen rows; carrying it on
+    /// every snapshot is cheaper than the round trip it replaces.
+    pub playlists: Vec<BrowseCard>,
+
+    // --- Tags & Lyrics manager ---
+    /// A modal over the Songs tab, in two halves: which of the library's songs
+    /// still have no tags, and which still have no words. Both are the same
+    /// shape -- three stat cards that double as filters, a coverage bar, a
+    /// paged list with a status pill and a per-row action.
+    pub mgr_open: bool,
+    /// tags | lyrics
+    pub mgr_tab: String,
+    /// list | search | view
+    pub mgr_mode: String,
+    /// all | synced | missing (lyrics) · all | tagged | missing (tags)
+    pub mgr_filter: String,
+    pub mgr_page: i64,
+    pub mgr_pages: i64,
+    pub mgr_total: i64,
+    /// Synced (lyrics) or fully tagged (tags).
+    pub mgr_ok: i64,
+    pub mgr_missing: i64,
+    pub mgr_rows: Vec<MgrRow>,
+    /// The song the search or the read-only view belongs to.
+    pub mgr_item_id: i64,
+    pub mgr_title: String,
+    pub mgr_q_name: String,
+    pub mgr_q_artist: String,
+    pub mgr_q_album: String,
+    pub mgr_searching: bool,
+    pub mgr_results: Vec<LyricHit>,
+    /// Whatever the view or the picked candidate holds.
+    pub mgr_view_rows: Vec<LyricLine>,
+    pub mgr_view_plain: String,
+    /// A picked candidate that has not been saved yet.
+    pub mgr_dirty: bool,
+    pub mgr_status: String,
+    pub mgr_progress: f64,
+    /// A bulk fetch is running; the coverage bar is a progress bar until it
+    /// finishes.
+    pub mgr_busy: bool,
 
     // --- album / artist / genre / playlist / folder detail ---
     pub detail_open: bool,
@@ -321,6 +397,16 @@ pub struct MusicState {
     pub detail_art: String,
     pub detail_tracks: Vec<Track>,
     pub detail_albums: Vec<BrowseCard>,
+    /// The heart and the stars on the *subject* of the page -- the album or the
+    /// artist itself, which is a different row from any of its tracks.
+    pub detail_loved: bool,
+    pub detail_stars: i64,
+    /// Who made the album this page is about, so its subtitle can be a link to
+    /// their page. 0 on every other kind.
+    pub detail_artist_id: i64,
+    /// An artist biography, fetched once from MusicBrainz + Wikipedia and kept
+    /// in `artists.bio` from then on. Empty for every other kind of page.
+    pub detail_info: String,
 
     // --- Podcasts ---
     /// home | subscribed | downloads
@@ -417,8 +503,36 @@ pub enum MusicCmd {
     SetBrowsePage { page: i64 },
     OpenAlbum { album_id: i64 },
     OpenArtist { artist_id: i64 },
+    /// The album / artist of whatever is on the deck. Every player draws the
+    /// track's title over its album and its subtitle over its artist, and in
+    /// Slint both are links -- `open-now-album` / `open-now-artist`. The ids
+    /// are not on `NowPlaying`, so they are looked up here rather than carried
+    /// on every tick.
+    OpenNowAlbum,
+    OpenNowArtist,
     OpenGenre { name: String },
     OpenFolder { path: String },
+
+    // --- Tags & Lyrics manager ---
+    MgrOpen { tab: String },
+    MgrClose,
+    MgrSetTab { tab: String },
+    MgrSetFilter { key: String },
+    MgrSetPage { page: i64 },
+    /// One step back: preview → results, results → list.
+    MgrBack,
+    /// Open the search form for one song, seeded from its tags.
+    MgrSearchOpen { item_id: i64 },
+    MgrSetQuery { name: String, artist: String, album: String },
+    MgrSearch,
+    /// Preview one of the results.
+    MgrPick { index: i64 },
+    /// Write the previewed candidate to the library.
+    MgrSave,
+    /// Read-only look at what is already stored for a song.
+    MgrView { item_id: i64 },
+    /// Fetch words for everything the current filter calls missing.
+    MgrSyncAll,
     OpenPlaylist { playlist_id: i64 },
     CloseDetail,
     AddFolder { path: String },
@@ -440,6 +554,28 @@ pub enum MusicCmd {
     },
     DeleteTrack { item_id: i64 },
 
+    // --- the right-click menu on a song ------------------------------------
+    //
+    // Slint gives every song row and every song tile the same menu, and most
+    // of it was already commands here -- play, love, rate, edit tags, delete.
+    // These are the rest of it.
+    /// Hand the file to whatever the desktop opens audio with.
+    SongPlayDefault { item_id: i64 },
+    /// The album / artist page of any track, not only the one on the deck.
+    SongViewAlbum { item_id: i64 },
+    SongViewArtist { item_id: i64 },
+    /// Queue the tracks that sound closest to this one, by the DSP embeddings
+    /// in `tulipix_music::embeddings`.
+    SongSonic { item_id: i64 },
+    /// Play the music video linked to this song, if one is.
+    SongPlayVideo { item_id: i64 },
+    /// Link one — `path` comes from a chooser opened on the Dart side.
+    SongLinkVideo { item_id: i64, path: String },
+    /// Covers for the two kinds that have no column to hold one: a genre is a
+    /// string and a playlist is a name. `key` is the genre, or the playlist id
+    /// as text.
+    SetCardArt { kind: String, key: String, path: String },
+
     // --- transport ---
     /// Replace the queue with what the current view is showing and start at
     /// `index`. This is what clicking a row in a list means, as opposed to
@@ -457,6 +593,14 @@ pub enum MusicCmd {
     SetSleep { minutes: i64 },
     Love { item_id: i64 },
     Rate { item_id: i64, stars: i64 },
+    /// Loving or rating a whole album or artist, which the browse tiles do.
+    /// Stored on the `albums` / `artists` row rather than fanned out over its
+    /// tracks: the Slint build does the same, and a fan-out would make "loved
+    /// album" and "every track loved" the same thing, which they are not.
+    AlbumFav { album_id: i64 },
+    AlbumRate { album_id: i64, stars: i64 },
+    ArtistFav { artist_id: i64 },
+    ArtistRate { artist_id: i64, stars: i64 },
     QueueAdd { item_ids: Vec<i64> },
     QueueRemove { item_id: i64 },
     QueueClear,
@@ -465,6 +609,14 @@ pub enum MusicCmd {
     PlaylistCreate { name: String },
     /// loved | recent — the two smart playlists the Slint build offers.
     PlaylistCreateSmart { kind: String },
+    /// Open the "Recently added" playlist, rebuilding it first.
+    ///
+    /// Not a smart playlist: the rule engine has no date-added field, so this
+    /// is a real playlist whose contents are rewritten each time it is asked
+    /// for. That is what "View all" on the Recently added rail means -- the
+    /// rail is one row of a list, and the list has to exist somewhere you can
+    /// scroll it.
+    PlaylistOpenFresh,
     PlaylistDelete { playlist_id: i64 },
     PlaylistAdd { playlist_id: i64, item_ids: Vec<i64> },
     PlaylistRemove { playlist_id: i64, item_id: i64 },
@@ -573,6 +725,11 @@ pub enum MusicEvent {
     /// it, for the same reason the section polls rather than pushes state — one
     /// place decides what happens next, and it is the one holding the queue.
     Ended,
+    /// Something the UI is already showing was filled in behind it -- an
+    /// artist biography that had to be fetched, artwork that had to be
+    /// resolved. The held snapshot is not wrong, only incomplete, so the answer
+    /// is a plain Refresh rather than anything to do with the player.
+    Stale,
     ScanProgress { root: String, done: i64, total: i64 },
     ScanFinished { inserted: i64, updated: i64, missing: i64 },
     Failed { message: String },
@@ -587,6 +744,19 @@ pub enum MusicEvent {
     /// One mpv property. `value` is a JSON literal: `true`, `85`, `"inf"`.
     AudioProp { name: String, value: String },
     AudioSeek { secs: f64 },
+
+    /// A command from outside the app: a media key, the desktop's media applet,
+    /// a Bluetooth remote, or the tray menu.
+    ///
+    /// A name and a number rather than an arm each, because the far side of
+    /// this is Dart and one string covers every command MPRIS defines. Rust
+    /// does not act on it: the deck lives in Dart now, so the answer is a
+    /// `MusicCmd` sent from there, exactly as if a button had been clicked.
+    ///
+    /// toggle · play · pause · stop · next · prev · shuffle · repeat ·
+    /// seek (absolute seconds) · seekby (relative seconds, signed) ·
+    /// volume (0..130) · raise · mini · quit
+    Remote { action: String, value: f64 },
 }
 
 // --------------------------------------------------------------- session ----
@@ -667,6 +837,28 @@ struct Session {
     yt_queue_pos: i64,
     yt_status: String,
 
+    mgr_open: bool,
+    mgr_tab: String,
+    mgr_mode: String,
+    mgr_filter: String,
+    mgr_page: i64,
+    mgr_item_id: i64,
+    mgr_title: String,
+    mgr_q_name: String,
+    mgr_q_artist: String,
+    mgr_q_album: String,
+    mgr_searching: bool,
+    mgr_results: Vec<LyricHit>,
+    /// The raw content behind each result, parallel to `mgr_results`. Kept so
+    /// picking one is a preview rather than a second network round trip, and
+    /// so Save has something to write.
+    mgr_bodies: Vec<(bool, String)>,
+    mgr_picked: Option<usize>,
+    mgr_status: String,
+    /// A bulk fetch is running. Separate from `mgr_status`, which also carries
+    /// one-shot notes like "Saved." that nothing is waiting on.
+    mgr_busy: bool,
+
     status: String,
 }
 
@@ -676,8 +868,8 @@ impl Default for Session {
             view: "mymusic".into(),
             query: String::new(),
             lib_tab: "home".into(),
-            song_sort: "added".into(),
-            song_dir: "desc".into(),
+            song_sort: "title".into(),
+            song_dir: "asc".into(),
             song_page: 0,
             browse_sort: "name".into(),
             browse_dir: "asc".into(),
@@ -726,6 +918,22 @@ impl Default for Session {
             yt_queue: Vec::new(),
             yt_queue_pos: 0,
             yt_status: String::new(),
+            mgr_open: false,
+            mgr_tab: "lyrics".into(),
+            mgr_mode: "list".into(),
+            mgr_filter: "all".into(),
+            mgr_page: 0,
+            mgr_item_id: 0,
+            mgr_title: String::new(),
+            mgr_q_name: String::new(),
+            mgr_q_artist: String::new(),
+            mgr_q_album: String::new(),
+            mgr_searching: false,
+            mgr_results: Vec::new(),
+            mgr_bodies: Vec::new(),
+            mgr_picked: None,
+            mgr_status: String::new(),
+            mgr_busy: false,
             status: String::new(),
         }
     }
@@ -785,6 +993,10 @@ pub fn music_events(sink: StreamSink<MusicEvent>) {
     if let Ok(mut sinks) = events().lock() {
         sinks.push(sink);
     }
+    // Here rather than at process start: the surfaces exist to be driven, and
+    // remote commands arrive as events — registering before there is a sink to
+    // deliver them to would drop the first ones. Idempotent.
+    crate::shellsurface::start();
 }
 
 /// Kill the player. Synchronous, and called from the window's exit handler for
@@ -842,6 +1054,134 @@ pub fn music_audio_failed(token: i64, message: String) {
 /// Called by the tile when it scrolls into view, so a cold library paints
 /// progressively rather than blocking the first snapshot on thousands of
 /// ffmpeg invocations — the same lazy pass `photos_ensure_thumb` runs.
+/// Everything the Properties row of the song menu shows.
+///
+/// Not a command: `music_dispatch` answers with the whole section snapshot, and
+/// none of this belongs on it — it is read once, for one song, when a menu row
+/// is clicked. Same shape as `music_ensure_art`, for the same reason.
+///
+/// `bpm`, `key` and `dr` are whatever the Slint build's analysis pass wrote;
+/// they stay empty here rather than being computed, because the analyser lives
+/// in a crate that pulls in Slint and this one may not link it.
+#[derive(Debug, Clone)]
+pub struct SongProps {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub genre: String,
+    pub release: String,
+    pub credits: String,
+    pub duration: String,
+    pub format: String,
+    /// "FLAC · 981 kbps · 44.1 kHz · stereo", as far as the tags know.
+    pub stream: String,
+    pub size: String,
+    pub path: String,
+    /// "128 BPM · A minor · DR 9", or "" when nothing has analysed it.
+    pub analysis: String,
+    pub has_video: bool,
+}
+
+pub async fn music_song_props(item_id: i64) -> Result<SongProps> {
+    let pool = music_pool().await?;
+    let path = track_path(pool, item_id).await.unwrap_or_default();
+    let p = Path::new(&path);
+    let bytes = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+
+    // Artist and album are ids on `track_meta`, not strings — the same join
+    // every other query here does.
+    #[allow(clippy::type_complexity)]
+    let row: Option<(String, String, String, f64, String, i64, i64, i64, String)> =
+        sqlx::query_as(
+            "SELECT COALESCE(tm.title, ''), COALESCE(ar.name, ''), COALESCE(al.title, ''), \
+                    COALESCE(tm.duration_s, 0), COALESCE(tm.genre, ''), \
+                    COALESCE(tm.bitrate, 0), COALESCE(tm.sample_rate, 0), \
+                    COALESCE(tm.channels, 0), COALESCE(tm.codec, '') \
+             FROM track_meta tm \
+             LEFT JOIN artists ar ON ar.id = tm.artist_id \
+             LEFT JOIN albums al ON al.id = tm.album_id \
+             WHERE tm.item_id = ?",
+        )
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    let (title, artist, album, duration_s, genre, bitrate, sample_rate, channels, codec) =
+        row.unwrap_or_default();
+
+    // Two columns the Slint build adds on demand rather than in a migration, so
+    // both builds have to assume they may not be there yet.
+    for sql in [
+        "ALTER TABLE track_meta ADD COLUMN release_date TEXT",
+        "ALTER TABLE track_meta ADD COLUMN credits TEXT",
+    ] {
+        let _ = sqlx::query(sql).execute(pool).await;
+    }
+    let extra: Option<(String, String, Option<f64>, String, Option<f64>)> = sqlx::query_as(
+        "SELECT COALESCE(release_date, ''), COALESCE(credits, ''), bpm, \
+                COALESCE(music_key, ''), dr_score \
+         FROM track_meta WHERE item_id = ?",
+    )
+    .bind(item_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let (release, credits, bpm, key, dr) = extra.unwrap_or_default();
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(b) = bpm {
+        parts.push(format!("{b:.0} BPM"));
+    }
+    if !key.is_empty() {
+        parts.push(key);
+    }
+    if let Some(d) = dr {
+        parts.push(format!("DR {d:.0}"));
+    }
+
+    let mut stream: Vec<String> = Vec::new();
+    if !codec.is_empty() {
+        stream.push(codec.to_uppercase());
+    }
+    if bitrate > 0 {
+        stream.push(format!("{} kbps", bitrate / 1000));
+    }
+    if sample_rate > 0 {
+        stream.push(format!("{:.1} kHz", sample_rate as f64 / 1000.0));
+    }
+    if channels > 0 {
+        stream.push(match channels {
+            1 => "mono".to_string(),
+            2 => "stereo".to_string(),
+            n => format!("{n} ch"),
+        });
+    }
+
+    Ok(SongProps {
+        title,
+        artist,
+        album,
+        genre,
+        release,
+        credits,
+        duration: if duration_s > 0.0 { fmt_clock(duration_s) } else { String::new() },
+        format: p
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_uppercase(),
+        stream: stream.join(" · "),
+        size: human_size(bytes),
+        path,
+        analysis: parts.join(" · "),
+        has_video: tulipix_music::video_link::has_video(pool, item_id)
+            .await
+            .unwrap_or(false),
+    })
+}
+
 pub async fn music_ensure_art(kind: String, key: String) -> Result<Option<String>> {
     match kind.as_str() {
         "track" => {
@@ -910,6 +1250,43 @@ pub async fn music_ensure_art(kind: String, key: String) -> Result<Option<String
             .await?;
             match album {
                 Some(a) => Box::pin(music_ensure_art("album".into(), a.to_string())).await,
+                None => Ok(None),
+            }
+        }
+        // A playlist has no cover of its own, so it wears the newest thing in
+        // it — which also means the tile changes as the playlist does.
+        "playlist" => {
+            let Ok(id) = key.parse::<i64>() else { return Ok(None) };
+            let pool = music_pool().await?;
+            let newest: Option<i64> = sqlx::query_scalar(
+                "SELECT item_id FROM playlist_items WHERE playlist_id = ? \
+                 ORDER BY position DESC LIMIT 1",
+            )
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+            match newest {
+                Some(item) => {
+                    Box::pin(music_ensure_art("track".into(), item.to_string())).await
+                }
+                None => Ok(None),
+            }
+        }
+        // Same borrowing for a genre, from the first track tagged with it.
+        "genre" => {
+            let pool = music_pool().await?;
+            let first: Option<i64> = sqlx::query_scalar(
+                "SELECT tm.item_id FROM track_meta tm JOIN items i ON i.id = tm.item_id \
+                 WHERE tm.genre = ? AND i.missing_since IS NULL \
+                 ORDER BY tm.item_id LIMIT 1",
+            )
+            .bind(&key)
+            .fetch_optional(pool)
+            .await?;
+            match first {
+                Some(item) => {
+                    Box::pin(music_ensure_art("track".into(), item.to_string())).await
+                }
                 None => Ok(None),
             }
         }
@@ -1043,6 +1420,26 @@ impl NoWindowCompat for std::process::Command {
 // which is where the Slint build put them. Same keys, same values, so a
 // crossfade set in one build is in force in the other.
 
+/// The whole `advanced` map at once.
+///
+/// [`setting`] re-reads settings.json on every call, which is fine for the six
+/// audio knobs and not fine for a grid: a library with fifty genres was fifty
+/// loads of the same file per snapshot. One load, then lookups.
+fn settings_map() -> HashMap<String, String> {
+    tulipix_core::settings::Settings::load()
+        .map(|s| s.advanced)
+        .unwrap_or_default()
+}
+
+/// A cover that was chosen by hand, if it is still where it was left.
+fn pref_cover(prefs: &HashMap<String, String>, key: &str) -> String {
+    prefs
+        .get(key)
+        .filter(|p| !p.is_empty() && Path::new(p.as_str()).exists())
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn setting(key: &str, default: &str) -> String {
     tulipix_core::settings::Settings::load()
         .ok()
@@ -1169,8 +1566,37 @@ fn launch(src: &str, slot: mpv::Slot, start_s: Option<f64>) {
     emit(MusicEvent::TrackChanged);
 }
 
+/// Write the real listening time onto the play that is ending.
+///
+/// `record_play` stamps a row the moment a track starts, and stamps it with an
+/// `ms_played` of zero — at the start nothing has been listened to yet. Nothing
+/// ever wrote the figure back, in either build, so the Home strip's "This week"
+/// and "All time" have always summed a column of zeroes and shown 0m. The last
+/// position the deck reported for the outgoing track is that figure.
+///
+/// ponytail: track change only. A seek counts as listening, and the last track
+/// of a session is closed out by the next play rather than at stop --
+/// `music_shutdown` is sync and cannot reach the pool. Accumulating real
+/// playing time across pauses and seeks would want a counter on the tick.
+async fn close_out_play(pool: &sqlx::SqlitePool) {
+    let prev = mpv::now_playing().item_id;
+    let played_ms = (mpv::observe().pos * 1000.0).round() as i64;
+    if prev <= 0 || played_ms <= 0 {
+        return;
+    }
+    let _ = sqlx::query(
+        "UPDATE play_history SET ms_played = ? \
+         WHERE id = (SELECT MAX(id) FROM play_history WHERE item_id = ?)",
+    )
+    .bind(played_ms)
+    .bind(prev)
+    .execute(pool)
+    .await;
+}
+
 /// Play one library track and make it the now-playing.
 async fn play_track(pool: &sqlx::SqlitePool, item_id: i64) -> Result<()> {
+    close_out_play(pool).await;
     let row: Option<(String, String, String, String)> = sqlx::query_as(
         "SELECT i.abs_path, COALESCE(tm.title, ''), COALESCE(ar.name, ''), COALESCE(al.title, '') \
          FROM items i JOIN track_meta tm ON tm.item_id = i.id \
@@ -1219,6 +1645,9 @@ async fn play_track(pool: &sqlx::SqlitePool, item_id: i64) -> Result<()> {
     // Count the play immediately rather than at EOF: a skipped track is still
     // a track that was chosen, and the Slint build records it the same way.
     let _ = tulipix_music::queue::record_play(pool, item_id, 0).await;
+    // Words follow the track, without being asked. Detached: an LRCLIB round
+    // trip is network latency and the track is already playing.
+    tokio::spawn(ensure_lyrics(item_id));
     Ok(())
 }
 
@@ -1707,8 +2136,72 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
         MusicCmd::SetBrowsePage { page } => lock().browse_page = page.max(0),
         MusicCmd::OpenAlbum { album_id } => open_detail("album", album_id, String::new()),
         MusicCmd::OpenArtist { artist_id } => open_detail("artist", artist_id, String::new()),
+        MusicCmd::OpenNowAlbum => open_now_detail("album").await?,
+        MusicCmd::OpenNowArtist => open_now_detail("artist").await?,
         MusicCmd::OpenGenre { name } => open_detail("genre", 0, name),
         MusicCmd::OpenFolder { path } => open_detail("folder", 0, path),
+
+        MusicCmd::MgrOpen { tab } => {
+            let mut s = lock();
+            s.mgr_open = true;
+            s.mgr_tab = tab;
+            s.mgr_mode = "list".into();
+            s.mgr_filter = "all".into();
+            s.mgr_page = 0;
+        }
+        MusicCmd::MgrClose => lock().mgr_open = false,
+        MusicCmd::MgrSetTab { tab } => {
+            let mut s = lock();
+            s.mgr_tab = tab;
+            s.mgr_mode = "list".into();
+            s.mgr_filter = "all".into();
+            s.mgr_page = 0;
+        }
+        MusicCmd::MgrSetFilter { key } => {
+            let mut s = lock();
+            s.mgr_filter = key;
+            s.mgr_page = 0;
+        }
+        MusicCmd::MgrSetPage { page } => lock().mgr_page = page.max(0),
+        MusicCmd::MgrBack => {
+            let mut s = lock();
+            // Preview → results → list, one rung at a time. Backing out of a
+            // preview must not throw away the search that produced it.
+            if s.mgr_picked.is_some() {
+                s.mgr_picked = None;
+            } else {
+                s.mgr_mode = "list".into();
+                s.mgr_results.clear();
+                s.mgr_bodies.clear();
+            }
+        }
+        MusicCmd::MgrSearchOpen { item_id } => mgr_search_open(item_id).await?,
+        MusicCmd::MgrSetQuery {
+            name,
+            artist,
+            album,
+        } => {
+            let mut s = lock();
+            s.mgr_q_name = name;
+            s.mgr_q_artist = artist;
+            s.mgr_q_album = album;
+        }
+        MusicCmd::MgrSearch => mgr_search().await,
+        MusicCmd::MgrPick { index } => {
+            let mut s = lock();
+            let i = index.max(0) as usize;
+            if i < s.mgr_bodies.len() {
+                s.mgr_picked = Some(i);
+            }
+        }
+        MusicCmd::MgrSave => mgr_save().await?,
+        MusicCmd::MgrView { item_id } => {
+            let mut s = lock();
+            s.mgr_item_id = item_id;
+            s.mgr_mode = "view".into();
+            s.mgr_picked = None;
+        }
+        MusicCmd::MgrSyncAll => mgr_sync_all(),
         MusicCmd::OpenPlaylist { playlist_id } => {
             open_detail("playlist", playlist_id, String::new())
         }
@@ -1788,11 +2281,118 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                 // The file first: a row without a file is a missing track the
                 // next scan cleans up, but a file without a row comes straight
                 // back on that same scan.
-                if let Err(e) = std::fs::remove_file(&p) {
+                //
+                // To the recycle bin, not off the disk. The menu row says
+                // "delete from system" and the Slint build has always meant the
+                // recoverable kind; an unlink here made the same words mean
+                // something the user cannot undo.
+                if let Err(e) = tulipix_platform::fm::move_to_trash(Path::new(&p)) {
                     anyhow::bail!("could not delete {p}: {e}");
                 }
             }
             tulipix_core::populator::remove(pool, item_id).await?;
+        }
+
+        MusicCmd::SongPlayDefault { item_id } => {
+            let pool = music_pool().await?;
+            let path = track_path(pool, item_id).await?;
+            tulipix_platform::fm::open_default(Path::new(&path))?;
+        }
+        MusicCmd::SongViewAlbum { item_id } => open_item_detail(item_id, "album").await?,
+        MusicCmd::SongViewArtist { item_id } => open_item_detail(item_id, "artist").await?,
+        MusicCmd::SongSonic { item_id } => {
+            let pool = music_pool().await?;
+            // The embeddings are computed by the analysis pass, which lives in
+            // a Slint-only crate this one cannot link. So this reads an index
+            // rather than building one: with nothing stored it says so instead
+            // of quietly queueing nothing.
+            let hits = tulipix_music::embeddings::similar(pool, item_id, 25)
+                .await
+                .unwrap_or_default();
+            if hits.is_empty() {
+                anyhow::bail!("no sonic index for this track yet");
+            }
+            let ids: Vec<i64> = hits.into_iter().map(|(id, _)| id).collect();
+            for id in &ids {
+                tulipix_music::queue::enqueue(pool, *id, "sonic").await?;
+            }
+            lock().status = format!("Queued {} similar tracks.", ids.len());
+        }
+        MusicCmd::SongPlayVideo { item_id } => {
+            let pool = music_pool().await?;
+            let _ = sqlx::query("ALTER TABLE music_video_link ADD COLUMN video_path TEXT")
+                .execute(pool)
+                .await;
+            let path: Option<String> = sqlx::query_scalar(
+                "SELECT video_path FROM music_video_link \
+                 WHERE item_id = ? AND video_path IS NOT NULL",
+            )
+            .bind(item_id)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+            let Some(path) = path.filter(|p| Path::new(p).exists()) else {
+                anyhow::bail!("no music video linked — use “Link music video…” first");
+            };
+            // The windowed player the Slint build hands this to does not exist
+            // here, and the deck is audio-only. The desktop's video player is
+            // the honest answer rather than a second one inside this window.
+            tulipix_platform::fm::open_default(Path::new(&path))?;
+        }
+        MusicCmd::SongLinkVideo { item_id, path } => {
+            let pool = music_pool().await?;
+            let _ = sqlx::query("ALTER TABLE music_video_link ADD COLUMN video_path TEXT")
+                .execute(pool)
+                .await;
+            // The videos library's own id when the file happens to be indexed
+            // there, zero when it is just a file on disk. Either way the path
+            // is what plays it.
+            let video_id: i64 = match tulipix_common::pool_for("videos").await {
+                Ok(vp) => sqlx::query_scalar("SELECT id FROM items WHERE abs_path = ?")
+                    .bind(&path)
+                    .fetch_optional(&vp)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0),
+                Err(_) => 0,
+            };
+            tulipix_music::video_link::link(pool, item_id, video_id).await?;
+            sqlx::query("UPDATE music_video_link SET video_path = ? WHERE item_id = ?")
+                .bind(&path)
+                .bind(item_id)
+                .execute(pool)
+                .await?;
+            lock().status = "Music video linked.".into();
+        }
+        MusicCmd::SetCardArt { kind, key, path } => {
+            if !path.is_empty() && !Path::new(&path).exists() {
+                anyhow::bail!("no such image: {path}");
+            }
+            // Albums and artists have a column for this; genres and playlists
+            // have no row at all and keep theirs as a preference. Writing the
+            // column is what makes the change survive into the Slint build and
+            // into `music_ensure_art`, which reads it before it reads anything
+            // else.
+            match kind.as_str() {
+                "album" | "artist" => {
+                    let Ok(id) = key.parse::<i64>() else {
+                        anyhow::bail!("not an id: {key}")
+                    };
+                    let pool = music_pool().await?;
+                    let sql = if kind == "album" {
+                        "UPDATE albums SET cover_path = ? WHERE id = ?"
+                    } else {
+                        "UPDATE artists SET image_path = ? WHERE id = ?"
+                    };
+                    sqlx::query(sql)
+                        .bind(if path.is_empty() { None } else { Some(path.as_str()) })
+                        .bind(id)
+                        .execute(pool)
+                        .await?;
+                }
+                _ => set_setting(&format!("music.{kind}.cover.{key}"), &path),
+            }
         }
 
         // --- transport ------------------------------------------------------
@@ -1821,7 +2421,7 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                 }
                 return Ok(());
             }
-            mpv::set_property("pause", if obs.paused { "false" } else { "true" });
+            mpv::set_paused(!obs.paused);
         }
         MusicCmd::Next => {
             let pool = music_pool().await?;
@@ -1890,6 +2490,40 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             let pool = music_pool().await?;
             tulipix_music::rating::set_stars(pool, item_id, stars.clamp(0, 5) as u8).await?;
         }
+        MusicCmd::AlbumFav { album_id } => {
+            let pool = music_pool().await?;
+            ensure_browse_columns(pool).await;
+            sqlx::query("UPDATE albums SET loved = CASE COALESCE(loved, 0) WHEN 1 THEN 0 ELSE 1 END WHERE id = ?")
+                .bind(album_id)
+                .execute(pool)
+                .await?;
+        }
+        MusicCmd::AlbumRate { album_id, stars } => {
+            let pool = music_pool().await?;
+            ensure_browse_columns(pool).await;
+            sqlx::query("UPDATE albums SET rating = ? WHERE id = ?")
+                .bind(stars.clamp(0, 5))
+                .bind(album_id)
+                .execute(pool)
+                .await?;
+        }
+        MusicCmd::ArtistFav { artist_id } => {
+            let pool = music_pool().await?;
+            ensure_browse_columns(pool).await;
+            sqlx::query("UPDATE artists SET loved = CASE COALESCE(loved, 0) WHEN 1 THEN 0 ELSE 1 END WHERE id = ?")
+                .bind(artist_id)
+                .execute(pool)
+                .await?;
+        }
+        MusicCmd::ArtistRate { artist_id, stars } => {
+            let pool = music_pool().await?;
+            ensure_browse_columns(pool).await;
+            sqlx::query("UPDATE artists SET rating = ? WHERE id = ?")
+                .bind(stars.clamp(0, 5))
+                .bind(artist_id)
+                .execute(pool)
+                .await?;
+        }
         MusicCmd::QueueAdd { item_ids } => {
             let pool = music_pool().await?;
             for id in item_ids {
@@ -1930,6 +2564,17 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
         MusicCmd::PlaylistCreateSmart { kind } => {
             let pool = music_pool().await?;
             create_smart_playlist(pool, &kind).await?;
+        }
+        MusicCmd::PlaylistOpenFresh => {
+            let pool = music_pool().await?;
+            let id = rebuild_fresh_playlist(pool).await?;
+            let mut s = lock();
+            s.lib_tab = "playlists".into();
+            s.browse_page = 0;
+            s.detail_open = true;
+            s.detail_kind = "playlist".into();
+            s.detail_id = id;
+            s.detail_key = id.to_string();
         }
         MusicCmd::PlaylistDelete { playlist_id } => {
             let pool = music_pool().await?;
@@ -2526,6 +3171,386 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
     Ok(())
 }
 
+// ------------------------------------------------ tags & lyrics manager ----
+
+/// Rows per page in the manager's list. Ten fits the 640x680 modal Slint
+/// draws without the list needing a scrollbar of its own.
+const MGR_PAGE: i64 = 10;
+
+/// The joins the manager counts over. `TRACK_SELECT` already carries them --
+/// this is the same FROM without the columns, for the three COUNT(*)s behind
+/// the stat cards.
+const MGR_FROM: &str = " FROM items i JOIN track_meta tm ON tm.item_id = i.id \
+     LEFT JOIN artists ar ON ar.id = tm.artist_id \
+     LEFT JOIN albums al ON al.id = tm.album_id \
+     LEFT JOIN lyrics ly ON ly.item_id = i.id";
+
+/// What "done" and "not done" mean on each tab.
+///
+/// Lyrics: synced words are the goal, plain words are progress, nothing is
+/// missing. Tags: a song with both an artist and an album is tagged.
+fn mgr_clauses(tab: &str) -> (&'static str, &'static str) {
+    if tab == "tags" {
+        (
+            "COALESCE(ar.name, '') != '' AND COALESCE(al.title, '') != ''",
+            "(COALESCE(ar.name, '') = '' OR COALESCE(al.title, '') = '')",
+        )
+    } else {
+        ("ly.synced = 1", "ly.item_id IS NULL")
+    }
+}
+
+fn mgr_status_of(tab: &str, t: &Track) -> String {
+    if tab == "tags" {
+        if t.artist.is_empty() || t.album.is_empty() {
+            "Missing".into()
+        } else {
+            "Tagged".into()
+        }
+    } else {
+        match t.lyrics.as_str() {
+            "synced" => "Synced".into(),
+            "plain" => "Normal".into(),
+            _ => "Missing".into(),
+        }
+    }
+}
+
+/// Everything the manager modal draws.
+///
+/// Two halves, because two things drive it. The counts and the paged list
+/// belong to the modal and run only while it is open — three `COUNT(*)`s over
+/// the library on every snapshot would be paid by every screen in the section.
+/// The preview belongs to the search, which the player's side panel can also
+/// open, so it is filled whenever one is in flight.
+async fn mgr_load(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState) {
+    if s.mgr_open {
+        mgr_load_list(pool, s, st).await;
+    }
+    mgr_load_preview(pool, s, st).await;
+}
+
+async fn mgr_load_list(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState) {
+    let (ok_sql, missing_sql) = mgr_clauses(&s.mgr_tab);
+    let count = |extra: String| async move {
+        let sql = format!("SELECT COUNT(*){MGR_FROM}{MUSIC_WHERE}{extra}");
+        sqlx::query_scalar::<_, i64>(&sql)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0)
+    };
+    st.mgr_total = count(String::new()).await;
+    st.mgr_ok = count(format!(" AND {ok_sql}")).await;
+    st.mgr_missing = count(format!(" AND {missing_sql}")).await;
+    st.mgr_progress = if st.mgr_total > 0 {
+        st.mgr_ok as f64 / st.mgr_total as f64
+    } else {
+        0.0
+    };
+
+    let filter = match s.mgr_filter.as_str() {
+        "missing" => format!(" AND {missing_sql}"),
+        "all" => String::new(),
+        // "synced" on the lyrics tab, "tagged" on the tags tab -- one key each,
+        // and both mean the same thing to the query.
+        _ => format!(" AND {ok_sql}"),
+    };
+    let shown = match s.mgr_filter.as_str() {
+        "missing" => st.mgr_missing,
+        "all" => st.mgr_total,
+        _ => st.mgr_ok,
+    };
+    st.mgr_pages = (shown.max(1) as f64 / MGR_PAGE as f64).ceil() as i64;
+    let page = s.mgr_page.min((st.mgr_pages - 1).max(0));
+    let sql = format!(
+        "{TRACK_SELECT}{MUSIC_WHERE}{filter} ORDER BY COALESCE(tm.title, '') LIMIT ? OFFSET ?"
+    );
+    let rows = sqlx::query_as::<_, TrackRow>(&sql)
+        .bind(MGR_PAGE)
+        .bind(page * MGR_PAGE)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    st.mgr_rows = rows
+        .into_iter()
+        .map(|r| {
+            let track = into_track(r);
+            MgrRow {
+                status: mgr_status_of(&s.mgr_tab, &track),
+                track,
+            }
+        })
+        .collect();
+}
+
+/// The read-only view and the preview draw from the same two fields: one reads
+/// the library, the other the candidate that has not been saved yet.
+async fn mgr_load_preview(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState) {
+    let picked = s.mgr_picked.and_then(|i| s.mgr_bodies.get(i).cloned());
+    let (synced, content) = match picked {
+        Some(body) => body,
+        None if s.mgr_mode == "view" && s.mgr_item_id != 0 => {
+            let row: Option<(i64, String)> =
+                sqlx::query_as("SELECT synced, content FROM lyrics WHERE item_id = ?")
+                    .bind(s.mgr_item_id)
+                    .fetch_optional(pool)
+                    .await
+                    .ok()
+                    .flatten();
+            row.map(|(sy, c)| (sy == 1, c)).unwrap_or((false, String::new()))
+        }
+        None => (false, String::new()),
+    };
+    st.mgr_view_plain = content.clone();
+    st.mgr_view_rows = if synced {
+        tulipix_music::lyrics::parse_lrc(&content)
+            .into_iter()
+            .map(|(at_ms, text)| LyricLine { at_ms, text })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    st.mgr_dirty = s.mgr_picked.is_some();
+}
+
+/// Open the search form for one song, seeded from its tags.
+async fn mgr_search_open(item_id: i64) -> Result<()> {
+    let pool = music_pool().await?;
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT COALESCE(tm.title, ''), COALESCE(ar.name, ''), COALESCE(al.title, '') \
+         FROM track_meta tm \
+         LEFT JOIN artists ar ON ar.id = tm.artist_id \
+         LEFT JOIN albums al ON al.id = tm.album_id \
+         WHERE tm.item_id = ?",
+    )
+    .bind(item_id)
+    .fetch_optional(pool)
+    .await?;
+    let (title, artist, album) = row.unwrap_or_default();
+    let mut s = lock();
+    s.mgr_item_id = item_id;
+    s.mgr_title = title.clone();
+    s.mgr_mode = "search".into();
+    s.mgr_q_name = title;
+    s.mgr_q_artist = artist;
+    s.mgr_q_album = album;
+    s.mgr_results.clear();
+    s.mgr_bodies.clear();
+    s.mgr_picked = None;
+    Ok(())
+}
+
+/// LRCLIB `/search`, which unlike `/get` matches loosely and returns a list.
+///
+/// The bodies come down with the results, so picking one is a preview rather
+/// than a second round trip -- and Save has something to write without asking
+/// the network again.
+async fn mgr_search() {
+    let (name, artist, album) = {
+        let mut s = lock();
+        s.mgr_searching = true;
+        s.mgr_status = "Searching LRCLIB…".into();
+        s.mgr_results.clear();
+        s.mgr_bodies.clear();
+        s.mgr_picked = None;
+        (
+            s.mgr_q_name.clone(),
+            s.mgr_q_artist.clone(),
+            s.mgr_q_album.clone(),
+        )
+    };
+    let q = format!("{name} {artist}");
+    let q = q.trim();
+    if q.is_empty() {
+        let mut s = lock();
+        s.mgr_searching = false;
+        s.mgr_status = "Type a song name first.".into();
+        return;
+    }
+    let base = tulipix_music::lyrics::LRCLIB_BASE;
+    let url = format!(
+        "{base}/search?q={}&album_name={}",
+        q.replace(' ', "+"),
+        album.replace(' ', "+")
+    );
+    let resp = tulipix_core::net::http().get(&url).send().await;
+    let body: Option<serde_json::Value> = match resp {
+        Ok(r) => r.json().await.ok(),
+        Err(_) => None,
+    };
+
+    let mut hits = Vec::new();
+    let mut bodies = Vec::new();
+    if let Some(serde_json::Value::Array(items)) = body {
+        for item in items.into_iter().take(30) {
+            let synced = item["syncedLyrics"].as_str().unwrap_or("").to_string();
+            let plain = item["plainLyrics"].as_str().unwrap_or("").to_string();
+            if synced.trim().is_empty() && plain.trim().is_empty() {
+                continue;
+            }
+            let is_synced = !synced.trim().is_empty();
+            hits.push(LyricHit {
+                title: item["trackName"].as_str().unwrap_or("").to_string(),
+                sub: format!(
+                    "{} · {}",
+                    item["artistName"].as_str().unwrap_or(""),
+                    item["albumName"].as_str().unwrap_or("")
+                ),
+                kind: if is_synced { "Synced".into() } else { "Plain".into() },
+            });
+            bodies.push((is_synced, if is_synced { synced } else { plain }));
+        }
+    }
+    let mut s = lock();
+    s.mgr_searching = false;
+    s.mgr_status = if hits.is_empty() {
+        "No results.".into()
+    } else {
+        format!("{} results", hits.len())
+    };
+    s.mgr_results = hits;
+    s.mgr_bodies = bodies;
+}
+
+/// Write the previewed candidate to the library.
+async fn mgr_save() -> Result<()> {
+    let (item_id, body) = {
+        let s = lock();
+        (
+            s.mgr_item_id,
+            s.mgr_picked.and_then(|i| s.mgr_bodies.get(i).cloned()),
+        )
+    };
+    let Some((synced, content)) = body else {
+        return Ok(());
+    };
+    let pool = music_pool().await?;
+    tulipix_music::lyrics::store(pool, item_id, &content, synced, "lrclib").await?;
+    let mut s = lock();
+    s.mgr_picked = None;
+    s.mgr_mode = "list".into();
+    s.mgr_results.clear();
+    s.mgr_bodies.clear();
+    s.mgr_status = "Saved.".into();
+    // The track on the deck may be the one that just got words.
+    drop(s);
+    emit(MusicEvent::TrackChanged);
+    Ok(())
+}
+
+/// Fetch words for everything with none, in the background.
+///
+/// Detached, because a hundred LRCLIB round trips inside one dispatch would
+/// hold the command channel for minutes. Progress goes into the manager's own
+/// fields and not onto `ScanProgress`: the page-wide strip belongs to a library
+/// scan, and a bulk fetch started from inside a modal should report inside that
+/// modal rather than pushing a second progress bar over the grid behind it.
+/// `TrackChanged` is what pulls a fresh snapshot while it runs.
+fn mgr_sync_all() {
+    tokio::spawn(async move {
+        let Ok(pool) = music_pool().await else { return };
+        let sql = format!("SELECT i.id{MGR_FROM}{MUSIC_WHERE} AND ly.item_id IS NULL LIMIT 500");
+        let ids: Vec<i64> = sqlx::query_scalar(&sql)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+        let total = ids.len();
+        if total == 0 {
+            lock().mgr_status = "Nothing missing.".into();
+            emit(MusicEvent::TrackChanged);
+            return;
+        }
+        for (n, id) in ids.into_iter().enumerate() {
+            {
+                let mut s = lock();
+                s.mgr_busy = true;
+                s.mgr_status = format!("Fetching lyrics… {} of {total}", n + 1);
+            }
+            emit(MusicEvent::TrackChanged);
+            let _ = fetch_lyrics(id).await;
+        }
+        {
+            let mut s = lock();
+            s.mgr_busy = false;
+            s.mgr_status = format!("Fetched {total} of {total}.");
+        }
+        emit(MusicEvent::TrackChanged);
+    });
+}
+
+/// Open the album or artist page of the track on the deck.
+///
+/// A single scalar read per click, not a field on `NowPlaying`: the ids are
+/// wanted twice in the life of a track and the struct crosses the bridge on
+/// every snapshot.
+async fn open_now_detail(kind: &str) -> Result<()> {
+    let item_id = mpv::now_playing().item_id;
+    if item_id == 0 {
+        return Ok(());
+    }
+    open_item_detail(item_id, kind).await
+}
+
+/// Where a library item actually lives on disk.
+async fn track_path(pool: &sqlx::SqlitePool, item_id: i64) -> Result<String> {
+    let path: Option<String> = sqlx::query_scalar("SELECT abs_path FROM items WHERE id = ?")
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await?;
+    path.ok_or_else(|| anyhow::anyhow!("that track is not in the library any more"))
+}
+
+/// The same, for any track: the right-click menu offers "View album" and "View
+/// artist" on a row that is not the one playing.
+async fn open_item_detail(item_id: i64, kind: &str) -> Result<()> {
+    let pool = music_pool().await?;
+    let column = if kind == "album" { "album_id" } else { "artist_id" };
+    let id: Option<i64> =
+        sqlx::query_scalar(&format!("SELECT {column} FROM track_meta WHERE item_id = ?"))
+            .bind(item_id)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+    let Some(id) = id else {
+        anyhow::bail!("this track has no {kind}");
+    };
+    open_detail(kind, id, String::new());
+    Ok(())
+}
+
+/// Lyrics for a track that has none, in the background.
+///
+/// Slint calls `load_music_lyrics` on every track change, which is a DB read
+/// and, on a miss, an LRCLIB fetch that gets cached. The port only ever read
+/// the DB, so a track whose words had never been fetched showed an empty panel
+/// until someone pressed a button -- every track, every time, for a library
+/// nobody had fetched lyrics for. This is the fetch half.
+///
+/// `TrackChanged` is what says the words arrived. There is no narrower event,
+/// and inventing one to save a snapshot the deck was about to ask for anyway
+/// would be a bridge regeneration for nothing.
+async fn ensure_lyrics(item_id: i64) {
+    let Ok(pool) = music_pool().await else { return };
+    let stored: Option<(String,)> =
+        sqlx::query_as("SELECT content FROM lyrics WHERE item_id = ?")
+            .bind(item_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    if stored.map(|(c,)| !c.trim().is_empty()).unwrap_or(false) {
+        return;
+    }
+    if fetch_lyrics(item_id).await.is_ok() {
+        // Only if the track is still the one we fetched for: a fast skip
+        // through an album would otherwise put the last song's words under the
+        // current one.
+        if mpv::now_playing().item_id == item_id {
+            emit(MusicEvent::TrackChanged);
+        }
+    }
+}
+
 fn open_detail(kind: &str, id: i64, key: String) {
     let mut s = lock();
     s.detail_open = true;
@@ -2891,6 +3916,36 @@ fn write_file_tags(
 
 /// The two smart playlists the Slint build offers, built through the domain
 /// crate's rule evaluator rather than hand-written SQL.
+/// The newest hundred tracks in the library, as a playlist, rewritten from
+/// scratch every time it is opened.
+///
+/// Rebuilt rather than appended to: "recently added" is a window that moves,
+/// and a playlist that only ever grows would be "everything ever added" within
+/// a month.
+async fn rebuild_fresh_playlist(pool: &sqlx::SqlitePool) -> Result<i64> {
+    const NAME: &str = "Recently added";
+    const KEEP: i64 = 100;
+    let id = match tulipix_music::playlists::find_by_name(pool, NAME).await? {
+        Some(id) => id,
+        None => tulipix_music::playlists::create(pool, NAME, None).await?,
+    };
+    sqlx::query("DELETE FROM playlist_items WHERE playlist_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    let ids: Vec<i64> = sqlx::query_scalar(&format!(
+        "SELECT i.id FROM items i JOIN track_meta tm ON tm.item_id = i.id         {MUSIC_WHERE} ORDER BY i.added DESC LIMIT ?"
+    ))
+    .bind(KEEP)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for item in ids {
+        tulipix_music::playlists::append(pool, id, item).await?;
+    }
+    Ok(id)
+}
+
 async fn create_smart_playlist(pool: &sqlx::SqlitePool, kind: &str) -> Result<()> {
     use tulipix_music::playlists::{Combine, Condition, Field, Op, SmartRule};
     let (name, rule) = match kind {
@@ -3678,6 +4733,7 @@ fn song_order(mode: &str, dir: &str) -> String {
         "artist" => "ar.name COLLATE NOCASE",
         "album" => "al.title COLLATE NOCASE",
         "plays" => "tm.play_count",
+        "rating" => "tm.rating",
         "duration" => "tm.duration_s",
         _ => "i.added",
     };
@@ -3688,8 +4744,15 @@ fn song_order(mode: &str, dir: &str) -> String {
     format!(" ORDER BY {column} {direction}, i.id ASC")
 }
 
-/// One page of the songs list, plus the total behind it.
-async fn songs_page(pool: &sqlx::SqlitePool, s: &Session) -> (Vec<Track>, i64) {
+/// One page of the songs list, plus the total behind it and the page it
+/// actually landed on.
+///
+/// The page is clamped here rather than trusted. Nothing resets it when the
+/// list shrinks under it -- deleting the last track of the last page, loving
+/// something out of a filter, a rescan that drops missing files -- and an
+/// offset past the end is a `LIMIT` that returns nothing at all, which draws as
+/// an empty tab with a pager reading "7 / 6".
+async fn songs_page(pool: &sqlx::SqlitePool, s: &Session) -> (Vec<Track>, i64, i64) {
     let like = format!("%{}%", s.query.trim());
     let filtered = !s.query.trim().is_empty();
     let filter = if filtered {
@@ -3717,90 +4780,214 @@ async fn songs_page(pool: &sqlx::SqlitePool, s: &Session) -> (Vec<Track>, i64) {
     if filtered {
         q = q.bind(&like).bind(&like).bind(&like);
     }
+    let page = clamp_page(s.song_page, total, SONGS_PAGE);
     let rows = q
         .bind(SONGS_PAGE)
-        .bind(s.song_page * SONGS_PAGE)
+        .bind(page * SONGS_PAGE)
         .fetch_all(pool)
         .await
         .unwrap_or_default();
-    (rows.into_iter().map(into_track).collect(), total)
+    (rows.into_iter().map(into_track).collect(), total, page)
+}
+
+/// The last page that has anything on it, given a total and a page size.
+fn clamp_page(page: i64, total: i64, per: i64) -> i64 {
+    let pages = page_count(total, per);
+    page.clamp(0, pages - 1)
+}
+
+fn page_count(total: i64, per: i64) -> i64 {
+    ((total.max(1) as f64) / per as f64).ceil() as i64
 }
 
 /// Albums, artists, genres, playlists or folders — whichever the open tab
 /// wants — sorted and paged in Rust. These lists are thousands of rows at
 /// most, and doing it here keeps one sort rule for five different queries.
-async fn browse_cards(pool: &sqlx::SqlitePool, kind: &str, s: &Session) -> (Vec<BrowseCard>, i64) {
-    let mut cards: Vec<BrowseCard> = match kind {
-        "albums" => tulipix_music::browse::albums(pool)
+/// `loved` and `rating` are in no migration: the Slint build adds them with a
+/// bare `ALTER TABLE` the first time someone taps a heart, so a library nobody
+/// has rated has neither column. Both builds open the same file, so this does
+/// the same rather than assuming — the error when a column is already there is
+/// the expected case and is discarded.
+async fn ensure_browse_columns(pool: &sqlx::SqlitePool) {
+    for sql in [
+        "ALTER TABLE albums ADD COLUMN loved INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE albums ADD COLUMN rating INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE artists ADD COLUMN loved INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE artists ADD COLUMN rating INTEGER NOT NULL DEFAULT 0",
+    ] {
+        let _ = sqlx::query(sql).execute(pool).await;
+    }
+}
+
+/// The albums or artists carrying a heart.
+///
+/// Not a page: the Loved tab shows them all above the track list, and a
+/// library with more loved albums than fit on one screen is a library that
+/// scrolls.
+async fn loved_cards(pool: &sqlx::SqlitePool, kind: &str) -> Vec<BrowseCard> {
+    ensure_browse_columns(pool).await;
+    let marks = browse_marks(pool, kind).await;
+    if marks.is_empty() {
+        return Vec::new();
+    }
+    if kind == "artists" {
+        tulipix_music::browse::artists(pool)
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|a| BrowseCard {
-                id: a.album_id,
-                key: a.album_id.to_string(),
-                title: a.title,
-                subtitle: a.artist.unwrap_or_default(),
-                count: a.track_count,
-                art: a
-                    .cover_path
-                    .filter(|c| Path::new(c).exists())
-                    .unwrap_or_default(),
-                loved: false,
-                stars: 0,
-            })
-            .collect(),
-        "artists" => tulipix_music::browse::artists(pool)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(id, name, count)| BrowseCard {
-                id,
-                key: id.to_string(),
-                title: name,
-                subtitle: format!("{count} tracks"),
-                count,
-                art: String::new(),
-                loved: false,
-                stars: 0,
-            })
-            .collect(),
-        "genres" => tulipix_music::browse::genres(pool)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(name, count)| BrowseCard {
-                id: 0,
-                key: name.clone(),
-                title: name,
-                subtitle: format!("{count} tracks"),
-                count,
-                art: String::new(),
-                loved: false,
-                stars: 0,
-            })
-            .collect(),
-        "playlists" => {
-            let rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(
-                "SELECT p.id, p.name, p.is_smart, \
-                        (SELECT COUNT(*) FROM playlist_items pi WHERE pi.playlist_id = p.id) \
-                 FROM playlists p ORDER BY p.name COLLATE NOCASE",
-            )
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
-            rows.into_iter()
-                .map(|(id, name, smart, count)| BrowseCard {
+            .filter_map(|(id, name, count)| {
+                let (loved, stars) = marks.get(&id).copied().unwrap_or((false, 0));
+                loved.then(|| BrowseCard {
                     id,
                     key: id.to_string(),
                     title: name,
-                    subtitle: if smart != 0 { "Smart".into() } else { format!("{count} tracks") },
+                    subtitle: format!("{count} tracks"),
                     count,
                     art: String::new(),
+                    loved,
+                    stars,
+                })
+            })
+            .collect()
+    } else {
+        tulipix_music::browse::albums(pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|a| {
+                let (loved, stars) = marks.get(&a.album_id).copied().unwrap_or((false, 0));
+                loved.then(|| BrowseCard {
+                    id: a.album_id,
+                    key: a.album_id.to_string(),
+                    title: a.title,
+                    subtitle: a.artist.unwrap_or_default(),
+                    count: a.track_count,
+                    art: a.cover_path.filter(|c| Path::new(c).exists()).unwrap_or_default(),
+                    loved,
+                    stars,
+                })
+            })
+            .collect()
+    }
+}
+
+/// Every playlist, as tiles. Wanted in two places -- the Playlists tab and the
+/// snapshot's always-there list -- so it is one function rather than one query
+/// written twice.
+///
+/// The cover is a preference, not a column: right-clicking a playlist picks an
+/// image and it is remembered under `music.playlist.cover.{id}`, which is where
+/// the Slint build keeps it too.
+async fn playlist_cards(pool: &sqlx::SqlitePool) -> Vec<BrowseCard> {
+    let rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(
+        "SELECT p.id, p.name, p.is_smart, \
+                (SELECT COUNT(*) FROM playlist_items pi WHERE pi.playlist_id = p.id) \
+         FROM playlists p ORDER BY p.name COLLATE NOCASE",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let prefs = settings_map();
+    rows.into_iter()
+        .map(|(id, name, smart, count)| BrowseCard {
+            art: pref_cover(&prefs, &format!("music.playlist.cover.{id}")),
+            id,
+            key: id.to_string(),
+            title: name,
+            subtitle: if smart != 0 { "Smart".into() } else { format!("{count} tracks") },
+            count,
+            loved: false,
+            stars: 0,
+        })
+        .collect()
+}
+
+/// What a browse tile shows beyond its name. One query per kind, not per tile —
+/// and only the rows that carry a mark, since most do not.
+async fn browse_marks(pool: &sqlx::SqlitePool, table: &str) -> HashMap<i64, (bool, i64)> {
+    sqlx::query_as::<_, (i64, i64, i64)>(&format!(
+        "SELECT id, COALESCE(loved, 0), COALESCE(rating, 0) FROM {table} \
+         WHERE COALESCE(loved, 0) <> 0 OR COALESCE(rating, 0) <> 0"
+    ))
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(id, loved, stars)| (id, (loved != 0, stars)))
+    .collect()
+}
+
+async fn browse_cards(
+    pool: &sqlx::SqlitePool,
+    kind: &str,
+    s: &Session,
+) -> (Vec<BrowseCard>, i64, i64) {
+    let mut cards: Vec<BrowseCard> = match kind {
+        "albums" => {
+            let marks = browse_marks(pool, "albums").await;
+            tulipix_music::browse::albums(pool)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|a| {
+                    let (loved, stars) = marks.get(&a.album_id).copied().unwrap_or((false, 0));
+                    BrowseCard {
+                        id: a.album_id,
+                        key: a.album_id.to_string(),
+                        title: a.title,
+                        subtitle: a.artist.unwrap_or_default(),
+                        count: a.track_count,
+                        art: a.cover_path.filter(|c| Path::new(c).exists()).unwrap_or_default(),
+                        loved,
+                        stars,
+                    }
+                })
+                .collect()
+        }
+        "artists" => {
+            let marks = browse_marks(pool, "artists").await;
+            tulipix_music::browse::artists(pool)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(id, name, count)| {
+                    let (loved, stars) = marks.get(&id).copied().unwrap_or((false, 0));
+                    BrowseCard {
+                        id,
+                        key: id.to_string(),
+                        title: name,
+                        subtitle: format!("{count} tracks"),
+                        count,
+                        art: String::new(),
+                        loved,
+                        stars,
+                    }
+                })
+                .collect()
+        }
+        "genres" => {
+            let prefs = settings_map();
+            tulipix_music::browse::genres(pool)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, count)| BrowseCard {
+                    id: 0,
+                    // Right-click picks a cover for a genre; it is remembered
+                    // as a preference under the genre's own name, the way the
+                    // Slint build does it — there is no genres table to hold a
+                    // column.
+                    art: pref_cover(&prefs, &format!("music.genre.cover.{name}")),
+                    key: name.clone(),
+                    title: name,
+                    subtitle: format!("{count} tracks"),
+                    count,
                     loved: false,
                     stars: 0,
                 })
                 .collect()
         }
+        "playlists" => playlist_cards(pool).await,
         "folders" => {
             let excluded = folder_sections();
             tulipix_music::folders::list(pool)
@@ -3848,9 +5035,100 @@ async fn browse_cards(pool: &sqlx::SqlitePool, kind: &str, s: &Session) -> (Vec<
         cards.reverse();
     }
     let total = cards.len() as i64;
-    let start = (s.browse_page * BROWSE_PAGE).min(total) as usize;
-    let end = ((s.browse_page + 1) * BROWSE_PAGE).min(total) as usize;
-    (cards[start..end].to_vec(), total)
+    let per = browse_page_size(kind);
+    let page = clamp_page(s.browse_page, total, per);
+    let start = (page * per).min(total) as usize;
+    let end = ((page + 1) * per).min(total) as usize;
+    (cards[start..end].to_vec(), total, page)
+}
+
+/// How many tiles a browse grid pages by. Folders are three rows of seven, not
+/// four: the tile carries a path under the name and is a third taller than an
+/// album's, so four rows of them do not fit above the fold.
+fn browse_page_size(kind: &str) -> i64 {
+    if kind == "folders" { FOLDER_PAGE } else { BROWSE_PAGE }
+}
+
+/// An artist's blurb, from `artists.bio` -- fetched once from MusicBrainz and
+/// written back, so the page is instant every time after the first.
+///
+/// The column is added the same way `loved` and `rating` are: with a bare
+/// `ALTER TABLE` whose "already there" error is the expected case. There is no
+/// migration for it, and the Slint build opens the same file.
+///
+/// A failed lookup writes nothing. Caching the miss would mean an artist who
+/// was offline once stays blank forever, and the retry costs one request the
+/// next time someone opens the page.
+async fn artist_bio(pool: &sqlx::SqlitePool, artist_id: i64, name: &str) -> String {
+    let _ = sqlx::query("ALTER TABLE artists ADD COLUMN bio TEXT")
+        .execute(pool)
+        .await;
+    let cached: Option<String> = sqlx::query_scalar("SELECT bio FROM artists WHERE id = ?")
+        .bind(artist_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    if let Some(bio) = cached {
+        if !bio.trim().is_empty() {
+            return bio;
+        }
+    }
+    if name.trim().is_empty() || !bio_first_try(artist_id) {
+        return String::new();
+    }
+    // Off the snapshot's thread. This runs on every refresh while the page is
+    // open -- a track change, a tick that finished a song -- and a request that
+    // has to reach MusicBrainz and back would freeze the page for as long as it
+    // took. It lands in the column and `Stale` brings the page back for it.
+    let name = name.to_string();
+    tokio::spawn(async move {
+        let Ok(pool) = music_pool().await else { return };
+        let Ok(client) = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(12))
+            .build()
+        else {
+            return;
+        };
+        let Ok(search) = tulipix_music::musicbrainz::lookup_artist(&client, &name).await else {
+            return;
+        };
+        // Best hit only, and only if it is actually about this artist --
+        // MusicBrainz answers every query with something, and a low-scoring hit
+        // is a different band with a similar name.
+        let Some(hit) = search
+            .artists
+            .iter()
+            .max_by_key(|a| a.score)
+            .filter(|a| a.score >= 80)
+        else {
+            return;
+        };
+        let bio = tulipix_music::musicbrainz::artist_blurb(hit);
+        if bio.trim().is_empty() {
+            return;
+        }
+        let _ = sqlx::query("UPDATE artists SET bio = ? WHERE id = ?")
+            .bind(&bio)
+            .bind(artist_id)
+            .execute(pool)
+            .await;
+        emit(MusicEvent::Stale);
+    });
+    String::new()
+}
+
+/// One lookup per artist per run. A miss is not written to the column -- an
+/// artist who was offline once should not stay blank forever -- so without this
+/// every refresh of an unknown artist's page would fire another request.
+fn bio_first_try(artist_id: i64) -> bool {
+    static TRIED: std::sync::OnceLock<Mutex<std::collections::HashSet<i64>>> =
+        std::sync::OnceLock::new();
+    TRIED
+        .get_or_init(Default::default)
+        .lock()
+        .map(|mut g| g.insert(artist_id))
+        .unwrap_or(false)
 }
 
 /// The tracks behind whatever detail page is open, plus its header fields.
@@ -3860,7 +5138,17 @@ async fn detail_tracks(pool: &sqlx::SqlitePool, s: &Session) -> (Vec<Track>, Str
         "album" => (" AND tm.album_id = ?", Some(s.detail_id), None),
         "artist" => (" AND tm.artist_id = ?", Some(s.detail_id), None),
         "genre" => (" AND tm.genre = ?", None, Some(s.detail_key.clone())),
-        "folder" => (" AND tm.folder = ?", None, Some(s.detail_key.clone())),
+        // Two shapes of the same question. `tm.folder` is what the grid
+        // grouped by, but it is written by the scanner and a library imported
+        // by two different versions of it can hold both `/music/x` and
+        // `/music/x/` -- and a track whose row predates the column has no
+        // folder at all. The path prefix catches every one of those, and a
+        // folder page that lists nothing is the bug it prevents.
+        "folder" => (
+            " AND (tm.folder = ? OR i.abs_path LIKE ? || '/%')",
+            None,
+            Some(s.detail_key.clone()),
+        ),
         "playlist" => (
             " AND i.id IN (SELECT item_id FROM playlist_items WHERE playlist_id = ?)",
             Some(s.detail_id),
@@ -3882,6 +5170,9 @@ async fn detail_tracks(pool: &sqlx::SqlitePool, s: &Session) -> (Vec<Track>, Str
     }
     if let Some(v) = &bind_s {
         q = q.bind(v);
+        if s.detail_kind == "folder" {
+            q = q.bind(v.trim_end_matches('/'));
+        }
     }
     if s.detail_kind == "playlist" {
         q = q.bind(s.detail_id);
@@ -3928,7 +5219,10 @@ async fn detail_tracks(pool: &sqlx::SqlitePool, s: &Session) -> (Vec<Track>, Str
                 .flatten()
                 .unwrap_or_default();
             let n = tracks.len();
-            (name, format!("{n} tracks"), String::new())
+            // The same preference the Playlists grid reads, so the page and the
+            // tile you opened it from are one picture rather than two.
+            let cover = pref_cover(&settings_map(), &format!("music.playlist.cover.{}", s.detail_id));
+            (name, format!("{n} tracks"), cover)
         }
         "folder" => {
             let name = Path::new(&s.detail_key)
@@ -3939,7 +5233,12 @@ async fn detail_tracks(pool: &sqlx::SqlitePool, s: &Session) -> (Vec<Track>, Str
         }
         _ => {
             let n = tracks.len();
-            (s.detail_key.clone(), format!("{n} tracks"), String::new())
+            let cover = if s.detail_kind == "genre" {
+                pref_cover(&settings_map(), &format!("music.genre.cover.{}", s.detail_key))
+            } else {
+                String::new()
+            };
+            (s.detail_key.clone(), format!("{n} tracks"), cover)
         }
     };
     let art = if !art.is_empty() && Path::new(&art).exists() {
@@ -4211,6 +5510,34 @@ async fn snapshot() -> Result<MusicState> {
         replaygain: setting("music.replaygain", "off"),
         preamp_db: setting("music.preamp", "0").parse().unwrap_or(0.0),
 
+        mgr_open: s.mgr_open,
+        mgr_tab: s.mgr_tab.clone(),
+        mgr_mode: if s.mgr_picked.is_some() {
+            "preview".into()
+        } else {
+            s.mgr_mode.clone()
+        },
+        mgr_filter: s.mgr_filter.clone(),
+        mgr_page: s.mgr_page,
+        mgr_pages: 1,
+        mgr_total: 0,
+        mgr_ok: 0,
+        mgr_missing: 0,
+        mgr_rows: Vec::new(),
+        mgr_item_id: s.mgr_item_id,
+        mgr_title: s.mgr_title.clone(),
+        mgr_q_name: s.mgr_q_name.clone(),
+        mgr_q_artist: s.mgr_q_artist.clone(),
+        mgr_q_album: s.mgr_q_album.clone(),
+        mgr_searching: s.mgr_searching,
+        mgr_results: s.mgr_results.clone(),
+        mgr_view_rows: Vec::new(),
+        mgr_view_plain: String::new(),
+        mgr_dirty: false,
+        mgr_status: s.mgr_status.clone(),
+        mgr_progress: 0.0,
+        mgr_busy: s.mgr_busy,
+
         lib_tab: s.lib_tab.clone(),
         track_count: 0,
         songs: Vec::new(),
@@ -4233,6 +5560,7 @@ async fn snapshot() -> Result<MusicState> {
         rail_albums: Vec::new(),
         rail_artists: Vec::new(),
         roots: Vec::new(),
+        playlists: Vec::new(),
 
         detail_open: s.detail_open,
         detail_kind: s.detail_kind.clone(),
@@ -4243,6 +5571,10 @@ async fn snapshot() -> Result<MusicState> {
         detail_art: String::new(),
         detail_tracks: Vec::new(),
         detail_albums: Vec::new(),
+        detail_loved: false,
+        detail_stars: 0,
+        detail_artist_id: 0,
+        detail_info: String::new(),
 
         pod_tab: s.pod_tab.clone(),
         pod_shows: Vec::new(),
@@ -4308,6 +5640,10 @@ async fn snapshot() -> Result<MusicState> {
         yt_status: s.yt_status.clone(),
     };
 
+    // Whatever tab is open: the player bar's "add to playlist" is on every one
+    // of them.
+    st.playlists = playlist_cards(pool).await;
+
     match s.view.as_str() {
         "mymusic" => fill_mymusic(pool, &s, &mut st).await,
         "podcasts" => fill_podcasts(&s, &mut st).await,
@@ -4316,7 +5652,34 @@ async fn snapshot() -> Result<MusicState> {
         "youtube" => fill_youtube(&s, &mut st).await,
         _ => {}
     }
+    // Cheap unless something is open: `mgr_load` reads nothing at all when the
+    // modal is closed and no search is in flight.
+    if s.mgr_open || s.mgr_mode != "list" {
+        mgr_load(pool, &s, &mut st).await;
+    }
+    // The tray menu, from here rather than from the deck: this is the only
+    // place that has the transport and the shuffle/repeat switches at once, and
+    // `update_tray` drops a push that matches the last one, so running it on
+    // every snapshot costs one comparison.
+    crate::shellsurface::set_tray(tulipix_platform::TrayNowPlaying {
+        title: st.now.title.clone(),
+        artist: st.now.artist.clone(),
+        playing: st.now.playing,
+        has_track: st.now.loaded || !st.now.title.is_empty(),
+        shuffle: st.shuffle,
+        repeat: st.repeat.clone(),
+        art_png: Vec::new(),
+        popup: false,
+    });
     Ok(st)
+}
+
+/// Record the page a list actually landed on, in the snapshot *and* in the
+/// session. Without the second half the clamp would be cosmetic: the next
+/// Refresh would read the stale page straight back out and clamp it again.
+fn set_song_page(st: &mut MusicState, page: i64) {
+    st.song_page = page;
+    lock().song_page = page;
 }
 
 async fn fill_mymusic(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState) {
@@ -4358,6 +5721,35 @@ async fn fill_mymusic(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState)
         st.detail_title = title;
         st.detail_subtitle = subtitle;
         st.detail_art = art;
+        // The heart and the stars belong to the album or the artist row, not to
+        // any of the tracks under it -- the same pair the grid tile draws.
+        if s.detail_kind == "album" || s.detail_kind == "artist" {
+            ensure_browse_columns(pool).await;
+            let table = if s.detail_kind == "album" { "albums" } else { "artists" };
+            let row: (i64, i64) = sqlx::query_as(&format!(
+                "SELECT COALESCE(loved, 0), COALESCE(rating, 0) FROM {table} WHERE id = ?"
+            ))
+            .bind(s.detail_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or((0, 0));
+            st.detail_loved = row.0 != 0;
+            st.detail_stars = row.1;
+        }
+        if s.detail_kind == "album" {
+            st.detail_artist_id = sqlx::query_scalar("SELECT artist_id FROM albums WHERE id = ?")
+                .bind(s.detail_id)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(0);
+        }
+        if s.detail_kind == "artist" {
+            st.detail_info = artist_bio(pool, s.detail_id, &st.detail_title).await;
+        }
         // An artist page also lists their albums, which is the one detail page
         // that is two lists rather than one.
         if s.detail_kind == "artist" {
@@ -4422,46 +5814,69 @@ async fn fill_mymusic(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState)
             st.rail_most = tracks_by_ids(pool, &most).await;
             st.rail_loved = tracks_by_ids(pool, &loved).await;
             st.rail_fresh = tracks_by_ids(pool, &fresh).await;
-            let (albums, _) = browse_cards(pool, "albums", s).await;
+            let (albums, _, _) = browse_cards(pool, "albums", s).await;
             st.rail_albums = albums.into_iter().take(RAIL as usize).collect();
-            let (artists, _) = browse_cards(pool, "artists", s).await;
+            let (artists, _, _) = browse_cards(pool, "artists", s).await;
             st.rail_artists = artists.into_iter().take(RAIL as usize).collect();
         }
         "songs" => {
-            let (songs, total) = songs_page(pool, s).await;
+            let (songs, total, page) = songs_page(pool, s).await;
             st.songs = songs;
             st.song_total = total;
-            st.song_pages = (total.max(1) as f64 / SONGS_PAGE as f64).ceil() as i64;
+            st.song_pages = page_count(total, SONGS_PAGE);
+            set_song_page(st, page);
         }
         "favorites" => {
             let ids = tulipix_music::rating::loved(pool, 5_000).await.unwrap_or_default();
             let all = tracks_by_ids(pool, &ids).await;
             st.song_total = all.len() as i64;
-            st.song_pages = (st.song_total.max(1) as f64 / SONGS_PAGE as f64).ceil() as i64;
-            let start = ((s.song_page * SONGS_PAGE) as usize).min(all.len());
-            let end = (((s.song_page + 1) * SONGS_PAGE) as usize).min(all.len());
+            st.song_pages = page_count(st.song_total, LIST_ROWS);
+            let page = clamp_page(s.song_page, st.song_total, LIST_ROWS);
+            set_song_page(st, page);
+            let start = ((page * LIST_ROWS) as usize).min(all.len());
+            let end = (((page + 1) * LIST_ROWS) as usize).min(all.len());
             st.songs = all[start..end].to_vec();
+            // Loved is three things, the way search is: the artists you loved,
+            // the albums you loved, and the tracks. A heart on an album is
+            // stored on the album row and is NOT the same claim as a heart on
+            // each of its tracks, so a page that only listed tracks could not
+            // show it at all.
+            //
+            // They ride on `rail_artists` / `rail_albums`, which the Home
+            // dashboard fills for its own two shelves. One tab is open at a
+            // time, so the two uses never collide, and a pair of new fields
+            // for the same two lists of cards would only mean two places to
+            // keep in step.
+            st.rail_artists = loved_cards(pool, "artists").await;
+            st.rail_albums = loved_cards(pool, "albums").await;
         }
         "history" => {
             let ids: Vec<i64> = sqlx::query_scalar(
-                "SELECT ph.item_id FROM play_history ph ORDER BY ph.played_at DESC LIMIT 150",
+                "SELECT ph.item_id FROM play_history ph ORDER BY ph.played_at DESC LIMIT 500",
             )
             .fetch_all(pool)
             .await
             .unwrap_or_default();
-            st.songs = tracks_by_ids(pool, &ids).await;
-            st.song_total = st.songs.len() as i64;
-            st.song_pages = 1;
+            let all = tracks_by_ids(pool, &ids).await;
+            st.song_total = all.len() as i64;
+            st.song_pages = page_count(st.song_total, LIST_ROWS);
+            let page = clamp_page(s.song_page, st.song_total, LIST_ROWS);
+            set_song_page(st, page);
+            let start = ((page * LIST_ROWS) as usize).min(all.len());
+            let end = (((page + 1) * LIST_ROWS) as usize).min(all.len());
+            st.songs = all[start..end].to_vec();
         }
         // The Downloader draws from its own module and needs nothing from the
         // library query — without this arm it would fall through to
         // `browse_cards` and pay for a grid nobody is looking at.
         "downloader" => {}
         other => {
-            let (cards, total) = browse_cards(pool, other, s).await;
+            let (cards, total, page) = browse_cards(pool, other, s).await;
             st.cards = cards;
             st.card_total = total;
-            st.browse_pages = (total.max(1) as f64 / BROWSE_PAGE as f64).ceil() as i64;
+            st.browse_pages = page_count(total, browse_page_size(other));
+            st.browse_page = page;
+            lock().browse_page = page;
         }
     }
 }

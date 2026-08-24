@@ -16,6 +16,8 @@ mod db;
 // transport is an implementation detail of the Music section, not part of the
 // Dart-facing contract.
 mod mpv;
+/// Media applet, tray and taskbar registration.
+mod shellsurface;
 // Same reason: the Finances forms are a plain data structure the section builds
 // and validates, not a Dart-facing type. `api::finances` maps them into the one
 // struct that does cross.

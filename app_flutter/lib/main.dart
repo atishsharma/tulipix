@@ -30,7 +30,6 @@ import 'playback/video_layer.dart';
 import 'shell/shell_controller.dart';
 import 'shell/sidebar.dart';
 import 'src/rust/api/music.dart';
-import 'src/rust/api/shell.dart';
 import 'src/rust/api/transfer.dart';
 import 'src/rust/api/videos.dart';
 import 'src/rust/frb_generated.dart';
@@ -97,25 +96,19 @@ class _TulipixAppState extends State<TulipixApp> {
     final theme = _shell.state?.theme ?? 'system';
     final dark = theme != 'light';
     final oled = theme == 'extra-dark';
-    if (dark == _dark && oled == _oled) {
-      setState(() {});
-      return;
-    }
+    // Only when the theme actually moved. This `setState` rebuilds MaterialApp,
+    // and every rebuild hands its AnimatedTheme a freshly built ThemeData:
+    // `Tokens` is a ThemeExtension with no value equality, so a new instance is
+    // never `==` the old one and the app-wide 200 ms theme cross-fade restarts
+    // from zero -- taking the AnimatedTheme that ButtonStyleButton wraps around
+    // every Material button with it. Sixty-two of them were re-animating on the
+    // shell's 30-second tick, for a theme that had not changed. Everything else
+    // this file draws from the shell redraws through the AnimatedBuilder below.
+    if (dark == _dark && oled == _oled) return;
     setState(() {
       _dark = dark;
       _oled = oled;
     });
-  }
-
-  /// light → dark → extra-dark → light, and stored. The sidebar's theme button
-  /// calls this; the same three stops the Slint build cycles through.
-  void _cycleTheme() {
-    final next = !_dark
-        ? 'dark'
-        : !_oled
-            ? 'extra-dark'
-            : 'light';
-    _shell.send(ShellCmd.setTheme(theme: next));
   }
 
   IconData get _themeIcon => !_dark
@@ -147,7 +140,7 @@ class _TulipixAppState extends State<TulipixApp> {
                   children: [
                     Sidebar(
                       controller: _shell,
-                      onCycleTheme: _cycleTheme,
+                      onCycleTheme: _shell.cycleTheme,
                       themeIcon: _themeIcon,
                     ),
                     // Every section stays alive across a switch: Transfer polls a
@@ -156,21 +149,55 @@ class _TulipixAppState extends State<TulipixApp> {
                     // the poll and lose the ledger's page and sort, or drop the
                     // now-playing. The ones that cost something to keep warm are
                     // told whether they are on screen instead.
+                    //
+                    // `ContentSurface` in ui/main.slint: the page is a card, not
+                    // the window. The shell there is one
+                    // `HorizontalLayout { padding: 14px; spacing: 14px }` around
+                    // the rail and this, which is the gutter the port was
+                    // missing — the page ran flush into the sidebar and off
+                    // three edges of the window.
                     Expanded(
-                      child: IndexedStack(
-                        index: at.index,
-                        children: [
-                          HomePage(visible: at == Section.home),
-                          const PhotosPage(),
-                          const VideosPage(),
-                          const MusicPage(),
-                          const BooksPage(),
-                          const CloudPage(),
-                          const ToolsPage(),
-                          TransferPage(visible: at == Section.transfer),
-                          const FinancesPage(),
-                          SettingsPage(visible: at == Section.settings),
-                        ],
+                      child: Container(
+                        margin: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+                        decoration: BoxDecoration(
+                          color: tokens.panel,
+                          borderRadius: BorderRadius.circular(Tokens.radiusLg),
+                          border: Border.all(color: tokens.outline),
+                          boxShadow: const [
+                            BoxShadow(color: Color(0x40000000), blurRadius: 32),
+                          ],
+                        ),
+                        clipBehavior: Clip.antiAlias,
+                        child: IndexedStack(
+                          index: at.index,
+                          children: [
+                            // TickerMode is what makes "kept alive" stop short of
+                            // "kept animating". IndexedStack holds all ten pages
+                            // in the tree and skips painting the nine underneath,
+                            // but it does not stop their tickers -- and one
+                            // offstage indeterminate spinner is enough to ask for
+                            // a frame at every vsync, for as long as the app is
+                            // open. Settings is exactly that: it does not load
+                            // until it is first opened, so its page sits on
+                            // FirstLoad's CircularProgressIndicator from launch,
+                            // and the window rebuilt, laid out, painted and
+                            // re-walked its semantics tree 144 times a second
+                            // over a screen where nothing moved.
+                            for (final (i, page) in <Widget>[
+                              HomePage(visible: at == Section.home),
+                              const PhotosPage(),
+                              const VideosPage(),
+                              const MusicPage(),
+                              const BooksPage(),
+                              const CloudPage(),
+                              const ToolsPage(),
+                              TransferPage(visible: at == Section.transfer),
+                              const FinancesPage(),
+                              SettingsPage(visible: at == Section.settings),
+                            ].indexed)
+                              TickerMode(enabled: i == at.index, child: page),
+                          ],
+                        ),
                       ),
                     ),
                   ],

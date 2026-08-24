@@ -151,10 +151,15 @@ tulipix-status = { path = "../tulipix-status" }
 # Genesis: LibGen search, mirror ranking, record pages, covers and downloads.
 # Blocking (ureq) by design; every call from here goes through `spawn_blocking`.
 tulipix-genesis = { path = "../tulipix-genesis" }
-# `fm::open_default` and `fm::reveal_in_file_manager`. Default features only —
-# the `tray` feature is what pulls ksni/tray-icon in, and the bridge has no
-# tray. No slint here either, which is why this one is allowed.
-tulipix-platform = { path = "../tulipix-platform" }
+# `fm::open_default`, `fm::reveal_in_file_manager`, and now the status-bar
+# item: the `tray` feature is what pulls ksni in, and the bridge is where the
+# tray lives in the Flutter build — there is no Slint event loop to host it.
+# Still no slint here, which is what makes this dependency allowed at all.
+tulipix-platform = { path = "../tulipix-platform", features = ["tray"] }
+# MPRIS on Linux, SMTC on Windows, MPNowPlayingInfoCenter on macOS. Same crate
+# and version the Slint build registers with, so the two cannot drift apart in
+# what they publish; the publish helpers themselves are tulipix-common's.
+souvlaki = "0.7"
 
 [dev-dependencies]
 tempfile = "3"

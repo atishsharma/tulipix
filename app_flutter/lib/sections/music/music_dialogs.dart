@@ -9,8 +9,29 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
+import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
+
+/// The section's confirm button. Left to itself a `FilledButton` takes the
+/// app's own primary, which is the shell's violet -- so every "Delete
+/// playlist" and "Clear history" in Music was asking in a colour from another
+/// section. Music's pink, with ink dark enough to read on it.
+ButtonStyle musicFilledStyle({Color? fill}) => FilledButton.styleFrom(
+      backgroundColor: fill ?? Tokens.secMusic,
+      foregroundColor: const Color(0xFF0B0B0F),
+      textStyle: const TextStyle(
+        fontFamily: Tokens.fontFamily,
+        fontSize: 13,
+        fontWeight: FontWeight.w700,
+      ),
+    );
+
+/// Its Cancel. Neutral: the way out of a confirm should not compete with the
+/// thing being confirmed.
+ButtonStyle musicQuietStyle(BuildContext context) => TextButton.styleFrom(
+      foregroundColor: context.tokens.nInk2,
+    );
 
 /// Yes/no, for the three things in this section that cannot be undone.
 Future<bool> confirm(
@@ -18,6 +39,7 @@ Future<bool> confirm(
   required String title,
   required String body,
   String action = 'Delete',
+  bool danger = true,
 }) async {
   final ok = await showDialog<bool>(
     context: context,
@@ -26,9 +48,14 @@ Future<bool> confirm(
       content: SizedBox(width: 420, child: Text(body)),
       actions: [
         TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel')),
+          style: musicQuietStyle(ctx),
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('Cancel'),
+        ),
         FilledButton(
+          // Destructive confirms wear the error red; everything else is the
+          // section's pink, so "Rescan" and "Delete" do not look alike.
+          style: musicFilledStyle(fill: danger ? Tokens.error : null),
           onPressed: () => Navigator.pop(ctx, true),
           child: Text(action),
         ),
@@ -36,6 +63,33 @@ Future<bool> confirm(
     ),
   );
   return ok ?? false;
+}
+
+/// Ask, then dispatch.
+///
+/// Slint puts a confirm sheet in front of everything in this section that
+/// cannot be taken back — deleting a playlist, clearing the history, dropping
+/// a watched folder, a rescan that will run for minutes. The port fired most
+/// of them straight off the click. Same yes/no, one call site.
+Future<bool> confirmThen(
+  BuildContext context,
+  MusicController c, {
+  required String title,
+  required String body,
+  required String action,
+  required MusicCmd cmd,
+  bool danger = true,
+}) async {
+  final ok = await confirm(
+    context,
+    title: title,
+    body: body,
+    action: action,
+    danger: danger,
+  );
+  if (!ok) return false;
+  await c.send(cmd);
+  return true;
 }
 
 /// The tag editor. Writes into the file with ffmpeg and then re-reads it into
@@ -100,11 +154,15 @@ Future<void> editTags(
       ),
       actions: [
         TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel')),
+          style: musicQuietStyle(ctx),
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('Cancel'),
+        ),
         FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Write to file')),
+          style: musicFilledStyle(),
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('Write to file'),
+        ),
       ],
     ),
   );
@@ -123,36 +181,63 @@ Future<void> editTags(
   }
 }
 
+/// Every playlist the library has.
+///
+/// It used to be fetched by switching My Music to the Playlists tab, reading
+/// the cards the snapshot then held, and switching back — two full reloads of
+/// the library for a list of a dozen names, and the tab you were on came back
+/// only if nothing else moved in between. It is on every snapshot now.
+List<BrowseCard> _playlists(MusicController c) =>
+    c.state?.playlists ?? const <BrowseCard>[];
+
+/// Name a new playlist. Returns its id once the bridge has made it, or null.
+Future<int?> createPlaylist(BuildContext context, MusicController c) async {
+  final name = TextEditingController();
+  final chosen = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('New playlist'),
+      content: SizedBox(
+        width: 360,
+        child: TextField(
+          controller: name,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Name',
+            hintText: 'Late night, Gym, Rediscovered…',
+          ),
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+        ),
+      ),
+      actions: [
+        TextButton(
+          style: musicQuietStyle(ctx),
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: musicFilledStyle(),
+          onPressed: () => Navigator.pop(ctx, name.text.trim()),
+          child: const Text('Create'),
+        ),
+      ],
+    ),
+  );
+  if (chosen == null || chosen.isEmpty) return null;
+  await c.send(MusicCmd.playlistCreate(name: chosen));
+  // The snapshot that came back already has it; matching by name is how the
+  // id gets back here, since the command answers with the whole section.
+  final made = _playlists(c).where((p) => p.title == chosen);
+  return made.isEmpty ? null : made.last.id;
+}
+
 /// Pick one of the library's playlists and add tracks to it.
 Future<void> addToPlaylist(
   BuildContext context,
   MusicController c,
   List<Track> tracks,
 ) async {
-  // The playlist list only sits in the snapshot while that browse tab is open,
-  // so ask for it before showing a picker that would otherwise be empty — and
-  // put the tab back afterwards, because the user asked to add a track, not to
-  // be moved somewhere else.
-  final previous = c.state?.libTab ?? 'songs';
-  await c.send(const MusicCmd.setLibTab(name: 'playlists'));
-  final playlists = c.state?.cards ?? const <BrowseCard>[];
-  await c.send(MusicCmd.setLibTab(name: previous));
-  if (!context.mounted) return;
-  if (playlists.isEmpty) {
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('No playlists yet'),
-        content: const Text(
-            'Create one from My Music → Playlists, then add tracks to it.'),
-        actions: [
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
-        ],
-      ),
-    );
-    return;
-  }
+  final playlists = _playlists(c);
   final chosen = await showDialog<int>(
     context: context,
     builder: (ctx) => SimpleDialog(
@@ -163,14 +248,133 @@ Future<void> addToPlaylist(
             onPressed: () => Navigator.pop(ctx, p.id),
             child: Text('${p.title}  ·  ${p.count}'),
           ),
+        if (playlists.isEmpty)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(24, 4, 24, 12),
+            child: Text('No playlists yet.'),
+          ),
+        SimpleDialogOption(
+          onPressed: () => Navigator.pop(ctx, _kNewPlaylist),
+          child: const Row(
+            children: [
+              Icon(Icons.add, size: 16),
+              SizedBox(width: 10),
+              Text('New playlist…'),
+            ],
+          ),
+        ),
       ],
     ),
   );
   if (chosen == null) return;
+  if (!context.mounted) return;
+  await _addTo(context, c, chosen, tracks);
+}
+
+/// The sentinel the two pickers use for their "new playlist" row. Playlist ids
+/// are rowids, so nothing real is ever negative.
+const int _kNewPlaylist = -1;
+
+Future<void> _addTo(
+  BuildContext context,
+  MusicController c,
+  int playlistId,
+  List<Track> tracks,
+) async {
+  var id = playlistId;
+  if (id == _kNewPlaylist) {
+    id = await createPlaylist(context, c) ?? -1;
+    if (id < 0) return;
+  }
   await c.send(MusicCmd.playlistAdd(
-    playlistId: chosen,
+    playlistId: id,
     itemIds: Int64List.fromList(tracks.map((t) => t.itemId).toList()),
   ));
+}
+
+/// A menu that rises out of the button it belongs to.
+///
+/// Every menu in the player bar has the same problem: the bar is at the foot of
+/// the window, and Material's default is to open downward over the anchor, so
+/// each one either landed off-screen or covered the control that opened it.
+/// `showMenu` with a rect pinned to the button's *top* edge leaves it nowhere
+/// to grow but up, which is what Slint's anchored popups do.
+///
+/// No package for the motion. `showMenu` is a `PopupRoute` with a transition
+/// of its own — the menu fades in while its height and the items' opacity
+/// animate over about 300 ms — so a dependency here would be buying an
+/// animation the framework already runs.
+Future<T?> dropUp<T>(
+  BuildContext anchor, {
+  required List<PopupMenuEntry<T>> items,
+}) async {
+  final box = anchor.findRenderObject() as RenderBox?;
+  final overlayBox =
+      Overlay.of(anchor).context.findRenderObject() as RenderBox?;
+  if (box == null || overlayBox == null) return null;
+  final topLeft = box.localToGlobal(Offset.zero, ancestor: overlayBox);
+  return showMenu<T>(
+    context: anchor,
+    // `bottom` is measured from the overlay's bottom edge, so anchoring it to
+    // the button's *top* is what puts the menu above rather than over.
+    position: RelativeRect.fromLTRB(
+      topLeft.dx,
+      topLeft.dy,
+      overlayBox.size.width - topLeft.dx - box.size.width,
+      overlayBox.size.height - topLeft.dy,
+    ),
+    items: items,
+  );
+}
+
+/// The same picker, as a menu that opens upward from the button that asked.
+///
+/// Slint's `add-to-playlist` is an anchored popup over the player, not a modal:
+/// the bar is at the bottom of the window, so the list rises out of the button
+/// rather than dimming the page and landing in the middle of it. A dialog for
+/// "which of these six" is a heavier gesture than the choice deserves.
+///
+/// [anchor] must be the context of the widget the menu belongs under — pass a
+/// `Builder`'s context if the button is built inline.
+Future<void> playlistDropUp(
+  BuildContext anchor,
+  MusicController c,
+  List<Track> tracks,
+) async {
+  final playlists = _playlists(c);
+  final chosen = await dropUp<int>(
+    anchor,
+    items: [
+      for (final p in playlists)
+        PopupMenuItem<int>(
+          value: p.id,
+          child: Row(
+            children: [
+              const Icon(Icons.queue_music, size: 16),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(p.title, overflow: TextOverflow.ellipsis),
+              ),
+              const SizedBox(width: 12),
+              Text('${p.count}', style: const TextStyle(fontSize: 11)),
+            ],
+          ),
+        ),
+      if (playlists.isNotEmpty) const PopupMenuDivider(),
+      const PopupMenuItem<int>(
+        value: _kNewPlaylist,
+        child: Row(
+          children: [
+            Icon(Icons.add, size: 16),
+            SizedBox(width: 10),
+            Text('New playlist…'),
+          ],
+        ),
+      ),
+    ],
+  );
+  if (chosen == null || !anchor.mounted) return;
+  await _addTo(anchor, c, chosen, tracks);
 }
 
 /// Output device, gapless, crossfade, ReplayGain and pre-amp — the five knobs
@@ -261,7 +465,10 @@ Future<void> audioSettings(BuildContext context, MusicController c) async {
           ),
           actions: [
             FilledButton(
-                onPressed: () => Navigator.pop(ctx), child: const Text('Done')),
+              style: musicFilledStyle(),
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Done'),
+            ),
           ],
         );
       },

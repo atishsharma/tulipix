@@ -8,6 +8,13 @@ set(BINARY_NAME "tulipix")
 # The unique GTK application identifier for this application. See:
 # https://wiki.gnome.org/HowDoI/ChooseApplicationID
 set(APPLICATION_ID "com.tulipix.tulipix")
+# The name the shell matches against `StartupWMClass` in
+# packaging/linux/tulipix.desktop, and the name of the icon-theme entry that
+# .desktop points at. Not the application id: GApplication requires a dotted,
+# reverse-DNS id and rejects a bare word, while WM_CLASS and the icon name have
+# to be the plain one the desktop file already declares. Changing either
+# without the other gives the taskbar a blank square.
+set(APPLICATION_WM_CLASS "tulipix")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
@@ -95,6 +102,15 @@ install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
+  COMPONENT Runtime)
+
+# The taskbar mark, beside the executable rather than in flutter_assets: GTK
+# loads it with a plain file read before the engine exists, and the assets
+# directory is an engine-side archive. Same file the Slint build compiles in and
+# the same one packaging/linux installs into the icon theme, so an installed
+# copy and a run out of the build directory show the same icon.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../resources/icons/tulipix-256.png"
+  DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" RENAME "tulipix.png"
   COMPONENT Runtime)
 
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"

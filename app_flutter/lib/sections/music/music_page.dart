@@ -8,17 +8,21 @@
 // still driving it.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../design/first_load.dart';
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'audiobooks_tab.dart';
 import 'music_controller.dart';
+import 'music_viz.dart';
 import 'music_widgets.dart';
 import 'my_music_tab.dart';
 import 'player_bar.dart';
 import 'podcasts_tab.dart';
 import 'radio_tab.dart';
+import 'side_panel.dart';
 import 'youtube_tab.dart';
 
 class MusicPage extends StatefulWidget {
@@ -57,36 +61,74 @@ class _MusicPageState extends State<MusicPage> {
       animation: _c,
       builder: (context, _) {
         final st = _c.state;
-        return ColoredBox(
-          color: t.nCanvas,
-          child: Column(
-            children: [
-              _Header(controller: _c, search: _search),
-              if (_c.progress != null) _ProgressBar(controller: _c),
-              if (_c.error != null) _ErrorBanner(controller: _c),
-              if (st != null && st.status.isNotEmpty)
-                _StatusBanner(message: st.status),
-              Expanded(
-                child: st == null
-                    ? FirstLoad(error: _c.error, onRetry: _c.refresh)
-                    // IndexedStack, not a switch: each tab holds scroll
-                    // positions and text fields, and rebuilding the whole
-                    // subtree on every category change would throw both away.
-                    : IndexedStack(
-                        index: musicViews
-                            .indexWhere((v) => v.id == st.view)
-                            .clamp(0, musicViews.length - 1),
-                        children: [
-                          MyMusicTab(controller: _c),
-                          PodcastsTab(controller: _c),
-                          AudiobooksTab(controller: _c),
-                          RadioTab(controller: _c),
-                          YoutubeTab(controller: _c),
-                        ],
-                      ),
-              ),
-              PlayerBar(controller: _c),
-            ],
+        return CallbackShortcuts(
+          // Escape closes whatever the player has open — the docked panel or
+          // the equalizer — before anything outside the section sees the key.
+          // Slint's is a focus scope that exists only while one is open; this
+          // is the same rule, bound where the panels live.
+          bindings: <ShortcutActivator, VoidCallback>{
+            if (_c.panel.isNotEmpty)
+              const SingleActivator(LogicalKeyboardKey.escape): () =>
+                  _c.setPanel(_c.panel),
+          },
+          child: ColoredBox(
+            color: t.nCanvas,
+            child: Column(
+              children: [
+                _Header(controller: _c, search: _search),
+                if (_c.progress != null) _ProgressBar(controller: _c),
+                // One row, not two. A failed command sets `status` on the
+                // snapshot AND emits `Failed`, which becomes `error` here, so
+                // the same sentence arrived twice — once with a close button
+                // and once without. The dismissible one wins; the status line
+                // is for the notes no command failed over ("Queued 25 similar
+                // tracks").
+                if (_c.error != null)
+                  _ErrorBanner(controller: _c)
+                else if (st != null && st.status.isNotEmpty)
+                  _StatusBanner(message: st.status),
+                Expanded(
+                  child: st == null
+                      ? FirstLoad(error: _c.error, onRetry: _c.refresh)
+                      : Stack(
+                          children: [
+                            // IndexedStack, not a switch: each tab holds scroll
+                            // positions and text fields, and rebuilding the whole
+                            // subtree on every category change would throw both
+                            // away.
+                            IndexedStack(
+                              index: musicViews
+                                  .indexWhere((v) => v.id == st.view)
+                                  .clamp(0, musicViews.length - 1),
+                              children: [
+                                MyMusicTab(controller: _c),
+                                PodcastsTab(controller: _c),
+                                AudiobooksTab(controller: _c),
+                                RadioTab(controller: _c),
+                                YoutubeTab(controller: _c),
+                              ],
+                            ),
+                            // Queue and Lyrics dock here — under BOTH headers
+                            // and above the player, which is the band Slint
+                            // gives them. It used to start at the top of this
+                            // Stack, which put it over the tab row belonging to
+                            // the page behind it: the panel covered the way out
+                            // of itself.
+                            if (_c.panel == 'queue' || _c.panel == 'lyrics')
+                              Positioned(
+                                top: st.view == 'mymusic' ? 57 : 52,
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                child: SidePanel(
+                                    key: sidePanelKey, controller: _c),
+                              ),
+                          ],
+                        ),
+                ),
+                PlayerBar(controller: _c),
+              ],
+            ),
           ),
         );
       },
@@ -104,6 +146,10 @@ class _Header extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final active = controller.view;
+    final view = musicViews.firstWhere((v) => v.id == active,
+        orElse: () => musicViews.first);
+    final st = controller.state;
+    final accent = controller.accent;
     return DecoratedBox(
       // The 2px gradient underline the Slint header draws beneath its tab row.
       decoration: const BoxDecoration(
@@ -123,59 +169,387 @@ class _Header extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 2),
         child: ColoredBox(
           color: t.nCanvas,
-          child: SizedBox(
-            height: 58,
-            child: Row(
-              children: [
-                const SizedBox(width: 20),
-                for (final v in musicViews)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: MusicChip(
-                      label: v.label,
-                      icon: v.icon,
-                      active: active == v.id,
-                      tint: v.tint,
-                      tint2: v.tint2,
-                      onTap: () =>
-                          controller.send(MusicCmd.setView(name: v.id)),
-                    ),
-                  ),
-                const Spacer(),
-                // One search box for the section. What it filters depends on
-                // the open tab, which is how the Slint header behaves too.
-                SizedBox(
-                  width: 280,
-                  child: TextField(
-                    controller: search,
-                    decoration: InputDecoration(
-                      isDense: true,
-                      prefixIcon: const Icon(Icons.search, size: 18),
-                      hintText: 'Search the library',
-                      border: const OutlineInputBorder(),
-                      suffixIcon: search.text.isEmpty
-                          ? null
-                          : IconButton(
-                              icon: const Icon(Icons.close, size: 16),
-                              onPressed: () {
-                                search.clear();
-                                controller
-                                    .send(const MusicCmd.search(query: ''));
-                              },
+          // The album-art wash, which is the thing the header was missing: the
+          // player bar at the foot of the page is painted in the cover's
+          // colour and the header at the top of it was not, so the section
+          // read as two unrelated bars around a white page. Slint's is
+          // `@linear-gradient(90deg, np-accent.with-alpha(0.22), transparent
+          // 55%)` over `surf-header` — left-anchored, gone by just past
+          // halfway, so it never fights the search pill or the count.
+          //
+          // A BoxDecoration cannot carry both: a gradient replaces the colour
+          // outright, so the canvas is the box under this one.
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                stops: const [0.0, 0.55],
+                colors: [
+                  accent.withValues(alpha: 0.22),
+                  accent.withValues(alpha: 0.0),
+                ],
+              ),
+            ),
+            child: SizedBox(
+              // 72, not 64: the Slint row is 72 and the eight-pixel difference
+              // is what was making the two-tier header look squashed against
+              // the sub-tabs.
+              height: 72,
+              child: Row(
+                children: [
+                  const SizedBox(width: 28),
+                  _Wordmark(accent: accent, playing: controller.tickPlaying),
+                  const SizedBox(width: 18),
+                  // The five fill whatever is left between the title and the
+                  // search pill, equally — `horizontal-stretch: 1` on each.
+                  Expanded(
+                    child: Row(
+                      children: [
+                        for (final v in musicViews) ...[
+                          if (v != musicViews.first) const SizedBox(width: 8),
+                          Expanded(
+                            child: MusicChip(
+                              label: v.label,
+                              icon: v.icon,
+                              active: active == v.id,
+                              tint: v.tint,
+                              tint2: v.tint2,
+                              onTap: () =>
+                                  controller.send(MusicCmd.setView(name: v.id)),
                             ),
+                          ),
+                        ],
+                      ],
                     ),
-                    onSubmitted: (q) =>
-                        controller.send(MusicCmd.search(query: q)),
                   ),
-                ),
-                const SizedBox(width: 20),
-              ],
+                  const SizedBox(width: 14),
+                  _SearchPill(controller: controller, search: search),
+                  const SizedBox(width: 10),
+                  // Add follows the open section's colour. Always drawn as an
+                  // active chip — it is an action, not a tab.
+                  // What "add" means is different in each of the five, the
+                  // way it is in Slint: a folder here, a feed URL there, a
+                  // stream, a subscriptions export. One chip, five doors.
+                  MusicChip(
+                    label: '+ Add',
+                    active: true,
+                    tint: view.tint,
+                    tint2: view.tint2,
+                    minWidth: 86,
+                    onTap: () => musicAdd(context, controller),
+                  ),
+                  const SizedBox(width: 10),
+                  _countPill(st, active),
+                  const SizedBox(width: 28),
+                ],
+              ),
             ),
           ),
         ),
       ),
     );
   }
+}
+
+/// The header's `+ Add`, which means something different in each of the five.
+///
+/// Slint gives every view its own add control; the port had one that called
+/// `addFolder` from all five, so "add" on the Radio tab was offering to scan a
+/// directory of MP3s.
+Future<void> musicAdd(BuildContext context, MusicController c) async {
+  switch (c.view) {
+    case 'podcasts':
+      await addFeed(context, c);
+    case 'radio':
+      await addStation(context, c);
+    case 'youtube':
+      // There is nothing to type: a channel is subscribed to from its own page,
+      // and the only thing you can hand YouTube from outside is the
+      // subscriptions export Google gives you.
+      final path = await pickFile(
+        label: 'Subscriptions',
+        extensions: const ['csv', 'json', 'opml', 'xml'],
+      );
+      if (path == null) return;
+      await c.send(MusicCmd.ytImportSubs(path: path));
+    // Audiobooks and My Music are both folders of files -- the same chooser,
+    // and the folder's section is decided afterwards from its own tile menu.
+    default:
+      await c.addFolder();
+  }
+}
+
+/// How much of what is open there is.
+///
+/// Per sub-tab inside My Music, not per section: `FancyCount` in Slint reads
+/// `item-count`, which is whatever the open tab is counting, and a pill saying
+/// "385 Tracks" while you look at a wall of twenty-two albums is answering a
+/// question nobody asked. The numbers are already on the snapshot —
+/// `songTotal` for the paged song lists, `cardTotal` for the browse grids — so
+/// this is a switch, not a query.
+Widget _countPill(MusicState? st, String view) {
+  if (st == null) return const _CountPill(count: 0, label: 'Tracks');
+  if (view != 'mymusic') {
+    return _CountPill(
+      // Radio's number is not the library's: it is how many stations are in
+      // the local cache, which is what Refresh all changes. The pill said
+      // "0 Stations" on a machine with thirty thousand of them.
+      count: view == 'radio' ? st.radioTotal : st.trackCount,
+      label: switch (view) {
+        'podcasts' => 'Podcasts',
+        'audiobooks' => 'Audiobooks',
+        'radio' => 'Stations',
+        _ => 'Channels',
+      },
+    );
+  }
+  final (count, label) = switch (st.libTab) {
+    'songs' => (st.songTotal, 'Songs'),
+    'albums' => (st.cardTotal, 'Albums'),
+    'artists' => (st.cardTotal, 'Artists'),
+    'genres' => (st.cardTotal, 'Genres'),
+    'playlists' => (st.cardTotal, 'Playlists'),
+    'folders' => (st.cardTotal, 'Folders'),
+    'favorites' => (st.songTotal, 'Loved'),
+    'history' => (st.songTotal, 'Played'),
+    // Home and the downloader count nothing of their own, so they fall back to
+    // the library.
+    _ => (st.trackCount, 'Tracks'),
+  };
+  return _CountPill(count: count, label: label);
+}
+
+/// The note and the wordmark, both carrying the cover's colour.
+///
+/// The title is drawn twice: an accent-tinted copy offset a pixel and a half
+/// right and two and a half down, then the real one over it. That is not a
+/// drop shadow — it is Slint's, and the reason is the wash behind it. A single
+/// flat ink title over a gradient that changes with every track loses its edge
+/// on light covers; the offset copy gives it one in the cover's own colour
+/// rather than in grey.
+///
+/// Both ride the beat. In Slint the glyph and the wordmark carry the same
+/// `- 5px * vis-bars[0]` offset, so they rise and fall together with the bass —
+/// see [BeatBounce], which runs the strip's own shape and envelope rather than
+/// a second clock of its own.
+class _Wordmark extends StatelessWidget {
+  const _Wordmark({required this.accent, required this.playing});
+
+  final Color accent;
+  final bool playing;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    const style = TextStyle(
+      fontFamily: Tokens.fontFamily,
+      fontSize: 22,
+      fontWeight: FontWeight.w700,
+    );
+    return BeatBounce(
+      playing: playing,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            // A note, not a record crate. `Icons.music` in Slint, tinted
+            // `np-accent.mix(fg, 0.45)` — the cover's colour pulled most of the
+            // way to the page's ink, so it reads as text and not as a badge.
+            Icons.music_note,
+            size: 22,
+            color: Color.lerp(t.nInk, accent, 0.45),
+          ),
+          const SizedBox(width: 8),
+          Stack(
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(left: 1.5, top: 2.5),
+                child: Text(
+                  'Music',
+                  style: style.copyWith(
+                    color: accent.withValues(alpha: 0.55),
+                  ),
+                ),
+              ),
+              Text('Music', style: style.copyWith(color: t.nInk)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The one search box for the section, as a 44px pill inside a 1.5px gradient
+/// ring over a white interior — both themes, which is deliberate in Slint: the
+/// ring is the section's identity and the field under it has to stay a field.
+class _SearchPill extends StatelessWidget {
+  const _SearchPill({required this.controller, required this.search});
+
+  final MusicController controller;
+  final TextEditingController search;
+
+  @override
+  Widget build(BuildContext context) {
+    final radio = controller.view == 'radio';
+    return Container(
+      width: 340,
+      height: 44,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(22),
+        gradient: const LinearGradient(
+          begin: Alignment(-1, -0.58),
+          end: Alignment(1, 0.58),
+          stops: [0.0, 0.5, 1.0],
+          colors: [Color(0xFFEC4899), Color(0xFF8B5CF6), Color(0xFF06B6D4)],
+        ),
+      ),
+      padding: const EdgeInsets.all(1.5),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20.5),
+        ),
+        padding: const EdgeInsets.only(left: 14, right: 8),
+        child: Row(
+          children: [
+            const Icon(Icons.search, size: 15, color: Color(0xFF6B6B74)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextField(
+                controller: search,
+                style: const TextStyle(
+                  fontFamily: Tokens.fontFamily,
+                  fontSize: 14,
+                  color: Color(0xFF16161B),
+                ),
+                cursorColor: const Color(0xFFEC4899),
+                // Radio is not in the library, so the library filter cannot
+                // reach it: its stations live in radio.db and are found by
+                // asking radio-browser. One box, two questions — which is what
+                // Slint does, and is why the Radio tab had a second search
+                // field of its own.
+                textInputAction: radio
+                    ? TextInputAction.search
+                    : TextInputAction.unspecified,
+                onSubmitted: radio
+                    ? (q) => controller.send(MusicCmd.radioSearch(query: q))
+                    : null,
+                onChanged: radio
+                    ? null
+                    : (q) => controller.send(MusicCmd.search(query: q)),
+                decoration: InputDecoration(
+                  isCollapsed: true,
+                  border: InputBorder.none,
+                  hintText:
+                      radio ? 'Search stations — press ↵' : 'Search music',
+                  hintStyle: const TextStyle(
+                    fontFamily: Tokens.fontFamily,
+                    fontSize: 14,
+                    color: Color(0xFF8A8A92),
+                  ),
+                ),
+              ),
+            ),
+            if (search.text.isNotEmpty)
+              _Round(
+                icon: Icons.close,
+                onTap: () {
+                  search.clear();
+                  // An empty station search is a no-op in the bridge -- there
+                  // is nothing to look for -- so clearing the box on Radio has
+                  // to mean "back to the categories".
+                  controller.send(radio
+                      ? const MusicCmd.radioBack()
+                      : const MusicCmd.search(query: ''));
+                },
+              ),
+            const _Round(icon: Icons.mic_none, onTap: null),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The two 26px pink discs that live at the right end of the search pill.
+class _Round extends StatelessWidget {
+  const _Round({required this.icon, required this.onTap});
+
+  final IconData icon;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(left: 4),
+        child: SizedBox(
+          width: 26,
+          height: 26,
+          child: Material(
+            color: const Color(0x33EC4899),
+            shape: const CircleBorder(),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: onTap,
+              hoverColor: const Color(0xFFEC4899),
+              child: Icon(icon, size: 13, color: const Color(0xFFEC4899)),
+            ),
+          ),
+        ),
+      );
+}
+
+/// `FancyCount` — how much of the open section there is, in a gradient pill.
+class _CountPill extends StatelessWidget {
+  const _CountPill({required this.count, required this.label});
+
+  final int count;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        height: 44,
+        constraints: const BoxConstraints(minWidth: 150),
+        padding: const EdgeInsets.only(left: 20, right: 22),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(22),
+          gradient: const LinearGradient(
+            begin: Alignment(-1, -0.58),
+            end: Alignment(1, 0.58),
+            colors: [Color(0xFFEC4899), Color(0xFF8B5CF6)],
+          ),
+          boxShadow: const [
+            BoxShadow(color: Color(0x55EC4899), blurRadius: 16),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              '$count',
+              style: const TextStyle(
+                fontFamily: Tokens.fontFamily,
+                fontSize: 23,
+                fontWeight: FontWeight.w800,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(width: 9),
+            Text(
+              label,
+              style: const TextStyle(
+                fontFamily: Tokens.fontFamily,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.5,
+                color: Color(0xDDFFFFFF),
+              ),
+            ),
+          ],
+        ),
+      );
 }
 
 class _ProgressBar extends StatelessWidget {

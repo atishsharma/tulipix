@@ -104,7 +104,7 @@ class _Header extends StatelessWidget {
           FilledButton.icon(
             icon: const Icon(Icons.add, size: 16),
             label: const Text('Add feed'),
-            onPressed: () => _addFeed(context, controller),
+            onPressed: () => addFeed(context, controller),
           ),
           PopupMenuButton<String>(
             tooltip: 'More',
@@ -205,7 +205,8 @@ Future<void> _showQueue(
   );
 }
 
-Future<void> _addFeed(BuildContext context, MusicController c) async {
+/// Subscribe by RSS URL. The header's `+ Add` while Podcasts is open.
+Future<void> addFeed(BuildContext context, MusicController c) async {
   final text = TextEditingController();
   final url = await showDialog<String>(
     context: context,
@@ -251,7 +252,7 @@ class _Home extends StatelessWidget {
         title: 'No podcasts yet',
         body: 'Paste a feed URL and Tulipix will pull the show, its artwork '
             'and its back catalogue into podcasts.db.',
-        action: ('Add a feed', () => _addFeed(context, controller)),
+        action: ('Add a feed', () => addFeed(context, controller)),
       );
     }
     return ListView(
@@ -308,7 +309,7 @@ class _Subscribed extends StatelessWidget {
         icon: Icons.podcasts_outlined,
         title: 'Nothing in this category',
         body: 'Pick another category, or add a feed.',
-        action: ('Add a feed', () => _addFeed(context, controller)),
+        action: ('Add a feed', () => addFeed(context, controller)),
       );
     }
     return Column(
@@ -327,8 +328,15 @@ class _Subscribed extends StatelessWidget {
                   badge: s.unplayed > 0 ? '${s.unplayed}' : null,
                   onTap: () =>
                       controller.send(MusicCmd.podOpen(podcastId: s.id)),
-                  onMenu: () =>
-                      controller.send(MusicCmd.podUnsubscribe(podcastId: s.id)),
+                  onMenu: () => confirmThen(
+                    context,
+                    controller,
+                    title: 'Unsubscribe from this show?',
+                    body: '“${s.title}” and its episode list go. Anything you '
+                        'have downloaded from it stays on disk.',
+                    action: 'Unsubscribe',
+                    cmd: MusicCmd.podUnsubscribe(podcastId: s.id),
+                  ),
                 ),
             ],
           ),
@@ -367,8 +375,15 @@ class _Downloads extends StatelessWidget {
             TextButton.icon(
               icon: const Icon(Icons.delete_sweep_outlined, size: 16),
               label: const Text('Delete all'),
-              onPressed: () =>
-                  controller.send(const MusicCmd.podClearDownloads()),
+              onPressed: () => confirmThen(
+                context,
+                controller,
+                title: 'Delete every downloaded episode?',
+                body: 'The audio files are removed from disk. The episodes '
+                    'stay in their feeds and can be downloaded again.',
+                action: 'Delete all',
+                cmd: const MusicCmd.podClearDownloads(),
+              ),
             ),
             const SizedBox(width: 12),
           ],
@@ -426,8 +441,15 @@ class _ShowPage extends StatelessWidget {
                 label: const Text('Unsubscribe'),
                 onPressed: show == null
                     ? null
-                    : () => controller
-                        .send(MusicCmd.podUnsubscribe(podcastId: show.id)),
+                    : () => confirmThen(
+                          context,
+                          controller,
+                          title: 'Unsubscribe from this show?',
+                          body: '“${show.title}” and its episode list go. '
+                              'Anything downloaded from it stays on disk.',
+                          action: 'Unsubscribe',
+                          cmd: MusicCmd.podUnsubscribe(podcastId: show.id),
+                        ),
               ),
             ],
           ),

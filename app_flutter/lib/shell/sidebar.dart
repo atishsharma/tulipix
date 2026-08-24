@@ -76,7 +76,7 @@ class Sidebar extends StatelessWidget {
       duration: const Duration(milliseconds: 160),
       curve: Curves.easeOut,
       width: collapsed ? kSidebarCollapsed : kSidebarExpanded,
-      margin: const EdgeInsets.fromLTRB(8, 8, 0, 8),
+      margin: const EdgeInsets.fromLTRB(14, 14, 0, 14),
       decoration: BoxDecoration(
         color: t.panel,
         borderRadius: BorderRadius.circular(Tokens.radiusLg),

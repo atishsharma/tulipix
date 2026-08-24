@@ -76,6 +76,28 @@ class ShellController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// light → dark → extra-dark → light, and stored.
+  ///
+  /// Two buttons cycle the app theme — the one in the sidebar's footer dock and
+  /// the one at the top right of the zen player — and they are the same three
+  /// stops in the same order, so the rule lives here rather than in whichever
+  /// widget was written first.
+  void cycleTheme() {
+    final theme = state?.theme ?? 'system';
+    final dark = theme != 'light';
+    final oled = theme == 'extra-dark';
+    send(ShellCmd.setTheme(
+      theme: !dark
+          ? 'dark'
+          : !oled
+              ? 'extra-dark'
+              : 'light',
+    ));
+  }
+
+  /// `light` | `dark` | `extra-dark`, whatever the shell last stored.
+  String get theme => state?.theme ?? 'system';
+
   void toggleCollapsed() {
     collapsed = !collapsed;
     notifyListeners();

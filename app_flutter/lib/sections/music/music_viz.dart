@@ -10,14 +10,18 @@
 // it on the event stream would make it by far the loudest thing on it. It used
 // to be an atomic in Rust behind a sync bridge symbol; now that the deck is
 // media_kit in this process, the r128 meter is observed there and left in a
-// plain variable, which the ticker here reads at ~11 fps.
+// plain variable, which the timer here reads at ~11 fps.
 
+import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../playback/audio_deck.dart' show audioLoudness;
+import 'music_controller.dart';
+import 'music_dialogs.dart';
+import 'player_widgets.dart';
 
 const List<String> visStyleNames = [
   'Bars',
@@ -69,6 +73,88 @@ List<double> syntheticBars(int n, double t) => List<double>.generate(n, (i) {
       return (0.5 + 0.30 * a + 0.18 * b).clamp(0.0, 1.0);
     });
 
+/// Rides the bass band, so a thing sitting on it moves with the music.
+///
+/// `y: ... - 5px * vis-bars[0]` in ui/page_music.slint, on both the note glyph
+/// and the "Music" wordmark in the section header. Both use the same
+/// expression, so they move together and one wrapper does for the pair.
+///
+/// It runs the same 90 ms timer the visualizer does, and for the same reason:
+/// a Ticker would ask the engine for a frame at every vsync to move a title by
+/// three pixels eleven times a second. The offset goes through a notifier so
+/// the child is built once and only the transform is rebuilt.
+class BeatBounce extends StatefulWidget {
+  const BeatBounce({
+    super.key,
+    required this.playing,
+    required this.child,
+    this.travel = 5,
+  });
+
+  final bool playing;
+  final Widget child;
+
+  /// Peak displacement, upward.
+  final double travel;
+
+  @override
+  State<BeatBounce> createState() => _BeatBounceState();
+}
+
+class _BeatBounceState extends State<BeatBounce> {
+  final Stopwatch _clock = Stopwatch()..start();
+  final ValueNotifier<double> _lift = ValueNotifier<double>(0);
+  Timer? _timer;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _retime(TickerMode.valuesOf(context).enabled);
+  }
+
+  @override
+  void didUpdateWidget(BeatBounce old) {
+    super.didUpdateWidget(old);
+    if (!widget.playing && _lift.value != 0) _lift.value = 0;
+  }
+
+  void _retime(bool on) {
+    _timer?.cancel();
+    _timer = on ? Timer.periodic(_kFrame, (_) => _onFrame()) : null;
+  }
+
+  void _onFrame() {
+    if (!widget.playing) {
+      if (_lift.value != 0) _lift.value = 0;
+      return;
+    }
+    // Band 0 of the same shape the strip draws, scaled by the same envelope —
+    // so the title and the bars are moving to one signal, not to two clocks
+    // that drift apart.
+    final env = 0.18 + 0.82 * audioLoudness;
+    final t = _clock.elapsedMicroseconds / 1e6;
+    _lift.value = (syntheticBars(1, t).first * env).clamp(0.0, 1.0);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _lift.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<double>(
+        valueListenable: _lift,
+        // Built once. Only the translation re-runs.
+        child: widget.child,
+        builder: (context, lift, child) => Transform.translate(
+          offset: Offset(0, -widget.travel * lift),
+          child: child,
+        ),
+      );
+}
+
 /// A live visualizer. Owns its own ticker so the rest of the section is not
 /// rebuilt eleven times a second on its behalf.
 class VizView extends StatefulWidget {
@@ -89,25 +175,51 @@ class VizView extends StatefulWidget {
   State<VizView> createState() => _VizViewState();
 }
 
-class _VizViewState extends State<VizView> with SingleTickerProviderStateMixin {
-  late final Ticker _ticker;
-  final Stopwatch _clock = Stopwatch()..start();
-  Duration _lastFrame = Duration.zero;
-  List<double> _bars = _idle;
+/// ~11 fps, matching the Slint timer. Anything faster is invisible on bars
+/// this wide.
+const Duration _kFrame = Duration(milliseconds: 90);
 
+class _VizViewState extends State<VizView> {
+  final Stopwatch _clock = Stopwatch()..start();
+
+  /// The bars, as something the painter can subscribe to rather than something
+  /// a rebuild carries down to it. This is the difference between eleven
+  /// repaints a second and eleven full frames a second: `setState` marks the
+  /// element dirty, and the pipeline that follows re-runs build, layout and
+  /// semantics over a render tree that holds all ten sections. Handing the
+  /// notifier to `CustomPainter.repaint` marks one RenderCustomPaint as needing
+  /// paint and nothing else, so the frame does the work of the strip and no
+  /// more.
+  final ValueNotifier<List<double>> _bars = ValueNotifier<List<double>>(_idle);
+
+  /// A Timer, not a Ticker, and that is the whole point of this widget's cost.
+  /// A running Ticker asks the engine for a frame at *every* vsync for as long
+  /// as it runs — the throttle that used to sit at the top of this callback
+  /// dropped four frames in five, but the app had already built, laid out,
+  /// painted and re-walked its semantics for all five. The bars want eleven
+  /// frames a second; a Timer asks for exactly those eleven, and for none at
+  /// all while the deck is paused.
+  Timer? _timer;
+
+  /// The cost of the Timer is that it does not know about [TickerMode], which
+  /// is what silences this widget when Music is behind another section. Read it
+  /// here instead: `didChangeDependencies` runs again whenever it flips.
   @override
-  void initState() {
-    super.initState();
-    _ticker = createTicker(_onFrame)..start();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _retime(TickerMode.valuesOf(context).enabled);
   }
 
-  void _onFrame(Duration now) {
-    // ~11 fps, matching the Slint timer. Anything faster is invisible on bars
-    // this wide and costs a rebuild every frame.
-    if (now - _lastFrame < const Duration(milliseconds: 90)) return;
-    _lastFrame = now;
+  void _retime(bool on) {
+    _timer?.cancel();
+    _timer = on ? Timer.periodic(_kFrame, (_) => _onFrame()) : null;
+  }
+
+  void _onFrame() {
     if (!widget.playing) {
-      if (!identical(_bars, _idle)) setState(() => _bars = _idle);
+      // No setState once the bars are already at rest, so a paused deck asks
+      // for no frames at all rather than eleven identical ones a second.
+      if (!identical(_bars.value, _idle)) _bars.value = _idle;
       return;
     }
     // 0.18 floor: at true silence the bars should still breathe, or a quiet
@@ -116,24 +228,30 @@ class _VizViewState extends State<VizView> with SingleTickerProviderStateMixin {
     final shaped = syntheticBars(_kBars, _clock.elapsedMicroseconds / 1e6)
         .map((b) => (b * env).clamp(0.0, 1.0))
         .toList();
-    setState(() => _bars = shaped);
+    _bars.value = shaped;
   }
 
   @override
   void dispose() {
-    _ticker.dispose();
+    _timer?.cancel();
+    _bars.dispose();
     super.dispose();
   }
 
+  // RepaintBoundary because the surfaces this sits on -- the 124px glass bar,
+  // the zen backdrop -- are the expensive things in the frame. Without it a
+  // bar moving by two pixels repaints the blur behind it.
   @override
-  Widget build(BuildContext context) => CustomPaint(
-        painter: _VizPainter(
-          bars: _bars,
-          style: widget.style,
-          active: widget.playing,
-          barWidth: widget.barWidth,
+  Widget build(BuildContext context) => RepaintBoundary(
+        child: CustomPaint(
+          painter: _VizPainter(
+            bars: _bars,
+            style: widget.style,
+            active: widget.playing,
+            barWidth: widget.barWidth,
+          ),
+          size: Size.infinite,
         ),
-        size: Size.infinite,
       );
 }
 
@@ -143,9 +261,11 @@ class _VizPainter extends CustomPainter {
     required this.style,
     required this.active,
     this.barWidth,
-  });
+  }) : super(repaint: bars);
 
-  final List<double> bars;
+  /// Listened to, not read once: `repaint` above is what lets a tick reach the
+  /// canvas without a rebuild.
+  final ValueListenable<List<double>> bars;
   final int style;
   final bool active;
   final double? barWidth;
@@ -156,6 +276,7 @@ class _VizPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    final bars = this.bars.value;
     if (size.width <= 0 || size.height <= 0 || bars.isEmpty) return;
     final n = bars.length;
     final gap = style == 4 ? 1.0 : (style == 5 ? 2.0 : 3.0);
@@ -239,6 +360,58 @@ class _VizPainter extends CustomPainter {
       : Color.lerp(_hi, _top, (frac - 0.5) * 2)!;
 
   @override
+  // Not the bars: those arrive through `repaint`. This is only for the
+  // properties that come down from a rebuild.
   bool shouldRepaint(_VizPainter old) =>
-      old.bars != bars || old.style != style || old.active != active;
+      old.style != style || old.active != active || old.barWidth != barWidth;
+}
+
+/// Which of the six shapes the bars draw, and whether they are drawn at all.
+///
+/// It sat in the player bar beside a strip of bars that is no longer there;
+/// this is Slint's `zvizpop`, which is where it has always belonged — the
+/// selector goes with the thing it selects for.
+class VizStyleButton extends StatelessWidget {
+  const VizStyleButton({
+    super.key,
+    required this.controller,
+    this.size = 38,
+    this.iconSize = 18,
+  });
+
+  final MusicController controller;
+  final double size;
+  final double iconSize;
+
+  @override
+  Widget build(BuildContext context) => Builder(
+        builder: (btn) => PlayerBtn(
+          icon: Icons.graphic_eq,
+          tip: 'Visualizer style',
+          size: size,
+          iconSize: iconSize,
+          active: controller.visOn,
+          accent: controller.accent,
+          onTap: () async {
+            // -1 is the Off row: picking a style turns it back on, which is
+            // why the list would otherwise look dead while it is off.
+            final v = await dropUp<int>(btn, items: [
+              for (var i = 0; i < visStyleNames.length; i++)
+                CheckedPopupMenuItem(
+                  value: i,
+                  checked: controller.visOn && controller.visStyle == i,
+                  child: Text(visStyleNames[i]),
+                ),
+              const PopupMenuDivider(),
+              CheckedPopupMenuItem(
+                value: -1,
+                checked: !controller.visOn,
+                child: const Text('Off'),
+              ),
+            ]);
+            if (v == null) return;
+            v < 0 ? controller.setVisOn(false) : controller.setVisStyle(v);
+          },
+        ),
+      );
 }
