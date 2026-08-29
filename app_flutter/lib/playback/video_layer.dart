@@ -21,18 +21,32 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../src/rust/api/videos.dart';
 
 /// Everything the layer needs to show a video, or null when nothing is on.
+///
+/// Two sections put pictures here now — Videos, and a YouTube music video —
+/// and they report back to different halves of the bridge. Rather than teach
+/// the layer which is which, the requester supplies the two callbacks; the
+/// defaults are the Videos ones, so that side needed no change.
 class VideoRequest {
   const VideoRequest({
     required this.token,
     required this.src,
     required this.startAt,
     required this.props,
+    this.onStarted,
+    this.onEnded,
   });
 
   final int token;
   final String src;
   final double startAt;
   final List<String> props;
+
+  /// Fired once, when the clock first runs. Live TV's status line waits on it.
+  final void Function(int token)? onStarted;
+
+  /// Fired on every way out: end of file, Escape, the close button, or Rust
+  /// replacing the source. This is what writes the position back.
+  final Future<void> Function(int token, double pos, double dur)? onEnded;
 }
 
 /// What is on screen, set by the videos controller from the bridge's events.
@@ -126,7 +140,12 @@ class _VideoStageState extends State<_VideoStage> {
       _pos = p.inMilliseconds / 1000.0;
       if (!_reportedStart && _pos > 0) {
         _reportedStart = true;
-        videosPlaybackStarted(token: r.token);
+        final started = r.onStarted;
+        if (started != null) {
+          started(r.token);
+        } else {
+          videosPlaybackStarted(token: r.token);
+        }
       }
     }));
     _subs.add(_player.stream.duration.listen((d) => _dur = d.inMilliseconds / 1000.0));
@@ -144,10 +163,15 @@ class _VideoStageState extends State<_VideoStage> {
     final token = widget.request.token;
     final pos = _pos;
     final dur = _dur;
+    final ended = widget.request.onEnded;
     if (videoRequest.value?.token == token) {
       videoRequest.value = null;
     }
-    await videosPlaybackEnded(token: token, pos: pos, dur: dur);
+    if (ended != null) {
+      await ended(token, pos, dur);
+    } else {
+      await videosPlaybackEnded(token: token, pos: pos, dur: dur);
+    }
   }
 
   @override

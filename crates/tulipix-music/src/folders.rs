@@ -26,11 +26,18 @@ pub fn pick_cover(files_in_dir: &[String]) -> Option<&String> {
 }
 
 /// Folders that contain tracks, with track counts, alphabetical.
+///
+/// Audiobook-flagged tracks are excluded, so a book's folder never appears in
+/// My Music's Folders tab. The section-tag filter the callers apply on top of
+/// this only knows the folder the user actually picked; a shelf pointed at a
+/// PARENT directory has one sub-folder per book, and none of those are keys in
+/// that map — which is exactly how books ended up listed as music folders.
 pub async fn list(pool: &SqlitePool) -> Result<Vec<(String, i64)>> {
     Ok(sqlx::query_as(
         "SELECT folder, COUNT(*) FROM track_meta
          JOIN items ON items.id = track_meta.item_id
          WHERE items.missing_since IS NULL AND folder IS NOT NULL
+           AND COALESCE(track_meta.is_audiobook, 0) = 0
          GROUP BY folder ORDER BY folder COLLATE NOCASE",
     ).fetch_all(pool).await?)
 }
@@ -71,5 +78,15 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f[0], ("/m/Band/Disc".to_string(), 2));
         assert_eq!(tracks_in(&pool, "/m/Band/Disc").await.unwrap().len(), 2);
+
+        // A book's folder belongs to the Audiobooks shelf, never to this list.
+        let p = "/books/dune/ch01.mp3";
+        sqlx::query("INSERT INTO items (abs_path, inode, size, mtime, section, added, updated) VALUES (?, 0, 1, 0, 'music', 0, 0)").bind(p).execute(&pool).await.unwrap();
+        let id: i64 = sqlx::query_scalar("SELECT id FROM items WHERE abs_path = ?").bind(p).fetch_one(&pool).await.unwrap();
+        scan::upsert_track(&pool, id, p, &TrackTags::default()).await.unwrap();
+        assert_eq!(list(&pool).await.unwrap().len(), 2, "unflagged, it is just a folder");
+        sqlx::query("UPDATE track_meta SET is_audiobook = 1 WHERE item_id = ?")
+            .bind(id).execute(&pool).await.unwrap();
+        assert_eq!(list(&pool).await.unwrap(), vec![("/m/Band/Disc".to_string(), 2)]);
     }
 }

@@ -1114,12 +1114,18 @@ class Rail extends StatelessWidget {
     required this.height,
     required this.children,
     this.action,
+    this.connect = false,
   });
 
   final String title;
   final double height;
   final List<Widget> children;
   final (String, VoidCallback)? action;
+
+  /// Slint's `yt-home-connect`: a gradient hairline under the rail's heading,
+  /// tying the row to the section's colour. Off everywhere else, because only
+  /// the YouTube Home rails carry it and only when the user leaves it on.
+  final bool connect;
 
   @override
   Widget build(BuildContext context) {
@@ -1143,6 +1149,18 @@ class Rail extends StatelessWidget {
             ],
           ),
         ),
+        if (connect)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
+            child: Container(
+              height: 2,
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Color(0xFFF43F5E), Color(0x00F97316)],
+                ),
+              ),
+            ),
+          ),
         SizedBox(
           height: height,
           child: ListView.separated(

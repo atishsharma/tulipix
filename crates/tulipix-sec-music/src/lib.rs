@@ -1290,29 +1290,17 @@ static CUR_PODCAST_ID: std::sync::OnceLock<std::sync::Mutex<i64>> = std::sync::O
 pub fn cur_podcast_id() -> &'static std::sync::Mutex<i64> {
     CUR_PODCAST_ID.get_or_init(|| std::sync::Mutex::new(-1))
 }
-/// Cache an http(s) artwork URL to a local file (keyed by `key`), returning the
-/// path. Re-uses an already-downloaded file. Used for podcast/episode thumbs.
+// Podcast/station artwork: a local path is used as-is, a URL is downloaded
+// once into the shared cache. Both spellings kept because callers pass either;
+// the download itself is `pod_trends::cache_art`, so the Trends grid, the show
+// pages and the Flutter build all read the one directory.
 pub async fn cache_artwork(client: &reqwest::Client, key: &str, url: &str) -> Option<std::path::PathBuf> {
-    if url.is_empty() || !url.starts_with("http") { return None; }
-    let dir = tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("podcast_art");
-    let _ = std::fs::create_dir_all(&dir);
-    let ext = url.rsplit('.').next().filter(|e| e.len() <= 4 && !e.contains('/')).unwrap_or("jpg");
-    let dest = dir.join(format!("{key}.{ext}"));
-    if dest.exists() { return Some(dest); }
-    let bytes = client.get(url).header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA)
-        .send().await.ok()?.bytes().await.ok()?;
-    std::fs::write(&dest, &bytes).ok()?;
-    Some(dest)
+    if !url.starts_with("http") { return None; }
+    tulipix_music::pod_trends::cache_art(client, key, url).await
 }
 
-/// Resolve a podcast/show artwork source that may be either an http(s) URL OR a
-/// local file path (a user-supplied custom thumbnail). Local existing files are
-/// used as-is; URLs go through [`cache_artwork`].
 pub async fn resolve_artwork(client: &reqwest::Client, key: &str, src: &str) -> Option<std::path::PathBuf> {
-    if src.is_empty() { return None; }
-    let p = std::path::Path::new(src);
-    if p.is_file() { return Some(p.to_path_buf()); }
-    cache_artwork(client, key, src).await
+    tulipix_music::pod_trends::cache_art(client, key, src).await
 }
 
 // ── Off-UI-thread artwork decode ─────────────────────────────────────────────
@@ -1368,30 +1356,14 @@ const PODCAST_SUB_PAGE: usize = 21;   // Subscribed grid: 3 rows × 7
 const PODCAST_HOME_PAGE: usize = 14;  // Home "Your shows": 2 rows × 7
 const PODCAST_HOME_MAX_PAGES: usize = 2;  // Home caps at 2 pages; rest live on Subscribed
 
-// ── Trends (hardcoded podcast directory) ──────────────────────────────────
-// Feed URLs are baked into the binary from resources/podcast-feeds.txt, so the
-// Trends page stays populated even after a full podcast-library reset. Edit
-// that file (one feed URL per line; '#'/blank lines ignored) and rebuild to add
-// more — crates/tulipix-app/build.rs watches it. Per-feed metadata
-// (title/author/art/category) is fetched live and cached for the session.
-const TREND_FEEDS_RAW: &str = include_str!("../../../resources/podcast-feeds.txt");
-
-pub fn trend_feed_urls() -> Vec<String> {
-    TREND_FEEDS_RAW.lines()
-        .map(|l| l.trim())
-        .filter(|l| l.starts_with("http"))
-        .map(|s| s.to_string())
-        .collect()
-}
-
-#[derive(Clone)]
-pub struct TrendMeta {
-    pub feed_url: String,
-    pub title: String,
-    pub author: String,
-    pub category: String,
-    pub art: Option<std::path::PathBuf>,
-}
+// ── Trends (baked podcast directory) ──────────────────────────────────────
+// The directory, its metadata cache and the fetch all live in
+// `tulipix_music::pod_trends` so both front ends show the same grid off the
+// same `podcast_trends` rows. Edit resources/podcast-feeds.txt (one feed URL
+// per line; '#'/blank lines ignored) and rebuild to add more —
+// crates/tulipix-app/build.rs watches it. What stays here is the Slint half:
+// decoding art into `Image`, sorting, paging and pushing the model.
+pub use tulipix_music::pod_trends::{feed_urls as trend_feed_urls, TrendMeta};
 
 pub fn trend_cache() -> &'static std::sync::Mutex<Vec<TrendMeta>> {
     static C: OnceLock<std::sync::Mutex<Vec<TrendMeta>>> = OnceLock::new();
@@ -1519,9 +1491,9 @@ pub fn subscribe_feed_with_progress(weak: slint::Weak<MainWindow>, url: String) 
     });
 }
 
-/// Populate the Trends grid. Metadata is persisted in the `podcast_trends` table:
-/// loaded from there on every launch (no network), and only feeds NOT yet in the
-/// table are fetched + saved. Session-cached after the first build.
+/// Populate the Trends grid. The directory + metadata cache is
+/// `tulipix_music::pod_trends::build`; this only session-caches the result and
+/// renders it.
 pub fn populate_podcast_trends(w: &MainWindow) {
     let weak = w.as_weak();
     let feeds = trend_feed_urls();
@@ -1529,87 +1501,10 @@ pub fn populate_podcast_trends(w: &MainWindow) {
     if cached_now == feeds.len() { render_trends(w); return; }
     w.set_music_podcast_trends_loading(true);
     tokio::runtime::Handle::current().spawn(async move {
-        let client = tulipix_core::net::http().clone();
-        // 1. Load whatever's already cached in the DB.
-        let mut stored: std::collections::HashMap<String, TrendMeta> = std::collections::HashMap::new();
-        if let Ok(pool) = pool_for("podcasts").await {
-            let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
-                "SELECT feed_url, COALESCE(title,''), COALESCE(author,''), COALESCE(category,''), art_path FROM podcast_trends")
-                .fetch_all(&pool).await.unwrap_or_default();
-            for (feed_url, title, author, category, art_path) in rows {
-                let art = art_path.filter(|p| !p.is_empty())
-                    .map(std::path::PathBuf::from)
-                    .filter(|p| p.exists());
-                // A row whose title is still the feed URL is the placeholder a
-                // FAILED fetch used to leave behind — and because step 2 only
-                // fetches feeds missing from this table, that one bad moment
-                // pinned the card to "no artwork, URL for a name" for good.
-                // Treat it as absent so the feed is retried on the next visit.
-                if title.trim().is_empty() || title == feed_url { continue; }
-                stored.insert(feed_url.clone(), TrendMeta { feed_url, title, author, category, art });
-            }
-        }
-        // 2. Fetch only the feeds missing from the DB (concurrently), then persist.
-        let missing: Vec<(usize, String)> = feeds.iter().enumerate()
-            .filter(|(_, u)| !stored.contains_key(*u)).map(|(i, u)| (i, u.clone())).collect();
-        let handles: Vec<_> = missing.into_iter().map(|(i, url)| {
-            let client = client.clone();
-            tokio::spawn(async move {
-                let (mut title, mut author, mut category, mut art) = (String::new(), String::new(), String::new(), None);
-                if let Ok(resp) = client.get(&url).header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA).send().await {
-                    if let Ok(xml) = resp.text().await {
-                        let feed = tulipix_music::podcasts::parse_feed(&xml);
-                        title = feed.title.unwrap_or_default();
-                        author = feed.author;
-                        category = feed.category;
-                        art = resolve_artwork(&client, &format!("trend-{i}"), &feed.image_url).await;
-                    }
-                }
-                // `ok` is what decides whether this row is worth remembering. A
-                // feed that 403s or times out still needs SOMETHING on its card
-                // this session, but the host reads better than a raw URL and,
-                // more importantly, the row must not be written to the table —
-                // see the loader for what a persisted failure did to the grid.
-                let ok = !title.is_empty();
-                if title.is_empty() {
-                    title = url.split('/').nth(2).unwrap_or(url.as_str()).to_string();
-                }
-                if category.is_empty() { category = "Other".to_string(); }
-                (ok, TrendMeta { feed_url: url, title, author, category, art })
-            })
-        }).collect();
-        let mut fetched: Vec<TrendMeta> = Vec::new();
-        let mut failed: Vec<TrendMeta> = Vec::new();
-        for h in handles {
-            if let Ok((ok, m)) = h.await {
-                if ok { fetched.push(m); } else { failed.push(m); }
-            }
-        }
-        if !failed.is_empty() {
-            tracing::warn!(count = failed.len(), "podcast trends: feeds unreachable, will retry next visit");
-        }
-        // Persist the newly fetched rows.
-        if !fetched.is_empty() {
-            if let Ok(pool) = pool_for("podcasts").await {
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-                for m in &fetched {
-                    let art_s = m.art.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-                    let _ = sqlx::query(
-                        "INSERT INTO podcast_trends (feed_url, title, author, category, art_path, fetched_at)
-                         VALUES (?,?,?,?,?,?)
-                         ON CONFLICT(feed_url) DO UPDATE SET title=excluded.title, author=excluded.author,
-                            category=excluded.category, art_path=excluded.art_path, fetched_at=excluded.fetched_at")
-                        .bind(&m.feed_url).bind(&m.title).bind(&m.author).bind(&m.category).bind(&art_s).bind(now)
-                        .execute(&pool).await;
-                }
-            }
-            for m in fetched { stored.insert(m.feed_url.clone(), m); }
-        }
-        // Unreachable feeds go into the session cache only, so the grid still
-        // has a card for them and the next visit tries the network again.
-        for m in failed { stored.entry(m.feed_url.clone()).or_insert(m); }
-        // 3. Build the cache in feed-list order.
-        let metas: Vec<TrendMeta> = feeds.iter().filter_map(|u| stored.get(u).cloned()).collect();
+        let metas = match pool_for("podcasts").await {
+            Ok(pool) => tulipix_music::pod_trends::build(&pool, tulipix_core::net::http()).await,
+            Err(_) => Vec::new(),
+        };
         if let Ok(mut g) = trend_cache().lock() { *g = metas; }
         let _ = weak.upgrade_in_event_loop(move |w| {
             w.set_music_podcast_trends_loading(false);
@@ -2094,13 +1989,9 @@ pub fn refresh_podcast_views(w: &MainWindow) {
 }
 
 /// Fill the audiobooks view with `is_audiobook` library tracks (np.p5.music.audiobook-chapters).
-/// Folder basename → book title.
-pub fn book_title(folder: &str) -> String {
-    std::path::Path::new(folder).file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| folder.to_string())
-}
+/// Folder basename → book title. The Flutter build shows the same name for the
+/// same folder, so the rule lives in `tulipix_music::ab_meta`.
+pub use tulipix_music::ab_meta::{book_query, book_title};
 
 /// Seconds → "8h 12m" / "47m" pretty duration for book cards.
 pub fn fmt_hm(secs: f64) -> String {
@@ -2127,13 +2018,15 @@ pub fn ab_cover_cache() -> &'static std::sync::Mutex<std::collections::HashMap<S
     C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-/// Audiobook cover (np.p5.music.audiobook-chapters): a cover/folder image in
-/// the book's directory wins; otherwise the album art embedded in the first
-/// chapter's tags, extracted once via ffmpeg into the cache. Decoded
-/// off-thread; None keeps the 📚 monogram.
+/// Audiobook cover (np.p5.music.audiobook-chapters), decoded for Slint.
+///
+/// Which FILE is the cover — stored choice, sidecar image, art extracted from
+/// the first chapter — is `tulipix_music::ab_meta::cover_path`, shared with the
+/// Flutter build so both read the same cache. This adds the decode and the
+/// per-folder memo; `None` keeps the 📚 monogram.
 pub async fn audiobook_cover_px(folder: &str, custom: Option<PathBuf>, first_chapter: Option<PathBuf>) -> Option<ArtPx> {
-    // A user-chosen cover (audiobook_covers table) outranks everything and
-    // bypasses the per-folder cache so a change shows immediately.
+    // A user-chosen cover outranks everything and bypasses the memo, so a
+    // change shows immediately.
     if let Some(c) = custom.filter(|p| p.is_file()) {
         let px = decode_art_px(Some(c)).await?;
         if let Ok(mut g) = ab_cover_cache().lock() { g.insert(folder.to_string(), px.clone()); }
@@ -2142,55 +2035,15 @@ pub async fn audiobook_cover_px(folder: &str, custom: Option<PathBuf>, first_cha
     if let Some(hit) = ab_cover_cache().lock().ok().and_then(|g| g.get(folder).cloned()) {
         return Some(hit);
     }
-    let dir = PathBuf::from(folder);
-    let mut found: Option<PathBuf> = None;
-    for name in ["cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png",
-                 "Cover.jpg", "Cover.png", "Folder.jpg", "front.jpg"] {
-        let p = dir.join(name);
-        if p.is_file() { found = Some(p); break; }
-    }
-    // No loose art file → pull the embedded album art out of the first chapter.
-    if found.is_none() {
-        if let (Some(chapter), Some(base)) = (first_chapter, dirs_default()) {
-            let out_dir = base.join("cache").join("abcover");
-            let _ = std::fs::create_dir_all(&out_dir);
-            use sha2::{Digest, Sha256};
-            let mut h = Sha256::new();
-            h.update(folder.as_bytes());
-            let stem: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
-            let out = out_dir.join(format!("{stem}.png"));
-            if !out.exists() {
-                let ffmpeg = tulipix_core::thumbs::tool_bin("ffmpeg");
-                let outc = out.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    std::process::Command::new(&ffmpeg)
-                        .args(["-y", "-loglevel", "quiet", "-i"]).arg(&chapter)
-                        .args(["-map", "0:v:0", "-frames:v", "1"]).arg(&outc)
-                        .no_window()
-                        .status()
-                }).await;
-            }
-            if out.exists() { found = Some(out); }
-        }
-    }
+    let found = tulipix_music::ab_meta::cover_path(folder, None, first_chapter.as_deref()).await;
     let px = decode_art_px(found).await?;
     if let Ok(mut g) = ab_cover_cache().lock() { g.insert(folder.to_string(), px.clone()); }
     Some(px)
 }
 
 // ── Audiobook identity: title + author + cover (np.p7.music.audiobook-net) ──
-// Five resolution methods, best-first; results persist in `audiobook_meta`
-// (title, author) + `audiobook_covers` (cover path) so the library stays
-// consistent across restarts:
-//  1. Embedded tags of the first chapter — LibriVox-style rips carry
-//     album = book title, artist = author, and an archive.org link in the
-//     comment tag (which is also a direct cover source).
-//  2. Filename convention — `{title}_{nn}_{author}_{bitrate}.mp3`: the author
-//     token is whatever non-noise token every chapter file shares.
-//  3. LibriVox catalogue API — title lookup returns proper title, author and
-//     the archive.org identifier.
-//  4. iTunes audiobook search — commercial books; 600×600 art + author.
-//  5. Open Library search — last resort for title/author/cover.
+// The five-method resolution chain lives in `tulipix_music::ab_meta`; what is
+// left here is the session dedup and the Slint repaint it triggers.
 
 /// Folders already looked up online this session (hit or miss) — populate
 /// never re-hits the network or loops on books the internet doesn't know.
@@ -2213,211 +2066,10 @@ pub fn book_display_title(folder: &str) -> String {
         .unwrap_or_else(|| book_title(folder))
 }
 
-/// Folder basename → search query: separators to spaces, bracketed release
-/// junk and common rip noise dropped ("Dune_1965_[64k MP3]" → "Dune 1965").
-pub fn book_query(folder: &str) -> String {
-    let base = book_title(folder);
-    let mut out = String::with_capacity(base.len());
-    let mut depth = 0i32;
-    for c in base.chars() {
-        match c {
-            '[' | '(' | '{' => depth += 1,
-            ']' | ')' | '}' => depth = (depth - 1).max(0),
-            _ if depth == 0 => out.push(match c { '_' | '.' | '-' => ' ', _ => c }),
-            _ => {}
-        }
-    }
-    let noise = ["unabridged", "abridged", "audiobook", "mp3", "m4b", "64k", "128k", "320k", "kbps"];
-    out.split_whitespace()
-        .filter(|w| !noise.contains(&w.to_lowercase().as_str()))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Everything one lookup pass learns about a book.
-#[derive(Default, Clone)]
-struct AbInfo {
-    title: Option<String>,
-    author: Option<String>,
-    archive_id: Option<String>, // archive.org identifier — direct cover source
-    cover: Option<Vec<u8>>,
-}
-
-fn ab_pick(dst: &mut Option<String>, src: Option<String>) {
-    if dst.is_none() {
-        *dst = src.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    }
-}
-
-/// Method 1 — embedded tags of the first chapter file. LibriVox rips carry
-/// album = book title, artist = author, and the archive.org details URL in
-/// the comment tag.
-async fn ab_info_from_tags(pool: &sqlx::SqlitePool, folder: &str) -> AbInfo {
-    let mut info = AbInfo::default();
-    let Ok(Some(path)) = sqlx::query_scalar::<_, String>(
-        "SELECT i.abs_path FROM items i JOIN track_meta tm ON tm.item_id = i.id \
-         WHERE tm.folder = ? ORDER BY i.abs_path LIMIT 1")
-        .bind(folder).fetch_optional(pool).await else { return info; };
-    let out = tokio::task::spawn_blocking(move || {
-        let ff = tulipix_core::thumbs::tool_bin("ffprobe");
-        std::process::Command::new(ff)
-            .args(["-v", "quiet", "-print_format", "json", "-show_format"])
-            .arg(&path).no_window().output()
-    }).await.ok().and_then(|r| r.ok());
-    let Some(out) = out else { return info; };
-    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return info; };
-    let tags = &v["format"]["tags"];
-    let get = |k: &str| tags.get(k).or_else(|| tags.get(k.to_uppercase().as_str()))
-        .and_then(|s| s.as_str()).map(String::from);
-    ab_pick(&mut info.title, get("album"));
-    ab_pick(&mut info.author, get("artist").or_else(|| get("album_artist")));
-    // "https://archive.org/details/<id>" anywhere in the comment.
-    if let Some(c) = get("comment") {
-        if let Some(idx) = c.find("archive.org/details/") {
-            let id: String = c[idx + "archive.org/details/".len()..]
-                .chars().take_while(|c| !c.is_whitespace() && *c != '/' && *c != '"').collect();
-            if !id.is_empty() { info.archive_id = Some(id); }
-        }
-    }
-    info
-}
-
-/// Method 2 — filename convention (`{title}_{nn}_{author}_{bitrate}`): the
-/// author hint is a non-noise token shared by EVERY chapter file that isn't
-/// part of the folder (title) name.
-async fn ab_author_hint_from_filenames(pool: &sqlx::SqlitePool, folder: &str) -> Option<String> {
-    let stems: Vec<String> = sqlx::query_scalar::<_, String>(
-        "SELECT i.abs_path FROM items i JOIN track_meta tm ON tm.item_id = i.id \
-         WHERE tm.folder = ? LIMIT 40")
-        .bind(folder).fetch_all(pool).await.ok()?
-        .into_iter()
-        .filter_map(|p| std::path::Path::new(&p).file_stem().map(|s| s.to_string_lossy().to_lowercase()))
-        .collect();
-    if stems.len() < 2 { return None; }
-    let title_l = book_title(folder).to_lowercase();
-    let noise = ["64kb", "128kb", "mp3", "m4b", "librivox", "read", "by"];
-    let is_candidate = |t: &str| {
-        t.len() >= 3 && !t.chars().any(|c| c.is_ascii_digit())
-            && !noise.contains(&t) && !title_l.contains(t)
-    };
-    let first: Vec<String> = stems[0].split(['_', '-', ' ', '.'])
-        .filter(|t| is_candidate(t)).map(String::from).collect();
-    first.into_iter().find(|tok|
-        stems.iter().all(|s| s.split(['_', '-', ' ', '.']).any(|t| t == tok)))
-}
-
-/// Method 3 — LibriVox catalogue: proper title, author and archive identifier.
-async fn ab_info_from_librivox(client: &reqwest::Client, query: &str) -> AbInfo {
-    let mut info = AbInfo::default();
-    let Ok(resp) = client
-        .get("https://librivox.org/api/feed/audiobooks")
-        .query(&[("format", "json"), ("limit", "1"), ("title", query)])
-        .send().await else { return info; };
-    let Ok(v) = resp.json::<serde_json::Value>().await else { return info; };
-    let Some(b) = v.get("books").and_then(|b| b.as_array()).and_then(|a| a.first()) else { return info; };
-    ab_pick(&mut info.title, b.get("title").and_then(|t| t.as_str()).map(String::from));
-    if let Some(a) = b.get("authors").and_then(|a| a.as_array()).and_then(|a| a.first()) {
-        let name = format!("{} {}",
-            a.get("first_name").and_then(|s| s.as_str()).unwrap_or(""),
-            a.get("last_name").and_then(|s| s.as_str()).unwrap_or(""));
-        ab_pick(&mut info.author, Some(name));
-    }
-    if let Some(u) = b.get("url_iarchive").and_then(|u| u.as_str()) {
-        if let Some(idx) = u.find("archive.org/details/") {
-            let id: String = u[idx + "archive.org/details/".len()..]
-                .chars().take_while(|c| !c.is_whitespace() && *c != '/').collect();
-            if !id.is_empty() { info.archive_id = Some(id); }
-        }
-    }
-    info
-}
-
-async fn ab_grab(client: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
-    let b = client.get(url).send().await.ok()?
-        .error_for_status().ok()?
-        .bytes().await.ok()?;
-    // archive.org serves a tiny generic placeholder for unknown ids — skip it.
-    (b.len() > 1500).then(|| b.to_vec())
-}
-
-/// Method 4 — iTunes audiobook search (art + author + title).
-async fn ab_info_from_itunes(client: &reqwest::Client, query: &str) -> AbInfo {
-    let mut info = AbInfo::default();
-    let Ok(resp) = client
-        .get("https://itunes.apple.com/search")
-        .query(&[("media", "audiobook"), ("limit", "1"), ("term", query)])
-        .send().await else { return info; };
-    let Ok(v) = resp.json::<serde_json::Value>().await else { return info; };
-    let Some(r) = v.get("results").and_then(|r| r.as_array()).and_then(|a| a.first()) else { return info; };
-    ab_pick(&mut info.author, r.get("artistName").and_then(|a| a.as_str()).map(String::from));
-    ab_pick(&mut info.title, r.get("collectionName").and_then(|a| a.as_str()).map(String::from));
-    if let Some(art) = r.get("artworkUrl100").and_then(|a| a.as_str()) {
-        info.cover = ab_grab(client, &art.replace("100x100", "600x600")).await;
-    }
-    info
-}
-
-/// Method 5 — Open Library search (title/author/cover fallback).
-async fn ab_info_from_openlibrary(client: &reqwest::Client, query: &str) -> AbInfo {
-    let mut info = AbInfo::default();
-    let Ok(resp) = client
-        .get("https://openlibrary.org/search.json")
-        .query(&[("q", query), ("limit", "1")])
-        .send().await else { return info; };
-    let Ok(v) = resp.json::<serde_json::Value>().await else { return info; };
-    let Some(doc) = v.get("docs").and_then(|d| d.as_array()).and_then(|a| a.first()) else { return info; };
-    ab_pick(&mut info.title, doc.get("title").and_then(|t| t.as_str()).map(String::from));
-    ab_pick(&mut info.author, doc.get("author_name").and_then(|a| a.as_array())
-        .and_then(|a| a.first()).and_then(|a| a.as_str()).map(String::from));
-    if let Some(cid) = doc.get("cover_i").and_then(|c| c.as_i64()) {
-        info.cover = ab_grab(client, &format!("https://covers.openlibrary.org/b/id/{cid}-L.jpg")).await;
-    }
-    info
-}
-
-/// Full resolution chain for one folder. Local evidence (tags, filenames)
-/// builds the query; the online methods fill whatever is still missing.
-async fn ab_resolve_info(pool: &sqlx::SqlitePool, client: &reqwest::Client, folder: &str) -> AbInfo {
-    // 1. Embedded tags.
-    let mut info = ab_info_from_tags(pool, folder).await;
-    // 2. Filename author hint (used for the query even when tags had an author).
-    let hint = ab_author_hint_from_filenames(pool, folder).await;
-    let title_q = info.title.clone().unwrap_or_else(|| book_query(folder));
-    let author_q = info.author.clone().or(hint.clone()).unwrap_or_default();
-    let full_q = if author_q.is_empty() { title_q.clone() } else { format!("{title_q} {author_q}") };
-    // 3. LibriVox (these rips usually ARE LibriVox).
-    if info.title.is_none() || info.author.is_none() || info.archive_id.is_none() {
-        let lv = ab_info_from_librivox(client, &title_q).await;
-        ab_pick(&mut info.title, lv.title);
-        ab_pick(&mut info.author, lv.author);
-        if info.archive_id.is_none() { info.archive_id = lv.archive_id; }
-    }
-    // Cover from the archive identifier the moment we have one.
-    if info.cover.is_none() {
-        if let Some(id) = &info.archive_id {
-            info.cover = ab_grab(client, &format!("https://archive.org/services/img/{id}")).await;
-        }
-    }
-    // 4. iTunes / 5. Open Library — only for what's still missing.
-    if info.cover.is_none() || info.author.is_none() || info.title.is_none() {
-        let it = ab_info_from_itunes(client, &full_q).await;
-        ab_pick(&mut info.title, it.title);
-        ab_pick(&mut info.author, it.author);
-        if info.cover.is_none() { info.cover = it.cover; }
-    }
-    if info.cover.is_none() || info.author.is_none() || info.title.is_none() {
-        let ol = ab_info_from_openlibrary(client, &full_q).await;
-        ab_pick(&mut info.title, ol.title);
-        ab_pick(&mut info.author, ol.author);
-        if info.cover.is_none() { info.cover = ol.cover; }
-    }
-    info
-}
-
 /// Background pass: resolve title + author + cover for each folder, persist,
-/// then re-populate the cards once. Session-deduped per folder; a net-fetched
-/// cover (`*_net.jpg`) may be replaced by a better later resolution, a
-/// user-chosen cover never is.
+/// then re-populate the cards once. Session-deduped per folder; the resolution
+/// chain itself is `tulipix_music::ab_meta`, shared with the Flutter build so
+/// one library does not resolve two different titles for the same book.
 fn kick_ab_net_lookup(weak: slint::Weak<MainWindow>, folders: Vec<String>) {
     tokio::runtime::Handle::current().spawn(async move {
         let todo: Vec<String> = {
@@ -2426,50 +2078,11 @@ fn kick_ab_net_lookup(weak: slint::Weak<MainWindow>, folders: Vec<String>) {
         };
         if todo.is_empty() { return; }
         let Ok(pool) = pool_for("music").await else { return; };
-        let _ = sqlx::query("CREATE TABLE IF NOT EXISTS audiobook_meta (folder TEXT PRIMARY KEY, author TEXT NOT NULL)")
-            .execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE audiobook_meta ADD COLUMN title TEXT").execute(&pool).await;
-        let Some(base) = dirs_default() else { return; };
-        let out_dir = base.join("cache").join("abcover");
-        let _ = std::fs::create_dir_all(&out_dir);
-        let client = tulipix_core::net::http().clone();
-        let mut got_any = false;
-        for folder in todo {
-            let info = ab_resolve_info(&pool, &client, &folder).await;
-            if let Some(bytes) = &info.cover {
-                use sha2::{Digest, Sha256};
-                let mut h = Sha256::new();
-                h.update(folder.as_bytes());
-                let stem: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
-                let path = out_dir.join(format!("{stem}_net.jpg"));
-                if std::fs::write(&path, bytes).is_ok() {
-                    // Replace a previous net cover (better resolution wins);
-                    // never a user-chosen path outside the _net cache slot.
-                    let existing: Option<String> = sqlx::query_scalar(
-                        "SELECT path FROM audiobook_covers WHERE folder = ?")
-                        .bind(&folder).fetch_optional(&pool).await.ok().flatten();
-                    let replace_ok = existing.as_deref()
-                        .map(|p| p.ends_with("_net.jpg")).unwrap_or(true);
-                    if replace_ok {
-                        let _ = sqlx::query("INSERT OR REPLACE INTO audiobook_covers (folder, path) VALUES (?, ?)")
-                            .bind(&folder).bind(path.to_string_lossy().as_ref()).execute(&pool).await;
-                        // Evict the decoded stale art so the new file shows now.
-                        if let Ok(mut g) = ab_cover_cache().lock() { g.remove(&folder); }
-                    }
-                }
+        if tulipix_music::ab_meta::resolve_and_store(&pool, &todo).await {
+            // A better cover may have replaced the one already decoded.
+            if let Ok(mut g) = ab_cover_cache().lock() {
+                for f in &todo { g.remove(f); }
             }
-            if info.title.is_some() || info.author.is_some() {
-                let _ = sqlx::query(
-                    "INSERT INTO audiobook_meta (folder, author, title) VALUES (?1, ?2, ?3) \
-                     ON CONFLICT(folder) DO UPDATE SET author = ?2, title = ?3")
-                    .bind(&folder)
-                    .bind(info.author.clone().unwrap_or_default())
-                    .bind(info.title.clone())
-                    .execute(&pool).await;
-            }
-            got_any = true;
-        }
-        if got_any {
             let _ = weak.upgrade_in_event_loop(|w| populate_audiobooks(&w));
         }
     });
@@ -2587,33 +2200,19 @@ pub fn populate_audiobooks(w: &MainWindow) {
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else { return; };
         // Reflect folder→section assignments: flag every audiobook-section
-        // folder so its (now-scanned) tracks show up grouped below.
-        for (folder, key) in load_folder_sections() {
-            if key == "audiobooks" {
-                // Metadata-gated flag (whole-folder fallback). Re-applied here so
-                // it self-heals once the async tag ingest has filled genre/container.
-                let _ = tulipix_music::audiobooks::flag_audiobook_folder(&pool, &folder).await;
-            }
-        }
+        // folder so its (now-scanned) tracks show up grouped below. Idempotent,
+        // and the only thing that makes the tag mean anything once the scan has
+        // finally produced the rows it applies to.
+        let sections = load_folder_sections();
+        let _ = tulipix_music::audiobooks::apply_folder_sections(&pool, &sections).await;
         let ids: Vec<i64> = sqlx::query_scalar(
             "SELECT item_id FROM track_meta WHERE is_audiobook = 1")
             .fetch_all(&pool).await.unwrap_or_default();
-        // User-chosen covers (np.p5.music.audiobook-chapters — custom art).
-        let _ = sqlx::query("CREATE TABLE IF NOT EXISTS audiobook_covers (folder TEXT PRIMARY KEY, path TEXT NOT NULL)")
-            .execute(&pool).await;
-        let custom_covers: std::collections::HashMap<String, String> =
-            sqlx::query_as("SELECT folder, path FROM audiobook_covers")
-                .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
-        // Title + author resolved by the lookup chain (np.p7.music.audiobook-net).
-        let _ = sqlx::query("CREATE TABLE IF NOT EXISTS audiobook_meta (folder TEXT PRIMARY KEY, author TEXT NOT NULL)")
-            .execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE audiobook_meta ADD COLUMN title TEXT").execute(&pool).await;
-        let metas: std::collections::HashMap<String, (String, String)> =
-            sqlx::query_as::<_, (String, Option<String>, String)>(
-                "SELECT folder, title, author FROM audiobook_meta")
-                .fetch_all(&pool).await.unwrap_or_default().into_iter()
-                .map(|(f, t, a)| (f, (t.unwrap_or_default(), a)))
-                .collect();
+        // User-chosen + net-resolved covers, and the resolved title/author
+        // (np.p5.music.audiobook-chapters / np.p7.music.audiobook-net).
+        tulipix_music::ab_meta::ensure_tables(&pool).await;
+        let custom_covers = tulipix_music::ab_meta::load_covers(&pool).await;
+        let metas = tulipix_music::ab_meta::load_meta(&pool).await;
         if let Ok(mut g) = ab_meta_cache().lock() { *g = metas.clone(); }
         // Per-chapter resume positions → book status (in-progress / finished).
         let progress: std::collections::HashMap<i64, f64> = sqlx::query_as(
@@ -2657,13 +2256,11 @@ pub fn populate_audiobooks(w: &MainWindow) {
         // cover came from an EARLIER net lookup that didn't yet resolve a real
         // title (the improved chain re-resolves those once). User-chosen covers
         // are never touched. Session-deduped inside the kick.
-        let missing: Vec<String> = book_data.iter()
-            .filter(|(f, _, _, c, ..)| {
-                let net_cover = custom_covers.get(f).map(|p| p.ends_with("_net.jpg")).unwrap_or(false);
-                let has_title = metas.get(f).map(|(t, _)| !t.is_empty()).unwrap_or(false);
-                (c.is_none() && !custom_covers.contains_key(f)) || (net_cover && !has_title)
-            })
-            .map(|(f, ..)| f.clone()).collect();
+        let with_art: std::collections::HashSet<String> = book_data.iter()
+            .filter(|(_, _, _, c, ..)| c.is_some()).map(|(f, ..)| f.clone()).collect();
+        let folders: Vec<String> = book_data.iter().map(|(f, ..)| f.clone()).collect();
+        let missing = tulipix_music::ab_meta::needs_lookup(
+            &folders, &custom_covers, &metas, |f| with_art.contains(f));
         if !missing.is_empty() { kick_ab_net_lookup(weak.clone(), missing); }
         let tab = ab_tab().lock().map(|g| g.clone()).unwrap_or_default();
         // Folders view rows: "name · N chapters — /path".
@@ -2731,12 +2328,8 @@ pub fn audiobook_pick_cover(weak: slint::Weak<MainWindow>, folder: String) {
             .pick_file().await else { return; };
         let path = file.path().to_path_buf();
         let Ok(pool) = pool_for("music").await else { return; };
-        let _ = sqlx::query("CREATE TABLE IF NOT EXISTS audiobook_covers (folder TEXT PRIMARY KEY, path TEXT NOT NULL)")
-            .execute(&pool).await;
-        let _ = sqlx::query(
-            "INSERT INTO audiobook_covers (folder, path) VALUES (?,?)
-             ON CONFLICT(folder) DO UPDATE SET path = excluded.path")
-            .bind(&folder).bind(path.to_string_lossy().as_ref()).execute(&pool).await;
+        let _ = tulipix_music::ab_meta::set_cover(
+            &pool, &folder, path.to_string_lossy().as_ref()).await;
         // Drop the stale decode and rebuild cards + the open detail hero.
         if let Ok(mut g) = ab_cover_cache().lock() { g.remove(&folder); }
         let ids = tulipix_music::audiobooks::book_chapters(&pool, &folder).await.unwrap_or_default();
@@ -5820,57 +5413,17 @@ pub fn piped_instance() -> String {
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "https://pipedapi.kavin.rocks".to_string())
 }
-/// Saved default watch resolution height (-999 = unset). Persisted in settings.
-pub fn yt_default_res() -> i64 {
-    tulipix_core::settings::Settings::load().ok()
-        .and_then(|s| s.advanced.get("yt.default-res").cloned())
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(-999)
-}
-pub fn yt_store_default_res(h: Option<i64>) {
-    let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
-    match h {
-        Some(v) => { s.advanced.insert("yt.default-res".into(), v.to_string()); }
-        None => { s.advanced.remove("yt.default-res"); }
-    }
-    let _ = s.save();
-}
-/// User-pinned Home-rail channels (most-recent first, max 9). Persisted CSV.
-const YT_HOME_MAX: usize = 9;
-pub fn yt_home_channels() -> Vec<String> {
-    tulipix_core::settings::Settings::load().ok()
-        .and_then(|s| s.advanced.get("yt.home-channels").cloned())
-        .map(|v| v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
-        .unwrap_or_default()
-}
-pub fn yt_add_home_channel(id: &str) {
-    let mut list = yt_home_channels();
-    list.retain(|x| x != id);          // de-dup
-    list.insert(0, id.to_string());    // newest on top
-    list.truncate(YT_HOME_MAX);        // keep at most 9 (drops the last)
-    let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
-    s.advanced.insert("yt.home-channels".into(), list.join(","));
-    let _ = s.save();
-}
-pub fn yt_remove_home_channel(id: &str) {
-    let mut list = yt_home_channels();
-    list.retain(|x| x != id);
-    let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
-    s.advanced.insert("yt.home-channels".into(), list.join(","));
-    let _ = s.save();
-}
-/// Persisted Subscriptions-page filter: "sub" (default) or "unsub".
-pub fn yt_subs_filter() -> String {
-    tulipix_core::settings::Settings::load().ok()
-        .and_then(|s| s.advanced.get("yt.subs-filter").cloned())
-        .filter(|v| v == "unsub")
-        .unwrap_or_else(|| "sub".to_string())
-}
-pub fn yt_set_subs_filter(v: &str) {
-    let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
-    s.advanced.insert("yt.subs-filter".into(), v.to_string());
-    let _ = s.save();
-}
+// YouTube preferences live in `tulipix_music::yt_prefs`: same settings file,
+// same keys, same meaning of the `-999` sentinel and the nine-entry pin list,
+// so the two builds cannot drift on them.
+use tulipix_music::yt_prefs::HOME_MAX as YT_HOME_MAX;
+pub use tulipix_music::yt_prefs::{
+    add_home_channel as yt_add_home_channel, default_res as yt_default_res,
+    home_channels as yt_home_channels, remove_home_channel as yt_remove_home_channel,
+    store_default_res as yt_store_default_res, store_subs_filter as yt_set_subs_filter,
+    subs_filter as yt_subs_filter,
+};
+
 pub fn yt_thumb_dir() -> std::path::PathBuf {
     tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("youtube_thumbs")
 }

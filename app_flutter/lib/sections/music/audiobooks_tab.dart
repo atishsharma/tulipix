@@ -7,6 +7,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
@@ -31,14 +32,16 @@ class AudiobooksTab extends StatelessWidget {
             children: [
               const SizedBox(width: 20),
               for (final tab in const [
-                ('all', 'All'),
-                ('progress', 'In progress'),
-                ('finished', 'Finished'),
+                ('all', 'All', null),
+                ('progress', 'In progress', null),
+                ('finished', 'Finished', null),
+                ('folders', 'Folders', Icons.folder_open),
               ])
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4),
                   child: MusicChip(
                     label: tab.$2,
+                    icon: tab.$3,
                     active: st.bookTab == tab.$1,
                     tint: const Color(0xFF10B981),
                     tint2: const Color(0xFF14B8A6),
@@ -46,6 +49,15 @@ class AudiobooksTab extends StatelessWidget {
                         controller.send(MusicCmd.bookSetTab(name: tab.$1)),
                   ),
                 ),
+              const Spacer(),
+              Padding(
+                padding: const EdgeInsets.only(right: 20),
+                child: TextButton.icon(
+                  icon: const Icon(Icons.create_new_folder_outlined, size: 16),
+                  label: const Text('Add a shelf'),
+                  onPressed: controller.addFolder,
+                ),
+              ),
             ],
           ),
         ),
@@ -56,41 +68,137 @@ class AudiobooksTab extends StatelessWidget {
                   title: st.bookTab == 'all'
                       ? 'No audiobooks yet'
                       : 'Nothing in this shelf',
-                  body: 'Mark a folder as an audiobook from My Music → '
-                      'Folders and its chapters move here, with their own '
-                      'position, speed and bookmarks.',
+                  body: st.bookTab == 'all'
+                      ? 'Add a folder here and everything under it becomes a '
+                          'shelf — one book per sub-folder, each with its own '
+                          'position, speed and bookmarks, and none of it in My '
+                          'Music. A folder already in My Music can be moved '
+                          'across from its tile menu instead.'
+                      : 'Nothing has reached this shelf yet.',
                   action: st.bookTab == 'all'
-                      ? null
+                      ? ('Add a folder', controller.addFolder)
                       : (
                           'Show all',
                           () => controller
                               .send(const MusicCmd.bookSetTab(name: 'all'))
                         ),
                 )
-              : CardGrid(
-                  min: 190,
-                  children: [
-                    for (final b in st.books)
-                      MusicCard(
-                        controller: controller,
-                        title: b.title,
-                        subtitle: b.author.isEmpty
-                            ? '${b.chapters} chapters'
-                            : b.author,
-                        artKind: 'book',
-                        artKey: b.folder,
-                        direct: b.art,
-                        fallback: Icons.menu_book,
-                        progress: b.progress,
-                        badge: b.finished ? 'Finished' : null,
-                        onTap: () => controller
-                            .send(MusicCmd.bookOpen(folder: b.folder)),
-                      ),
-                  ],
-                ),
+              : st.bookTab == 'folders'
+                  ? _FolderList(controller: controller, books: st.books)
+                  : CardGrid(
+                      min: 190,
+                      children: [
+                        for (final b in st.books)
+                          MusicCard(
+                            controller: controller,
+                            title: b.title,
+                            subtitle: b.author.isEmpty
+                                ? '${b.chapters} chapters'
+                                : b.author,
+                            artKind: 'book',
+                            artKey: b.folder,
+                            direct: b.art,
+                            fallback: Icons.menu_book,
+                            progress: b.progress,
+                            badge: b.finished ? 'Finished' : null,
+                            onTap: () => controller
+                                .send(MusicCmd.bookOpen(folder: b.folder)),
+                            onMenu: () => _bookMenu(context, controller, b),
+                          ),
+                      ],
+                    ),
         ),
       ],
     );
+  }
+}
+
+/// The Folders sub-tab: one row per book folder, `name · N chapters — path`,
+/// which is the same line the Slint build draws. Useful when a shelf points at
+/// a parent directory and you want to see what the split into books actually
+/// produced.
+class _FolderList extends StatelessWidget {
+  const _FolderList({required this.controller, required this.books});
+
+  final MusicController controller;
+  final List<BookCard> books;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      itemCount: books.length,
+      itemBuilder: (_, i) {
+        final b = books[i];
+        return ListTile(
+          dense: true,
+          leading: const Icon(Icons.folder_open, size: 18),
+          title: Text('${b.title}   ·   ${b.chapters} chapters',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 13, color: t.nInk)),
+          subtitle: Text(b.folder,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11, color: t.nInk2)),
+          onTap: () => controller.send(MusicCmd.bookOpen(folder: b.folder)),
+          trailing: IconButton(
+            iconSize: 16,
+            icon: const Icon(Icons.more_horiz),
+            tooltip: 'More',
+            onPressed: () => _bookMenu(context, controller, b),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Per-book actions that have nowhere else to live: the cover, and putting the
+/// folder back in My Music. Both write what the Slint build writes, so a change
+/// made in either shows in both.
+Future<void> _bookMenu(
+  BuildContext context,
+  MusicController c,
+  BookCard book,
+) async {
+  final choice = await showDialog<String>(
+    context: context,
+    builder: (ctx) => SimpleDialog(
+      title: Text(book.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+      children: [
+        SimpleDialogOption(
+          onPressed: () => Navigator.pop(ctx, 'cover'),
+          child: const ListTile(
+            dense: true,
+            leading: Icon(Icons.image_outlined, size: 18),
+            title: Text('Choose cover…'),
+          ),
+        ),
+        SimpleDialogOption(
+          onPressed: () => Navigator.pop(ctx, 'unbook'),
+          child: const ListTile(
+            dense: true,
+            leading: Icon(Icons.library_music_outlined, size: 18),
+            title: Text('Move back to My Music'),
+            subtitle: Text('Its chapters become songs again'),
+          ),
+        ),
+      ],
+    ),
+  );
+  switch (choice) {
+    case 'cover':
+      final path = await pickFile(
+        label: 'Images',
+        extensions: const ['png', 'jpg', 'jpeg', 'webp', 'bmp'],
+      );
+      if (path == null) return;
+      await c.send(MusicCmd.setCardArt(
+          kind: 'book', key: book.folder, path: path));
+    case 'unbook':
+      await c.send(MusicCmd.bookFlagFolder(folder: book.folder, on_: false));
   }
 }
 
@@ -142,14 +250,23 @@ class _BookPage extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                MusicArt(
-                  controller: controller,
-                  kind: 'book',
-                  artKey: book.folder,
-                  direct: book.art,
-                  size: 148,
-                  radius: 10,
-                  fallback: Icons.menu_book,
+                // The hero is the cover control, exactly as it is in Slint:
+                // click it to pick your own art for this book.
+                Tooltip(
+                  message: 'Cover, and where this folder lives',
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: () => _bookMenu(context, controller, book),
+                    child: MusicArt(
+                      controller: controller,
+                      kind: 'book',
+                      artKey: book.folder,
+                      direct: book.art,
+                      size: 148,
+                      radius: 10,
+                      fallback: Icons.menu_book,
+                    ),
+                  ),
                 ),
                 const SizedBox(width: 20),
                 Expanded(

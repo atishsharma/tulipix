@@ -16,6 +16,11 @@ reqwest = { workspace = true, features = ["json"] }
 md-5 = "0.10"
 # YouTube thumbnail/avatar fetch decodes remote jpg/webp/png and re-encodes PNG.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# Stable per-folder cache stems for audiobook art (ab_meta), spelled the
+# same way in both front ends so they share the one cache directory.
+sha2.workspace = true
+# Trend-feed fetches that fail are worth a line in the log, not a silent gap.
+tracing.workspace = true
 tulipix-core = { path = "../tulipix-core" }
 
 [dev-dependencies]

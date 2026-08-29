@@ -14,6 +14,7 @@
 
 pub mod schema;
 
+pub mod ab_meta;
 pub mod album_flip;
 pub mod audiobooks;
 pub mod bpm_key;
@@ -40,6 +41,7 @@ pub mod opus_cache;
 pub mod output_device;
 pub mod player;
 pub mod playlists;
+pub mod pod_trends;
 pub mod podcasts;
 pub mod queue;
 pub mod radio;
@@ -54,3 +56,4 @@ pub mod video_link;
 pub mod visualizer;
 pub mod yt_search;
 pub mod youtube;
+pub mod yt_prefs;

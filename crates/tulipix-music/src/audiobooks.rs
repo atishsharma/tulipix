@@ -200,6 +200,37 @@ pub async fn flag_audiobook_folder(pool: &SqlitePool, folder: &str) -> Result<(u
     Ok((flagged, 0))
 }
 
+/// Re-assert `is_audiobook` from the folder → music-section map.
+///
+/// The flag is an UPDATE over `track_meta`, so it only ever touches rows that
+/// exist when it runs. Adding a folder writes its section tag immediately and
+/// the rows appear minutes later, at the end of the scan — which is why a
+/// freshly added shelf's chapters sat in My Music until something else happened
+/// to rebuild. Run this after every scan: it is idempotent, and it is the only
+/// thing that has to run for the tag to mean anything.
+///
+/// Only flags. Clearing is left to the explicit "this folder is not audiobooks"
+/// paths, because a single book flagged by hand under an otherwise-My-Music
+/// root is a legitimate state a blanket clear would wipe out.
+///
+/// Takes the map concretely rather than an `IntoIterator` of borrowed pairs:
+/// a generic lifetime here makes the returned future's `Send`-ness depend on
+/// that lifetime, which the bridge's `Send + 'static` spawn cannot prove
+/// ("implementation of `Send` is not general enough").
+pub async fn apply_folder_sections(
+    pool: &SqlitePool,
+    sections: &std::collections::HashMap<String, String>,
+) -> Result<u64> {
+    let mut n = 0;
+    for (folder, key) in sections {
+        if key.as_str() == "audiobooks" {
+            let (flagged, _) = flag_audiobook_folder(pool, folder).await?;
+            n += flagged;
+        }
+    }
+    Ok(n)
+}
+
 /// Distinct audiobook folders with chapter counts, ordered by folder path.
 /// One row per book card (np.p5.music.audiobook-chapters).
 pub async fn book_folders(pool: &SqlitePool) -> Result<Vec<(String, i64)>> {
@@ -290,6 +321,35 @@ mod tests {
         let still: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_meta WHERE is_audiobook = 1")
             .fetch_one(&pool).await.unwrap();
         assert_eq!(still, 0);
+    }
+
+    #[tokio::test]
+    async fn section_reassert_flags_rows_that_appeared_after_the_tag() {
+        let (_t, pool) = open_pool().await;
+        // The shelf points at a PARENT; each book is a sub-folder under it.
+        let a = add_track(&pool, "/books/dune/ch01.mp3").await;
+        let b = add_track(&pool, "/books/hobbit/ch01.mp3").await;
+        let c = add_track(&pool, "/music/song.mp3").await;
+        for (id, folder) in [(a, "/books/dune"), (b, "/books/hobbit"), (c, "/music")] {
+            sqlx::query("UPDATE track_meta SET folder = ? WHERE item_id = ?")
+                .bind(folder).bind(id).execute(&pool).await.unwrap();
+        }
+        // Trailing separator, exactly as a folder picker hands it back.
+        let map = |pairs: &[(&str, &str)]| -> std::collections::HashMap<String, String> {
+            pairs.iter().map(|(f, k)| (f.to_string(), k.to_string())).collect()
+        };
+        let n = apply_folder_sections(&pool, &map(&[("/books/", "audiobooks"), ("/music", "mymusic")]))
+            .await.unwrap();
+        assert_eq!(n, 2);
+        let flagged: Vec<i64> = sqlx::query_scalar(
+            "SELECT item_id FROM track_meta WHERE is_audiobook = 1 ORDER BY item_id")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(flagged, vec![a, b], "the whole subtree, and nothing outside it");
+        // Idempotent: a second pass changes nothing about who is flagged.
+        apply_folder_sections(&pool, &map(&[("/books", "audiobooks")])).await.unwrap();
+        let still: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_meta WHERE is_audiobook = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(still, 2);
     }
 
     #[tokio::test]

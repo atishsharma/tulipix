@@ -273,8 +273,10 @@ Future<void> musicAdd(BuildContext context, MusicController c) async {
       );
       if (path == null) return;
       await c.send(MusicCmd.ytImportSubs(path: path));
-    // Audiobooks and My Music are both folders of files -- the same chooser,
-    // and the folder's section is decided afterwards from its own tile menu.
+    // Audiobooks and My Music are both folders of files, so both get the same
+    // chooser -- but the folder lands in whichever of the two is OPEN. The
+    // bridge reads the current view when it takes the path, which is what makes
+    // a folder picked here a shelf rather than four hundred songs in My Music.
     default:
       await c.addFolder();
   }

@@ -150,6 +150,42 @@ pub struct PodcastShow {
     pub feed_url: String,
 }
 
+/// One card in the Trends grid — the baked directory, not a subscription.
+///
+/// `idx` is the position in `tulipix_music::pod_trends::feed_urls()`, which is
+/// what the artwork cache is keyed on; Dart passes `feed_url` back for every
+/// action, so the two never have to agree on an ordering.
+#[derive(Debug, Clone)]
+pub struct PodTrend {
+    pub idx: i64,
+    pub feed_url: String,
+    pub title: String,
+    pub author: String,
+    pub category: String,
+    pub art: String,
+    pub subscribed: bool,
+}
+
+/// The read-only info card, opened from a Trends card or a subscribed show.
+///
+/// Deliberately never loads the episode list: it exists to answer "what is
+/// this show" before subscribing, and pulling a back catalogue to answer that
+/// is what made the Slint one slow before it stopped doing it.
+#[derive(Debug, Clone)]
+pub struct PodInfo {
+    pub feed_url: String,
+    /// -1 when the show is not subscribed (a Trends card).
+    pub podcast_id: i64,
+    pub title: String,
+    pub author: String,
+    pub category: String,
+    pub description: String,
+    pub art: String,
+    pub episodes: i64,
+    pub latest: i64,
+    pub subscribed: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Episode {
     pub id: i64,
@@ -428,6 +464,35 @@ pub struct MusicState {
     pub pod_ep_sort: String,
     pub pod_speed: f64,
     pub pod_queue: Vec<Episode>,
+    /// Home "Your shows" — only the pinned ones, in `pod_home_sort` order.
+    pub pod_home: Vec<PodcastShow>,
+    pub pod_home_page: i64,
+    pub pod_home_pages: i64,
+    pub pod_home_sort: String,
+    pub pod_dl_sort: String,
+    pub pod_trends: Vec<PodTrend>,
+    pub pod_trends_loading: bool,
+    pub pod_trends_sort: String,
+    pub pod_trends_page: i64,
+    pub pod_trends_pages: i64,
+    pub pod_info: Option<PodInfo>,
+    /// Show notes for one episode. Empty title = the panel is closed.
+    pub pod_transcript_title: String,
+    pub pod_transcript_text: String,
+    /// One progress line for every long podcast job — refresh, subscribe,
+    /// reset. They never overlap (each one blocks the button that starts the
+    /// next), so three separate sets of fields would only be three ways to
+    /// spell the same bar.
+    pub pod_busy: bool,
+    pub pod_frac: f64,
+    pub pod_status: String,
+    /// The search box for the open tab. Each tab keeps its own, so a filter on
+    /// Downloads does not silently hide half of Subscribed.
+    pub pod_query: String,
+    /// The episode currently saving offline, and how far in. -1 = none.
+    pub pod_dl_id: i64,
+    pub pod_dl_frac: f64,
+    pub pod_dl_title: String,
 
     // --- Audiobooks ---
     /// all | progress | finished | folders
@@ -481,6 +546,68 @@ pub struct MusicState {
     pub yt_playlist_title: String,
     pub yt_playlist_videos: Vec<YtVideo>,
     pub yt_status: String,
+    /// Home's centre column when nothing has been searched: the newest video
+    /// from each subscribed channel. Without it Home was an empty box until
+    /// you typed something, which is not what a subscriptions feed is for.
+    pub yt_recommended: Vec<YtVideo>,
+    /// A further page of search hits exists.
+    pub yt_results_more: bool,
+    /// new | old | az
+    pub yt_dl_sort: String,
+    /// name | videos | subscribers
+    pub yt_subs_sort: String,
+    /// asc | desc
+    pub yt_subs_dir: String,
+    /// sub | unsub — which half of the channel table the page lists.
+    pub yt_subs_filter: String,
+    /// default | title | duration
+    pub yt_playlist_sort: String,
+    /// "142 videos · 4.2M subscribers", when the channel row knows.
+    pub yt_channel_sub: String,
+    /// Downloads in flight or waiting, oldest first. `frac` is only meaningful
+    /// on the first one — yt-dlp runs one at a time.
+    pub yt_jobs: Vec<YtJob>,
+    pub yt_busy: bool,
+    /// Preferred download height. 0 = best video, < 0 = audio only,
+    /// `-999` = no default, so the picker asks.
+    pub yt_default_res: i64,
+    /// Channel ids pinned to the Home rail, newest first.
+    pub yt_home_channels: Vec<String>,
+    /// The pinned channels themselves, resolved and in pin order. Falls back to
+    /// the most-followed subscriptions while nothing is pinned.
+    pub yt_home_subs: Vec<YtSub>,
+    /// auto | piped | ytdlp
+    pub yt_fetcher: String,
+    /// Counts refresh — a yt-dlp spawn per channel, so it needs a bar.
+    pub yt_fetch_busy: bool,
+    pub yt_fetch_frac: f64,
+    pub yt_fetch_msg: String,
+    /// Channel page: the scoped search box and its hits, kept apart from
+    /// `yt_channel_videos` so clearing the box restores the listing.
+    pub yt_channel_query: String,
+    pub yt_channel_results: Vec<YtVideo>,
+    /// How many pages of the channel listing have been pulled, and whether
+    /// another exists.
+    pub yt_channel_page: i64,
+    pub yt_channel_has_next: bool,
+    /// A video is on screen rather than on the deck. The player bar drops its
+    /// transport while this is true — the picture carries its own.
+    pub yt_watching: bool,
+    /// The playlist currently being played through, so its card can show it.
+    /// -1 = none.
+    pub yt_playing_pl_id: i64,
+    /// Gradient outline on the Home rails. On by default, off for people who
+    /// find it loud.
+    pub yt_home_connect: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct YtJob {
+    pub video_id: String,
+    pub title: String,
+    /// 0..1 for the running job, 0 for anything still queued.
+    pub frac: f64,
+    pub running: bool,
 }
 
 // -------------------------------------------------------------- commands ----
@@ -655,6 +782,24 @@ pub enum MusicCmd {
     PodOpmlImport { path: String },
     PodOpmlExport { path: String },
     PodResetAll,
+    PodSetHomeSort { mode: String },
+    PodSetHomePage { page: i64 },
+    PodToggleHome { podcast_id: i64 },
+    PodSetDlSort { mode: String },
+    PodTrendsLoad,
+    PodSetTrendsSort { mode: String },
+    PodSetTrendsPage { page: i64 },
+    PodTrendSubscribe { feed_url: String },
+    /// `podcast_id` < 0 means the card is a Trends entry; `feed_url` is then
+    /// the only handle on it.
+    PodInfoOpen { podcast_id: i64, feed_url: String },
+    PodInfoClose,
+    PodInfoSetCategory { name: String },
+    PodSetThumb { podcast_id: i64, path: String },
+    PodTranscript { episode_id: i64 },
+    PodTranscriptClose,
+    /// Filter the open tab. Stored per tab.
+    PodSearch { query: String },
 
     // --- Audiobooks ---
     BookSetTab { name: String },
@@ -710,6 +855,40 @@ pub enum MusicCmd {
     YtPlaylistBack,
     YtAddToPlaylist { playlist_id: i64, video_id: String },
     YtRemoveFromPlaylist { playlist_id: i64, video_id: String },
+    /// Append the next page of hits to the current results.
+    YtSearchMore,
+    YtSetDlSort { mode: String },
+    YtSetSubsSort { mode: String },
+    YtToggleSubsDir,
+    YtToggleSubsFilter,
+    YtSetPlaylistSort { mode: String },
+    /// Queue every video in the open playlist.
+    YtPlaylistPlayAll { playlist_id: i64 },
+    /// Subscribe by channel URL or @handle rather than by finding it first.
+    YtAddChannelUrl { url: String },
+    /// Import a YouTube playlist URL as a local playlist.
+    YtImportPlaylistUrl { url: String },
+    /// Remember a download height. 0 = best video, < 0 = audio only.
+    YtSetDefaultRes { height: i64 },
+    /// Forget it, so the picker comes back.
+    YtResetVideoPrefs,
+    YtPinHome { channel_id: String },
+    YtUnpinHome { channel_id: String },
+    /// auto | piped | ytdlp
+    YtSetFetcher { name: String },
+    /// Search inside the open channel. Empty query clears back to the listing.
+    YtChannelSearch { query: String },
+    /// Pull another 30 videos onto the open channel's listing.
+    YtChannelLoadMore,
+    /// Watch a video rather than hearing it. `height` follows the same spelling
+    /// as the download picker: 0 = best, < 0 is meaningless here and is treated
+    /// as best, anything else is a cap.
+    YtWatch { video_id: String, height: i64 },
+    /// Watch whatever is playing as audio right now, from where it has got to.
+    YtWatchCurrent,
+    /// Close the picture without waiting for the end of the video.
+    YtStopWatching,
+    YtToggleHomeConnect,
 }
 
 #[derive(Debug, Clone)]
@@ -744,6 +923,14 @@ pub enum MusicEvent {
     /// One mpv property. `value` is a JSON literal: `true`, `85`, `"inf"`.
     AudioProp { name: String, value: String },
     AudioSeek { secs: f64 },
+
+    /// Watch a YouTube video in the in-app player — the same `VideoLayer` the
+    /// Videos section uses, so a film and a music video are the one player.
+    /// Audio is stopped first; when Dart reports the video ended, audio for the
+    /// same video resumes where the picture left off.
+    VideoPlay { token: i64, src: String, start_at: f64, props: Vec<String> },
+    /// Close the picture. Also sent immediately before every `VideoPlay`.
+    VideoStop,
 
     /// A command from outside the app: a media key, the desktop's media applet,
     /// a Bluetooth remote, or the tray menu.
@@ -802,6 +989,19 @@ struct Session {
     pod_ep_page: i64,
     pod_speed: f64,
     pod_queue: Vec<i64>,
+    pod_home_sort: String,
+    pod_home_page: i64,
+    pod_dl_sort: String,
+    pod_trends_sort: String,
+    pod_trends_page: i64,
+    /// The built directory, cached for the session. Rebuilding it is a network
+    /// walk over three dozen feeds; the persisted half is in `podcast_trends`.
+    pod_trends: Vec<tulipix_music::pod_trends::TrendMeta>,
+    pod_trends_loading: bool,
+    pod_info: Option<PodInfo>,
+    pod_transcript: Option<(String, String)>,
+    /// tab name -> its filter.
+    pod_queries: HashMap<String, String>,
 
     book_tab: String,
     book_open: String,
@@ -836,6 +1036,19 @@ struct Session {
     yt_queue: Vec<String>,
     yt_queue_pos: i64,
     yt_status: String,
+    yt_recommended: Vec<YtVideo>,
+    yt_results_more: bool,
+    yt_search_q: String,
+    yt_dl_sort: String,
+    yt_subs_sort: String,
+    yt_subs_dir: String,
+    yt_subs_filter: String,
+    yt_playlist_sort: String,
+    yt_channel_query: String,
+    yt_channel_results: Vec<YtVideo>,
+    yt_channel_page: i64,
+    yt_channel_has_next: bool,
+    yt_playing_pl_id: i64,
 
     mgr_open: bool,
     mgr_tab: String,
@@ -892,6 +1105,16 @@ impl Default for Session {
             pod_ep_page: 0,
             pod_speed: 1.0,
             pod_queue: Vec::new(),
+            pod_home_sort: "name".into(),
+            pod_home_page: 0,
+            pod_dl_sort: "dl".into(),
+            pod_trends_sort: "name".into(),
+            pod_trends_page: 0,
+            pod_trends: Vec::new(),
+            pod_trends_loading: false,
+            pod_info: None,
+            pod_transcript: None,
+            pod_queries: HashMap::new(),
             book_tab: "all".into(),
             book_open: String::new(),
             radio_tab: "home".into(),
@@ -918,6 +1141,19 @@ impl Default for Session {
             yt_queue: Vec::new(),
             yt_queue_pos: 0,
             yt_status: String::new(),
+            yt_recommended: Vec::new(),
+            yt_results_more: false,
+            yt_search_q: String::new(),
+            yt_dl_sort: "new".into(),
+            yt_subs_sort: "subscribers".into(),
+            yt_subs_dir: "desc".into(),
+            yt_subs_filter: tulipix_music::yt_prefs::subs_filter(),
+            yt_playlist_sort: "default".into(),
+            yt_channel_query: String::new(),
+            yt_channel_results: Vec::new(),
+            yt_channel_page: 1,
+            yt_channel_has_next: false,
+            yt_playing_pl_id: -1,
             mgr_open: false,
             mgr_tab: "lyrics".into(),
             mgr_mode: "list".into(),
@@ -984,6 +1220,40 @@ pub async fn music_dispatch(cmd: MusicCmd) -> Result<MusicState> {
         emit(MusicEvent::Failed { message: e.to_string() });
     }
     snapshot().await
+}
+
+/// Dart reports the picture closed — end of file, Escape, or the close button.
+///
+/// `pos` is where the video got to, and it is the whole reason this exists:
+/// audio resumes there, so switching to the picture and back does not lose
+/// your place. A report for a token that is no longer current is a reply from
+/// a video this one already replaced, and is dropped.
+pub async fn music_video_ended(token: i64, pos: f64, dur: f64) {
+    let id = {
+        let mut g = match yt_watch().lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if g.0 != token {
+            return;
+        }
+        let id = g.1.clone();
+        *g = (0, String::new());
+        id
+    };
+    if id.is_empty() {
+        return;
+    }
+    // Past the end is a finished video, not a place to resume from.
+    let resume = if dur > 0.0 && pos >= dur - 1.0 { 0.0 } else { pos };
+    if let Ok(pool) = youtube_pool().await {
+        let _ = tulipix_music::youtube::store::save_progress(pool, &id, resume, dur).await;
+    }
+    // `play_youtube` reads `progress_of` itself, so writing the position above
+    // IS the handoff -- seeking again here would fight it.
+    if let Err(e) = play_youtube(&id).await {
+        tracing::warn!(error = %e, video = %id, "could not resume audio after the video");
+    }
 }
 
 /// Player ticks, track changes, end-of-file and scan progress. Registering a
@@ -1290,7 +1560,21 @@ pub async fn music_ensure_art(kind: String, key: String) -> Result<Option<String
                 None => Ok(None),
             }
         }
-        "folder" | "book" => Ok(folder_cover(Path::new(&key))),
+        "folder" => Ok(folder_cover(Path::new(&key))),
+        // A book's cover is the same chain the shelf card uses: a stored /
+        // net-resolved choice, a sidecar image, then the first chapter's
+        // embedded art. `folder_cover` alone is why a tagged rip with no loose
+        // jpg drew the placeholder here while its card had a picture.
+        "book" => {
+            let pool = music_pool().await?;
+            let stored: Option<String> =
+                sqlx::query_scalar("SELECT path FROM audiobook_covers WHERE folder = ?")
+                    .bind(&key)
+                    .fetch_optional(pool)
+                    .await
+                    .unwrap_or_default();
+            Ok(book_cover(pool, &key, stored.as_deref()).await)
+        }
         "yt" | "podcast" => {
             // A remote URL cached to disk once. Dart could fetch these itself,
             // but then two builds would hold two copies of the same artwork in
@@ -2214,6 +2498,12 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             if !dir.is_dir() {
                 anyhow::bail!("not a folder: {path}");
             }
+            // The Add button is section-scoped: the folder lands in whichever
+            // music sub-section is open, which is what the Slint build does and
+            // the only reason a folder picked on the Audiobooks tab becomes a
+            // shelf instead of four hundred songs in My Music.
+            let view = lock().view.clone();
+            tulipix_common::set_folder_section(&path, &view);
             add_watched_folder(&dir);
             scan_watched().await?;
         }
@@ -2390,6 +2680,17 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                         .bind(id)
                         .execute(pool)
                         .await?;
+                }
+                // A book's cover belongs in `audiobook_covers`, which is the
+                // one place the resolution chain looks first -- and the same
+                // table the Slint build writes, so a cover picked in either
+                // build is the cover in both.
+                "book" => {
+                    let pool = music_pool().await?;
+                    tulipix_music::ab_meta::set_cover(pool, &key, &path).await?;
+                    if let Ok(mut g) = ab_cover_memo().lock() {
+                        g.retain(|(folder, _), _| folder != &key);
+                    }
                 }
                 _ => set_setting(&format!("music.{kind}.cover.{key}"), &path),
             }
@@ -2666,7 +2967,12 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             s.pod_tab = name;
             s.pod_page = 0;
         }
-        MusicCmd::PodSubscribe { url } => subscribe_podcast(&url).await?,
+        MusicCmd::PodSubscribe { url } => {
+            pod_job_set(true, 0.0, "Subscribing…");
+            let r = subscribe_podcast(&url).await;
+            pod_job_set(false, 1.0, "");
+            r?;
+        }
         MusicCmd::PodUnsubscribe { podcast_id } => {
             let pool = podcasts_pool().await?;
             sqlx::query("DELETE FROM podcast_episodes WHERE podcast_id = ?")
@@ -2701,10 +3007,16 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                     done: i as i64,
                     total,
                 });
+                pod_job_set(
+                    true,
+                    if total > 0 { i as f64 / total as f64 } else { 0.0 },
+                    &format!("Refreshing {}/{total}", i + 1),
+                );
                 if let Err(e) = refresh_feed(id, &url).await {
                     tracing::warn!(error = %e, feed = %url, "podcast refresh failed");
                 }
             }
+            pod_job_set(false, 1.0, "");
             emit(MusicEvent::ScanFinished {
                 inserted: 0,
                 updated: total,
@@ -2812,17 +3124,129 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
         }
         MusicCmd::PodResetAll => {
             let pool = podcasts_pool().await?;
-            for (_, p) in tulipix_music::podcasts::cleanup_candidates(pool)
+            pod_job_set(true, 0.0, "Removing downloads…");
+            let files = tulipix_music::podcasts::cleanup_candidates(pool)
                 .await
-                .unwrap_or_default()
-            {
+                .unwrap_or_default();
+            let total = files.len().max(1);
+            for (i, (_, p)) in files.into_iter().enumerate() {
                 let _ = std::fs::remove_file(&p);
+                pod_job_set(true, i as f64 / total as f64, "Removing downloads…");
             }
             sqlx::query("DELETE FROM podcast_episodes").execute(pool).await?;
             sqlx::query("DELETE FROM podcasts").execute(pool).await?;
+            {
+                let mut s = lock();
+                s.pod_open = -1;
+                s.pod_queue.clear();
+                s.pod_info = None;
+            }
+            pod_job_set(false, 1.0, "");
+        }
+        MusicCmd::PodSetHomeSort { mode } => {
             let mut s = lock();
-            s.pod_open = -1;
-            s.pod_queue.clear();
+            s.pod_home_sort = mode;
+            s.pod_home_page = 0;
+        }
+        MusicCmd::PodSetHomePage { page } => lock().pod_home_page = page.max(0),
+        MusicCmd::PodToggleHome { podcast_id } => {
+            let pool = podcasts_pool().await?;
+            sqlx::query(
+                "UPDATE podcasts SET home_pinned = CASE COALESCE(home_pinned,0) WHEN 0 THEN 1 ELSE 0 END \
+                 WHERE id = ?",
+            )
+            .bind(podcast_id)
+            .execute(pool)
+            .await?;
+        }
+        MusicCmd::PodSetDlSort { mode } => {
+            let mut s = lock();
+            s.pod_dl_sort = mode;
+            s.pod_page = 0;
+        }
+        MusicCmd::PodTrendsLoad => {
+            // Cached for the session: the build is a network walk over three
+            // dozen feeds, and the tab is re-entered constantly.
+            if !lock().pod_trends.is_empty() {
+                return Ok(());
+            }
+            lock().pod_trends_loading = true;
+            emit(MusicEvent::Stale);
+            let pool = podcasts_pool().await?;
+            let metas = tulipix_music::pod_trends::build(pool, tulipix_core::net::http()).await;
+            let mut s = lock();
+            s.pod_trends = metas;
+            s.pod_trends_loading = false;
+        }
+        MusicCmd::PodSetTrendsSort { mode } => {
+            let mut s = lock();
+            s.pod_trends_sort = mode;
+            s.pod_trends_page = 0;
+        }
+        MusicCmd::PodSetTrendsPage { page } => lock().pod_trends_page = page.max(0),
+        MusicCmd::PodTrendSubscribe { feed_url } => {
+            pod_job_set(true, 0.0, "Subscribing…");
+            let r = subscribe_podcast(&feed_url).await;
+            pod_job_set(false, 1.0, "");
+            r?;
+        }
+        MusicCmd::PodInfoOpen { podcast_id, feed_url } => {
+            let info = pod_info(podcast_id, &feed_url).await;
+            lock().pod_info = info;
+        }
+        MusicCmd::PodInfoClose => lock().pod_info = None,
+        MusicCmd::PodInfoSetCategory { name } => {
+            let feed = lock().pod_info.as_ref().map(|i| i.feed_url.clone());
+            if let Some(feed) = feed {
+                let pool = podcasts_pool().await?;
+                sqlx::query("UPDATE podcasts SET category = ? WHERE feed_url = ?")
+                    .bind(&name)
+                    .bind(&feed)
+                    .execute(pool)
+                    .await?;
+                if let Some(i) = lock().pod_info.as_mut() {
+                    i.category = name;
+                }
+            }
+        }
+        MusicCmd::PodSetThumb { podcast_id, path } => {
+            let pool = podcasts_pool().await?;
+            sqlx::query("UPDATE podcasts SET custom_image = ? WHERE id = ?")
+                .bind(&path)
+                .bind(podcast_id)
+                .execute(pool)
+                .await?;
+            if let Some(i) = lock().pod_info.as_mut() {
+                if i.podcast_id == podcast_id {
+                    i.art = path;
+                }
+            }
+        }
+        MusicCmd::PodTranscript { episode_id } => {
+            let pool = podcasts_pool().await?;
+            let row: Option<(String, String)> = sqlx::query_as(
+                "SELECT COALESCE(title,''), COALESCE(description,'') FROM podcast_episodes WHERE id = ?",
+            )
+            .bind(episode_id)
+            .fetch_optional(pool)
+            .await?;
+            lock().pod_transcript = row.map(|(t, d)| {
+                let body = tulipix_music::podcasts::strip_html(&d);
+                let body = if body.trim().is_empty() {
+                    "This episode has no show notes.".to_string()
+                } else {
+                    body
+                };
+                (t, body)
+            });
+        }
+        MusicCmd::PodTranscriptClose => lock().pod_transcript = None,
+        MusicCmd::PodSearch { query } => {
+            let mut s = lock();
+            let tab = s.pod_tab.clone();
+            s.pod_queries.insert(tab, query.trim().to_string());
+            s.pod_page = 0;
+            s.pod_trends_page = 0;
         }
 
         // --- Audiobooks -----------------------------------------------------
@@ -2857,6 +3281,14 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
         }
         MusicCmd::BookFlagFolder { folder, on } => {
             let pool = music_pool().await?;
+            // Tag and flag move together, or they undo each other: the tag is
+            // what `apply_folder_sections` re-asserts after every scan, so
+            // clearing the flag alone put the book straight back on the shelf
+            // the next time anything rescanned.
+            tulipix_common::set_folder_section(
+                &folder,
+                if on { "audiobooks" } else { "mymusic" },
+            );
             tulipix_music::audiobooks::set_folder_flag(pool, &folder, on).await?;
         }
         MusicCmd::BookmarkAdd { label } => {
@@ -2959,7 +3391,132 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             s.yt_dl_page = 0;
             s.yt_subs_page = 0;
         }
-        MusicCmd::YtSearch { query } => yt_search(&query).await?,
+        MusicCmd::YtSearch { query } => {
+            lock().yt_search_q = query.trim().to_string();
+            yt_search(&query, false).await?
+        }
+        MusicCmd::YtSearchMore => {
+            let q = lock().yt_search_q.clone();
+            if !q.is_empty() {
+                yt_search(&q, true).await?;
+            }
+        }
+        MusicCmd::YtSetDlSort { mode } => {
+            let mut s = lock();
+            s.yt_dl_sort = mode;
+            s.yt_dl_page = 0;
+        }
+        MusicCmd::YtSetSubsSort { mode } => {
+            let mut s = lock();
+            s.yt_subs_sort = mode;
+            s.yt_subs_page = 0;
+        }
+        MusicCmd::YtToggleSubsDir => {
+            let mut s = lock();
+            s.yt_subs_dir = if s.yt_subs_dir == "desc" { "asc".into() } else { "desc".into() };
+        }
+        MusicCmd::YtToggleHomeConnect => {
+            let on = setting("music.yt.home-connect", "1") != "0";
+            set_setting("music.yt.home-connect", if on { "0" } else { "1" });
+        }
+        MusicCmd::YtToggleSubsFilter => {
+            let next = {
+                let mut s = lock();
+                s.yt_subs_filter =
+                    if s.yt_subs_filter == "sub" { "unsub".into() } else { "sub".into() };
+                s.yt_subs_page = 0;
+                s.yt_subs_filter.clone()
+            };
+            // Persisted, so the page opens where you left it -- the Slint
+            // build has always remembered this and they share the key.
+            tulipix_music::yt_prefs::store_subs_filter(&next);
+        }
+        MusicCmd::YtSetPlaylistSort { mode } => lock().yt_playlist_sort = mode,
+        MusicCmd::YtPlaylistPlayAll { playlist_id } => {
+            let pool = youtube_pool().await?;
+            let items =
+                tulipix_music::youtube::store::playlist_items(pool, playlist_id).await?;
+            let ids: Vec<String> = items.into_iter().map(|p| p.video_id).collect();
+            let Some(first) = ids.first().cloned() else {
+                anyhow::bail!("that playlist is empty");
+            };
+            {
+                let mut s = lock();
+                s.yt_queue = ids;
+                s.yt_queue_pos = 0;
+                s.yt_playing_pl_id = playlist_id;
+            }
+            play_youtube(&first).await?;
+            cache_youtube_audio(&first).await;
+        }
+        MusicCmd::YtAddChannelUrl { url } => {
+            let (id, title) = yt_channel_from_url(&url).await?;
+            let pool = youtube_pool().await?;
+            tulipix_music::youtube::store::import_subs(
+                pool,
+                &[tulipix_music::youtube::subscriptions::ImportedSub {
+                    channel_id: id,
+                    title,
+                }],
+            )
+            .await?;
+        }
+        MusicCmd::YtImportPlaylistUrl { url } => yt_import_playlist_url(&url).await?,
+        MusicCmd::YtSetDefaultRes { height } => {
+            tulipix_music::yt_prefs::store_default_res(Some(height));
+        }
+        MusicCmd::YtResetVideoPrefs => tulipix_music::yt_prefs::store_default_res(None),
+        MusicCmd::YtPinHome { channel_id } => {
+            tulipix_music::yt_prefs::add_home_channel(&channel_id);
+        }
+        MusicCmd::YtUnpinHome { channel_id } => {
+            tulipix_music::yt_prefs::remove_home_channel(&channel_id);
+        }
+        MusicCmd::YtSetFetcher { name } => tulipix_music::yt_prefs::store_fetcher(&name),
+        MusicCmd::YtChannelSearch { query } => yt_channel_search(&query).await?,
+        MusicCmd::YtWatch { video_id, height } => {
+            // If this same video is on the deck, hand its position over.
+            let start = if mpv::current_slot() == mpv::Slot::Youtube
+                && mpv::now_playing().key == video_id
+            {
+                mpv::observe().pos
+            } else {
+                let pool = youtube_pool().await?;
+                tulipix_music::youtube::store::progress_of(pool, &video_id)
+                    .await
+                    .unwrap_or(0.0)
+            };
+            yt_watch_video(&video_id, height, start).await?;
+        }
+        MusicCmd::YtWatchCurrent => {
+            if mpv::current_slot() != mpv::Slot::Youtube {
+                anyhow::bail!("nothing from YouTube is playing");
+            }
+            let id = mpv::now_playing().key;
+            if id.is_empty() {
+                anyhow::bail!("nothing from YouTube is playing");
+            }
+            let height = match tulipix_music::yt_prefs::default_res() {
+                h if h > 0 => h,
+                _ => 0,
+            };
+            yt_watch_video(&id, height, mpv::observe().pos).await?;
+        }
+        MusicCmd::YtStopWatching => {
+            if let Ok(mut g) = yt_watch().lock() {
+                *g = (0, String::new());
+            }
+            emit(MusicEvent::VideoStop);
+        }
+        MusicCmd::YtChannelLoadMore => {
+            let (id, page) = {
+                let s = lock();
+                (s.yt_channel_id.clone(), s.yt_channel_page)
+            };
+            if !id.is_empty() {
+                yt_open_channel_pages(&id, page + 1).await?;
+            }
+        }
         MusicCmd::YtClearRecent => {
             let pool = youtube_pool().await?;
             tulipix_music::youtube::store::clear_recent_searches(pool).await?;
@@ -2967,8 +3524,11 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
         MusicCmd::YtPlay { video_id } => {
             {
                 let mut s = lock();
+                // A single tap is no longer "playing that playlist", however
+                // the queue got here.
                 if !s.yt_queue.contains(&video_id) {
                     s.yt_queue.push(video_id.clone());
+                    s.yt_playing_pl_id = -1;
                 }
                 let at = s
                     .yt_queue
@@ -3022,7 +3582,22 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             emit(MusicEvent::TrackChanged);
         }
         MusicCmd::YtDownload { video_id, quality } => {
-            yt_download(&video_id, &quality).await?
+            // The card knows the title; the job list is drawn before yt-dlp has
+            // said anything, so take it from what is already on screen.
+            let title = {
+                let s = lock();
+                s.yt_results
+                    .iter()
+                    .chain(s.yt_channel_videos.iter())
+                    .chain(s.yt_recommended.iter())
+                    .find(|v| v.video_id == video_id)
+                    .map(|v| v.title.clone())
+                    .unwrap_or_else(|| video_id.clone())
+            };
+            yt_job_push(&video_id, &title);
+            let r = yt_download(&video_id, &quality).await;
+            yt_job_done(&video_id);
+            r?;
         }
         MusicCmd::YtRemoveCached { video_id } => {
             let pool = youtube_pool().await?;
@@ -3652,19 +4227,23 @@ pub(crate) fn add_watched_folder(dir: &Path) {
     save_watched_folders(&existing);
 }
 
-/// Which folders have been reassigned away from My Music. The Slint build keeps
-/// this map so a folder of audiobooks does not clutter the songs list; same
-/// file, so a reassignment made in either build holds in both.
+/// Which folders have been reassigned away from My Music. Same file the Slint
+/// build reads and writes -- `music_folder_sections.json` -- so a folder added
+/// to Audiobooks in either build is an audiobook folder in both. The key
+/// normalisation (no trailing separator) is the shared writer's, and getting it
+/// wrong is what used to make the flag pass match nothing.
 fn folder_sections() -> std::collections::HashMap<String, String> {
-    let Some(p) = tulipix_core::paths::config_dir()
-        .map(|d| d.join("music_folder_sections.json"))
-    else {
-        return Default::default();
-    };
-    std::fs::read_to_string(p)
-        .ok()
-        .and_then(|b| serde_json::from_str(&b).ok())
-        .unwrap_or_default()
+    tulipix_common::load_folder_sections()
+}
+
+/// Push the folder→section map into `is_audiobook`. The tag is written when the
+/// folder is picked; the `track_meta` rows it applies to only exist after the
+/// scan, so this has to run at the end of one or the tag means nothing.
+async fn apply_folder_sections(pool: &sqlx::SqlitePool) {
+    let sections = folder_sections();
+    if let Err(e) = tulipix_music::audiobooks::apply_folder_sections(pool, &sections).await {
+        tracing::warn!(error = %e, "audiobook section flags");
+    }
 }
 
 /// Audio extensions the scanner accepts. Not a second list: it is exactly what
@@ -3747,6 +4326,9 @@ pub(crate) async fn scan_watched() -> Result<()> {
             }
         }
     }
+    // Before the finish event, because every My Music view the UI rebuilds on
+    // it filters on `is_audiobook` and the rows to flag only exist now.
+    apply_folder_sections(pool).await;
     emit(MusicEvent::ScanFinished {
         inserted,
         updated,
@@ -3789,6 +4371,7 @@ async fn read_missing_tags() -> Result<()> {
             tracing::warn!(error = %e, path = %path, "tag upsert failed");
         }
     }
+    yt_fetch_set(false, 1.0, "");
     emit(MusicEvent::ScanFinished {
         inserted: 0,
         updated: total,
@@ -4082,7 +4665,16 @@ async fn subscribe_podcast(url: &str) -> Result<()> {
         anyhow::bail!("nothing at that URL looks like a podcast feed");
     }
     let pool = podcasts_pool().await?;
-    tulipix_music::podcasts::subscribe(pool, url, &feed).await?;
+    // Progress, not a spinner: a back catalogue is routinely hundreds of
+    // episodes and the insert loop is the slow part, so the bar is the honest
+    // answer to "is it stuck". Throttled to ~40 repaints however long the feed.
+    tulipix_music::podcasts::subscribe_with_progress(pool, url, &feed, |done, total| {
+        let step = (total / 40).max(1);
+        if total > 0 && (done % step == 0 || done >= total) {
+            pod_job_set(true, done as f64 / total as f64, &format!("Adding… {done}/{total}"));
+        }
+    })
+    .await?;
     Ok(())
 }
 
@@ -4101,7 +4693,7 @@ async fn download_episode(episode_id: i64) -> Result<()> {
     .bind(episode_id)
     .fetch_optional(pool)
     .await?;
-    let Some((url, _title)) = row else {
+    let Some((url, title)) = row else {
         anyhow::bail!("episode {episode_id} is gone");
     };
     let ext = url
@@ -4110,15 +4702,41 @@ async fn download_episode(episode_id: i64) -> Result<()> {
         .filter(|e| e.len() <= 4 && !e.contains('/'))
         .unwrap_or("mp3");
     let dest = podcast_offline_dir().join(format!("ep-{episode_id}.{ext}"));
-    let bytes = tulipix_core::net::http_stream()
+    // Chunked rather than `.bytes()`: an episode is routinely 80MB and the row
+    // showed nothing at all until the whole thing had landed. `chunk()` is on
+    // the plain response, so this needs no stream crate.
+    let mut resp = tulipix_core::net::http_stream()
         .get(&url)
         .header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA)
         .send()
         .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
-    std::fs::write(&dest, &bytes)?;
+        .error_for_status()?;
+    let total = resp.content_length().unwrap_or(0);
+    let mut got: u64 = 0;
+    let mut file = std::fs::File::create(&dest)?;
+    pod_dl_set(episode_id, 0.0, &title);
+    let wrote = async {
+        use std::io::Write;
+        while let Some(chunk) = resp.chunk().await? {
+            file.write_all(&chunk)?;
+            got += chunk.len() as u64;
+            if total > 0 {
+                pod_dl_set(episode_id, (got as f64 / total as f64).clamp(0.0, 1.0), &title);
+            }
+        }
+        file.flush()?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    drop(file);
+    if let Err(e) = wrote {
+        // A half-written file is worse than none: it would play as a truncated
+        // episode and `mark_downloaded` never runs to say otherwise.
+        let _ = std::fs::remove_file(&dest);
+        pod_dl_clear();
+        return Err(e);
+    }
+    pod_dl_clear();
     tulipix_music::podcasts::mark_downloaded(
         pool,
         episode_id,
@@ -4316,20 +4934,27 @@ fn drop_shorts(v: Vec<YtVideo>) -> Vec<YtVideo> {
         .collect()
 }
 
-async fn yt_search(query: &str) -> Result<()> {
+/// `more` asks for another page. yt-dlp's `ytsearchN:` has no cursor, so the
+/// next page is a bigger N with what we already have trimmed off the front --
+/// which is exactly what the Slint build does and is why "Load more" is a
+/// button rather than an infinite scroll.
+async fn yt_search(query: &str, more: bool) -> Result<()> {
     let q = query.trim().to_string();
     if q.is_empty() {
         let mut s = lock();
         s.yt_results.clear();
         s.yt_status.clear();
+        s.yt_results_more = false;
         return Ok(());
     }
-    lock().yt_status = "Searching…".into();
+    let have = if more { lock().yt_results.len() } else { 0 };
+    let want = have + YT_HITS;
+    lock().yt_status = if more { "Loading more…".into() } else { "Searching…".into() };
     let json = ytdlp_json(vec![
         "--flat-playlist".into(),
         "-J".into(),
         "--no-warnings".into(),
-        format!("ytsearch{YT_HITS}:{q}"),
+        format!("ytsearch{want}:{q}"),
     ])
     .await;
     let hits = json
@@ -4348,11 +4973,95 @@ async fn yt_search(query: &str) -> Result<()> {
     } else {
         String::new()
     };
+    // A page that came back no longer than what we already had means the
+    // search is exhausted, whatever N we asked for.
+    s.yt_results_more = hits.len() > have;
     s.yt_results = hits;
     Ok(())
 }
 
-async fn yt_open_channel(channel_id: &str) -> Result<()> {
+/// Resolve a channel URL or `@handle` to `(channel_id, title)`.
+async fn yt_channel_from_url(url: &str) -> Result<(String, String)> {
+    let url = url.trim();
+    if url.is_empty() {
+        anyhow::bail!("paste a channel URL or @handle");
+    }
+    let target = if url.starts_with("http") {
+        url.to_string()
+    } else {
+        format!("https://www.youtube.com/{}", url.trim_start_matches('/'))
+    };
+    let json = ytdlp_json(vec![
+        "--flat-playlist".into(),
+        "--playlist-items".into(),
+        "1".into(),
+        "-J".into(),
+        "--no-warnings".into(),
+        target,
+    ])
+    .await
+    .ok_or_else(|| anyhow::anyhow!("yt-dlp could not read that channel"))?;
+    let pick = |k: &str| json.get(k).and_then(|v| v.as_str()).map(String::from);
+    let id = pick("channel_id")
+        .or_else(|| pick("uploader_id"))
+        .or_else(|| pick("id"))
+        .ok_or_else(|| anyhow::anyhow!("that URL has no channel in it"))?;
+    let title = pick("channel")
+        .or_else(|| pick("uploader"))
+        .or_else(|| pick("title"))
+        .unwrap_or_else(|| id.clone());
+    Ok((id, title))
+}
+
+/// Import a YouTube playlist URL as a local playlist, ids and all.
+async fn yt_import_playlist_url(url: &str) -> Result<()> {
+    let url = url.trim();
+    if !url.starts_with("http") {
+        anyhow::bail!("that is not a playlist URL");
+    }
+    lock().yt_status = "Reading playlist…".into();
+    let json = ytdlp_json(vec![
+        "--flat-playlist".into(),
+        "-J".into(),
+        "--no-warnings".into(),
+        url.to_string(),
+    ])
+    .await
+    .ok_or_else(|| anyhow::anyhow!("yt-dlp could not read that playlist"))?;
+    let name = json
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Imported playlist")
+        .to_string();
+    let ids: Vec<String> = json
+        .get("entries")
+        .and_then(|e| e.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        anyhow::bail!("that playlist is empty or private");
+    }
+    let pool = youtube_pool().await?;
+    let id = tulipix_music::youtube::store::create_remote_playlist(
+        pool,
+        &name,
+        url,
+        ids.len() as i64,
+    )
+    .await?;
+    tulipix_music::youtube::store::add_playlist_ids(pool, id, &ids).await?;
+    lock().yt_status = format!("Imported {} videos", ids.len());
+    Ok(())
+}
+
+/// `pages` is how many 30-video blocks to pull. Opening a channel asks for one;
+/// Load more re-asks for one more and replaces the list, because yt-dlp's
+/// `--playlist-end` has no cursor to continue from.
+async fn yt_open_channel_pages(channel_id: &str, pages: i64) -> Result<()> {
     let mode = lock().yt_channel_mode.clone();
     let url = if mode == "popular" {
         format!("https://www.youtube.com/channel/{channel_id}/videos?view=0&sort=p&flow=grid")
@@ -4365,7 +5074,7 @@ async fn yt_open_channel(channel_id: &str) -> Result<()> {
         "-J".into(),
         "--no-warnings".into(),
         "--playlist-end".into(),
-        "30".into(),
+        (pages.max(1) * CHANNEL_PAGE).to_string(),
         url,
     ])
     .await;
@@ -4434,8 +5143,75 @@ async fn yt_open_channel(channel_id: &str) -> Result<()> {
     s.yt_channel_title = heading;
     s.yt_channel_subscribed = subscribed;
     s.yt_status = status;
+    // A block that came back short is the end of the channel, whatever we
+    // asked for -- which is the only signal yt-dlp gives us.
+    s.yt_channel_has_next = videos.len() as i64 >= pages.max(1) * CHANNEL_PAGE;
+    s.yt_channel_page = pages.max(1);
     s.yt_channel_videos = videos;
     Ok(())
+}
+
+/// Videos per block on a channel page.
+const CHANNEL_PAGE: i64 = 30;
+
+async fn yt_open_channel(channel_id: &str) -> Result<()> {
+    {
+        let mut s = lock();
+        s.yt_channel_query.clear();
+        s.yt_channel_results.clear();
+    }
+    yt_open_channel_pages(channel_id, 1).await
+}
+
+/// Search within one channel. yt-dlp has no channel-scoped search, so this is
+/// a site search pinned to the channel URL.
+async fn yt_channel_search(query: &str) -> Result<()> {
+    let (id, q) = {
+        let mut s = lock();
+        s.yt_channel_query = query.trim().to_string();
+        (s.yt_channel_id.clone(), s.yt_channel_query.clone())
+    };
+    if q.is_empty() || id.is_empty() {
+        lock().yt_channel_results.clear();
+        return Ok(());
+    }
+    lock().yt_status = "Searching the channel…".into();
+    let json = ytdlp_json(vec![
+        "--flat-playlist".into(),
+        "-J".into(),
+        "--no-warnings".into(),
+        "--playlist-end".into(),
+        "20".into(),
+        format!("https://www.youtube.com/channel/{id}/search?query={}", urlish(&q)),
+    ])
+    .await;
+    let hits = json
+        .as_ref()
+        .and_then(|j| j.get("entries"))
+        .and_then(|e| e.as_array())
+        .map(|arr| arr.iter().map(yt_entry).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let hits = drop_shorts(hits);
+    let mut s = lock();
+    s.yt_status = if hits.is_empty() {
+        "Nothing in this channel matched".into()
+    } else {
+        String::new()
+    };
+    s.yt_channel_results = hits;
+    Ok(())
+}
+
+/// Percent-encode the handful of characters a query can carry that would
+/// otherwise end the URL. Not a general encoder -- yt-dlp takes the rest.
+fn urlish(q: &str) -> String {
+    q.chars()
+        .map(|c| match c {
+            ' ' => "+".to_string(),
+            '&' | '?' | '#' | '%' | '+' | '/' => format!("%{:02X}", c as u8),
+            _ => c.to_string(),
+        })
+        .collect()
 }
 
 /// Re-fetch subscriber and video counts for every channel. Manual only: it is
@@ -4450,6 +5226,11 @@ async fn yt_refresh_subs() -> Result<()> {
             done: i as i64,
             total,
         });
+        yt_fetch_set(
+            true,
+            if total > 0 { i as f64 / total as f64 } else { 0.0 },
+            &format!("{} ({}/{total})", sub.title, i + 1),
+        );
         let url = format!("https://www.youtube.com/channel/{}", sub.channel_id);
         let Some(j) = ytdlp_json(vec![
             "--flat-playlist".into(),
@@ -4502,6 +5283,139 @@ async fn yt_refresh_subs() -> Result<()> {
 
 /// Download one video at the asked-for quality. "audio" extracts Opus;
 /// anything else is a height cap on the muxed file.
+/// Downloads in flight or waiting. yt-dlp runs one at a time, so the head of
+/// this list is the running one and the rest are queued.
+fn yt_jobs() -> &'static Mutex<Vec<YtJob>> {
+    static C: std::sync::OnceLock<Mutex<Vec<YtJob>>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// The video on screen: `(token, video_id)`. `token` is what makes a report
+/// from a picture this one replaced identifiable, and therefore ignorable.
+fn yt_watch() -> &'static Mutex<(i64, String)> {
+    static C: std::sync::OnceLock<Mutex<(i64, String)>> = std::sync::OnceLock::new();
+    C.get_or_init(|| Mutex::new((0, String::new())))
+}
+
+/// Resolve a watchable stream and hand it to the in-app player.
+///
+/// Audio stops first: libmpv playing the soundtrack twice, once per deck, is
+/// the obvious failure and there is no reason to keep the audio around when
+/// the picture carries it. `start` is where the audio had got to, so the video
+/// opens on the same frame you were listening to.
+async fn yt_watch_video(video_id: &str, height: i64, start: f64) -> Result<()> {
+    let fmt = if height <= 0 {
+        "best".to_string()
+    } else {
+        // `best[height<=N]` alone fails on videos with no muxed stream at that
+        // cap; the `/best` fallback is what keeps those playable.
+        format!("best[height<={height}]/best")
+    };
+    let url = format!("https://www.youtube.com/watch?v={video_id}");
+    let out = tokio::process::Command::new(tulipix_core::thumbs::tool_bin("yt-dlp"))
+        .args(["-g", "-f", fmt.as_str(), "--no-playlist"])
+        .arg(&url)
+        .no_window_async()
+        .output()
+        .await?;
+    let src = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .find(|l| !l.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("yt-dlp could not resolve a picture for {video_id}"))?;
+
+    mpv::stop();
+    let token = {
+        let mut g = yt_watch()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("watch state is poisoned"))?;
+        // Any non-zero, ever-increasing value; the wall clock is one we have.
+        let token = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(1)
+            .max(g.0 + 1);
+        *g = (token, video_id.to_string());
+        token
+    };
+    emit(MusicEvent::VideoStop);
+    emit(MusicEvent::VideoPlay {
+        token,
+        src,
+        start_at: start.max(0.0),
+        // A remote stream URL is bound to the agent that resolved it; the
+        // default one gets 403 from Google's CDN.
+        props: vec![format!("user-agent={}", tulipix_core::net::BROWSER_UA)],
+    });
+    emit(MusicEvent::TrackChanged);
+    Ok(())
+}
+
+/// The counts-refresh bar. Same shape as `pod_job` and for the same reason:
+/// one yt-dlp spawn per channel, forty channels, and nothing on screen.
+fn yt_fetch() -> &'static Mutex<(bool, f64, String)> {
+    static C: std::sync::OnceLock<Mutex<(bool, f64, String)>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+fn yt_fetch_set(busy: bool, frac: f64, msg: &str) {
+    if let Ok(mut g) = yt_fetch().lock() {
+        *g = (busy, frac, msg.to_string());
+    }
+    emit(MusicEvent::Stale);
+}
+
+fn yt_job_list() -> Vec<YtJob> {
+    yt_jobs().lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+fn yt_job_push(video_id: &str, title: &str) {
+    if let Ok(mut g) = yt_jobs().lock() {
+        if !g.iter().any(|j| j.video_id == video_id) {
+            g.push(YtJob {
+                video_id: video_id.to_string(),
+                title: title.to_string(),
+                frac: 0.0,
+                running: false,
+            });
+        }
+    }
+    emit(MusicEvent::Stale);
+}
+
+/// yt-dlp writes a progress line several times a second. Only a change the eye
+/// can see is worth waking the UI for, so the repaint is gated on the whole
+/// percent moving.
+fn yt_job_progress(video_id: &str, frac: f64) {
+    let mut changed = false;
+    if let Ok(mut g) = yt_jobs().lock() {
+        if let Some(j) = g.iter_mut().find(|j| j.video_id == video_id) {
+            changed = (frac * 100.0) as i64 != (j.frac * 100.0) as i64 || !j.running;
+            j.frac = frac;
+            j.running = true;
+        }
+    }
+    if changed {
+        emit(MusicEvent::Stale);
+    }
+}
+
+fn yt_job_done(video_id: &str) {
+    if let Ok(mut g) = yt_jobs().lock() {
+        g.retain(|j| j.video_id != video_id);
+    }
+    emit(MusicEvent::Stale);
+}
+
+/// `[download]  42.3% of ...` -> 0.423. yt-dlp writes one of these per update
+/// when given `--newline`, which is the only reason a bar is possible at all
+/// without re-implementing the downloader.
+fn yt_dl_percent(line: &str) -> Option<f64> {
+    let rest = line.trim().strip_prefix("[download]")?.trim_start();
+    let pct = rest.split('%').next()?.trim();
+    pct.parse::<f64>().ok().map(|p| (p / 100.0).clamp(0.0, 1.0))
+}
+
 async fn yt_download(video_id: &str, quality: &str) -> Result<()> {
     let dir = yt_download_dir();
     let url = format!("https://www.youtube.com/watch?v={video_id}");
@@ -4517,6 +5431,13 @@ async fn yt_download(video_id: &str, quality: &str) -> Result<()> {
             "--audio-format".into(),
             "opus".into(),
         ]);
+    } else if quality.eq_ignore_ascii_case("best") {
+        args.extend([
+            "-f".into(),
+            "bestvideo+bestaudio/best".into(),
+            "--merge-output-format".into(),
+            "mkv".into(),
+        ]);
     } else {
         let height: i64 = quality.trim_end_matches('p').parse().unwrap_or(1080);
         args.extend([
@@ -4527,12 +5448,24 @@ async fn yt_download(video_id: &str, quality: &str) -> Result<()> {
         ]);
     }
     args.push(url);
-    let status = tokio::process::Command::new(tulipix_core::thumbs::tool_bin("yt-dlp"))
+    args.push("--newline".into());
+    let mut child = tokio::process::Command::new(tulipix_core::thumbs::tool_bin("yt-dlp"))
         .args(&args)
+        .stdout(std::process::Stdio::piped())
         .no_window_async()
-        .status()
-        .await?;
+        .spawn()?;
+    if let Some(out) = child.stdout.take() {
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(out).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(f) = yt_dl_percent(&line) {
+                yt_job_progress(video_id, f);
+            }
+        }
+    }
+    let status = child.wait().await?;
     if !status.success() {
+        yt_job_done(video_id);
         anyhow::bail!("yt-dlp could not download {video_id}");
     }
     // yt-dlp picks the extension, so find what it actually wrote rather than
@@ -4547,6 +5480,7 @@ async fn yt_download(video_id: &str, quality: &str) -> Result<()> {
                 .unwrap_or(false)
         });
     let Some(written) = written else {
+        yt_job_done(video_id);
         anyhow::bail!("yt-dlp reported success but wrote no file");
     };
     let known = {
@@ -5302,15 +6236,236 @@ fn into_episode(r: EpisodeRow) -> Episode {
     }
 }
 
+/// Pinned shows per Home page. 14, the 2x7 block Slint draws.
+const HOME_PAGE: i64 = 14;
+
+/// Trends cards per page. 21, the same 3x7 block the Slint grid draws.
+const TRENDS_PAGE: i64 = 21;
+
+/// The info card's payload.
+///
+/// A subscribed show is answered from `podcasts` -- no network, and it is the
+/// only source that knows the category the user edited. An unsubscribed Trends
+/// card has no row anywhere, so the feed itself is fetched once; that is the
+/// whole point of the card ("what is this show") and it is not on any repaint
+/// path, only on the click that opens it.
+async fn pod_info(podcast_id: i64, feed_url: &str) -> Option<PodInfo> {
+    let pool = podcasts_pool().await.ok()?;
+    type Row = (i64, String, String, String, String, String, i64, i64);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT p.id, COALESCE(p.title,''), COALESCE(p.author,''), COALESCE(p.category,''), \
+                COALESCE(p.description,''), \
+                COALESCE(NULLIF(p.custom_image,''), COALESCE(p.image_url,'')), \
+                (SELECT COUNT(*) FROM podcast_episodes e WHERE e.podcast_id = p.id), \
+                COALESCE((SELECT MAX(published) FROM podcast_episodes e WHERE e.podcast_id = p.id), 0) \
+         FROM podcasts p WHERE p.id = ? OR p.feed_url = ? LIMIT 1",
+    )
+    .bind(podcast_id)
+    .bind(feed_url)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    if let Some((id, title, author, category, description, art, episodes, latest)) = row {
+        return Some(PodInfo {
+            feed_url: feed_url.to_string(),
+            podcast_id: id,
+            title,
+            author,
+            category,
+            description,
+            art,
+            episodes,
+            latest,
+            subscribed: true,
+        });
+    }
+
+    let cached = {
+        let s = lock();
+        s.pod_trends.iter().find(|m| m.feed_url == feed_url).cloned()
+    };
+    let body = tulipix_core::net::http()
+        .get(feed_url)
+        .header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA)
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()
+        .unwrap_or_default();
+    let feed = tulipix_music::podcasts::parse_feed(&body);
+    let cached_art = cached
+        .as_ref()
+        .and_then(|m| m.art.as_ref())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    Some(PodInfo {
+        feed_url: feed_url.to_string(),
+        podcast_id: -1,
+        title: feed
+            .title
+            .clone()
+            .or_else(|| cached.as_ref().map(|m| m.title.clone()))
+            .unwrap_or_default(),
+        author: if feed.author.is_empty() {
+            cached.as_ref().map(|m| m.author.clone()).unwrap_or_default()
+        } else {
+            feed.author.clone()
+        },
+        category: if feed.category.is_empty() {
+            cached.as_ref().map(|m| m.category.clone()).unwrap_or_default()
+        } else {
+            feed.category.clone()
+        },
+        description: tulipix_music::podcasts::strip_html(&feed.description),
+        art: if cached_art.is_empty() { feed.image_url.clone() } else { cached_art },
+        episodes: feed.episodes.len() as i64,
+        latest: feed.episodes.iter().filter_map(|e| e.published).max().unwrap_or(0),
+        subscribed: false,
+    })
+}
+
+/// The episode saving offline: `(episode_id, 0..1, title)`. Downloads here run
+/// one per command, so there is no queue to model -- unlike the YouTube side,
+/// where yt-dlp jobs stack up behind each other.
+fn pod_dl() -> &'static Mutex<(i64, f64, String)> {
+    static C: std::sync::OnceLock<Mutex<(i64, f64, String)>> = std::sync::OnceLock::new();
+    C.get_or_init(|| Mutex::new((-1, 0.0, String::new())))
+}
+
+fn pod_dl_set(id: i64, frac: f64, title: &str) {
+    let mut changed = false;
+    if let Ok(mut g) = pod_dl().lock() {
+        changed = g.0 != id || (frac * 100.0) as i64 != (g.1 * 100.0) as i64;
+        *g = (id, frac, title.to_string());
+    }
+    if changed {
+        emit(MusicEvent::Stale);
+    }
+}
+
+fn pod_dl_clear() {
+    if let Ok(mut g) = pod_dl().lock() {
+        *g = (-1, 0.0, String::new());
+    }
+    emit(MusicEvent::Stale);
+}
+
+/// The one progress line every long podcast job writes to: refresh-all,
+/// subscribe, reset. They cannot overlap -- each blocks the control that would
+/// start the next -- so one channel is the whole story, and the UI has one bar
+/// to draw instead of four that are never lit at once.
+fn pod_job() -> &'static Mutex<(bool, f64, String)> {
+    static C: std::sync::OnceLock<Mutex<(bool, f64, String)>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+fn pod_job_set(busy: bool, frac: f64, status: &str) {
+    if let Ok(mut g) = pod_job().lock() {
+        *g = (busy, frac, status.to_string());
+    }
+    emit(MusicEvent::Stale);
+}
+
 // --- audiobooks ---
 
+/// Books already looked up online this session (hit or miss), so a shelf that
+/// repaints on every tick does not re-hit five APIs per book.
+fn ab_tried() -> &'static Mutex<std::collections::HashSet<String>> {
+    static C: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// Resolved cover path per (folder, stored choice). The shelf is re-read on
+/// every player tick while the tab is open, and resolving one book's cover is
+/// nine `stat`s and sometimes an ffmpeg spawn -- fine once, not once a second
+/// per book. Keyed by the stored path as well as the folder, so picking a new
+/// cover misses the memo rather than needing to invalidate it.
+fn ab_cover_memo() -> &'static Mutex<HashMap<(String, String), Option<String>>> {
+    static C: std::sync::OnceLock<Mutex<HashMap<(String, String), Option<String>>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// [`tulipix_music::ab_meta::cover_path`] behind that memo.
+async fn book_cover(
+    pool: &sqlx::SqlitePool,
+    folder: &str,
+    stored: Option<&str>,
+) -> Option<String> {
+    let key = (folder.to_string(), stored.unwrap_or_default().to_string());
+    if let Some(hit) = ab_cover_memo().lock().ok().and_then(|g| g.get(&key).cloned()) {
+        return hit;
+    }
+    // Only looked up on a miss: the embedded-art fallback is the one source
+    // that needs a file to point ffmpeg at.
+    let first: Option<String> = sqlx::query_scalar(
+        "SELECT i.abs_path FROM items i JOIN track_meta tm ON tm.item_id = i.id \
+         WHERE tm.folder = ? ORDER BY i.abs_path LIMIT 1",
+    )
+    .bind(folder)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let found = tulipix_music::ab_meta::cover_path(
+        folder,
+        stored,
+        first.as_deref().map(Path::new),
+    )
+    .await
+    .map(|p| p.to_string_lossy().into_owned());
+    if let Ok(mut g) = ab_cover_memo().lock() {
+        g.insert(key, found.clone());
+    }
+    found
+}
+
+/// Resolve title / author / cover for the books that still have none, in the
+/// background, then tell the UI to re-read. The chain itself is
+/// `tulipix_music::ab_meta`, shared with the Slint build.
+fn kick_ab_lookup(folders: Vec<String>) {
+    let todo: Vec<String> = match ab_tried().lock() {
+        Ok(mut g) => folders.into_iter().filter(|f| g.insert(f.clone())).collect(),
+        Err(_) => return,
+    };
+    if todo.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        let Ok(pool) = music_pool().await else { return };
+        if tulipix_music::ab_meta::resolve_and_store(pool, &todo).await {
+            if let Ok(mut g) = ab_cover_memo().lock() {
+                g.retain(|(folder, _), _| !todo.contains(folder));
+            }
+            emit(MusicEvent::Stale);
+        }
+    });
+}
+
 /// One card per book folder: title, cover, chapter count and how far in it is.
+///
+/// A book is named and pictured by the same chain the Slint build uses: the
+/// title and author resolved from tags / filenames / LibriVox / iTunes / Open
+/// Library when there are any, and only the folder's basename and the first
+/// track's artist as the placeholder until then. The bare basename is what a
+/// rip called `dune_01_64kb` shows, which is why the lookup exists.
 async fn book_cards(pool: &sqlx::SqlitePool, tab: &str) -> Vec<BookCard> {
     let folders = tulipix_music::audiobooks::book_folders(pool)
         .await
         .unwrap_or_default();
+    tulipix_music::ab_meta::ensure_tables(pool).await;
+    let covers = tulipix_music::ab_meta::load_covers(pool).await;
+    let meta = tulipix_music::ab_meta::load_meta(pool).await;
     let mut out = Vec::new();
+    // Every book, whether or not the open tab keeps it -- see below.
+    let mut every: Vec<String> = Vec::new();
+    let mut no_art: Vec<String> = Vec::new();
     for (folder, chapters) in folders {
+        every.push(folder.clone());
         let ids = tulipix_music::audiobooks::book_chapters(pool, &folder)
             .await
             .unwrap_or_default();
@@ -5335,6 +6490,13 @@ async fn book_cards(pool: &sqlx::SqlitePool, tab: &str) -> Vec<BookCard> {
         } else {
             0.0
         };
+        // Art and identity are resolved for every book, filtered tab or not:
+        // the lookup is what fills the OTHER tabs in, and a card that only gets
+        // a face while you are looking at it never gets one.
+        let art = book_cover(pool, &folder, covers.get(&folder).map(String::as_str)).await;
+        if art.is_none() {
+            no_art.push(folder.clone());
+        }
         let keep = match tab {
             "progress" => progress > 0.0 && !finished,
             "finished" => finished,
@@ -5343,24 +6505,30 @@ async fn book_cards(pool: &sqlx::SqlitePool, tab: &str) -> Vec<BookCard> {
         if !keep {
             continue;
         }
-        let author: String = sqlx::query_scalar(
-            "SELECT COALESCE(ar.name, '') FROM track_meta tm \
-             LEFT JOIN artists ar ON ar.id = tm.artist_id \
-             WHERE tm.folder = ? LIMIT 1",
-        )
-        .bind(&folder)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+        let resolved = meta.get(&folder);
+        let author = match resolved.map(|(_, a)| a.clone()).filter(|a| !a.is_empty()) {
+            Some(a) => a,
+            // Nothing resolved yet: the chapters' own artist tag is the best
+            // guess on disk, and on a tagged rip it is already the author.
+            None => sqlx::query_scalar(
+                "SELECT COALESCE(ar.name, '') FROM track_meta tm \
+                 LEFT JOIN artists ar ON ar.id = tm.artist_id \
+                 WHERE tm.folder = ? LIMIT 1",
+            )
+            .bind(&folder)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+        };
         out.push(BookCard {
-            title: Path::new(&folder)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| folder.clone()),
+            title: resolved
+                .map(|(t, _)| t.clone())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| tulipix_music::ab_meta::book_title(&folder)),
             author,
-            art: folder_cover(Path::new(&folder)).unwrap_or_default(),
+            art: art.unwrap_or_default(),
             chapters,
             finished,
             progress,
@@ -5368,6 +6536,12 @@ async fn book_cards(pool: &sqlx::SqlitePool, tab: &str) -> Vec<BookCard> {
             folder,
         });
     }
+    // Everything with no art at all, plus anything wearing a net cover that
+    // never resolved a real title -- the improved chain retries those once.
+    let missing = tulipix_music::ab_meta::needs_lookup(&every, &covers, &meta, |f| {
+        !no_art.iter().any(|n| n.as_str() == f)
+    });
+    kick_ab_lookup(missing);
     out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
     out
 }
@@ -5486,6 +6660,10 @@ async fn snapshot() -> Result<MusicState> {
     };
 
     let eq = load_eq();
+    let job = pod_job().lock().map(|g| g.clone()).unwrap_or_default();
+    let yt_jobs_now = yt_job_list();
+    let dl = pod_dl().lock().map(|g| g.clone()).unwrap_or((-1, 0.0, String::new()));
+    let fetch = yt_fetch().lock().map(|g| g.clone()).unwrap_or_default();
 
     // --- per-tab -----------------------------------------------------------
     let mut st = MusicState {
@@ -5593,6 +6771,26 @@ async fn snapshot() -> Result<MusicState> {
         pod_ep_sort: s.pod_ep_sort.clone(),
         pod_speed: s.pod_speed,
         pod_queue: Vec::new(),
+        pod_home: Vec::new(),
+        pod_home_page: s.pod_home_page,
+        pod_home_pages: 1,
+        pod_home_sort: s.pod_home_sort.clone(),
+        pod_dl_sort: s.pod_dl_sort.clone(),
+        pod_trends: Vec::new(),
+        pod_trends_loading: s.pod_trends_loading,
+        pod_trends_sort: s.pod_trends_sort.clone(),
+        pod_trends_page: s.pod_trends_page,
+        pod_trends_pages: 1,
+        pod_info: s.pod_info.clone(),
+        pod_transcript_title: s.pod_transcript.as_ref().map(|t| t.0.clone()).unwrap_or_default(),
+        pod_transcript_text: s.pod_transcript.as_ref().map(|t| t.1.clone()).unwrap_or_default(),
+        pod_busy: job.0,
+        pod_frac: job.1,
+        pod_status: job.2,
+        pod_query: s.pod_queries.get(&s.pod_tab).cloned().unwrap_or_default(),
+        pod_dl_id: dl.0,
+        pod_dl_frac: dl.1,
+        pod_dl_title: dl.2,
 
         book_tab: s.book_tab.clone(),
         books: Vec::new(),
@@ -5638,6 +6836,30 @@ async fn snapshot() -> Result<MusicState> {
         yt_playlist_title: s.yt_playlist_title.clone(),
         yt_playlist_videos: Vec::new(),
         yt_status: s.yt_status.clone(),
+        yt_recommended: s.yt_recommended.clone(),
+        yt_results_more: s.yt_results_more,
+        yt_dl_sort: s.yt_dl_sort.clone(),
+        yt_subs_sort: s.yt_subs_sort.clone(),
+        yt_subs_dir: s.yt_subs_dir.clone(),
+        yt_subs_filter: s.yt_subs_filter.clone(),
+        yt_playlist_sort: s.yt_playlist_sort.clone(),
+        yt_channel_sub: String::new(),
+        yt_busy: !yt_jobs_now.is_empty(),
+        yt_jobs: yt_jobs_now,
+        yt_default_res: tulipix_music::yt_prefs::default_res(),
+        yt_home_channels: tulipix_music::yt_prefs::home_channels(),
+        yt_home_subs: Vec::new(),
+        yt_fetcher: tulipix_music::yt_prefs::fetcher(),
+        yt_fetch_busy: fetch.0,
+        yt_fetch_frac: fetch.1,
+        yt_fetch_msg: fetch.2,
+        yt_channel_query: s.yt_channel_query.clone(),
+        yt_channel_results: s.yt_channel_results.clone(),
+        yt_channel_page: s.yt_channel_page,
+        yt_channel_has_next: s.yt_channel_has_next,
+        yt_watching: yt_watch().lock().map(|g| g.0 != 0).unwrap_or(false),
+        yt_playing_pl_id: s.yt_playing_pl_id,
+        yt_home_connect: setting("music.yt.home-connect", "1") != "0",
     };
 
     // Whatever tab is open: the player bar's "add to playlist" is on every one
@@ -5931,12 +7153,30 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
         return;
     }
 
+    let query = s.pod_queries.get(&s.pod_tab).cloned().unwrap_or_default();
     let filtered = s.pod_cat != "All";
-    let where_cat = if filtered { " WHERE p.category = ?" } else { "" };
+    let searching = !query.is_empty();
+    let like = format!("%{query}%");
+    let mut wheres: Vec<&str> = Vec::new();
+    if filtered {
+        wheres.push("p.category = ?");
+    }
+    if searching {
+        wheres.push("(p.title LIKE ? OR p.author LIKE ?)");
+    }
+    let where_cat = if wheres.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", wheres.join(" AND "))
+    };
+    // Bound in the order the placeholders appear, category first.
     let count_sql = format!("SELECT COUNT(*) FROM podcasts p{where_cat}");
     let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
     if filtered {
-        cq = cq.bind(&s.pod_cat);
+        cq = cq.bind(s.pod_cat.clone());
+    }
+    if searching {
+        cq = cq.bind(like.clone()).bind(like.clone());
     }
     st.pod_total = cq.fetch_one(pool).await.unwrap_or(0);
 
@@ -5944,7 +7184,10 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
         format!("{SHOW_SELECT}{where_cat} ORDER BY p.title COLLATE NOCASE LIMIT ? OFFSET ?");
     let mut q = sqlx::query_as::<_, ShowRow>(&show_sql);
     if filtered {
-        q = q.bind(&s.pod_cat);
+        q = q.bind(s.pod_cat.clone());
+    }
+    if searching {
+        q = q.bind(like.clone()).bind(like.clone());
     }
     let rows = q
         .bind(LIST_PAGE)
@@ -5956,6 +7199,41 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
     st.pod_pages = (st.pod_total.max(1) as f64 / LIST_PAGE as f64).ceil() as i64;
 
     if s.pod_tab == "home" {
+        // "Your shows" is the shows the user PINNED, not the first page of the
+        // subscription list -- the whole point of Home is that it is a chosen
+        // shelf. Sorted here rather than in SQL because `latest` is a computed
+        // column in SHOW_SELECT.
+        let pinned: Vec<ShowRow> = sqlx::query_as(&format!(
+            "{SHOW_SELECT} WHERE COALESCE(p.home_pinned, 0) = 1"
+        ))
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        let mut home: Vec<PodcastShow> = pinned.into_iter().map(into_show).collect();
+        match s.pod_home_sort.as_str() {
+            "category" => home.sort_by(|a, b| {
+                a.category
+                    .to_lowercase()
+                    .cmp(&b.category.to_lowercase())
+                    .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+            }),
+            "latest" => home.sort_by(|a, b| b.latest.cmp(&a.latest)),
+            _ => home.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
+        }
+        if let Some(q) = s.pod_queries.get("home").filter(|q| !q.is_empty()) {
+            let needle = q.to_lowercase();
+            home.retain(|h| {
+                h.title.to_lowercase().contains(&needle)
+                    || h.author.to_lowercase().contains(&needle)
+            });
+        }
+        // Paged, like Slint's: pinning forty shows makes a rail nobody can
+        // reach the end of, and the rail is meant to be a shelf.
+        st.pod_home_pages = (home.len().max(1) as f64 / HOME_PAGE as f64).ceil() as i64;
+        let from = ((s.pod_home_page * HOME_PAGE) as usize).min(home.len());
+        let to = (((s.pod_home_page + 1) * HOME_PAGE) as usize).min(home.len());
+        st.pod_home = home[from..to].to_vec();
+
         // Newest episode per show, which is what "what's new" means when you
         // follow forty podcasts and one of them posts daily.
         let rows: Vec<EpisodeRow> = sqlx::query_as(&format!(
@@ -5974,9 +7252,17 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
     }
 
     if s.pod_tab == "downloads" {
+        // "dl" is the order they were saved in, which sqlite gives us for free
+        // as the row id -- there is no downloaded_at column and adding one to
+        // sort a list nobody paginates past page two is not worth a migration.
+        let order = match s.pod_dl_sort.as_str() {
+            "new" => "COALESCE(e.published, 0) DESC",
+            "old" => "COALESCE(e.published, 0) ASC",
+            _ => "e.id DESC",
+        };
         let rows: Vec<EpisodeRow> = sqlx::query_as(&format!(
             "{EPISODE_SELECT} WHERE e.downloaded_path IS NOT NULL AND e.downloaded_path != '' \
-             ORDER BY COALESCE(e.published, 0) DESC LIMIT ? OFFSET ?"
+             ORDER BY {order} LIMIT ? OFFSET ?"
         ))
         .bind(LIST_PAGE)
         .bind(s.pod_page * LIST_PAGE)
@@ -5984,6 +7270,67 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
         .await
         .unwrap_or_default();
         st.pod_downloads = rows.into_iter().map(into_episode).collect();
+        if let Some(q) = s.pod_queries.get("downloads").filter(|q| !q.is_empty()) {
+            let needle = q.to_lowercase();
+            st.pod_downloads.retain(|e| {
+                e.title.to_lowercase().contains(&needle)
+                    || e.show.to_lowercase().contains(&needle)
+            });
+        }
+        // The pager was reading `pod_pages`, which counts SHOWS -- so the
+        // downloads list paged against the wrong total and either stopped
+        // early or offered pages with nothing on them.
+        let saved: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM podcast_episodes \
+             WHERE downloaded_path IS NOT NULL AND downloaded_path != ''",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        st.pod_pages = (saved.max(1) as f64 / LIST_PAGE as f64).ceil() as i64;
+    }
+
+    if s.pod_tab == "trends" {
+        let subscribed = tulipix_music::pod_trends::subscribed_urls(pool).await;
+        let mut cards: Vec<PodTrend> = s
+            .pod_trends
+            .iter()
+            .enumerate()
+            .map(|(i, m)| PodTrend {
+                idx: i as i64,
+                feed_url: m.feed_url.clone(),
+                title: m.title.clone(),
+                author: m.author.clone(),
+                category: m.category.clone(),
+                art: m.art.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+                subscribed: subscribed.iter().any(|u| u == &m.feed_url),
+            })
+            .collect();
+        if let Some(q) = s.pod_queries.get("trends").filter(|q| !q.is_empty()) {
+            let needle = q.to_lowercase();
+            cards.retain(|c| {
+                c.title.to_lowercase().contains(&needle)
+                    || c.author.to_lowercase().contains(&needle)
+                    || c.category.to_lowercase().contains(&needle)
+            });
+        }
+        if s.pod_trends_sort == "category" {
+            cards.sort_by(|a, b| {
+                a.category
+                    .to_lowercase()
+                    .cmp(&b.category.to_lowercase())
+                    .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+            });
+        } else {
+            cards.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        }
+        let total = cards.len() as i64;
+        st.pod_trends_pages = (total.max(1) as f64 / TRENDS_PAGE as f64).ceil() as i64;
+        st.pod_trends = cards
+            .into_iter()
+            .skip((s.pod_trends_page * TRENDS_PAGE) as usize)
+            .take(TRENDS_PAGE as usize)
+            .collect();
     }
 
     if !s.pod_queue.is_empty() {
@@ -6136,6 +7483,17 @@ async fn fill_radio(s: &Session, st: &mut MusicState) {
     lock().radio_list = list;
 }
 
+fn into_sub(x: &tulipix_music::youtube::store::Sub) -> YtSub {
+    YtSub {
+        channel_id: x.channel_id.clone(),
+        title: x.title.clone(),
+        avatar: x.avatar_path.clone().unwrap_or_default(),
+        videos: x.video_count.unwrap_or(0),
+        subs: x.sub_count.unwrap_or(0),
+        subscribed: x.subscribed,
+    }
+}
+
 async fn fill_youtube(s: &Session, st: &mut MusicState) {
     let Ok(pool) = youtube_pool().await else { return };
     let progress: std::collections::HashMap<String, f32> =
@@ -6169,6 +7527,15 @@ async fn fill_youtube(s: &Session, st: &mut MusicState) {
             quality: String::new(),
         })
         .collect();
+        // "default" is the playlist's own order, which is the one thing a
+        // playlist actually carries -- so it sorts nothing.
+        match s.yt_playlist_sort.as_str() {
+            "title" => st
+                .yt_playlist_videos
+                .sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
+            "duration" => st.yt_playlist_videos.sort_by(|a, b| a.duration.cmp(&b.duration)),
+            _ => {}
+        }
         return;
     }
 
@@ -6188,9 +7555,15 @@ async fn fill_youtube(s: &Session, st: &mut MusicState) {
     }
 
     if s.yt_tab == "downloads" || s.yt_tab == "home" {
-        let all = tulipix_music::youtube::store::list_downloads(pool, 1_000)
+        let mut all = tulipix_music::youtube::store::list_downloads(pool, 1_000)
             .await
             .unwrap_or_default();
+        // `list_downloads` is newest-first already, so "new" is the identity.
+        match s.yt_dl_sort.as_str() {
+            "old" => all.reverse(),
+            "az" => all.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
+            _ => {}
+        }
         st.yt_dl_total = all.len() as i64;
         st.yt_dl_pages = (st.yt_dl_total.max(1) as f64 / LIST_PAGE as f64).ceil() as i64;
         let start = ((s.yt_dl_page * LIST_PAGE) as usize).min(all.len());
@@ -6206,24 +7579,99 @@ async fn fill_youtube(s: &Session, st: &mut MusicState) {
     }
 
     if s.yt_tab == "subscriptions" || s.yt_tab == "home" {
-        let subs = tulipix_music::youtube::store::list_subs(pool)
+        // (see `into_sub` below for the row -> card mapping)
+        let all = tulipix_music::youtube::store::list_subs(pool)
             .await
             .unwrap_or_default();
-        st.yt_sub_count = subs.iter().filter(|sub| sub.subscribed).count() as i64;
+        // The count in the tab badge is subscriptions, always -- it must not
+        // move when the page is flipped to show the unsubscribed half.
+        st.yt_sub_count = all.iter().filter(|sub| sub.subscribed).count() as i64;
+        let want_sub = s.yt_subs_filter != "unsub";
+        let mut subs: Vec<_> = all
+            .into_iter()
+            .filter(|x| x.subscribed == want_sub)
+            .collect();
+        match s.yt_subs_sort.as_str() {
+            "name" => subs.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
+            "videos" => subs.sort_by(|a, b| a.video_count.unwrap_or(0).cmp(&b.video_count.unwrap_or(0))),
+            _ => subs.sort_by(|a, b| a.sub_count.unwrap_or(0).cmp(&b.sub_count.unwrap_or(0))),
+        }
+        if s.yt_subs_dir == "desc" {
+            subs.reverse();
+        }
         st.yt_subs_pages = (subs.len().max(1) as f64 / LIST_PAGE as f64).ceil() as i64;
         let start = ((s.yt_subs_page * LIST_PAGE) as usize).min(subs.len());
         let end = (((s.yt_subs_page + 1) * LIST_PAGE) as usize).min(subs.len());
-        st.yt_subs = subs[start..end]
-            .iter()
-            .map(|x| YtSub {
-                channel_id: x.channel_id.clone(),
-                title: x.title.clone(),
-                avatar: x.avatar_path.clone().unwrap_or_default(),
-                videos: x.video_count.unwrap_or(0),
-                subs: x.sub_count.unwrap_or(0),
-                subscribed: x.subscribed,
-            })
-            .collect();
+        st.yt_subs = subs[start..end].iter().map(into_sub).collect();
+    }
+
+    if s.yt_tab == "home" {
+        // The newest video from each subscribed channel, from the per-channel
+        // cache the channel pages already fill -- no network, so Home is warm
+        // rather than empty on arrival.
+        let subs = tulipix_music::youtube::store::list_subs(pool)
+            .await
+            .unwrap_or_default();
+        let mut reco: Vec<YtVideo> = Vec::new();
+        for sub in subs.iter().filter(|x| x.subscribed).take(RAIL as usize) {
+            let cached = tulipix_music::youtube::store::get_channel_cache(pool, &sub.channel_id)
+                .await
+                .unwrap_or_default();
+            if let Some(v) = cached.into_iter().next() {
+                reco.push(YtVideo {
+                    progress: progress.get(&v.video_id).copied().unwrap_or(0.0) as f64,
+                    video_id: v.video_id,
+                    title: v.title,
+                    channel: sub.title.clone(),
+                    thumb: v.thumb_path,
+                    duration: v.duration,
+                    media_path: String::new(),
+                    meta: String::new(),
+                    quality: String::new(),
+                });
+            }
+        }
+        st.yt_recommended = reco;
+
+        // The Home rail is the channels you pinned; until you pin any it is
+        // the most-followed subscriptions, so the rail is never empty just
+        // because you have not discovered pinning yet.
+        let pins = tulipix_music::yt_prefs::home_channels();
+        let mut rail: Vec<YtSub> = if pins.is_empty() {
+            let mut by_reach: Vec<_> = subs.iter().filter(|x| x.subscribed).collect();
+            by_reach.sort_by(|a, b| b.sub_count.unwrap_or(0).cmp(&a.sub_count.unwrap_or(0)));
+            by_reach
+                .into_iter()
+                .take(tulipix_music::yt_prefs::HOME_MAX)
+                .map(into_sub)
+                .collect()
+        } else {
+            pins.iter()
+                .filter_map(|pid| subs.iter().find(|x| &x.channel_id == pid))
+                .take(tulipix_music::yt_prefs::HOME_MAX)
+                .map(into_sub)
+                .collect()
+        };
+        rail.truncate(tulipix_music::yt_prefs::HOME_MAX);
+        st.yt_home_subs = rail;
+    }
+
+    if s.yt_channel_open {
+        if let Some(sub) = tulipix_music::youtube::store::list_subs(pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|x| x.channel_id == s.yt_channel_id)
+        {
+            st.yt_channel_sub = [
+                sub.video_count.map(|n| format!("{n} videos")),
+                sub.sub_count.map(|n| format!("{n} subscribers")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("  ·  ");
+        }
     }
 
     if s.yt_tab == "playlists" || s.yt_tab == "home" {
@@ -6239,5 +7687,34 @@ async fn fill_youtube(s: &Session, st: &mut MusicState) {
                 source_url: p.source_url.unwrap_or_default(),
             })
             .collect();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yt_progress_lines_parse() {
+        // Not assert_eq on the float: 42.3/100.0 is not bit-identical to 0.423.
+        let got = yt_dl_percent("[download]  42.3% of 120MiB at 3MiB/s").unwrap();
+        assert!((got - 0.423).abs() < 1e-9, "{got}");
+        assert_eq!(yt_dl_percent("[download] 100% of 120MiB"), Some(1.0));
+        assert_eq!(yt_dl_percent("[download]   0.0% of ~1.00MiB"), Some(0.0));
+        // Everything else yt-dlp writes on stdout must not move the bar.
+        assert_eq!(yt_dl_percent("[youtube] abc123: Downloading webpage"), None);
+        assert_eq!(yt_dl_percent("[download] Destination: /tmp/x.mkv"), None);
+        assert_eq!(yt_dl_percent("[Merger] Merging formats into \"x.mkv\""), None);
+    }
+
+    #[test]
+    fn channel_search_query_cannot_end_the_url() {
+        assert_eq!(urlish("two words"), "two+words");
+        // & and # would truncate the query; % would start an escape.
+        assert_eq!(urlish("rock & roll"), "rock+%26+roll");
+        assert_eq!(urlish("c#"), "c%23");
+        assert_eq!(urlish("100%"), "100%25");
+        assert_eq!(urlish("a/b?c"), "a%2Fb%3Fc");
+        assert_eq!(urlish("plain"), "plain");
     }
 }

@@ -559,9 +559,12 @@ fn main() -> Result<()> {
     // Add a freshly-picked folder straight into one music sub-section
     // (mymusic|podcasts|audiobooks|radio|youtube). The Add button is
     // section-scoped — whatever music tab is open is where the folder lands; no
-    // universal "which section?" popup. Audiobooks get metadata-gated flagging
-    // (np.p5.music.audiobook-detect): only files that look like audiobooks are
-    // kept (whole-folder fallback when none carry the metadata).
+    // universal "which section?" popup.
+    //
+    // The flag below is a best-effort head start for a folder that was already
+    // scanned once: on a first add there are no `track_meta` rows yet, and the
+    // pass that actually lands it is `apply_music_folder_sections`, at the end
+    // of the scan this kicks off.
     fn music_add_folder_to_section(window: &MainWindow, path: PathBuf, key: &str) {
         let path_str = path.display().to_string();
         set_folder_section(&path_str, key);
@@ -7946,8 +7949,14 @@ fn kick_section_scan(
                 // Once per scan, not on the periodic refresh: the scanned-roots
                 // list so a freshly added folder shows up with its count, and the
                 // tag extraction pass for tracks lacking them (np.p4.music.tags).
-                populate_folder_roots(&w);
-                ingest_music_tags(w.as_weak());
+                //
+                // The audiobook flag goes first and is awaited: a folder added to
+                // the Audiobooks section is tagged the instant it is picked, but
+                // `is_audiobook` is an UPDATE over rows that only exist now. Set
+                // it before anything reads them and the chapters never appear in
+                // My Music at all, rather than sitting there until the next
+                // rebuild happened to re-assert the tag.
+                apply_music_folder_sections(w.as_weak());
             }
             let model = w.get_library_rows();
             let mut rows: Vec<LibraryRow> = (0..model.row_count())
@@ -9944,12 +9953,29 @@ fn wire_music_metadata(window: &MainWindow) {
     // Reassign a folder to the next of the 5 music sections (np.p5.atmusic.folder-sections).
     let w = window.as_weak();
     window.on_music_folder_cycle_section(move |pos| {
-        let Some(w0) = w.upgrade() else { return; };
+        // Upgraded only to prove the window is still alive; the repaint happens
+        // back on the loop once the flag has actually been written.
+        let Some(_w0) = w.upgrade() else { return; };
         let Some(folder) = music_paths().lock().ok()
             .and_then(|g| g.get(pos as usize).and_then(|p| p.parent().map(|d| d.display().to_string()))) else { return; };
         let next = cycle_folder_section(&folder);
         tracing::info!(folder = %folder, section = %next, "music folder section reassigned");
-        populate_music_views(w0.as_weak());
+        // The tag alone moves nothing: `is_audiobook` is what every My Music
+        // query filters on. Without this, cycling INTO Audiobooks left the
+        // chapters in the songs list, and cycling back OUT of it never returned
+        // them -- the folder was tagged My Music and still invisible there.
+        let aud = next == "audiobooks";
+        let folder2 = folder.clone();
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Ok(pool) = pool_for("music").await {
+                let _ = tulipix_music::audiobooks::set_folder_flag(&pool, &folder2, aud).await;
+            }
+            let _ = weak.upgrade_in_event_loop(|w| {
+                populate_music_views(w.as_weak());
+                populate_audiobooks(&w);
+            });
+        });
     });
     // Player redesign — sleep timer set to a chosen interval (np.p4.music.sleep-timer).
     let w = window.as_weak();
@@ -12267,6 +12293,26 @@ fn wire_music_podcasts(window: &MainWindow) {
 /// Classify a watched folder, seed one library row + progress row per
 /// section that has matching files, and kick the scans that fill the tile
 /// models. Shared by the folder picker and the startup restore path.
+/// Apply the folder → music-section map to `is_audiobook`, then refresh the
+/// roots list and kick the tag ingest. Ordered, because the folder counts and
+/// every My Music view read the flag this sets.
+fn apply_music_folder_sections(weak: slint::Weak<MainWindow>) {
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("music").await {
+            let sections = load_folder_sections();
+            if let Err(e) =
+                tulipix_music::audiobooks::apply_folder_sections(&pool, &sections).await
+            {
+                tracing::warn!(error = %e, "audiobook section flags");
+            }
+        }
+        let _ = weak.upgrade_in_event_loop(|w| {
+            populate_folder_roots(&w);
+            ingest_music_tags(w.as_weak());
+        });
+    });
+}
+
 fn add_folder_path(window: &MainWindow, path: PathBuf) {
     let counts = classify_folder(&path);
     add_folder_counted(window, path, counts);

@@ -182,7 +182,7 @@ pub fn parse_itunes_duration(s: &str) -> Option<f64> {
 
 /// Crude HTML→text: drop tags, collapse whitespace, decode a few entities.
 /// Show notes are HTML; this keeps them readable in the transcript panel.
-fn strip_html(s: &str) -> String {
+pub fn strip_html(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_tag = false;
     for c in s.chars() {

@@ -17,6 +17,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../playback/audio_deck.dart';
+import '../../playback/video_layer.dart';
 import '../../src/rust/api/music.dart';
 import '../../shell/shell_controller.dart';
 import '../../shell/window.dart';
@@ -229,6 +230,31 @@ class MusicController extends ChangeNotifier {
         AudioDeck.instance.setProperty(name, value);
       case MusicEvent_AudioSeek(:final secs):
         AudioDeck.instance.seek(secs);
+      // The picture. Same layer the Videos section uses -- it wraps the whole
+      // app, so a music video keeps playing while you look at Photos, and a
+      // film and a music video are the one player rather than two.
+      case MusicEvent_VideoPlay(
+          :final token,
+          :final src,
+          :final startAt,
+          :final props
+        ):
+        videoRequest.value = VideoRequest(
+          token: token,
+          src: src,
+          startAt: startAt,
+          props: props,
+          // Reports go to the music half of the bridge, which resumes the
+          // audio at whatever frame the picture stopped on.
+          onEnded: (t, pos, dur) async {
+            await musicVideoEnded(token: t, pos: pos, dur: dur);
+            notifyListeners();
+          },
+        );
+        notifyListeners();
+      case MusicEvent_VideoStop():
+        videoRequest.value = null;
+        notifyListeners();
       case MusicEvent_Remote(:final action, :final value):
         _remote(action, value);
     }

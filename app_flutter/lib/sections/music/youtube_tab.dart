@@ -95,9 +95,54 @@ class _YoutubeTabState extends State<YoutubeTab> {
                       style:
                           TextStyle(fontSize: 12, color: context.tokens.nInk2)),
                 ),
+              // What is on the deck right now, as a picture. The Slint build
+              // calls this Watch current; it is the fastest path from "this
+              // song is good" to seeing the video.
+              if (c.now?.mode == 'youtube' && !st.ytWatching)
+                TextButton.icon(
+                  icon: const Icon(Icons.smart_display_outlined, size: 16),
+                  label: const Text('Watch this'),
+                  onPressed: () =>
+                      c.send(const MusicCmd.ytWatchCurrent()),
+                ),
+              if (st.ytWatching)
+                TextButton.icon(
+                  icon: const Icon(Icons.close, size: 16),
+                  label: const Text('Close the picture'),
+                  onPressed: () =>
+                      c.send(const MusicCmd.ytStopWatching()),
+                ),
+              // Which backend does the listing. Piped is faster and rate-limits
+              // less; yt-dlp always works. "auto" tries Piped and falls back.
+              PopupMenuButton<String>(
+                tooltip: 'Listing backend: ${st.ytFetcher}',
+                icon: const Icon(Icons.cloud_outlined, size: 18),
+                initialValue: st.ytFetcher,
+                onSelected: (v) => c.send(MusicCmd.ytSetFetcher(name: v)),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'auto', child: Text('Auto')),
+                  PopupMenuItem(value: 'piped', child: Text('Piped')),
+                  PopupMenuItem(value: 'ytdlp', child: Text('yt-dlp')),
+                ],
+              ),
+              IconButton(
+                iconSize: 18,
+                tooltip: st.ytHomeConnect
+                    ? 'Plain outlines on the Home rails'
+                    : 'Gradient outlines on the Home rails',
+                icon: Icon(st.ytHomeConnect
+                    ? Icons.gradient
+                    : Icons.gradient_outlined),
+                onPressed: () =>
+                    c.send(const MusicCmd.ytToggleHomeConnect()),
+              ),
+              const SizedBox(width: 8),
             ],
           ),
         ),
+        if (st.ytFetchBusy)
+          _FetchBar(label: st.ytFetchMsg, frac: st.ytFetchFrac),
+        if (st.ytJobs.isNotEmpty) _DlJobs(st: st),
         Expanded(child: _body(context, c, st)),
       ],
     );
@@ -138,6 +183,25 @@ class _YoutubeTabState extends State<YoutubeTab> {
           ),
         'downloads' => Column(
             children: [
+              Row(
+                children: [
+                  const SizedBox(width: 20),
+                  for (final m in const [
+                    ('new', 'Newest'),
+                    ('old', 'Oldest'),
+                    ('az', 'A–Z'),
+                  ])
+                    Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: SortChip(
+                        label: m.$2,
+                        active: st.ytDlSort == m.$1,
+                        onTap: () =>
+                            c.send(MusicCmd.ytSetDlSort(mode: m.$1)),
+                      ),
+                    ),
+                ],
+              ),
               _ClearBar(
                 label: 'Delete all downloads',
                 enabled: st.ytDownloads.isNotEmpty,
@@ -175,6 +239,283 @@ class _YoutubeTabState extends State<YoutubeTab> {
       };
 }
 
+/// The counts refresh — one yt-dlp spawn per channel, so forty channels is a
+/// minute of nothing without this.
+class _FetchBar extends StatelessWidget {
+  const _FetchBar({required this.label, required this.frac});
+
+  final String label;
+  final double frac;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: LinearProgressIndicator(
+                value: frac <= 0 ? null : frac.clamp(0.0, 1.0),
+                minHeight: 3,
+                backgroundColor: t.nHair,
+                valueColor: const AlwaysStoppedAnimation(Color(0xFFF97316)),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(label, style: TextStyle(fontSize: 11, color: t.nInk2)),
+        ],
+      ),
+    );
+  }
+}
+
+/// What yt-dlp is doing. A download used to be a button press with no visible
+/// consequence until a file appeared in another tab minutes later.
+class _DlJobs extends StatelessWidget {
+  const _DlJobs({required this.st});
+
+  final MusicState st;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final head = st.ytJobs.first;
+    final queued = st.ytJobs.length - 1;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+      child: Row(
+        children: [
+          const Icon(Icons.downloading, size: 16, color: Color(0xFFF43F5E)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  queued > 0
+                      ? '${head.title}   ·   $queued waiting'
+                      : head.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: t.nInk2),
+                ),
+                const SizedBox(height: 4),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(2),
+                  child: LinearProgressIndicator(
+                    // Indeterminate until yt-dlp's first percent line: it
+                    // spends the opening seconds resolving formats.
+                    value: head.frac <= 0 ? null : head.frac.clamp(0.0, 1.0),
+                    minHeight: 3,
+                    backgroundColor: t.nHair,
+                    valueColor: const AlwaysStoppedAnimation(Color(0xFFF43F5E)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text('${(head.frac * 100).round()}%',
+              style: TextStyle(fontSize: 11, color: t.nInk2)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Subscribe to a channel you already have the URL for, rather than having to
+/// find one of its videos first.
+Future<void> _addChannel(BuildContext context, MusicController c) async {
+  final text = TextEditingController();
+  final url = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Add a channel'),
+      content: SizedBox(
+        width: 460,
+        child: TextField(
+          controller: text,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Channel URL or @handle',
+            hintText: '@veritasium',
+          ),
+          onSubmitted: (v) => Navigator.pop(ctx, v),
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(
+            onPressed: () => Navigator.pop(ctx, text.text),
+            child: const Text('Add')),
+      ],
+    ),
+  );
+  final trimmed = url?.trim() ?? '';
+  if (trimmed.isNotEmpty) {
+    await c.send(MusicCmd.ytAddChannelUrl(url: trimmed));
+  }
+}
+
+/// Import a YouTube playlist by URL — ids and title in one go.
+Future<void> _importPlaylist(BuildContext context, MusicController c) async {
+  final text = TextEditingController();
+  final url = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Import a playlist'),
+      content: SizedBox(
+        width: 460,
+        child: TextField(
+          controller: text,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Playlist URL',
+            hintText: 'https://www.youtube.com/playlist?list=…',
+          ),
+          onSubmitted: (v) => Navigator.pop(ctx, v),
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(
+            onPressed: () => Navigator.pop(ctx, text.text),
+            child: const Text('Import')),
+      ],
+    ),
+  );
+  final trimmed = url?.trim() ?? '';
+  if (trimmed.isNotEmpty) {
+    await c.send(MusicCmd.ytImportPlaylistUrl(url: trimmed));
+  }
+}
+
+/// Watch rather than listen. Honours the saved height, asks when there is
+/// none — the same preference the download picker writes, because "what
+/// quality do you want" is one question however the file is used.
+Future<void> watchVideo(
+    BuildContext context, MusicController c, YtVideo v) async {
+  var res = c.state?.ytDefaultRes ?? kResUnset;
+  if (res == kResUnset) {
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Watch at'),
+        children: [
+          for (final o in const [
+            (1080, '1080p'),
+            (720, '720p'),
+            (480, '480p'),
+            (0, 'Best available'),
+          ])
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, o.$1),
+              child: Text(o.$2),
+            ),
+        ],
+      ),
+    );
+    if (picked == null) return;
+    res = picked;
+  }
+  // Audio-only is a download answer, not a watch one.
+  await c.send(MusicCmd.ytWatch(videoId: v.videoId, height: res < 0 ? 0 : res));
+}
+
+/// The saved default, as the menu label. Null when nothing is saved, so the
+/// caller falls back to "Download…" and the picker opens.
+String? qualityLabel(int? res) {
+  if (res == null || res == kResUnset) return null;
+  if (res < 0) return 'Download audio (Opus)';
+  if (res == 0) return 'Download best video';
+  return 'Download ${res}p';
+}
+
+/// `yt_prefs::RES_UNSET` — the value that means "ask every time".
+const int kResUnset = -999;
+
+/// The wire spelling `yt_download` expects.
+String qualityArg(int res) =>
+    res < 0 ? 'audio' : (res == 0 ? 'best' : '${res}p');
+
+/// Download honouring the saved default, asking only when there isn't one.
+Future<void> downloadWithQuality(
+    BuildContext context, MusicController c, YtVideo v) async {
+  final res = c.state?.ytDefaultRes ?? kResUnset;
+  if (res == kResUnset) {
+    await pickQuality(context, c, v);
+    return;
+  }
+  await c.send(MusicCmd.ytDownload(videoId: v.videoId, quality: qualityArg(res)));
+}
+
+/// The quality sheet: the same five the Slint picker offers, plus the tick
+/// that turns one of them into the default. `force` reopens it even when a
+/// default is saved, which is how you change your mind about one.
+Future<void> pickQuality(
+  BuildContext context,
+  MusicController c,
+  YtVideo v, {
+  bool force = false,
+}) async {
+  final saved = c.state?.ytDefaultRes ?? kResUnset;
+  var remember = false;
+  final picked = await showDialog<int>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) => SimpleDialog(
+        title: Text(v.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+        children: [
+          for (final o in const [
+            (1080, '1080p'),
+            (720, '720p'),
+            (480, '480p'),
+            (0, 'Best video'),
+            (-1, 'Audio only (Opus)'),
+          ])
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, o.$1),
+              child: Row(
+                children: [
+                  Expanded(child: Text(o.$2)),
+                  if (saved == o.$1)
+                    const Icon(Icons.check, size: 16),
+                ],
+              ),
+            ),
+          const Divider(height: 12),
+          CheckboxListTile(
+            dense: true,
+            value: remember,
+            onChanged: (x) => setLocal(() => remember = x ?? false),
+            title: const Text('Remember this choice'),
+          ),
+          if (saved != kResUnset)
+            SimpleDialogOption(
+              onPressed: () {
+                c.send(const MusicCmd.ytResetVideoPrefs());
+                Navigator.pop(ctx);
+              },
+              child: const Text('Forget the saved default'),
+            ),
+        ],
+      ),
+    ),
+  );
+  if (picked == null) return;
+  if (remember) {
+    await c.send(MusicCmd.ytSetDefaultRes(height: picked));
+  }
+  await c.send(
+      MusicCmd.ytDownload(videoId: v.videoId, quality: qualityArg(picked)));
+}
+
 class _Home extends StatelessWidget {
   const _Home({required this.controller, required this.st});
 
@@ -185,6 +526,7 @@ class _Home extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     if (st.ytResults.isEmpty &&
+        st.ytRecommended.isEmpty &&
         st.ytCached.isEmpty &&
         st.ytSubs.isEmpty &&
         st.ytDownloads.isEmpty) {
@@ -234,11 +576,36 @@ class _Home extends StatelessWidget {
           ),
           for (final v in st.ytResults)
             VideoRow(controller: controller, video: v),
+          if (st.ytResultsMore)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  icon: const Icon(Icons.expand_more, size: 18),
+                  label: const Text('Load more'),
+                  onPressed: () =>
+                      controller.send(const MusicCmd.ytSearchMore()),
+                ),
+              ),
+            ),
+        ] else if (st.ytRecommended.isNotEmpty) ...[
+          // Not a search: the newest thing from each channel you follow. This
+          // is what makes Home a feed rather than a blank search box.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 20, 24, 8),
+            child: Text('New from your channels',
+                style: TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w700, color: t.nInk)),
+          ),
+          for (final v in st.ytRecommended)
+            VideoRow(controller: controller, video: v),
         ],
         if (st.ytCached.isNotEmpty)
           Rail(
             title: 'Cached',
             height: 200,
+            connect: st.ytHomeConnect,
             action: (
               'See all',
               () => controller.send(const MusicCmd.ytSetTab(name: 'cached'))
@@ -248,17 +615,21 @@ class _Home extends StatelessWidget {
                 _VideoCard(controller: controller, video: v),
             ],
           ),
-        if (st.ytSubs.isNotEmpty)
+        // The rail is what you pinned; until you pin anything the bridge fills
+        // it with your most-followed channels, so it is never empty for the
+        // want of a feature nobody has found yet.
+        if (st.ytHomeSubs.isNotEmpty)
           Rail(
-            title: 'Channels',
+            title: st.ytHomeChannels.isEmpty ? 'Channels' : 'Pinned channels',
             height: 190,
+            connect: st.ytHomeConnect,
             action: (
               'See all',
               () => controller
                   .send(const MusicCmd.ytSetTab(name: 'subscriptions'))
             ),
             children: [
-              for (final s in st.ytSubs.take(10))
+              for (final s in st.ytHomeSubs)
                 MusicCard(
                   controller: controller,
                   title: s.title,
@@ -270,6 +641,11 @@ class _Home extends StatelessWidget {
                   fallback: Icons.person,
                   onTap: () => controller
                       .send(MusicCmd.ytOpenChannel(channelId: s.channelId)),
+                  onMenu: () => controller.send(
+                    st.ytHomeChannels.contains(s.channelId)
+                        ? MusicCmd.ytUnpinHome(channelId: s.channelId)
+                        : MusicCmd.ytPinHome(channelId: s.channelId),
+                  ),
                 ),
             ],
           ),
@@ -448,30 +824,44 @@ class VideoRow extends StatelessWidget {
                 ],
               ),
             ),
+            // One click, not a menu dive: watching is what half of YouTube is
+            // for and the audio deck is the other half.
+            IconButton(
+              iconSize: 18,
+              tooltip: 'Watch the video',
+              icon: const Icon(Icons.smart_display_outlined),
+              onPressed: () => watchVideo(context, controller, v),
+            ),
             PopupMenuButton<String>(
               iconSize: 18,
               tooltip: 'More',
               onSelected: (choice) async {
-                if (choice == 'remove') {
-                  onRemove?.call();
-                  return;
+                switch (choice) {
+                  case 'remove':
+                    onRemove?.call();
+                  case 'playlist':
+                    await _addToYtPlaylist(context, controller, v);
+                  case 'download':
+                    await downloadWithQuality(context, controller, v);
+                  case 'download-ask':
+                    await pickQuality(context, controller, v, force: true);
+                  case 'watch':
+                    await watchVideo(context, controller, v);
                 }
-                if (choice == 'playlist') {
-                  await _addToYtPlaylist(context, controller, v);
-                  return;
-                }
-                await controller.send(
-                    MusicCmd.ytDownload(videoId: v.videoId, quality: choice));
               },
               itemBuilder: (_) => [
                 const PopupMenuItem(
+                    value: 'watch', child: Text('Watch the video')),
+                const PopupMenuItem(
                     value: 'playlist', child: Text('Add to playlist…')),
+                PopupMenuItem(
+                  value: 'download',
+                  child: Text(qualityLabel(controller.state?.ytDefaultRes) ??
+                      'Download…'),
+                ),
+                // Always reachable, so a saved default is never a trap.
                 const PopupMenuItem(
-                    value: 'audio', child: Text('Download audio (Opus)')),
-                const PopupMenuItem(
-                    value: '1080p', child: Text('Download 1080p')),
-                const PopupMenuItem(
-                    value: '720p', child: Text('Download 720p')),
+                    value: 'download-ask', child: Text('Download at…')),
                 if (onRemove != null)
                   const PopupMenuItem(value: 'remove', child: Text('Remove')),
               ],
@@ -491,19 +881,50 @@ class _Subscriptions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (st.ytSubs.isEmpty) {
-      return const MusicEmpty(
-        icon: Icons.subscriptions_outlined,
-        title: 'No channels',
-        body: 'Open a channel from a search result and subscribe, or import '
-            "Google Takeout's subscriptions.csv.",
-      );
-    }
     return Column(
       children: [
         Row(
           children: [
+            const SizedBox(width: 20),
+            for (final m in const [
+              ('subscribers', 'Followers'),
+              ('videos', 'Videos'),
+              ('name', 'Name'),
+            ])
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: SortChip(
+                  label: m.$2,
+                  active: st.ytSubsSort == m.$1,
+                  dir: st.ytSubsSort == m.$1
+                      ? (st.ytSubsDir == 'desc' ? -1 : 1)
+                      : 0,
+                  onTap: () => st.ytSubsSort == m.$1
+                      ? controller.send(const MusicCmd.ytToggleSubsDir())
+                      : controller.send(MusicCmd.ytSetSubsSort(mode: m.$1)),
+                ),
+              ),
+            const SizedBox(width: 10),
+            // Channels you unsubscribed from stay in the table -- a Takeout
+            // import brings in hundreds and unsubscribing is how you thin it
+            // out, so getting back to one has to be possible.
+            MusicChip(
+              label: st.ytSubsFilter == 'unsub' ? 'Unsubscribed' : 'Subscribed',
+              icon: st.ytSubsFilter == 'unsub'
+                  ? Icons.person_off_outlined
+                  : Icons.how_to_reg,
+              active: st.ytSubsFilter == 'unsub',
+              tint: const Color(0xFFF43F5E),
+              tint2: const Color(0xFFF97316),
+              onTap: () =>
+                  controller.send(const MusicCmd.ytToggleSubsFilter()),
+            ),
             const Spacer(),
+            TextButton.icon(
+              icon: const Icon(Icons.person_add_alt, size: 16),
+              label: const Text('Add by URL'),
+              onPressed: () => _addChannel(context, controller),
+            ),
             TextButton.icon(
               icon: const Icon(Icons.upload_file, size: 16),
               label: const Text('Import subscriptions'),
@@ -525,9 +946,21 @@ class _Subscriptions extends StatelessWidget {
             const SizedBox(width: 12),
           ],
         ),
-        Expanded(
-          child: CardGrid(
-            min: 160,
+        if (st.ytSubs.isEmpty)
+          Expanded(
+            child: MusicEmpty(
+              icon: Icons.subscriptions_outlined,
+              title: st.ytSubsFilter == 'unsub'
+                  ? 'Nothing unsubscribed'
+                  : 'No channels',
+              body: 'Open a channel from a search result and subscribe, add '
+                  "one by URL, or import Google Takeout's subscriptions.csv.",
+            ),
+          )
+        else
+          Expanded(
+            child: CardGrid(
+              min: 160,
             children: [
               for (final s in st.ytSubs)
                 MusicCard(
@@ -545,8 +978,12 @@ class _Subscriptions extends StatelessWidget {
                   badge: s.subscribed ? null : 'unsubbed',
                   onTap: () => controller
                       .send(MusicCmd.ytOpenChannel(channelId: s.channelId)),
-                  onMenu: () =>
-                      controller.send(MusicCmd.ytUnsub(channelId: s.channelId)),
+                  onMenu: () => controller.send(
+                    s.subscribed
+                        ? MusicCmd.ytUnsub(channelId: s.channelId)
+                        : MusicCmd.ytSubscribe(
+                            channelId: s.channelId, title: s.title),
+                  ),
                 ),
             ],
           ),
@@ -574,6 +1011,11 @@ class _Playlists extends StatelessWidget {
         Row(
           children: [
             const Spacer(),
+            TextButton.icon(
+              icon: const Icon(Icons.link, size: 16),
+              label: const Text('Import from URL'),
+              onPressed: () => _importPlaylist(context, controller),
+            ),
             FilledButton.icon(
               icon: const Icon(Icons.add, size: 16),
               label: const Text('New playlist'),
@@ -600,13 +1042,22 @@ class _Playlists extends StatelessWidget {
                       MusicCard(
                         controller: controller,
                         title: p.name,
-                        subtitle: '${p.count} videos',
+                        // The card that is playing says so, which is the only
+                        // way to tell which playlist the deck is walking.
+                        subtitle: st.ytPlayingPlId == p.id
+                            ? '▶  playing  ·  ${p.count} videos'
+                            : '${p.count} videos',
                         artKind: 'yt',
                         artKey: p.cover,
                         direct: p.cover,
                         fallback: Icons.playlist_play,
+                        badge: st.ytPlayingPlId == p.id ? '▶' : null,
                         onTap: () => controller
                             .send(MusicCmd.ytOpenPlaylist(playlistId: p.id)),
+                        // Play-all straight off the card, as Slint's
+                        // `yt-playlist-play-all-id` does.
+                        onPlay: () => controller.send(
+                            MusicCmd.ytPlaylistPlayAll(playlistId: p.id)),
                         onMenu: () => controller
                             .send(MusicCmd.ytDeletePlaylist(playlistId: p.id)),
                       ),
@@ -706,14 +1157,29 @@ Future<void> _newPlaylist(BuildContext context, MusicController c) async {
   }
 }
 
-class _ChannelPage extends StatelessWidget {
+class _ChannelPage extends StatefulWidget {
   const _ChannelPage({required this.controller, required this.st});
 
   final MusicController controller;
   final MusicState st;
 
   @override
+  State<_ChannelPage> createState() => _ChannelPageState();
+}
+
+class _ChannelPageState extends State<_ChannelPage> {
+  final _search = TextEditingController();
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final st = widget.st;
     final t = context.tokens;
     return Column(
       children: [
@@ -738,11 +1204,23 @@ class _ChannelPage extends StatelessWidget {
                 fallback: Icons.person,
               ),
               const SizedBox(width: 12),
-              Text(st.ytChannelTitle,
-                  style: TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                      color: t.nInk)),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(st.ytChannelTitle,
+                      style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w700,
+                          color: t.nInk)),
+                  // "142 videos · 4.2M subscribers" -- the two numbers that
+                  // say whether a channel is worth following, which the port
+                  // had nowhere to put.
+                  if (st.ytChannelSub.isNotEmpty)
+                    Text(st.ytChannelSub,
+                        style: TextStyle(fontSize: 11, color: t.nInk2)),
+                ],
+              ),
               const SizedBox(width: 16),
               MusicChip(
                 label: 'Latest',
@@ -762,6 +1240,45 @@ class _ChannelPage extends StatelessWidget {
                     .send(const MusicCmd.ytChannelMode(mode: 'popular')),
               ),
               const Spacer(),
+              SizedBox(
+                width: 220,
+                child: TextField(
+                  controller: _search,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    prefixIcon: const Icon(Icons.search, size: 16),
+                    hintText: 'Search this channel',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: st.ytChannelQuery.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(Icons.close, size: 14),
+                            onPressed: () {
+                              _search.clear();
+                              controller.send(
+                                  const MusicCmd.ytChannelSearch(query: ''));
+                            },
+                          ),
+                  ),
+                  onSubmitted: (q) =>
+                      controller.send(MusicCmd.ytChannelSearch(query: q)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              IconButton(
+                iconSize: 18,
+                tooltip: st.ytHomeChannels.contains(st.ytChannelId)
+                    ? 'Unpin from Home'
+                    : 'Pin to the Home rail',
+                icon: Icon(st.ytHomeChannels.contains(st.ytChannelId)
+                    ? Icons.push_pin
+                    : Icons.push_pin_outlined),
+                onPressed: () => controller.send(
+                  st.ytHomeChannels.contains(st.ytChannelId)
+                      ? MusicCmd.ytUnpinHome(channelId: st.ytChannelId)
+                      : MusicCmd.ytPinHome(channelId: st.ytChannelId),
+                ),
+              ),
               if (st.ytChannelSubscribed)
                 OutlinedButton.icon(
                   icon: const Icon(Icons.check, size: 16),
@@ -782,21 +1299,44 @@ class _ChannelPage extends StatelessWidget {
             ],
           ),
         ),
-        Expanded(
-          child: st.ytChannelVideos.isEmpty
-              ? const MusicEmpty(
-                  icon: Icons.videocam_off_outlined,
-                  title: 'Nothing to list',
-                  body: 'yt-dlp could not reach this channel, or it has no '
-                      'public uploads.',
-                )
-              : ListView(
-                  children: [
-                    for (final v in st.ytChannelVideos)
-                      VideoRow(controller: controller, video: v),
-                  ],
-                ),
-        ),
+        Expanded(child: _channelBody(st, controller)),
+      ],
+    );
+  }
+
+  /// A search replaces the listing while it is active; clearing the box brings
+  /// the listing back, which is why the two lists are kept apart in state.
+  Widget _channelBody(MusicState st, MusicController controller) {
+    final searching = st.ytChannelQuery.isNotEmpty;
+    final videos = searching ? st.ytChannelResults : st.ytChannelVideos;
+    if (videos.isEmpty) {
+      return MusicEmpty(
+        icon: searching ? Icons.search_off : Icons.videocam_off_outlined,
+        title: searching ? 'No matches in this channel' : 'Nothing to list',
+        body: searching
+            ? 'Try fewer words, or clear the box to see the whole channel.'
+            : 'yt-dlp could not reach this channel, or it has no public '
+                'uploads.',
+      );
+    }
+    return ListView(
+      children: [
+        for (final v in videos) VideoRow(controller: controller, video: v),
+        // Only on the listing: the search is a fixed twenty hits, so there is
+        // no further page to ask for.
+        if (!searching && st.ytChannelHasNext)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                icon: const Icon(Icons.expand_more, size: 18),
+                label: Text('Load more  ·  ${videos.length} so far'),
+                onPressed: () =>
+                    controller.send(const MusicCmd.ytChannelLoadMore()),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -829,7 +1369,32 @@ class _PlaylistPage extends StatelessWidget {
                       fontSize: 17,
                       fontWeight: FontWeight.w700,
                       color: t.nInk)),
+              const SizedBox(width: 16),
+              for (final m in const [
+                ('default', 'Playlist order'),
+                ('title', 'Title'),
+                ('duration', 'Length'),
+              ])
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: SortChip(
+                    label: m.$2,
+                    active: st.ytPlaylistSort == m.$1,
+                    onTap: () => controller
+                        .send(MusicCmd.ytSetPlaylistSort(mode: m.$1)),
+                  ),
+                ),
               const Spacer(),
+              FilledButton.icon(
+                icon: const Icon(Icons.play_arrow, size: 18),
+                label: const Text('Play all'),
+                onPressed: st.ytPlaylistVideos.isEmpty
+                    ? null
+                    : () => controller.send(MusicCmd.ytPlaylistPlayAll(
+                          playlistId: st.ytPlaylistId,
+                        )),
+              ),
+              const SizedBox(width: 12),
               Text('${st.ytPlaylistVideos.length} videos',
                   style: TextStyle(fontSize: 12, color: t.nInk2)),
               const SizedBox(width: 16),

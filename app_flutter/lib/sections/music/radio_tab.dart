@@ -80,18 +80,25 @@ class _RadioTabState extends State<RadioTab> {
       return _StationList(controller: c, st: st, title: st.radioCatTitle);
     }
     if (st.radioTab == 'home') {
-      // 240, not 160. A category tile is an emoji, a name and a count -- three
-      // things and a lot of air -- and at 160 a wide window drew eleven columns
-      // of mostly nothing. Six or seven big ones read as a menu.
-      return CardGrid(
-        min: 240,
-        children: [
-          for (var i = 0; i < st.radioCategories.length; i++)
-            _CategoryTile(
-              category: st.radioCategories[i],
-              onTap: () => c.send(MusicCmd.radioSetGenre(index: i)),
-            ),
-        ],
+      // Five columns, pinned -- `RadioCatGrid` in ui/page_music.slint hardcodes
+      // `cols: 5` and squares the cell (`ch: cw`), so the fifteen presets are
+      // always a 5x3 block. A max-extent grid reflowed to eleven skinny columns
+      // on a wide window and three on a narrow one, which is why the port never
+      // looked like the same page.
+      return SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+        child: MusicGrid(
+          count: st.radioCategories.length,
+          minCols: 5,
+          maxCols: 5,
+          // The label lives inside the tile here, not under it.
+          labelHeight: 0,
+          builder: (_, i) => _CategoryTile(
+            category: st.radioCategories[i],
+            index: i,
+            onTap: () => c.send(MusicCmd.radioSetGenre(index: i)),
+          ),
+        ),
       );
     }
     return _StationList(
@@ -186,46 +193,161 @@ class _RefreshPill extends StatelessWidget {
   }
 }
 
-class _CategoryTile extends StatelessWidget {
-  const _CategoryTile({required this.category, required this.onTap});
+/// One preset tile in the 5x3 browse block.
+///
+/// `RadioCatGrid` gives every tile one of six gradients by `i % 6` and spends
+/// it twice: a wash on hover, and the ring around the station count. Without
+/// the index the port had fifteen identical grey cards.
+class _CategoryTile extends StatefulWidget {
+  const _CategoryTile({
+    required this.category,
+    required this.index,
+    required this.onTap,
+  });
+
+  static const List<List<Color>> _grads = [
+    [Color(0xFF14B8A6), Color(0xFF0EA5E9)],
+    [Color(0xFFF59E0B), Color(0xFFEF4444)],
+    [Color(0xFF8B5CF6), Color(0xFFEC4899)],
+    [Color(0xFF22C55E), Color(0xFF14B8A6)],
+    [Color(0xFF3B82F6), Color(0xFF8B5CF6)],
+    [Color(0xFFEC4899), Color(0xFFF59E0B)],
+  ];
 
   final RadioCategory category;
+  final int index;
   final VoidCallback onTap;
+
+  @override
+  State<_CategoryTile> createState() => _CategoryTileState();
+}
+
+class _CategoryTileState extends State<_CategoryTile> {
+  bool _hover = false;
 
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(Tokens.radiusMd),
-      child: Container(
-        decoration: BoxDecoration(
-          color: t.nCard,
-          borderRadius: BorderRadius.circular(Tokens.radiusMd),
-          border: Border.all(color: t.nHair),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(category.icon, style: const TextStyle(fontSize: 48)),
-            const SizedBox(height: 10),
-            Text(category.label,
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontFamily: Tokens.fontFamily,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                    color: t.nInk)),
-            const SizedBox(height: 2),
-            Text(
-              // Zero means "never fetched", not "no stations" — Refresh is
-              // what fills the cache, and saying so is more useful than "0".
-              category.count > 0 ? '${category.count} stations' : 'not cached',
-              style: TextStyle(fontSize: 12, color: t.nInk2),
+    final g = _CategoryTile._grads[widget.index % 6];
+    final grad = LinearGradient(
+      colors: g,
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+    );
+    return Padding(
+      padding: const EdgeInsets.all(6),
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: AnimatedContainer(
+          duration: t.reduceMotion
+              ? Duration.zero
+              : const Duration(milliseconds: 140),
+          decoration: BoxDecoration(
+            color: t.nCard,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: _hover ? const Color(0x8014B8A6) : t.nHair,
             ),
-          ],
+            boxShadow: _hover
+                ? const [
+                    BoxShadow(color: Color(0x3314B8A6), blurRadius: 18),
+                  ]
+                : const [],
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              AnimatedOpacity(
+                duration: t.reduceMotion
+                    ? Duration.zero
+                    : const Duration(milliseconds: 140),
+                opacity: _hover ? 0.16 : 0,
+                child: DecoratedBox(decoration: BoxDecoration(gradient: grad)),
+              ),
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: widget.onTap,
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(widget.category.icon,
+                            style: const TextStyle(fontSize: 42)),
+                        const SizedBox(height: 10),
+                        Text(
+                          widget.category.label,
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontFamily: Tokens.fontFamily,
+                              fontSize: 21,
+                              fontWeight: FontWeight.w800,
+                              height: 1.1,
+                              color: t.nInk),
+                        ),
+                        const SizedBox(height: 10),
+                        _CountPill(
+                          // Zero means "never fetched", not "no stations" --
+                          // Refresh is what fills the cache.
+                          text: widget.category.count > 0
+                              ? '${widget.category.count} stations'
+                              : 'tap to load',
+                          gradient: grad,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The gradient-ringed count pill. Light theme fills it and goes white-on-
+/// gradient; dark keeps the card colour inside the ring, as in the Slint one.
+class _CountPill extends StatelessWidget {
+  const _CountPill({required this.text, required this.gradient});
+
+  final String text;
+  final Gradient gradient;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      height: 30,
+      padding: const EdgeInsets.all(1.5),
+      decoration:
+          BoxDecoration(gradient: gradient, borderRadius: BorderRadius.circular(15)),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: t.dark ? t.nCard : Colors.transparent,
+          borderRadius: BorderRadius.circular(13.5),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: Center(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontFamily: Tokens.fontFamily,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: t.dark ? t.nInk2 : Colors.white,
+              ),
+            ),
+          ),
         ),
       ),
     );
