@@ -325,37 +325,63 @@ class _ToolchainButton extends StatelessWidget {
       ),
       onPressed: () => showDialog<void>(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Toolchain'),
-          content: SizedBox(
-            width: 520,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final s in statuses)
-                  ListTile(
-                    dense: true,
-                    leading: Icon(
-                      s.available ? Icons.check_circle : Icons.cancel,
-                      color:
-                          s.available ? const Color(0xFF2FBF71) : Tokens.error,
-                      size: 18,
+        // AnimatedBuilder, or the dialog is a photograph: `showDialog`'s
+        // builder runs once, so an Update that changes the version would leave
+        // the row still showing the old one.
+        builder: (ctx) => AnimatedBuilder(
+          animation: controller,
+          builder: (ctx, _) => AlertDialog(
+            title: const Text('Toolchain'),
+            content: SizedBox(
+              width: 520,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final s in statuses)
+                    ListTile(
+                      dense: true,
+                      leading: Icon(
+                        s.available ? Icons.check_circle : Icons.cancel,
+                        color: s.available
+                            ? const Color(0xFF2FBF71)
+                            : Tokens.error,
+                        size: 18,
+                      ),
+                      title: Text(s.name),
+                      // The version, where the tool reports one. yt-dlp's is the
+                      // number that matters: a download failing with 403 is
+                      // nearly always a binary some weeks old, and the row used
+                      // to say only "bundled".
+                      subtitle: Text(
+                        s.version.isEmpty
+                            ? s.detail
+                            : '${s.detail} · ${s.version}',
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            s.source,
+                            style: TextStyle(
+                                fontSize: 11, color: context.tokens.nInk2),
+                          ),
+                          if (s.updatable && s.available) ...[
+                            const SizedBox(width: 8),
+                            _UpdateToolButton(
+                                controller: controller, name: s.name),
+                          ],
+                        ],
+                      ),
                     ),
-                    title: Text(s.name),
-                    subtitle: Text(s.detail),
-                    trailing: Text(
-                      s.source,
-                      style:
-                          TextStyle(fontSize: 11, color: context.tokens.nInk2),
-                    ),
-                  ),
-              ],
+                ],
+              ),
             ),
+            actions: [
+              FilledButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Done')),
+            ],
           ),
-          actions: [
-            FilledButton(
-                onPressed: () => Navigator.pop(ctx), child: const Text('Done')),
-          ],
         ),
       ),
     );
@@ -448,4 +474,63 @@ class _ErrorBanner extends StatelessWidget {
           ],
         ),
       );
+}
+
+/// "Update" beside a tool that has its own release channel — yt-dlp, which
+/// breaks on its own schedule as sites change.
+///
+/// The button reports the outcome by comparing the version before and after:
+/// the bridge deliberately writes nothing to the session on success, because
+/// the only message channel there is drawn as a red error banner.
+class _UpdateToolButton extends StatefulWidget {
+  const _UpdateToolButton({required this.controller, required this.name});
+
+  final ToolsController controller;
+  final String name;
+
+  @override
+  State<_UpdateToolButton> createState() => _UpdateToolButtonState();
+}
+
+class _UpdateToolButtonState extends State<_UpdateToolButton> {
+  bool _busy = false;
+
+  String? _versionOf(String name) {
+    for (final s in widget.controller.state?.statuses ?? const <ToolStatus>[]) {
+      if (s.name == name) return s.version;
+    }
+    return null;
+  }
+
+  Future<void> _run() async {
+    final before = _versionOf(widget.name);
+    setState(() => _busy = true);
+    await widget.controller.send(ToolsCmd.updateTool(name: widget.name));
+    if (!mounted) return;
+    setState(() => _busy = false);
+    final after = _versionOf(widget.name);
+    final err = widget.controller.state?.error ?? '';
+    final message = err.isNotEmpty
+        ? err
+        : (after != null && after != before && after.isNotEmpty
+            ? '${widget.name} updated to $after'
+            : '${widget.name} is already up to date');
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_busy) {
+      return const SizedBox(
+        width: 18,
+        height: 18,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+    return TextButton(
+      onPressed: _run,
+      child: const Text('Update', style: TextStyle(fontSize: 11.5)),
+    );
+  }
 }

@@ -6272,10 +6272,10 @@ pub async fn yt_dlp_fetch_audio(id: &str, dir: &std::path::Path) -> Option<Strin
     if out.exists() { return Some(out.to_string_lossy().into_owned()); }
     let url = format!("https://www.youtube.com/watch?v={id}");
     let tmpl = dir.join(format!("{id}.%(ext)s"));
-    let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-    let _ = tokio::process::Command::new(bin)
+    let _ = tokio::process::Command::new(tulipix_core::ytdlp::bin())
         .arg("-f").arg("bestaudio").arg("-x").arg("--audio-format").arg("opus")
-        .arg("--no-playlist").arg("-o").arg(&tmpl).arg(&url).no_window().status().await;
+        .arg("--no-playlist").args(tulipix_core::ytdlp::common_args())
+        .arg("-o").arg(&tmpl).arg(&url).no_window().status().await;
     if out.exists() { Some(out.to_string_lossy().into_owned()) } else { None }
 }
 
@@ -6284,12 +6284,18 @@ pub async fn yt_dlp_fetch_audio(id: &str, dir: &std::path::Path) -> Option<Strin
 /// background (np.p4.music.youtube — instant audio, video-style streaming).
 pub async fn yt_dlp_stream_url(id: &str) -> Option<String> {
     let url = format!("https://www.youtube.com/watch?v={id}");
-    let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-    let out = tokio::process::Command::new(bin)
-        .arg("-g").arg("-f").arg("bestaudio/best").arg("--no-playlist").arg(&url)
+    let out = tokio::process::Command::new(tulipix_core::ytdlp::bin())
+        .arg("-g").arg("-f").arg("bestaudio/best").arg("--no-playlist")
+        .args(tulipix_core::ytdlp::common_args()).arg(&url)
         .no_window()
         .output().await.ok()?;
-    if !out.status.success() { return None; }
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if tulipix_core::ytdlp::is_access_error(&stderr) {
+            tracing::warn!(%stderr, "youtube: yt-dlp was refused — update it, or set cookies");
+        }
+        return None;
+    }
     String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string())
         .find(|l| !l.is_empty())
 }
@@ -6397,9 +6403,9 @@ pub async fn yt_dl_run(job: &YtDlJobData, dir: &std::path::Path, weak: &slint::W
         else { format!("{}p", job.height) };
     let stem = format!("{}.{}", job.id, suffix);
     let tmpl = dir.join(format!("{}.%(ext)s", stem));
-    let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-    let mut cmd = tokio::process::Command::new(bin);
+    let mut cmd = tokio::process::Command::new(tulipix_core::ytdlp::bin());
     cmd.no_window();
+    cmd.args(tulipix_core::ytdlp::common_args());
     let expected = if job.height < 0 {
         cmd.arg("-f").arg("bestaudio").arg("-x").arg("--audio-format").arg("opus");
         dir.join(format!("{}.opus", stem))
@@ -6455,8 +6461,16 @@ pub async fn yt_dl_run(job: &YtDlJobData, dir: &std::path::Path, weak: &slint::W
 
 // ── yt-dlp browsing backend (reliable, replaces flaky Piped at runtime) ──────
 pub async fn ytdlp_json(args: Vec<String>) -> Option<serde_json::Value> {
-    let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-    let out = tokio::process::Command::new(bin).args(&args).no_window().output().await.ok()?;
+    let out = tokio::process::Command::new(tulipix_core::ytdlp::bin())
+        .args(tulipix_core::ytdlp::common_args())
+        .args(&args)
+        .no_window().output().await.ok()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if tulipix_core::ytdlp::is_access_error(&stderr) {
+            tracing::warn!(%stderr, "youtube: yt-dlp was refused — update it, or set cookies");
+        }
+    }
     serde_json::from_slice(&out.stdout).ok()
 }
 
@@ -6782,8 +6796,10 @@ pub fn yt_watch_video(weak: slint::Weak<MainWindow>, id: String, height: i64, st
     tokio::runtime::Handle::current().spawn(async move {
         let fmt = if height <= 0 { "best".to_string() } else { format!("best[height<=?{height}]/best") };
         let url = format!("https://www.youtube.com/watch?v={id}");
-        let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-        let stream = match tokio::process::Command::new(bin).arg("-g").arg("-f").arg(&fmt).arg("--no-playlist").arg(&url).no_window().output().await {
+        let stream = match tokio::process::Command::new(tulipix_core::ytdlp::bin())
+            .arg("-g").arg("-f").arg(&fmt).arg("--no-playlist")
+            .args(tulipix_core::ytdlp::common_args()).arg(&url)
+            .no_window().output().await {
             Ok(o) => String::from_utf8_lossy(&o.stdout).lines().next().map(|l| l.to_string()).filter(|l| !l.is_empty()),
             Err(_) => None,
         };

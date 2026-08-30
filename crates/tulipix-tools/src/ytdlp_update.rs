@@ -1,38 +1,32 @@
-//! `np.p4.tools.ytdlp-update` — in-app yt-dlp self-update.
+//! `np.p4.tools.ytdlp-update` — the Tools section's view of the yt-dlp
+//! self-update.
 //!
-//! yt-dlp breaks often as sites change, so it updates on its own channel,
-//! separate from app updates. This owns the `--update`/`--version` argv, the
-//! "is a check due?" timer, and a semantic-ish version comparison so we only
-//! flag a newer build.
+//! The version arithmetic and the weekly timer moved to
+//! `tulipix_core::ytdlp`, because the updater that needs them lives in
+//! `tulipix-core` and this crate sits above it. They are re-exported here so
+//! the Tools call sites and their tests keep the names they had.
+//!
+//! What stays: the argv for yt-dlp's *own* `-U`, which is a different thing
+//! from the app's updater and is kept for the one case it still suits — a
+//! yt-dlp the user installed themselves, on PATH, that they would rather have
+//! update itself in place.
 
-/// argv to print the installed version.
-pub fn version_args() -> Vec<String> { vec!["--version".into()] }
+pub use tulipix_core::ytdlp::{CHECK_INTERVAL_S, is_check_due, is_newer, version_args};
 
-/// argv to self-update (optionally to a channel like "nightly").
+/// argv for yt-dlp's built-in self-update (optionally to a channel like
+/// "nightly").
+///
+/// Not what the app's Tools button runs any more. `-U` overwrites the running
+/// binary in place, which fails silently on a packaged install where
+/// `resources/bin/` is not writable — and failing silently is exactly how the
+/// bundled copy went eight weeks stale. `tulipix_core::updater::update_ytdlp_now`
+/// downloads to a location it has checked it can write, so that is what the
+/// button calls.
 pub fn update_args(channel: Option<&str>) -> Vec<String> {
     match channel {
         Some(c) => vec!["--update-to".into(), c.into()],
         None => vec!["-U".into()],
     }
-}
-
-pub const CHECK_INTERVAL_S: i64 = 7 * 86_400; // weekly
-
-pub fn is_check_due(last_check_unix: i64, now_unix: i64) -> bool {
-    now_unix >= last_check_unix + CHECK_INTERVAL_S
-}
-
-/// Is `remote` newer than `local`? yt-dlp versions are date-based
-/// `YYYY.MM.DD[.N]`; compare component-wise numerically.
-pub fn is_newer(local: &str, remote: &str) -> bool {
-    fn parts(v: &str) -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() }
-    let (l, r) = (parts(local), parts(remote));
-    for i in 0..l.len().max(r.len()) {
-        let a = l.get(i).copied().unwrap_or(0);
-        let b = r.get(i).copied().unwrap_or(0);
-        if b != a { return b > a; }
-    }
-    false
 }
 
 #[cfg(test)]

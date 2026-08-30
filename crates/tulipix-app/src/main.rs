@@ -338,6 +338,17 @@ fn main() -> Result<()> {
         tracing::info!("factory reset: all app data cleared on startup");
     }
 
+    // yt-dlp goes stale on its own schedule: sites change, and a binary a few
+    // weeks old starts answering 403 on downloads that worked yesterday. This
+    // is the weekly check — background thread, at most one network call a week,
+    // and every failure is a log line rather than something in the user's way.
+    //
+    // After the factory reset, not before: that arm deletes the data directory
+    // this writes its update into and the settings file it keeps its timer in,
+    // and a background thread racing an `rm -rf` of its own working directory
+    // is not a race worth having.
+    tulipix_core::updater::spawn_ytdlp_update();
+
     tulipix_platform::init_window_chrome();
 
     #[cfg(feature = "dev-reload")]
@@ -3631,6 +3642,10 @@ fn wire_settings_panels(window: &MainWindow) {
         if key.is_empty() { return; }
         match tulipix_core::api_keys::store(&service, &key) {
             Ok(()) => {
+                // yt-dlp's cookie flags are cached for the session (the keyring
+                // read is a D-Bus hop and sits on every listing now), so a new
+                // value has to be published or it takes until the next launch.
+                tulipix_core::ytdlp::forget_cookies();
                 row.user_key_set = true;
                 row.use_app_default = false;
                 row.editing = false;
@@ -3654,6 +3669,7 @@ fn wire_settings_panels(window: &MainWindow) {
         let Some(mut row) = model.row_data(i as usize) else { return; };
         let service = row.service.to_string();
         let _ = tulipix_core::api_keys::delete(&service);
+        tulipix_core::ytdlp::forget_cookies();
         row.user_key_set = false;
         row.use_app_default = true;
         row.editing = false;
@@ -6438,7 +6454,12 @@ fn seed_settings_panels(w: &MainWindow) {
         act("tools-dir-browse", "Choose tools directory", "Pick the folder containing your external tool binaries", "Browse…"),
         act("tools-dir-reset", "Reset tools directory", "Clear the custom folder and fall back to the app's bundled binaries + system PATH", "Reset"),
         tool_row("ffmpeg"), tool_row("ffprobe"), tool_row("rclone"),
-        tool_row("yt-dlp"), tool_row("whisper-cli"), tool_row("mpv"),
+        tool_row("yt-dlp"),
+        tog(&s, tulipix_core::ytdlp::AUTO_UPDATE_FLAG, true, "Keep yt-dlp up to date",
+            "Checks weekly. Sites change constantly and a yt-dlp a few weeks old starts failing downloads with 403"),
+        txt(&s, "ytdlp.player-clients", "yt-dlp player clients",
+            "Advanced, blank = yt-dlp's own defaults. Only set this if a yt-dlp issue tells you to, e.g. default,tv,android"),
+        tool_row("whisper-cli"), tool_row("mpv"),
         stat("ggml-tiny model", ggml_label, ggml_state),
         tool_row("exiftool"),
         hdr("PLATFORM INTEGRATIONS"),
@@ -6878,15 +6899,32 @@ fn rss_mb() -> u64 {
 
 // bundled_bin_dir / bundled_present / on_path moved to the tulipix-common crate.
 /// Status row for a CLI tool: user tools-dir > bundled > system > missing.
+/// Where one external tool is coming from, in the order the app resolves:
+/// the override folder, then the app's own updated copy, then the bundled copy,
+/// then PATH.
+///
+/// yt-dlp additionally prints its version, because that is the number anyone
+/// looking at this row is there to check: a download failing with 403 is nearly
+/// always a binary some weeks old, and "Bundled" never said that.
 fn tool_row(name: &str) -> SettingItem {
     let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
+    let file = format!("{name}{ext}");
+    let version = if name == "yt-dlp" { tulipix_core::ytdlp::installed_version() } else { None };
+    let shown = |source: &str| -> String {
+        match &version {
+            Some(v) => format!("{source} · {v}"),
+            None => source.to_string(),
+        }
+    };
     let in_tools_dir = tulipix_core::settings::Settings::load().ok()
         .map(|s| s.text("tools.bin-dir")).filter(|d| !d.trim().is_empty())
-        .map(|d| std::path::Path::new(d.trim()).join(format!("{name}{ext}")).exists())
+        .map(|d| std::path::Path::new(d.trim()).join(&file).exists())
         .unwrap_or(false);
-    if in_tools_dir { stat(name, "Tools directory", "ok") }
-    else if bundled_present(name) { stat(name, "Bundled", "ok") }
-    else if on_path(name) || on_path(&format!("{name}{ext}")) { stat(name, "System", "warn") }
+    let updated = tulipix_core::ytdlp::managed_dir().is_some_and(|d| d.join(&file).exists());
+    if in_tools_dir { stat(name, &shown("Tools directory"), "ok") }
+    else if updated { stat(name, &shown("Updated"), "ok") }
+    else if bundled_present(name) { stat(name, &shown("Bundled"), "ok") }
+    else if on_path(name) || on_path(&file) { stat(name, &shown("System"), "warn") }
     else { stat(name, "Missing", "error") }
 }
 

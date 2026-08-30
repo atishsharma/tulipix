@@ -195,6 +195,21 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
             let out_template = s(spec, "out_template").unwrap_or_else(|| "%(title)s.%(ext)s".into());
             let dl = download_spec(spec, url, out_template);
             let mut args = dl.args();
+            // The one choke point for all three download tools: the user's
+            // cookies and any player-client override, applied here so no
+            // front-end has to remember to. `DownloadSpec::args` stays pure and
+            // testable; only a job that named its own browser keeps that
+            // instead — an explicit per-job choice outranks the global one.
+            //
+            // Spliced in at the FRONT, never appended: `DownloadSpec::args`
+            // puts the URL last and sec-tools reads `args.last()` to name the
+            // queue row after the video. Options may sit anywhere before it.
+            let mut extra = Vec::new();
+            if dl.cookies_from.is_none() {
+                extra.extend(tulipix_core::ytdlp::cookie_args());
+            }
+            extra.extend(tulipix_core::ytdlp::player_client_args());
+            args.splice(0..0, extra);
             match kind {
                 "download_live" => args.insert(0, "--live-from-start".into()),
                 // A watch?v=…&list=… URL must not pull the whole playlist in the

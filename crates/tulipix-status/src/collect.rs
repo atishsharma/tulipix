@@ -884,6 +884,15 @@ async fn tools_card(t: i64) -> Sec {
         (n, None) => format!("{n} jobs failed in the last 24 hours"),
     };
 
+    // Off the runtime thread: this spawns `yt-dlp --version`, and a PyInstaller
+    // binary takes a couple of hundred milliseconds to start. The other rows
+    // here only stat PATH, which is why they can stay inline. Cached after the
+    // first read, so the cost is once per session.
+    let ytdlp_version = tokio::task::spawn_blocking(tulipix_core::ytdlp::installed_version)
+        .await
+        .ok()
+        .flatten();
+
     let mut s = Sec::new(
         card("tools", "Tools", "cyan", level, &status,
             vec![
@@ -905,8 +914,15 @@ async fn tools_card(t: i64) -> Sec {
                 grp("Binaries", vec![
                     row("ffmpeg", if which("ffmpeg") { "On PATH" } else { "Not found" },
                         if which("ffmpeg") { "g" } else { "rd" }),
-                    row("yt-dlp", if which("yt-dlp") { "On PATH" } else { "Not found" },
-                        if which("yt-dlp") { "g" } else { "rd" }),
+                    // The version, not "On PATH". This row exists to answer
+                    // "why did my download fail", and the answer is nearly
+                    // always a binary some weeks old — which "On PATH" never
+                    // said. It also asked the wrong question: the app resolves
+                    // its own copy first and only falls back to PATH.
+                    match &ytdlp_version {
+                        Some(v) => row("yt-dlp", v.clone(), "g"),
+                        None => row("yt-dlp", "Not found", "rd"),
+                    },
                     row("rclone", if which("rclone") { "On PATH" } else { "Not found" },
                         if which("rclone") { "g" } else { "rd" }),
                     row("mpv", if which("mpv") { "On PATH" } else { "Not found" },

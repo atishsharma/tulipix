@@ -22,23 +22,7 @@ fn search_query(track: &Track) -> String {
 }
 
 fn ytdlp_bin() -> PathBuf {
-    tulipix_core::thumbs::tool_bin("yt-dlp")
-}
-
-/// yt-dlp cookie flags from the stored `ytdlp_cookies` setting: a cookies.txt
-/// path -> `--cookies <path>`, otherwise a browser name -> `--cookies-from-browser`.
-fn cookie_args() -> Vec<String> {
-    match tulipix_core::api_keys::fetch("ytdlp_cookies") {
-        Ok(Some(v)) if !v.trim().is_empty() => {
-            let v = v.trim().to_string();
-            if std::path::Path::new(&v).is_file() {
-                vec!["--cookies".into(), v]
-            } else {
-                vec!["--cookies-from-browser".into(), v]
-            }
-        }
-        _ => Vec::new(),
-    }
+    tulipix_core::ytdlp::bin()
 }
 
 /// Download one track's audio into `dest` as Opus. Returns the produced path.
@@ -75,12 +59,8 @@ async fn download_audio(
         if bitrate > 0 && matches!(format, "opus" | "m4a" | "mp3") {
             cmd.args(["--audio-quality", &format!("{bitrate}K")]);
         }
-        cmd
-            // Threads per download — parallel fragment downloads for this track.
-            .args(["--concurrent-fragments", &threads.max(1).to_string()])
-            // Rotate player clients — helps dodge YouTube's "confirm you're not a
-            // bot" gate that hits the default web client.
-            .args(["--extractor-args", "youtube:player_client=default,tv,android"]);
+        // Threads per download — parallel fragment downloads for this track.
+        cmd.args(["--concurrent-fragments", &threads.max(1).to_string()]);
         // NOTE: cover art is embedded by write_tags (below) from each provider's
         // high-res artwork_url — Spotify/Apple/YT-Music square art, or a YouTube
         // video's highest-quality thumbnail. yt-dlp's own --embed-thumbnail is
@@ -93,10 +73,11 @@ async fn download_audio(
         if ffmpeg.exists() {
             cmd.arg("--ffmpeg-location").arg(&ffmpeg);
         }
-        // Optional cookies (Settings → "yt-dlp cookies"): a cookies.txt path or a
-        // browser name for --cookies-from-browser. The only reliable way past
-        // YouTube's bot check.
-        for a in cookie_args() {
+        // Cookies (Settings → "yt-dlp cookies") and any player-client override,
+        // from the one place that knows about both. The client rotation this
+        // used to hardcode is off by default now — see
+        // `tulipix_core::ytdlp::player_client_args`.
+        for a in tulipix_core::ytdlp::common_args() {
             cmd.arg(a);
         }
         cmd.arg("-o").arg(&out_tmpl);
@@ -120,11 +101,12 @@ async fn download_audio(
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 tracing::warn!(%stderr, attempt, "mdl: yt-dlp exited non-zero");
-                // The bot check never clears by retrying — fail fast.
-                if stderr.contains("confirm you") || stderr.contains("not a bot") || stderr.contains("Sign in") {
-                    bail!("YouTube bot check — set browser cookies in Settings → yt-dlp cookies");
+                // A refusal never clears by retrying — fail fast, and say the
+                // two things that actually fix it.
+                if tulipix_core::ytdlp::is_access_error(&stderr) {
+                    bail!("{}", tulipix_core::ytdlp::friendly_error(&stderr));
                 }
-                last_err = anyhow!("yt-dlp: {}", stderr.lines().last().unwrap_or("failed").trim().to_string());
+                last_err = anyhow!("yt-dlp: {}", tulipix_core::ytdlp::friendly_error(&stderr));
             }
         }
         if attempt < MAX_TRIES {

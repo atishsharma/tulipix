@@ -17,6 +17,10 @@ dev-reload = ["tulipix-ui/dev-reload"]
 slint.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
+# The yt-dlp self-update reports through the same channel every other crate
+# diagnoses itself on; a failed update that says nothing anywhere is how the
+# bundled binary went stale unnoticed in the first place.
+tracing.workspace = true
 sqlx = { workspace = true }
 serde_json.workspace = true
 walkdir = "2"

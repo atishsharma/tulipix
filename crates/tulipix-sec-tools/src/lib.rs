@@ -614,7 +614,7 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
             if !status.success() { anyhow::bail!("ffmpeg failed: {}", truncate_msg(&err)); }
         }
         Step::YtDlp { args } => {
-            let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
+            let bin = tulipix_core::ytdlp::bin();
             let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
             // Best-effort: resolve the video title up front so the queue row
             // names the actual video (not just "Download"). The URL is the last
@@ -623,7 +623,9 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
             if let Some(url) = args.last() {
                 if let Ok(out) = quiet_cmd(&bin)
                     .args(["--no-warnings", "--skip-download", "--playlist-items", "1",
-                           "--print", "%(title)s", url])
+                           "--print", "%(title)s"])
+                    .args(tulipix_core::ytdlp::common_args())
+                    .arg(url)
                     .output().await
                 {
                     if out.status.success() {
@@ -1531,8 +1533,19 @@ pub fn wire(window: &MainWindow) {
         let name = name.to_string();
         tokio::runtime::Handle::current().spawn(async move {
             if name == "yt-dlp" {
-                let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-                let _ = tokio::process::Command::new(&bin).arg("-U").output().await;
+                // The app's updater, not yt-dlp's own `-U`: `-U` overwrites the
+                // running binary in place and fails silently on a packaged
+                // install where `resources/bin/` is not writable — which is how
+                // the bundled copy went eight weeks stale and started answering
+                // 403. `update_ytdlp_now` picks a destination it has checked it
+                // can write and the tool resolver prefers.
+                let r = tokio::task::spawn_blocking(tulipix_core::updater::update_ytdlp_now).await;
+                match r {
+                    Ok(Ok(Some(v))) => tracing::info!(version = %v, "yt-dlp updated"),
+                    Ok(Ok(None)) => tracing::info!("yt-dlp already current"),
+                    Ok(Err(e)) => tracing::warn!(error = %e, "yt-dlp update failed"),
+                    Err(e) => tracing::warn!(error = %e, "yt-dlp update task failed"),
+                }
             }
             tools_refresh_status(weak).await;
         });

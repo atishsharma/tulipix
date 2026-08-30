@@ -213,8 +213,12 @@ pub async fn channel_next(
 /// yt-dlp `ytsearch20:` fallback → adapt SearchHit into Video (no blurb/views).
 async fn yt_dlp_search_fallback(query: &str) -> Result<ChannelPage> {
     let args = crate::yt_search::search_args(crate::yt_search::Source::YouTube, query, 20);
-    let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-    let out = tokio::process::Command::new(bin).args(&args).no_window().output().await?;
+    let out = tokio::process::Command::new(tulipix_core::ytdlp::bin())
+        .args(tulipix_core::ytdlp::common_args())
+        .args(&args)
+        .no_window()
+        .output()
+        .await?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let hits = crate::yt_search::parse_dump_json(&stdout);
     let videos = hits

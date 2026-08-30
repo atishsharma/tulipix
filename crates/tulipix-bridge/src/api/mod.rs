@@ -38,4 +38,10 @@ pub fn init_app() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .try_init();
+
+    // yt-dlp goes stale on its own schedule: sites change, and a binary a few
+    // weeks old starts answering 403 on downloads that worked yesterday. This
+    // is the weekly check — background thread, at most one network call a week,
+    // and every failure is a log line rather than something in the user's way.
+    tulipix_core::updater::spawn_ytdlp_update();
 }

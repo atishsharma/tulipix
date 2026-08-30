@@ -148,16 +148,36 @@ pub fn set_tool_dir(dir: Option<&str>) {
 
 /// Resolve a tool binary, in priority order:
 ///   1. the user's universal tools directory (Settings) if it holds a native copy
-///   2. the bundled per-OS copy (`resources/bin/<os-arch>/`) if present + native
-///   3. the bare name (found on PATH).
+///   2. the app-managed copy (`<data>/tools/`) a self-update wrote, if any
+///   3. the bundled per-OS copy (`resources/bin/<os-arch>/`) if present + native
+///   4. the bare name (found on PATH).
 /// Used across the app (ffmpeg/ffprobe/yt-dlp/exiftool/mpv).
+///
+/// Tier 2 is what makes the yt-dlp self-updater work at all. A packaged install
+/// puts `resources/bin/` somewhere the user cannot write, so an update has to
+/// land beside the app's data — and an update the resolver then ignores in
+/// favour of the stale bundle is not an update. The user's own directory still
+/// wins over both: an explicit choice outranks one the app made.
 pub fn tool_bin(name: &str) -> PathBuf {
     let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
+    let file = format!("{name}{ext}");
     if let Some(dir) = tool_dir() {
-        let cand = dir.join(format!("{name}{ext}"));
+        let cand = dir.join(&file);
+        if cand.exists() && is_native_executable(&cand) && starts(&cand) { return cand; }
+    }
+    if let Some(cand) = managed_dir().map(|d| d.join(&file)) {
         if cand.exists() && is_native_executable(&cand) && starts(&cand) { return cand; }
     }
     bundled_bin(name).unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// `<data>/tools` — where a self-update writes when the bundle is read-only.
+///
+/// Declared here rather than read from `crate::ytdlp` so the resolution order
+/// lives entirely in this function; `ytdlp::managed_dir` is the same path and
+/// delegates to this.
+pub fn managed_dir() -> Option<PathBuf> {
+    crate::paths::data_dir().map(|d| d.join("tools"))
 }
 
 /// Whether a binary actually starts, as opposed to merely being a native

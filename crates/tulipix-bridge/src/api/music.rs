@@ -2313,21 +2313,29 @@ async fn play_youtube(video_id: &str) -> Result<()> {
         cached.to_string_lossy().into_owned()
     } else {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
-        let out = tokio::process::Command::new(tulipix_core::thumbs::tool_bin("yt-dlp"))
+        let out = tokio::process::Command::new(tulipix_core::ytdlp::bin())
             .args(["-g", "-f", "bestaudio/best", "--no-playlist"])
+            .args(tulipix_core::ytdlp::common_args())
             .arg(&url)
             .no_window_async()
             .output()
             .await;
-        let resolved = out.ok().filter(|o| o.status.success()).and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
+        // Keep the stderr: "could not resolve a stream for dQw4w9WgXcQ" named
+        // the video and nothing the user could do about it, and a refusal is
+        // the overwhelmingly common reason this fails.
+        let out = out.map_err(|e| anyhow::anyhow!("yt-dlp could not be launched: {e}"))?;
+        let resolved = out.status.success().then(|| {
+            String::from_utf8_lossy(&out.stdout)
                 .lines()
                 .map(|l| l.trim().to_string())
                 .find(|l| !l.is_empty())
-        });
+        }).flatten();
         match resolved {
             Some(u) => u,
-            None => anyhow::bail!("yt-dlp could not resolve a stream for {video_id}"),
+            None => anyhow::bail!(
+                "{}",
+                tulipix_core::ytdlp::friendly_error(&String::from_utf8_lossy(&out.stderr))
+            ),
         }
     };
 
@@ -4862,12 +4870,22 @@ async fn radio_refresh_all() -> Result<()> {
 /// instance: the setting that chooses between them is a shell concern (phase
 /// 4 owns Settings), and yt-dlp is the backend that always answers.
 async fn ytdlp_json(args: Vec<String>) -> Option<serde_json::Value> {
-    let out = tokio::process::Command::new(tulipix_core::thumbs::tool_bin("yt-dlp"))
+    let out = tokio::process::Command::new(tulipix_core::ytdlp::bin())
+        .args(tulipix_core::ytdlp::common_args())
         .args(&args)
         .no_window_async()
         .output()
         .await
         .ok()?;
+    if !out.status.success() {
+        // This returns Option, so the caller draws an empty list either way —
+        // but a refused listing and a genuinely empty one look identical on
+        // screen, and only one of them is worth a line in the log.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if tulipix_core::ytdlp::is_access_error(&stderr) {
+            tracing::warn!(%stderr, "youtube: yt-dlp was refused — update it, or set cookies");
+        }
+    }
     serde_json::from_slice(&out.stdout).ok()
 }
 
@@ -5312,8 +5330,9 @@ async fn yt_watch_video(video_id: &str, height: i64, start: f64) -> Result<()> {
         format!("best[height<={height}]/best")
     };
     let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let out = tokio::process::Command::new(tulipix_core::thumbs::tool_bin("yt-dlp"))
+    let out = tokio::process::Command::new(tulipix_core::ytdlp::bin())
         .args(["-g", "-f", fmt.as_str(), "--no-playlist"])
+        .args(tulipix_core::ytdlp::common_args())
         .arg(&url)
         .no_window_async()
         .output()
@@ -5322,7 +5341,12 @@ async fn yt_watch_video(video_id: &str, height: i64, start: f64) -> Result<()> {
         .lines()
         .map(|l| l.trim().to_string())
         .find(|l| !l.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("yt-dlp could not resolve a picture for {video_id}"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{}",
+                tulipix_core::ytdlp::friendly_error(&String::from_utf8_lossy(&out.stderr))
+            )
+        })?;
 
     mpv::stop();
     let token = {
@@ -5449,11 +5473,24 @@ async fn yt_download(video_id: &str, quality: &str) -> Result<()> {
     }
     args.push(url);
     args.push("--newline".into());
-    let mut child = tokio::process::Command::new(tulipix_core::thumbs::tool_bin("yt-dlp"))
+    args.extend(tulipix_core::ytdlp::common_args());
+    let mut child = tokio::process::Command::new(tulipix_core::ytdlp::bin())
         .args(&args)
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .no_window_async()
         .spawn()?;
+    // Drained rather than inherited: a failed download used to report only
+    // "could not download <id>", because the reason went to a pipe nobody read.
+    let stderr_task = child.stderr.take().map(|e| {
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = String::new();
+            let mut e = e;
+            let _ = e.read_to_string(&mut buf).await;
+            buf
+        })
+    });
     if let Some(out) = child.stdout.take() {
         use tokio::io::AsyncBufReadExt;
         let mut lines = tokio::io::BufReader::new(out).lines();
@@ -5464,9 +5501,13 @@ async fn yt_download(video_id: &str, quality: &str) -> Result<()> {
         }
     }
     let status = child.wait().await?;
+    let stderr = match stderr_task {
+        Some(t) => t.await.unwrap_or_default(),
+        None => String::new(),
+    };
     if !status.success() {
         yt_job_done(video_id);
-        anyhow::bail!("yt-dlp could not download {video_id}");
+        anyhow::bail!("{}", tulipix_core::ytdlp::friendly_error(&stderr));
     }
     // yt-dlp picks the extension, so find what it actually wrote rather than
     // assuming: a merge that fell back to mp4 is still a successful download.
@@ -5527,8 +5568,10 @@ async fn cache_youtube_audio(video_id: &str) {
         }
         let template = dir.join(format!("{id}.%(ext)s"));
         let url = format!("https://www.youtube.com/watch?v={id}");
-        let _ = tokio::process::Command::new(tulipix_core::thumbs::tool_bin("yt-dlp"))
-            .args(["-f", "bestaudio", "-x", "--audio-format", "opus", "--no-playlist", "-o"])
+        let _ = tokio::process::Command::new(tulipix_core::ytdlp::bin())
+            .args(["-f", "bestaudio", "-x", "--audio-format", "opus", "--no-playlist"])
+            .args(tulipix_core::ytdlp::common_args())
+            .arg("-o")
             .arg(&template)
             .arg(&url)
             .no_window_async()

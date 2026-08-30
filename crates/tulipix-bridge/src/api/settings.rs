@@ -404,6 +404,12 @@ fn advanced(s: &S) -> Vec<SettingItem> {
         tool_row("ffprobe"),
         tool_row("rclone"),
         tool_row("yt-dlp"),
+        tog(s, tulipix_core::ytdlp::AUTO_UPDATE_FLAG, true, "Keep yt-dlp up to date",
+            "Checks weekly. Sites change constantly and a yt-dlp a few weeks old \
+             starts failing downloads with 403"),
+        txt(s, "ytdlp.player-clients", "yt-dlp player clients",
+            "Advanced, blank = yt-dlp's own defaults. Only set this if a yt-dlp \
+             issue tells you to, e.g. default,tv,android"),
         tool_row("mpv"),
         tool_row("exiftool"),
         hdr("PLATFORM"),
@@ -421,21 +427,40 @@ fn advanced(s: &S) -> Vec<SettingItem> {
 }
 
 /// Where one external tool is coming from. The order is the one the app
-/// actually resolves in: the override folder, then the bundled copy, then
-/// PATH -- so "System" is a warning, not a pass: a system binary is whatever
-/// version happens to be installed.
+/// actually resolves in: the override folder, then the app's own updated copy,
+/// then the bundled copy, then PATH -- so "System" is a warning, not a pass: a
+/// system binary is whatever version happens to be installed.
+///
+/// yt-dlp additionally prints its version, because that is the number anyone
+/// looking at this row is actually there to check: a download failing with 403
+/// is nearly always a binary some weeks old, and "Bundled" never said that.
 fn tool_row(name: &str) -> SettingItem {
     let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
+    let file = format!("{name}{ext}");
+    let version = if name == "yt-dlp" {
+        tulipix_core::ytdlp::installed_version()
+    } else {
+        None
+    };
+    let with_version = |source: &str| -> String {
+        match &version {
+            Some(v) => format!("{source} · {v}"),
+            None => source.to_string(),
+        }
+    };
     let dir = load().text("tools.bin-dir");
     let dir = dir.trim();
-    if !dir.is_empty() && Path::new(dir).join(format!("{name}{ext}")).exists() {
-        return stat(name, "Tools directory", "ok");
+    if !dir.is_empty() && Path::new(dir).join(&file).exists() {
+        return stat(name, &with_version("Tools directory"), "ok");
     }
-    if tulipix_core::thumbs::bundled_file(&format!("{name}{ext}")).is_some() {
-        return stat(name, "Bundled", "ok");
+    if tulipix_core::ytdlp::managed_dir().is_some_and(|d| d.join(&file).exists()) {
+        return stat(name, &with_version("Updated"), "ok");
     }
-    if on_path(&format!("{name}{ext}")) {
-        return stat(name, "System", "warn");
+    if tulipix_core::thumbs::bundled_file(&file).is_some() {
+        return stat(name, &with_version("Bundled"), "ok");
+    }
+    if on_path(&file) {
+        return stat(name, &with_version("System"), "warn");
     }
     stat(name, "Missing", "error")
 }

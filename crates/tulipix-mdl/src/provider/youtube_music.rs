@@ -140,16 +140,17 @@ pub async fn search(query: &str, limit: usize) -> Result<Playlist> {
     if q.is_empty() {
         bail!("Type something to search.");
     }
-    let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-    let mut cmd = tokio::process::Command::new(bin);
+    let mut cmd = tokio::process::Command::new(tulipix_core::ytdlp::bin());
     cmd.arg("-J")
         .arg("--no-warnings")
         .arg("--flat-playlist")
+        .args(tulipix_core::ytdlp::common_args())
         .arg(format!("ytsearch{limit}:{q}"));
     cmd.no_window();
     let out = cmd.output().await?;
     if !out.status.success() {
-        bail!("yt-dlp search failed: {}", String::from_utf8_lossy(&out.stderr));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("{}", tulipix_core::ytdlp::friendly_error(&stderr));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut pl = YoutubeMusic::parse_ytdlp_json(&stdout, &format!("ytsearch:{q}"))?;
@@ -202,18 +203,19 @@ impl Provider for YoutubeMusic {
             .ok()
             .map(|u| u.path().trim_end_matches('/').eq_ignore_ascii_case("/watch"))
             .unwrap_or(false);
-        let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-        let mut cmd = tokio::process::Command::new(bin);
+        let mut cmd = tokio::process::Command::new(tulipix_core::ytdlp::bin());
         cmd.arg("-J").arg("--no-warnings");
         // Playlists/albums: flat list (fast). Single video: full info (rich tags).
         if !is_watch {
             cmd.arg("--flat-playlist");
         }
+        cmd.args(tulipix_core::ytdlp::common_args());
         cmd.arg(url);
         cmd.no_window(); // no console-window flash on Windows
         let out = cmd.output().await?;
         if !out.status.success() {
-            bail!("yt-dlp failed: {}", String::from_utf8_lossy(&out.stderr));
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            bail!("{}", tulipix_core::ytdlp::friendly_error(&stderr));
         }
         let stdout = String::from_utf8_lossy(&out.stdout);
         Self::parse_ytdlp_json(&stdout, url)

@@ -66,6 +66,11 @@ pub struct ToolStatus {
     pub detail: String,
     pub available: bool,
     pub updatable: bool,
+    /// The installed version, where the tool reports one cheaply. Empty
+    /// otherwise. yt-dlp's is the number that matters: a download failing with
+    /// 403 is nearly always a binary some weeks old, and "bundled" alone never
+    /// said that.
+    pub version: String,
 }
 
 /// A file a download job produced.
@@ -162,6 +167,13 @@ pub enum ToolsCmd {
     ListDownloads,
     RemoveDownload {
         path: String,
+    },
+
+    /// Update one of the bundled tools in place. Only yt-dlp is updatable —
+    /// it is the one that breaks on its own schedule as sites change, which is
+    /// why it has a self-update channel separate from the app's.
+    UpdateTool {
+        name: String,
     },
 }
 
@@ -1106,6 +1118,24 @@ async fn apply(cmd: ToolsCmd) -> Result<()> {
                 .ok();
             lock().downloads.retain(|(_, p, _)| p != &path);
         }
+        ToolsCmd::UpdateTool { name } => {
+            if name != "yt-dlp" {
+                anyhow::bail!("{name} has no update channel");
+            }
+            // `spawn_blocking`: the updater is blocking reqwest plus a 30 MB
+            // download, and this is an async dispatch handler.
+            //
+            // Nothing is written to the session on success. `error` is drawn as
+            // a red banner, and "updated to 2026.08.19" is not an error; the
+            // snapshot this dispatch returns carries the new `version` on the
+            // yt-dlp row, which is the same fact in the place that already
+            // shows it. A failure does belong in the banner.
+            match tokio::task::spawn_blocking(tulipix_core::updater::update_ytdlp_now).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => lock().error = format!("yt-dlp update failed: {e}"),
+                Err(e) => lock().error = format!("yt-dlp update failed: {e}"),
+            }
+        }
     }
     Ok(())
 }
@@ -1910,6 +1940,11 @@ async fn snapshot() -> Result<ToolsState> {
                 detail: (*detail).to_string(),
                 available: has_bundled || on_path,
                 updatable: *updatable,
+                version: if *name == "yt-dlp" {
+                    tulipix_core::ytdlp::installed_version().unwrap_or_default()
+                } else {
+                    String::new()
+                },
             }
         })
         .collect();
