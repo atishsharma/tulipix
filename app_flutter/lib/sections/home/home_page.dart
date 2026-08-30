@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
+import '../music/music_controller.dart';
 import 'home_cinema.dart';
 import 'home_classic.dart';
 import 'home_controller.dart';
@@ -40,6 +41,11 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.visible) _c.refresh();
+      // All four layouts draw the app-wide player, so Home is the first thing
+      // that needs a Music snapshot when Music itself has never been opened.
+      if (MusicController.instance.state == null) {
+        MusicController.instance.refresh();
+      }
     });
   }
 

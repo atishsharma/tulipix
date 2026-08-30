@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import '../../design/first_load.dart';
 import '../../design/pick.dart';
 import '../../design/tokens.dart';
+import '../../shell/shell_controller.dart';
 import '../../src/rust/api/music.dart';
 import 'audiobooks_tab.dart';
 import 'music_controller.dart';
@@ -46,6 +47,16 @@ class _MusicPageState extends State<MusicPage> {
     // already listening — marking it dirty mid-build is an assertion. Ask for
     // the first snapshot once this frame is out.
     WidgetsBinding.instance.addPostFrameCallback((_) => _c.refresh());
+    // Home's YouTube and Music D/L launchers land on a tab, not on the
+    // section's front page.
+    ShellController.instance.onOpen(Section.music, (tab) {
+      if (tab == 'downloader') {
+        _c.send(const MusicCmd.setView(name: 'mymusic'));
+        _c.send(const MusicCmd.setLibTab(name: 'downloader'));
+      } else {
+        _c.send(MusicCmd.setView(name: tab));
+      }
+    });
   }
 
   @override

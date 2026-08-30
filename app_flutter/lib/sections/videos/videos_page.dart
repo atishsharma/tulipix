@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
+import '../../shell/shell_controller.dart';
 import '../../src/rust/api/videos.dart';
 import 'videos_controller.dart';
 import 'videos_discover.dart';
@@ -40,6 +41,11 @@ class _VideosPageState extends State<VideosPage> {
   void initState() {
     super.initState();
     _c.refresh();
+    // Home's Stream and Live TV launchers land on a tab, not on the section's
+    // front page. `SetKind` is both the switch and the fetch here.
+    ShellController.instance.onOpen(Section.videos, (tab) {
+      _c.send(VideosCmd.setKind(kind: tab));
+    });
   }
 
   @override

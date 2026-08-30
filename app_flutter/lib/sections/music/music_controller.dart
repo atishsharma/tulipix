@@ -99,11 +99,22 @@ class MusicController extends ChangeNotifier {
     // The deck is the media_kit player the bridge drives. Started here because
     // this controller is the only thing that receives the events it answers to,
     // and it outlives every page.
-    AudioDeck.instance.start();
-    _events = musicEvents().listen(_onEvent, onError: (Object e) {
+    //
+    // Guarded, because this is a singleton every Home layout touches on the way
+    // to drawing its player: without the guard a bridge that is not up yet
+    // throws out of a *constructor*, and what the user sees is not "the player
+    // is unavailable" but a blank landing page. `send` already reports its own
+    // failures the same way, and it is also what lets the layout tests run
+    // without the native library.
+    try {
+      AudioDeck.instance.start();
+      _events = musicEvents().listen(_onEvent, onError: (Object e) {
+        error = e;
+        notifyListeners();
+      });
+    } catch (e) {
       error = e;
-      notifyListeners();
-    });
+    }
   }
 
   MusicState? state;
@@ -494,6 +505,29 @@ class MusicController extends ChangeNotifier {
     if (view != 'mymusic') await send(const MusicCmd.setView(name: 'mymusic'));
     await send(
         album ? const MusicCmd.openNowAlbum() : const MusicCmd.openNowArtist());
+  }
+
+  /// Home's Random Radio launcher: a Bollywood or Punjabi station, picked for
+  /// you. `home_random_radio` in tulipix-sec-music does this in Rust; here it
+  /// is three commands the Radio tab already has, because a fourth bridge
+  /// entry point for "surprise me" would be a fourth thing to keep in step.
+  ///
+  /// The pick is off the clock rather than `dart:math` — good enough for
+  /// surprise me, and the same source the Slint build uses.
+  Future<void> randomRadio() async {
+    const sources = ['bollywood', 'punjabi'];
+    final nanos = DateTime.now().microsecondsSinceEpoch;
+    if (view != 'radio') await send(const MusicCmd.setView(name: 'radio'));
+    for (var k = 0; k < sources.length; k++) {
+      await send(MusicCmd.radioSearch(query: sources[(nanos + k) % 2]));
+      // `radioPlay` indexes the search result; page 0 is the window on it, so
+      // an index inside the first page is an index into the list.
+      final n = state?.radioStations.length ?? 0;
+      if (n > 0) {
+        await send(MusicCmd.radioPlay(index: (nanos ~/ 7) % n));
+        return;
+      }
+    }
   }
 
   /// Switch the docked panel without the toggle. The chips at its head pick

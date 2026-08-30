@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../design/pick.dart';
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
+import '../../shell/shell_controller.dart';
 import '../../src/rust/api/books.dart';
 import '../genesis/genesis_page.dart';
 import 'book_detail.dart';
@@ -33,6 +34,10 @@ class _BooksPageState extends State<BooksPage> {
   void initState() {
     super.initState();
     _c.refresh();
+    // Home's Genesis launcher opens the sub-page, not the shelf.
+    ShellController.instance.onOpen(Section.books, (tab) {
+      if (tab == 'genesis' && mounted) setState(() => _genesis = true);
+    });
   }
 
   @override

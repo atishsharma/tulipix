@@ -9,15 +9,6 @@ import 'package:flutter/material.dart';
 
 import '../../src/rust/api/home.dart';
 
-/// The Continue strip's kind tabs, in the order the Slint page lists them.
-const List<({String id, String label})> kContinueKinds = [
-  (id: 'all', label: 'All'),
-  (id: 'video', label: 'Videos'),
-  (id: 'book', label: 'Books'),
-  (id: 'podcast', label: 'Podcasts'),
-  (id: 'audiobook', label: 'Audiobooks'),
-];
-
 class HomeController extends ChangeNotifier {
   HomeState? state;
   Object? error;

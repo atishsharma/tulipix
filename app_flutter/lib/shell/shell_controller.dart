@@ -21,9 +21,7 @@ const Duration kShellTick = Duration(seconds: 30);
 class ShellController extends ChangeNotifier {
   static final ShellController instance = ShellController._();
 
-  ShellController._() {
-    _tick = Timer.periodic(kShellTick, (_) => refresh());
-  }
+  ShellController._();
 
   ShellState? state;
   Section section = Section.home;
@@ -36,6 +34,26 @@ class ShellController extends ChangeNotifier {
   String statusNote = 'Starting…';
 
   Timer? _tick;
+
+  /// The poll runs while something is drawing the badge and the lamp, and not
+  /// otherwise. It used to start in the constructor — but this is a singleton
+  /// that is constructed the moment any page reaches for it, so a headless
+  /// context (a layout test, say) inherited a 30-second timer nothing could
+  /// ever cancel.
+  @override
+  void addListener(VoidCallback listener) {
+    super.addListener(listener);
+    _tick ??= Timer.periodic(kShellTick, (_) => refresh());
+  }
+
+  @override
+  void removeListener(VoidCallback listener) {
+    super.removeListener(listener);
+    if (!hasListeners) {
+      _tick?.cancel();
+      _tick = null;
+    }
+  }
 
   @override
   void dispose() {
@@ -74,6 +92,24 @@ class ShellController extends ChangeNotifier {
     if (section == s) return;
     section = s;
     notifyListeners();
+  }
+
+  /// How each section answers a deep link — "open Videos *on Live TV*".
+  ///
+  /// Home's six launchers are doors past a section's front page, and the tab
+  /// they want lives in that section's own controller, which the launcher
+  /// cannot reach. Pages register here in `initState`; every page is built at
+  /// launch (the shell is an IndexedStack), so by the time anything is
+  /// clickable they all have.
+  final Map<Section, void Function(String)> _openers = {};
+
+  void onOpen(Section s, void Function(String) f) => _openers[s] = f;
+
+  /// Go to [s] and ask it to open [tab]. Fires the opener even when the
+  /// section is already up: "Live TV" from Videos still means Live TV.
+  void goTab(Section s, String tab) {
+    go(s);
+    _openers[s]?.call(tab);
   }
 
   /// light → dark → extra-dark → light, and stored.

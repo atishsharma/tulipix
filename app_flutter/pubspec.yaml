@@ -48,6 +48,13 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    # The app mark (five picks, as ui/page_home.slint) and Welcome's drawn
+    # banner, one per theme. Copied for the same reason the font is: Flutter
+    # refuses asset paths outside the package. Re-copy from
+    # resources/appicons/ and resources/illustrations/ if those change.
+    - assets/appicons/
+    - assets/illustrations/
   fonts:
     # Same variable face the Slint build declares in tokens.slint. Copied
     # rather than referenced: Flutter refuses asset paths outside the package,

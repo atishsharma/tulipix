@@ -35,9 +35,24 @@ const Size kMiniSize = Size(300, 470);
 const double kBubbleSize = 78;
 
 class MiniPlayer extends StatelessWidget {
-  const MiniPlayer({super.key, required this.controller});
+  const MiniPlayer({
+    super.key,
+    required this.controller,
+    this.embedded = false,
+    this.scale,
+  });
 
   final MusicController controller;
+
+  /// Dropped into a host card rather than floating over the app — Home's
+  /// Classic rail. `embedded: true` on Slint's `MusicMini`, and it means the
+  /// same thing: the card the player sits in already has an edge, a fill and a
+  /// cast, so the player draws none of its own.
+  final bool embedded;
+
+  /// Overrides `controller.miniScale`, which belongs to the floating copy. The
+  /// embedded one is sized by the rail it is in.
+  final double? scale;
 
   @override
   Widget build(BuildContext context) {
@@ -49,7 +64,7 @@ class MiniPlayer extends StatelessWidget {
     final accent = controller.accent;
     final live = now.mode == 'radio' || controller.tickDur <= 0;
     final library = now.itemId != 0 && now.mode == 'music';
-    final s = controller.miniScale;
+    final s = scale ?? controller.miniScale;
     // Slint has three mini components, not one: `MusicMini` (which carries its
     // own radio and YouTube branches), `PodcastMini` and `BookMini`. They share
     // a frame and nothing else — a spoken-word player has no vinyl, no shuffle
@@ -68,42 +83,48 @@ class MiniPlayer extends StatelessWidget {
       type: MaterialType.transparency,
       child: Container(
         decoration: BoxDecoration(
-          color: t.nCard,
-          borderRadius: BorderRadius.circular(18 * s),
+          color: embedded ? Colors.transparent : t.nCard,
+          borderRadius: BorderRadius.circular(embedded ? 0 : 18 * s),
           // The ring is not decoration: this thing floats over arbitrary content,
           // and without a hard edge it reads as part of whatever is behind it.
           // Each of the three wears its own ring, the way Slint's do: pink for
           // music, violet for podcasts, blue for books. It is the fastest read
           // of what the thing floating in the corner is playing.
-          border: GradientBoxBorder(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: podcast
-                  ? const [
-                      Color(0xFF8B5CF6),
-                      Color(0xFFEC4899),
-                      Color(0xFF06B6D4)
-                    ]
-                  : book
-                      ? const [
-                          Color(0xFF3B82F6),
-                          Color(0xFF06B6D4),
-                          Color(0xFF8B5CF6)
-                        ]
-                      : const [
-                          Color(0xFFEC4899),
-                          Color(0xFF8B5CF6),
-                          Color(0xFF06B6D4)
-                        ],
-              stops: const [0.0, 0.55, 1.0],
-            ),
-            width: 2 * s,
-          ),
-          boxShadow: const [
-            BoxShadow(
-                color: Color(0xE6000000), blurRadius: 42, spreadRadius: -6),
-          ],
+          border: embedded
+              ? null
+              : GradientBoxBorder(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: podcast
+                        ? const [
+                            Color(0xFF8B5CF6),
+                            Color(0xFFEC4899),
+                            Color(0xFF06B6D4)
+                          ]
+                        : book
+                            ? const [
+                                Color(0xFF3B82F6),
+                                Color(0xFF06B6D4),
+                                Color(0xFF8B5CF6)
+                              ]
+                            : const [
+                                Color(0xFFEC4899),
+                                Color(0xFF8B5CF6),
+                                Color(0xFF06B6D4)
+                              ],
+                    stops: const [0.0, 0.55, 1.0],
+                  ),
+                  width: 2 * s,
+                ),
+          boxShadow: embedded
+              ? null
+              : const [
+                  BoxShadow(
+                      color: Color(0xE6000000),
+                      blurRadius: 42,
+                      spreadRadius: -6),
+                ],
         ),
         clipBehavior: Clip.antiAlias,
         child: DecoratedBox(
