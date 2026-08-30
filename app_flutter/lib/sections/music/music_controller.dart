@@ -264,7 +264,7 @@ class MusicController extends ChangeNotifier {
         );
         notifyListeners();
       case MusicEvent_VideoStop():
-        videoRequest.value = null;
+        clearVideo();
         notifyListeners();
       case MusicEvent_Remote(:final action, :final value):
         _remote(action, value);

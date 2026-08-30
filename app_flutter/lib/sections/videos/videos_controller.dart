@@ -152,7 +152,7 @@ class VideosController extends ChangeNotifier {
           props: props,
         );
       case VideosEvent_VideoStop():
-        videoRequest.value = null;
+        clearVideo();
     }
   }
 

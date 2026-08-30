@@ -208,8 +208,8 @@ class AudioDeck {
   }
 
   /// `MusicEvent_AudioSeek`.
-  Future<void> seek(double secs) => _next(
-      () => _player.seek(Duration(milliseconds: (secs * 1000).round())));
+  Future<void> seek(double secs) =>
+      _next(() => _player.seek(Duration(milliseconds: (secs * 1000).round())));
 
   // ------------------------------------------------------------ outbound ---
 
