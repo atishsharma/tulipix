@@ -912,6 +912,217 @@ pub async fn videos_playback_ended(token: i64, pos: f64, dur: f64) {
     crate::vmpv::ended(token, pos, dur).await;
 }
 
+// ------------------------------------------------------- player services ----
+//
+// What the in-app player needs that Dart cannot reach: the settings file, the
+// OS keyring, and the network. Bare functions rather than `VideosCmd` arms for
+// the same reason the playback reports are — none of this redraws the grid.
+
+/// A remembered setting belonging to the video player: its keymap, and where
+/// screenshots go.
+///
+/// The key must start with `player.`. This is a key/value hatch for one
+/// widget's own preferences, not a general way for Dart to write settings.json
+/// — everything else in that file is a typed field or a curated panel row, and
+/// an unguarded setter would quietly make it neither.
+#[frb(sync)]
+pub fn player_pref_get(key: String) -> String {
+    if !key.starts_with("player.") {
+        return String::new();
+    }
+    tulipix_core::settings::Settings::load()
+        .map(|s| s.text(&key))
+        .unwrap_or_default()
+}
+
+#[frb(sync)]
+pub fn player_pref_set(key: String, value: String) {
+    if !key.starts_with("player.") {
+        return;
+    }
+    let Ok(mut s) = tulipix_core::settings::Settings::load() else {
+        return;
+    };
+    // An empty value removes the key rather than storing a blank one, so
+    // "reset to defaults" leaves settings.json as it was before the player
+    // ever wrote to it.
+    if value.is_empty() {
+        s.advanced.remove(&key);
+    } else {
+        s.advanced.insert(key, value);
+    }
+    let _ = s.save();
+}
+
+/// Where `screenshot-to-file` writes, created if it is not there yet.
+///
+/// The user's Pictures folder, because a still of a film is something they went
+/// looking for and the app's own data directory is not where anyone looks. An
+/// explicit `player.screenshot-dir` wins, and a machine with no Pictures folder
+/// falls back to somewhere that certainly exists.
+#[frb(sync)]
+pub fn player_screenshot_dir() -> String {
+    let custom = player_pref_get("player.screenshot-dir".into());
+    let dir = if custom.trim().is_empty() {
+        pictures_dir()
+            .map(|d| d.join("Tulipix"))
+            .or_else(|| tulipix_core::paths::data_dir().map(|d| d.join("screenshots")))
+            .unwrap_or_else(std::env::temp_dir)
+    } else {
+        PathBuf::from(custom.trim())
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    dir.display().to_string()
+}
+
+fn pictures_dir() -> Option<PathBuf> {
+    let home = if cfg!(target_os = "windows") {
+        std::env::var_os("USERPROFILE")
+    } else {
+        std::env::var_os("HOME")
+    }?;
+    let dir = PathBuf::from(home).join("Pictures");
+    dir.is_dir().then_some(dir)
+}
+
+/// One OpenSubtitles result.
+pub struct SubtitleHit {
+    pub file_id: i64,
+    pub language: String,
+    /// The uploader's release name — how you tell a 23.976 fps rip from a 25
+    /// fps one, which is the difference between in sync and unwatchable. Empty
+    /// when they left it blank.
+    pub release: String,
+    pub downloads: i64,
+    pub from_trusted: bool,
+}
+
+/// Search OpenSubtitles for whatever is playing.
+///
+/// Hash search first when the source is a real local file: it identifies the
+/// exact cut, and a subtitle matched that way is the only one that reliably
+/// lands in sync. A stream, a file too small to hash, or a hash nothing matches
+/// falls back to the title query — which is a guess, and why the release name
+/// is in the result rows.
+pub async fn videos_subtitle_search(
+    source: String,
+    title: String,
+    language: String,
+    season: i64,
+    episode: i64,
+) -> Result<Vec<SubtitleHit>> {
+    let client = os_client()?;
+    let lang = if language.trim().is_empty() { "en" } else { language.trim() };
+    let path = PathBuf::from(&source);
+
+    let mut hits = Vec::new();
+    if path.is_file() {
+        if let Ok((hash, _)) = tulipix_videos::sub_opensubtitles::osdb_hash(&path) {
+            // A failure here is not fatal: the query search below is the
+            // fallback, and it reports its own errors. Swallowing this one
+            // silently is the difference between "no hash match" and "the
+            // whole search is broken", and only the second is worth a message.
+            hits = client.search_by_hash(hash, lang).await.unwrap_or_default();
+        }
+    }
+
+    if hits.is_empty() {
+        let query = if title.trim().is_empty() {
+            path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string()
+        } else {
+            title.trim().to_string()
+        };
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        hits = client
+            .search_by_query(&query, lang, positive(season), positive(episode))
+            .await?;
+    }
+
+    Ok(hits
+        .into_iter()
+        .map(|h| SubtitleHit {
+            file_id: h.file_id,
+            language: h.language,
+            release: h.release.unwrap_or_default(),
+            downloads: h.download_count.unwrap_or_default(),
+            from_trusted: h.from_trusted,
+        })
+        .collect())
+}
+
+/// Fetch one result and return the path it landed at, ready for `sub-add`.
+pub async fn videos_subtitle_download(
+    source: String,
+    file_id: i64,
+    language: String,
+) -> Result<String> {
+    let client = os_client()?;
+    let link = client.download_link(file_id).await?;
+    let lang = if language.trim().is_empty() { "en" } else { language.trim() };
+    let out = client
+        .save_as_sibling(&subtitle_anchor(&source), &link, lang, "srt")
+        .await?;
+    Ok(out.display().to_string())
+}
+
+/// Where a downloaded subtitle should land.
+///
+/// Beside the film when that is possible, because that is where `sub_local`
+/// looks on the next launch and the download becomes permanent rather than
+/// something to do again tomorrow. A stream, or a folder the app cannot write
+/// to, falls back to its own directory: `save_as_sibling` reads only the stem
+/// and the parent of what it is handed, so an anchor placed in the fallback
+/// folder puts the file there under the same name.
+fn subtitle_anchor(source: &str) -> PathBuf {
+    let path = Path::new(source);
+    if path.is_file() {
+        if let Some(parent) = path.parent() {
+            if tulipix_core::paths::dir_is_writable(parent) {
+                return path.to_path_buf();
+            }
+        }
+    }
+    let stem: String = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.'))
+        .take(80)
+        .collect();
+    let stem = if stem.trim().is_empty() { "subtitle".to_string() } else { stem };
+    let dir = tulipix_core::paths::data_dir()
+        .map(|d| d.join("subtitles"))
+        .unwrap_or_else(std::env::temp_dir);
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(stem)
+}
+
+fn positive(n: i64) -> Option<i64> {
+    (n > 0).then_some(n)
+}
+
+fn os_client() -> Result<tulipix_videos::sub_opensubtitles::OpenSubtitlesClient> {
+    use tulipix_videos::sub_opensubtitles::{OpenSubtitlesClient, OsCredentials};
+    let api_key = tulipix_core::api_keys::fetch("opensubtitles")
+        .ok()
+        .flatten()
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No OpenSubtitles API key yet. Add one in Settings \u{2192} Services \u{2192} API keys."
+            )
+        })?;
+    // OpenSubtitles requires an identifying User-Agent and rejects generic
+    // ones; "<app> v<version>" is the form their docs ask for.
+    Ok(OpenSubtitlesClient::new(OsCredentials {
+        api_key,
+        user_agent: format!("Tulipix v{}", env!("CARGO_PKG_VERSION")),
+    }))
+}
+
 // -------------------------------------------------------------- dispatch ----
 
 async fn apply(cmd: VideosCmd) -> Result<()> {

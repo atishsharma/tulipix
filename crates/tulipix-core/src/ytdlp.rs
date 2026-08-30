@@ -265,7 +265,7 @@ pub fn update_dest() -> Option<PathBuf> {
     let current = bin();
     if current.is_absolute() {
         if let Some(dir) = current.parent() {
-            if dir_is_writable(dir) {
+            if crate::paths::dir_is_writable(dir) {
                 return Some(current);
             }
         }
@@ -277,18 +277,6 @@ pub fn update_dest() -> Option<PathBuf> {
     Some(dest)
 }
 
-/// Can we create a file in this directory? Asked by trying, because the
-/// permission bits lie about read-only mounts, ACLs and containers.
-fn dir_is_writable(dir: &Path) -> bool {
-    let probe = dir.join(".tulipix-write-probe");
-    match std::fs::File::create(&probe) {
-        Ok(_) => {
-            let _ = std::fs::remove_file(&probe);
-            true
-        }
-        Err(_) => false,
-    }
-}
 
 // ── the stored check state ──────────────────────────────────────────────────
 
