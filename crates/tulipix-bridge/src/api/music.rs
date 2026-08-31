@@ -1364,7 +1364,7 @@ pub async fn music_song_props(item_id: i64) -> Result<SongProps> {
     let row: Option<(String, String, String, f64, String, i64, i64, i64, String)> =
         sqlx::query_as(
             "SELECT COALESCE(tm.title, ''), COALESCE(ar.name, ''), COALESCE(al.title, ''), \
-                    COALESCE(tm.duration_s, 0), COALESCE(tm.genre, ''), \
+                    COALESCE(tm.duration_s, 0.0), COALESCE(tm.genre, ''), \
                     COALESCE(tm.bitrate, 0), COALESCE(tm.sample_rate, 0), \
                     COALESCE(tm.channels, 0), COALESCE(tm.codec, '') \
              FROM track_meta tm \
@@ -1906,6 +1906,13 @@ async fn play_track(pool: &sqlx::SqlitePool, item_id: i64) -> Result<()> {
     } else {
         title
     };
+    // Before `launch`, not after: launch emits TrackChanged and Dart answers
+    // that with a Refresh, so the row has to be down before the event goes out
+    // or that snapshot reads the rails without the track that just started.
+    //
+    // Counted at the start rather than at EOF: a skipped track is still a track
+    // that was chosen, and the Slint build records it the same way.
+    let _ = tulipix_music::queue::record_play(pool, item_id, 0).await;
     launch(&path, mpv::Slot::Music, None);
     mpv::set_now_playing(mpv::NowPlaying {
         item_id,
@@ -1926,9 +1933,6 @@ async fn play_track(pool: &sqlx::SqlitePool, item_id: i64) -> Result<()> {
             s.history.remove(0);
         }
     }
-    // Count the play immediately rather than at EOF: a skipped track is still
-    // a track that was chosen, and the Slint build records it the same way.
-    let _ = tulipix_music::queue::record_play(pool, item_id, 0).await;
     // Words follow the track, without being asked. Detached: an LRCLIB round
     // trip is network latency and the track is already playing.
     tokio::spawn(ensure_lyrics(item_id));
@@ -4582,7 +4586,7 @@ async fn fetch_lyrics(item_id: i64) -> Result<()> {
     let pool = music_pool().await?;
     let row: Option<(String, String, String, f64)> = sqlx::query_as(
         "SELECT COALESCE(ar.name, ''), COALESCE(tm.title, ''), COALESCE(al.title, ''), \
-                COALESCE(tm.duration_s, 0) \
+                COALESCE(tm.duration_s, 0.0) \
          FROM track_meta tm \
          LEFT JOIN artists ar ON ar.id = tm.artist_id \
          LEFT JOIN albums al ON al.id = tm.album_id \
@@ -5615,8 +5619,17 @@ async fn cache_youtube_audio(video_id: &str) {
 
 /// Every track list in the section reads these fourteen columns. One shape,
 /// one join, one place to fix when a fifteenth is wanted.
+///
+/// Every default here is written in the type of the column it stands in for --
+/// `0.0` for `duration_s`, not `0`. SQLite types values, not columns, so a
+/// track with no duration made COALESCE hand back an INTEGER where every other
+/// row gave a REAL, and sqlx's `f64` accepts only `DataType::Float`: one
+/// untagged file failed the decode for the whole statement. It is a query that
+/// resolves a *set* of ids, so the damage was never one row -- Recently played,
+/// Most played, Loved, Recently added and the queue all came back empty
+/// together, from the moment a single such track landed in any of them.
 const TRACK_SELECT: &str = "SELECT i.id, i.abs_path, COALESCE(tm.title, ''), \
-     COALESCE(ar.name, ''), COALESCE(al.title, ''), COALESCE(tm.duration_s, 0), \
+     COALESCE(ar.name, ''), COALESCE(al.title, ''), COALESCE(tm.duration_s, 0.0), \
      COALESCE(tm.loved, 0), COALESCE(tm.rating, 0), COALESCE(tm.play_count, 0), \
      COALESCE(tm.track_no, 0), COALESCE(tm.year, 0), COALESCE(tm.genre, ''), \
      COALESCE(al.cover_path, ''), \
@@ -6516,8 +6529,8 @@ async fn book_cards(pool: &sqlx::SqlitePool, tab: &str) -> Vec<BookCard> {
             .await
             .unwrap_or_default();
         let totals: Option<(f64, f64)> = sqlx::query_as(
-            "SELECT COALESCE(SUM(tm.duration_s), 0), \
-                    COALESCE(SUM(COALESCE(ap.position_s, 0)), 0) \
+            "SELECT COALESCE(SUM(tm.duration_s), 0.0), \
+                    COALESCE(SUM(COALESCE(ap.position_s, 0.0)), 0.0) \
              FROM track_meta tm LEFT JOIN audiobook_progress ap ON ap.item_id = tm.item_id \
              WHERE tm.folder = ?",
         )
@@ -7419,8 +7432,8 @@ async fn fill_books(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState) {
     } else {
         let holes = vec!["?"; ids.len()].join(",");
         let chapter_sql = format!(
-            "SELECT tm.item_id, COALESCE(tm.title, ''), COALESCE(tm.duration_s, 0), \
-                    COALESCE(ap.position_s, 0) \
+            "SELECT tm.item_id, COALESCE(tm.title, ''), COALESCE(tm.duration_s, 0.0), \
+                    COALESCE(ap.position_s, 0.0) \
              FROM track_meta tm LEFT JOIN audiobook_progress ap ON ap.item_id = tm.item_id \
              WHERE tm.item_id IN ({holes})"
         );
@@ -7748,6 +7761,55 @@ mod tests {
         assert_eq!(yt_dl_percent("[youtube] abc123: Downloading webpage"), None);
         assert_eq!(yt_dl_percent("[download] Destination: /tmp/x.mkv"), None);
         assert_eq!(yt_dl_percent("[Merger] Merging formats into \"x.mkv\""), None);
+    }
+
+    /// A track with no duration tag must not take the rail down with it.
+    ///
+    /// SQLite types values, not columns: `COALESCE(tm.duration_s, 0)` returns
+    /// an INTEGER for the untagged row and a REAL for every other, and sqlx's
+    /// `f64` accepts only Float -- so one such file emptied Recently played,
+    /// Most played, Loved, Recently added and the queue at once. The fix is the
+    /// `0.0` in `TRACK_SELECT`; this is what fails if it ever goes back to `0`.
+    #[tokio::test]
+    async fn a_track_with_no_duration_still_resolves() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        for ddl in [
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, abs_path TEXT, section TEXT, \
+             missing_since INTEGER, added INTEGER)",
+            "CREATE TABLE track_meta (item_id INTEGER, title TEXT, artist_id INTEGER, \
+             album_id INTEGER, duration_s REAL, loved INTEGER, rating INTEGER, \
+             play_count INTEGER, track_no INTEGER, year INTEGER, genre TEXT, \
+             is_audiobook INTEGER DEFAULT 0, last_played INTEGER)",
+            "CREATE TABLE artists (id INTEGER PRIMARY KEY, name TEXT)",
+            "CREATE TABLE albums (id INTEGER PRIMARY KEY, title TEXT, cover_path TEXT, \
+             artist_id INTEGER)",
+            "CREATE TABLE lyrics (item_id INTEGER, synced INTEGER, content TEXT)",
+        ] {
+            sqlx::query(ddl).execute(&pool).await.unwrap();
+        }
+        for (id, dur) in [(1_i64, Some(180.5_f64)), (2, None)] {
+            sqlx::query("INSERT INTO items (id, abs_path, section) VALUES (?, ?, 'music')")
+                .bind(id)
+                .bind(format!("/m/{id}.flac"))
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO track_meta (item_id, title, duration_s) VALUES (?, ?, ?)")
+                .bind(id)
+                .bind(format!("track {id}"))
+                .bind(dur)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        // The untagged track alone, and then in company: the rails ask for a
+        // set, so one bad row used to cost every other row in the same query.
+        assert_eq!(tracks_by_ids(&pool, &[2]).await.len(), 1);
+        let both = tracks_by_ids(&pool, &[1, 2]).await;
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0].duration_s, 180.5);
+        assert_eq!(both[1].duration_s, 0.0);
     }
 
     #[test]
