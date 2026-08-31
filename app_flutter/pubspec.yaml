@@ -55,6 +55,11 @@ flutter:
     # resources/appicons/ and resources/illustrations/ if those change.
     - assets/appicons/
     - assets/illustrations/
+    # The blank hardcover mockup the library tiles compose their covers onto
+    # (Book3D in ui/page_books.slint) and the open-book mockup the reader's
+    # two-page spread lays its columns on, one per reading theme (Book_*.png,
+    # 1511x1041). Re-copy from resources/icons/bookhero/ if those change.
+    - assets/bookhero/
   fonts:
     # Same variable face the Slint build declares in tokens.slint. Copied
     # rather than referenced: Flutter refuses asset paths outside the package,

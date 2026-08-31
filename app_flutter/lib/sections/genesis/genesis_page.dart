@@ -20,13 +20,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../design/first_load.dart';
-import '../../design/tokens.dart';
+import '../../sections/books/book_theme.dart';
 import '../../src/rust/api/genesis.dart';
 import 'genesis_controller.dart';
 import 'genesis_dialogs.dart';
 
-/// Genesis lives inside Books and wears its accent, the way the reader does.
-const Color kGen = Tokens.secBooks;
+/// Genesis lives inside Books and wears its palette, the way page_genesis.slint
+/// imports BookTheme from page_books.slint — so the accent here is the section's
+/// violet, not the shell's section colour.
+const Color kGen = BookTheme.accent;
+
+/// The two literal hues the Slint page uses that are not in the palette: the
+/// "already in the library" green and the Load-More red.
+const Color _have = Color(0xFF22C55E);
+const Color _loadMore = Color(0xFFEF4444);
 
 class GenesisPage extends StatefulWidget {
   const GenesisPage({super.key, required this.onBack});
@@ -72,13 +79,13 @@ class _GenesisPageState extends State<GenesisPage> {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     return AnimatedBuilder(
       animation: _c,
       builder: (context, _) {
         final st = _c.state;
         return ColoredBox(
-          color: t.nCanvas,
+          color: t.canvas,
           child: st == null
               ? FirstLoad(error: _c.error, onRetry: _c.refresh)
               : Padding(
@@ -137,7 +144,7 @@ class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     return Row(
       children: [
         _RoundBtn(icon: Icons.chevron_left, onTap: onBack),
@@ -162,7 +169,7 @@ class _Header extends StatelessWidget {
                   style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w800,
-                      color: t.nInk)),
+                      color: t.ink)),
             ],
           ),
         ),
@@ -190,15 +197,19 @@ class _MirrorChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bad = state.mirrorTone == 'bad';
-    final tint = bad ? Tokens.error : Tokens.ok;
+    final t = context.book;
+    final tint = switch (state.mirrorTone) {
+      'ok' => _have,
+      'warn' => BookTheme.amber,
+      _ => _loadMore,
+    };
     return Container(
-      height: 30,
+      height: 32,
       padding: const EdgeInsets.symmetric(horizontal: 11),
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: tint.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(15),
+        color: tint.withValues(alpha: 0.13),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -211,7 +222,7 @@ class _MirrorChip extends StatelessWidget {
           const SizedBox(width: 7),
           Text(state.mirror,
               style: TextStyle(
-                  fontSize: 11.5, fontWeight: FontWeight.w700, color: tint)),
+                  fontSize: 12, fontWeight: FontWeight.w600, color: t.ink)),
         ],
       ),
     );
@@ -227,17 +238,17 @@ class _RoundBtn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     return SizedBox(
       width: side,
       height: side,
       child: Material(
-        color: t.nChip,
+        color: t.pillBg,
         shape: const CircleBorder(),
         child: InkWell(
           customBorder: const CircleBorder(),
           onTap: onTap,
-          child: Icon(icon, size: 18, color: t.nInk),
+          child: Icon(icon, size: 18, color: t.ink),
         ),
       ),
     );
@@ -266,7 +277,7 @@ class _SearchRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     // The words live in the field until a search is asked for. Sending every
     // keystroke over the bridge would cost a snapshot per character, and the
     // Slint page does not do it either — it binds the box and reads it on
@@ -277,7 +288,7 @@ class _SearchRow extends StatelessWidget {
     );
   }
 
-  Widget _row(BuildContext context, Tokens t, String typed) {
+  Widget _row(BuildContext context, BookTheme t, String typed) {
     return Row(
       children: [
         Expanded(
@@ -292,24 +303,24 @@ class _SearchRow extends StatelessWidget {
             ),
             child: Row(
               children: [
-                Icon(Icons.search, size: 19, color: t.nInk3),
+                Icon(Icons.search, size: 19, color: t.inkDim),
                 const SizedBox(width: 12),
                 Expanded(
                   child: TextField(
                     controller: terms,
                     onSubmitted: (_) => _go(),
-                    style: TextStyle(fontSize: 15, color: t.nInk),
+                    style: TextStyle(fontSize: 15, color: t.ink),
                     decoration: InputDecoration(
                       border: InputBorder.none,
                       isCollapsed: true,
                       hintText: 'Title, author, series or ISBN',
-                      hintStyle: TextStyle(fontSize: 15, color: t.nInk3),
+                      hintStyle: TextStyle(fontSize: 15, color: t.inkDim),
                     ),
                   ),
                 ),
                 if (typed.isNotEmpty)
                   IconButton(
-                    icon: Icon(Icons.close, size: 14, color: t.nInk3),
+                    icon: Icon(Icons.close, size: 14, color: t.inkDim),
                     onPressed: () {
                       terms.clear();
                       controller.send(const GenesisCmd.setTerms(value: ''));
@@ -332,7 +343,7 @@ class _SearchRow extends StatelessWidget {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      ColoredBox(color: t.nTile),
+                      ColoredBox(color: t.track),
                       FractionallySizedBox(
                         alignment: Alignment.centerLeft,
                         widthFactor: switch (state.phase) {
@@ -400,62 +411,96 @@ class _Filters extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     final hasRows = state.rows.isNotEmpty;
-    return Wrap(
-      spacing: 9,
-      runSpacing: 9,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        for (final topic in state.topics)
-          GenChip(
-            label: topic.label,
-            on: topic.on_,
-            onTap: () =>
-                controller.send(GenesisCmd.toggleTopic(code: topic.code)),
-          ),
-        Container(width: 1, height: 22, color: t.nHair),
-        _Picker(
-          label: 'Field',
-          value: state.field,
-          options: kGenesisFields,
-          onPick: (v) => controller.send(GenesisCmd.setField(value: v)),
-        ),
-        _Picker(
-          label: 'Format',
-          value: state.format,
-          options: kGenesisFormats,
-          onPick: (v) => controller.send(GenesisCmd.setFormat(value: v)),
-        ),
-        _Picker(
-          label: 'Language',
-          value: state.language,
-          options: kGenesisLanguages,
-          onPick: (v) => controller.send(GenesisCmd.setLanguage(value: v)),
-        ),
-        if (hasRows) ...[
-          Text('${state.total} results  ·  SORT',
-              style: TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.6,
-                  color: t.nInk3)),
-          // Clicking the active key again flips the direction, which Rust owns.
-          for (final key in const ['title', 'author', 'year', 'size'])
-            GenChip(
-              label: _sortLabel(key, state),
-              on: state.sort == key,
-              onTap: () => controller.send(GenesisCmd.sortBy(key: key)),
+    // One row, not a Wrap: the Slint page pins the sort cluster and Load More
+    // to the right edge with a stretching spacer, and a Wrap puts them next to
+    // the Language picker instead. Topics scroll rather than wrapping so the
+    // body below never moves down a line.
+    return SizedBox(
+      height: 32,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // Only the category chips scroll. The three pickers used to ride
+          // inside the same scroll view, and Language — last in the row — was
+          // simply off the end of it on a normal window.
+          Flexible(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (final topic in state.topics)
+                    // Russian fiction is its own mirror collection and off by
+                    // default; it does not belong in the category row.
+                    if (topic.code != 'russian') ...[
+                      GenChip(
+                        label: topic.label,
+                        on: topic.on_,
+                        onTap: () => controller
+                            .send(GenesisCmd.toggleTopic(code: topic.code)),
+                      ),
+                      const SizedBox(width: 9),
+                    ],
+                ],
+              ),
             ),
+          ),
+          Container(width: 1, height: 22, color: t.hairline),
+          const SizedBox(width: 9),
+          _Picker(
+            label: 'Field',
+            value: state.field,
+            options: kGenesisFields,
+            onPick: (v) => controller.send(GenesisCmd.setField(value: v)),
+          ),
+          const SizedBox(width: 9),
+          _Picker(
+            label: 'Format',
+            value: state.format,
+            options: kGenesisFormats,
+            onPick: (v) => controller.send(GenesisCmd.setFormat(value: v)),
+          ),
+          const SizedBox(width: 9),
+          _Picker(
+            label: 'Language',
+            value: state.language,
+            options: kGenesisLanguages,
+            onPick: (v) => controller.send(GenesisCmd.setLanguage(value: v)),
+          ),
+          const Spacer(),
+          if (hasRows) ...[
+            Text('${state.total} results  ·  SORT',
+                style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.6,
+                    color: t.inkDim)),
+            const SizedBox(width: 9),
+            // Clicking the active key again flips the direction, which Rust
+            // owns.
+            for (final key in const ['title', 'author', 'year', 'size']) ...[
+              GenChip(
+                label: _sortLabel(key, state),
+                on: state.sort == key,
+                onTap: () => controller.send(GenesisCmd.sortBy(key: key)),
+              ),
+              const SizedBox(width: 9),
+            ],
+          ],
+          // A page of results that failed to load. Only ever set once results
+          // are up — a search clears it on the way in.
+          if (state.phase == 'ready' && state.status.isNotEmpty) ...[
+            Text(state.status,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 10.5, color: _loadMore)),
+            const SizedBox(width: 9),
+          ],
+          if (hasRows && !state.moreDone)
+            _LoadMore(controller: controller, state: state),
         ],
-        // A page of results that failed to load. Only ever set once results are
-        // up — a search clears it on the way in.
-        if (state.phase == 'ready' && state.status.isNotEmpty)
-          Text(state.status,
-              style: const TextStyle(fontSize: 10.5, color: Tokens.error)),
-        if (hasRows && !state.moreDone)
-          _LoadMore(controller: controller, state: state),
-      ],
+      ),
     );
   }
 
@@ -475,9 +520,9 @@ class GenChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     return Material(
-      color: on ? kGen.withValues(alpha: 0.14) : t.nChip,
+      color: on ? kGen.withValues(alpha: 0.14) : t.pillBg,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(
@@ -496,7 +541,7 @@ class GenChip extends StatelessWidget {
               style: TextStyle(
                   fontSize: 12.5,
                   fontWeight: FontWeight.w600,
-                  color: on ? kGen : t.nInk)),
+                  color: on ? kGen : t.ink)),
         ),
       ),
     );
@@ -518,7 +563,7 @@ class _Picker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     return PopupMenuButton<String>(
       tooltip: label,
       onSelected: onPick,
@@ -534,20 +579,20 @@ class _Picker extends StatelessWidget {
         height: 32,
         padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(
-          color: t.nChip,
+          color: t.pillBg,
           borderRadius: BorderRadius.circular(16),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('$label: ', style: TextStyle(fontSize: 11.5, color: t.nInk3)),
+            Text('$label: ', style: TextStyle(fontSize: 11.5, color: t.inkDim)),
             Text(value,
                 style: TextStyle(
                     fontSize: 12.5,
                     fontWeight: FontWeight.w700,
-                    color: t.nInk)),
+                    color: t.ink)),
             const SizedBox(width: 4),
-            Icon(Icons.expand_more, size: 15, color: t.nInk3),
+            Icon(Icons.expand_more, size: 15, color: t.inkDim),
           ],
         ),
       ),
@@ -568,8 +613,8 @@ class _LoadMore extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Material(
         color: state.moreBusy
-            ? Tokens.error.withValues(alpha: 0.55)
-            : Tokens.error,
+            ? _loadMore.withValues(alpha: 0.55)
+            : _loadMore,
         borderRadius: BorderRadius.circular(16),
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
@@ -608,18 +653,18 @@ class _Body extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     return Container(
       decoration: BoxDecoration(
-        color: t.nCard,
+        color: t.card,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: t.nHair),
+        border: Border.all(color: t.hairline),
       ),
       clipBehavior: Clip.antiAlias,
       child: switch (state.phase) {
         'idle' => _Empty(
             icon: Icons.search,
-            tint: state.canDownload ? kGen : Tokens.warn,
+            tint: state.canDownload ? kGen : BookTheme.amber,
             title: 'Search for a book',
             body: state.canDownload
                 ? 'Results come from Library Genesis mirrors. Downloads land '
@@ -630,7 +675,7 @@ class _Body extends StatelessWidget {
         // Said plainly because the wait is real and otherwise looks like a hang.
         'probing' => _Empty(
             icon: Icons.wifi_tethering,
-            tint: Tokens.warn,
+            tint: BookTheme.amber,
             title: 'Finding a working mirror…',
             body: state.status.isNotEmpty
                 ? state.status
@@ -640,7 +685,7 @@ class _Body extends StatelessWidget {
         'searching' => const _Skeletons(),
         'failed' => _Empty(
             icon: Icons.warning_amber_rounded,
-            tint: Tokens.error,
+            tint: _loadMore,
             title: 'Every mirror failed',
             body: state.error,
             action: FilledButton(
@@ -651,7 +696,7 @@ class _Body extends StatelessWidget {
           ),
         _ when state.rows.isEmpty => _Empty(
             icon: Icons.search_off,
-            tint: t.nInk3,
+            tint: t.inkDim,
             title: 'No results',
             // Filters run after the mirror truncates, so a narrow one is the
             // usual reason a real title comes back empty.
@@ -682,7 +727,7 @@ class _Empty extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -702,13 +747,13 @@ class _Empty extends StatelessWidget {
             const SizedBox(height: 14),
             Text(title,
                 style: TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.w800, color: t.nInk)),
+                    fontSize: 16, fontWeight: FontWeight.w800, color: t.ink)),
             const SizedBox(height: 6),
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 460),
               child: Text(body,
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 12.5, color: t.nInk2)),
+                  style: TextStyle(fontSize: 12.5, color: t.inkDim)),
             ),
             if (action != null) ...[const SizedBox(height: 14), action!],
           ],
@@ -723,14 +768,14 @@ class _Skeletons extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     Widget bar(double h, [double w = 1]) => FractionallySizedBox(
           alignment: Alignment.centerLeft,
           widthFactor: w,
           child: Container(
             height: h,
             decoration: BoxDecoration(
-              color: t.nTile,
+              color: t.track,
               borderRadius: BorderRadius.circular(6),
             ),
           ),
@@ -778,7 +823,7 @@ class _Grid extends StatelessWidget {
         builder: (context, box) {
           // Cards want ~200px; never fewer than two columns, or a narrow window
           // gives one enormous card per row.
-          final cols = (box.maxWidth / 232).floor().clamp(2, 8);
+          final cols = (box.maxWidth / 232).floor().clamp(2, 12);
           return GridView.builder(
             padding: const EdgeInsets.all(14),
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -825,10 +870,10 @@ class BookCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     final live = canDownload && !busy;
     return Material(
-      color: t.nCard,
+      color: t.card,
       borderRadius: BorderRadius.circular(14),
       child: InkWell(
         // The card itself opens the record. The Get button sits on top of this
@@ -839,7 +884,7 @@ class BookCard extends StatelessWidget {
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: t.nHair),
+            border: Border.all(color: t.hairline),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -854,7 +899,7 @@ class BookCard extends StatelessWidget {
                     style: TextStyle(
                         fontSize: 12.5,
                         fontWeight: FontWeight.w700,
-                        color: t.nInk)),
+                        color: t.ink)),
               ),
               const SizedBox(height: 8),
               SizedBox(
@@ -862,7 +907,7 @@ class BookCard extends StatelessWidget {
                 child: Text(row.author.isEmpty ? 'Unknown author' : row.author,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11.5, color: t.nInk2)),
+                    style: TextStyle(fontSize: 11.5, color: t.inkDim)),
               ),
               const SizedBox(height: 8),
               SizedBox(
@@ -873,7 +918,7 @@ class BookCard extends StatelessWidget {
                     '${row.language.isEmpty ? "" : "  ·  ${row.language}"}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 10.5, color: t.nInk3)),
+                    style: TextStyle(fontSize: 10.5, color: t.inkDim)),
               ),
               const SizedBox(height: 8),
               // The size used to sit outside the button as grey text, which put
@@ -935,11 +980,11 @@ class _Have extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
-        color: Tokens.ok.withValues(alpha: 0.18),
+        color: _have.withValues(alpha: 0.18),
         borderRadius: BorderRadius.circular(15),
       ),
       child: Row(
@@ -950,13 +995,13 @@ class _Have extends StatelessWidget {
                 style: TextStyle(
                     fontSize: 10.5,
                     fontWeight: FontWeight.w700,
-                    color: t.nInk2)),
+                    color: t.inkDim)),
           ),
-          const Icon(Icons.check, size: 13, color: Tokens.ok),
+          const Icon(Icons.check, size: 13, color: _have),
           const SizedBox(width: 7),
           const Text('In library',
               style: TextStyle(
-                  fontSize: 11, fontWeight: FontWeight.w700, color: Tokens.ok)),
+                  fontSize: 11, fontWeight: FontWeight.w700, color: _have)),
         ],
       ),
     );
@@ -972,20 +1017,22 @@ class _Plate extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
+    // The plate is the palette's own tint, at full strength — the format sets
+    // which one, exactly as page_genesis.slint picks it.
     final plate = switch (row.format) {
-      'PDF' => const Color(0xFFEC4899),
-      'EPUB' => const Color(0xFF10B981),
-      'MOBI' => const Color(0xFFF97316),
-      'CBZ' => const Color(0xFF06B6D4),
-      _ => kGen,
+      'PDF' => t.tintPink,
+      'EPUB' => t.tintGreen,
+      'MOBI' => t.tintOrange,
+      'CBZ' => t.tintBlue,
+      _ => t.tintViolet,
     };
     return ClipRRect(
       borderRadius: BorderRadius.circular(10),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          ColoredBox(color: plate.withValues(alpha: 0.14)),
+          ColoredBox(color: plate),
           if (row.cover.isNotEmpty)
             Image.file(File(row.cover),
                 fit: BoxFit.cover,
@@ -994,7 +1041,8 @@ class _Plate extends StatelessWidget {
             // A spine, so the plate reads as a book rather than a swatch.
             Align(
               alignment: Alignment.centerLeft,
-              child: Container(width: 7, color: plate.withValues(alpha: 0.28)),
+              child: Container(
+                  width: 7, color: kGen.withValues(alpha: 0.28)),
             ),
             Center(
               child: Opacity(
@@ -1007,7 +1055,7 @@ class _Plate extends StatelessWidget {
                       style: TextStyle(
                           fontSize: 30,
                           fontWeight: FontWeight.w800,
-                          color: t.nInk)),
+                          color: t.ink)),
                 ),
               ),
             ),
@@ -1020,14 +1068,14 @@ class _Plate extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 8),
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: t.nCard,
+                color: t.card,
                 borderRadius: BorderRadius.circular(6),
               ),
               child: Text(row.format,
                   style: TextStyle(
                       fontSize: 10.5,
                       fontWeight: FontWeight.w700,
-                      color: t.nInk)),
+                      color: t.ink)),
             ),
           ),
           // Already in the library: a check, not a button.
@@ -1040,7 +1088,7 @@ class _Plate extends StatelessWidget {
                 height: 24,
                 alignment: Alignment.center,
                 decoration: const BoxDecoration(
-                    color: Tokens.ok, shape: BoxShape.circle),
+                    color: _have, shape: BoxShape.circle),
                 child: const Icon(Icons.check, size: 13, color: Colors.white),
               ),
             ),
@@ -1060,7 +1108,7 @@ class _DownloadStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     // The live tick where there is one: it arrives ten times a second and the
     // snapshot does not.
     final pct = controller.tick?.pct ?? state.busyPct;
@@ -1069,9 +1117,9 @@ class _DownloadStrip extends StatelessWidget {
       height: 66,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: t.nChip,
+        color: t.pillBg,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: t.nHair),
+        border: Border.all(color: t.hairline),
       ),
       child: Row(
         children: [
@@ -1088,10 +1136,10 @@ class _DownloadStrip extends StatelessWidget {
                           style: TextStyle(
                               fontSize: 13,
                               fontWeight: FontWeight.w600,
-                              color: t.nInk)),
+                              color: t.ink)),
                     ),
                     Text(detail,
-                        style: TextStyle(fontSize: 12, color: t.nInk2)),
+                        style: TextStyle(fontSize: 12, color: t.inkDim)),
                   ],
                 ),
                 const SizedBox(height: 7),
@@ -1100,7 +1148,7 @@ class _DownloadStrip extends StatelessWidget {
                   child: LinearProgressIndicator(
                     value: pct <= 0 ? null : pct,
                     minHeight: 6,
-                    backgroundColor: t.nTile,
+                    backgroundColor: t.track,
                     color: kGen,
                   ),
                 ),
@@ -1126,12 +1174,12 @@ class _DoneStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
+    final t = context.book;
     return Container(
       height: 62,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Tokens.ok.withValues(alpha: 0.12),
+        color: _have.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Row(
@@ -1141,10 +1189,10 @@ class _DoneStrip extends StatelessWidget {
             height: 32,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: Tokens.ok.withValues(alpha: 0.2),
+              color: _have.withValues(alpha: 0.2),
               shape: BoxShape.circle,
             ),
-            child: const Icon(Icons.check, size: 16, color: Tokens.ok),
+            child: const Icon(Icons.check, size: 16, color: _have),
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -1157,10 +1205,10 @@ class _DoneStrip extends StatelessWidget {
                     style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
-                        color: t.nInk)),
+                        color: t.ink)),
                 Text(state.doneDetail,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11.5, color: t.nInk2)),
+                    style: TextStyle(fontSize: 11.5, color: t.inkDim)),
               ],
             ),
           ),
@@ -1182,13 +1230,13 @@ class _ErrorBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Material(
-        color: Tokens.error.withValues(alpha: 0.12),
+        color: _loadMore.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(12),
         child: ListTile(
           dense: true,
-          leading: const Icon(Icons.error_outline, color: Tokens.error),
+          leading: const Icon(Icons.error_outline, color: _loadMore),
           title: Text('${controller.error}',
-              style: const TextStyle(fontSize: 12.5, color: Tokens.error)),
+              style: const TextStyle(fontSize: 12.5, color: _loadMore)),
           trailing: IconButton(
             icon: const Icon(Icons.close, size: 18),
             onPressed: controller.clearError,

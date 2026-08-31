@@ -41,7 +41,44 @@ class BooksController extends ChangeNotifier {
   /// Live scan progress, from the event stream. Null when nothing is running.
   ({int done, int total, String name})? progress;
 
+  /// The day streak, remembered from the last reading-stats snapshot. The
+  /// bridge's LibraryStats does not carry it, so the hero row's sixth card has
+  /// nothing to show until the stats panel has been opened once — better an
+  /// honest dash than a number the shelf made up.
+  int? streakDays;
+
   StreamSubscription<BooksEvent>? _events;
+
+  /// Books whose online metadata this session has already gone looking for.
+  /// The Slint glue asks the row's `summary_fetched_at` instead; the bridge
+  /// does not send that, and re-asking the five sources every time a popup
+  /// opens for a book the web has nothing on is worse than remembering.
+  final Set<int> _fetched = <int>{};
+
+  /// The book the fetch is running for, so the popup can say so.
+  int fetching = 0;
+
+  /// Fetch this book's summary, publication date and average rating the first
+  /// time its detail popup opens — the Slint build does this on open, which is
+  /// why its popups fill themselves in and this one sat empty.
+  Future<void> ensureSummary(Book book) async {
+    if (book.id == 0 || !_fetched.add(book.id)) return;
+    if ((state?.detailSummary ?? '').isNotEmpty) return;
+    await fetchSummary(book.id);
+  }
+
+  /// The same fetch, asked for by hand. Always runs, whatever was tried before.
+  Future<void> fetchSummary(int id) async {
+    _fetched.add(id);
+    fetching = id;
+    notifyListeners();
+    try {
+      await send(BooksCmd.fetchSummary(id: id));
+    } finally {
+      fetching = 0;
+      notifyListeners();
+    }
+  }
 
   /// id → resolved cover path. Survives a refresh: re-extracting a cover that
   /// already painted is a wasted unzip per tile per scroll.
@@ -54,6 +91,11 @@ class BooksController extends ChangeNotifier {
       notifyListeners();
     });
   }
+
+  /// No event stream, so no native library — the layout test builds the shelf
+  /// widgets against a hand-written snapshot and never dispatches anything.
+  @visibleForTesting
+  BooksController.detached();
 
   void _onEvent(BooksEvent event) {
     switch (event) {
@@ -81,6 +123,8 @@ class BooksController extends ChangeNotifier {
     notifyListeners();
     try {
       state = await booksDispatch(cmd: cmd);
+      final rs = state?.readingStats;
+      if (rs != null) streakDays = rs.streak.toInt();
     } catch (e) {
       error = e;
     } finally {

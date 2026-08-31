@@ -1,9 +1,13 @@
-// The reading-statistics panel: how much, how often, and on what.
+// The reading-statistics panel — how much, how often, and on what.
+//
+// ui/page_books.slint's version: five big numbers, the twelve-week heat strip
+// laid out 12 columns × 7 rows, then the per-book time list. The page owns the
+// 620 × 500 card this goes inside.
 
 import 'package:flutter/material.dart';
 
-import '../../design/tokens.dart';
 import '../../src/rust/api/books.dart';
+import 'book_theme.dart';
 import 'books_controller.dart';
 
 class ReadingStatsPanel extends StatelessWidget {
@@ -18,68 +22,93 @@ class ReadingStatsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(24, 18, 24, 40),
-      children: [
-        Row(
-          children: [
-            TextButton.icon(
-              icon: const Icon(Icons.arrow_back, size: 18),
-              label: const Text('Back to the shelf'),
-              onPressed: () => controller.send(const BooksCmd.closeStats()),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Text('Reading',
-            style: TextStyle(
-                fontSize: 26, fontWeight: FontWeight.w800, color: t.nInk)),
-        const SizedBox(height: 20),
-        Row(
-          children: [
-            _Big(value: stats.hours.toStringAsFixed(1), label: 'hours'),
-            _Big(value: '${stats.days}', label: 'days read'),
-            _Big(value: '${stats.streak}', label: 'day streak'),
-            _Big(value: '${stats.finished}', label: 'finished'),
-            _Big(value: '${stats.started}', label: 'started'),
-          ],
-        ),
-        const SizedBox(height: 28),
-        Text('The last year',
-            style: TextStyle(
-                fontSize: 14, fontWeight: FontWeight.w700, color: t.nInk)),
-        const SizedBox(height: 10),
-        _Heat(days: stats.heat),
-        const SizedBox(height: 28),
-        Text('Where the hours went',
-            style: TextStyle(
-                fontSize: 14, fontWeight: FontWeight.w700, color: t.nInk)),
-        const SizedBox(height: 10),
-        if (stats.books.isEmpty)
-          Text('Nothing tracked yet.',
-              style: TextStyle(fontSize: 12, color: t.nInk2))
-        else
-          for (final b in stats.books)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 5),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(b.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 13, color: t.nInk)),
-                  ),
-                  Text(b.time,
-                      style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: Tokens.secBooks)),
-                ],
+    final b = context.book;
+    return Padding(
+      padding: const EdgeInsets.all(22),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Text('Reading stats',
+                  style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: b.ink)),
+              const Spacer(),
+              IconButton(
+                iconSize: 15,
+                visualDensity: VisualDensity.compact,
+                icon: Icon(Icons.close, color: b.inkDim),
+                onPressed: () =>
+                    controller.send(const BooksCmd.closeStats()),
               ),
-            ),
-      ],
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              for (final m in [
+                (v: '${stats.hours.toStringAsFixed(1)}h', l: 'Read'),
+                (v: '${stats.streak}d', l: 'Streak'),
+                (v: '${stats.finished}', l: 'Finished'),
+                (v: '${stats.started}', l: 'Started'),
+                (v: '${stats.days}', l: 'Days'),
+              ]) ...[
+                Expanded(child: _Big(value: m.v, label: m.l)),
+                if (m.l != 'Days') const SizedBox(width: 12),
+              ],
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text('LAST 12 WEEKS',
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.5,
+                  color: b.inkDim)),
+          const SizedBox(height: 8),
+          _Heat(days: stats.heat),
+          const SizedBox(height: 16),
+          Text('TIME PER BOOK',
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.5,
+                  color: b.inkDim)),
+          const SizedBox(height: 8),
+          Expanded(
+            child: stats.books.isEmpty
+                ? Text('No reading time logged yet.',
+                    style: TextStyle(fontSize: 12, color: b.inkDim))
+                : ListView.separated(
+                    padding: EdgeInsets.zero,
+                    itemCount: stats.books.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 4),
+                    itemBuilder: (_, i) {
+                      final row = stats.books[i];
+                      return Row(
+                        children: [
+                          Expanded(
+                            child: Text(row.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style:
+                                    TextStyle(fontSize: 13, color: b.ink)),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(row.time,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: b.inkDim)),
+                        ],
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -92,33 +121,38 @@ class _Big extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Expanded(
-      child: Container(
-        margin: const EdgeInsets.only(right: 12),
-        padding: const EdgeInsets.symmetric(vertical: 18),
-        decoration: BoxDecoration(
-          color: t.nCard,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: t.nHair),
-        ),
-        child: Column(
-          children: [
-            Text(value,
-                style: const TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.w800,
-                    color: Tokens.secBooks)),
-            Text(label, style: TextStyle(fontSize: 11, color: t.nInk2)),
-          ],
-        ),
+    final b = context.book;
+    return Container(
+      height: 74,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: b.pillBg,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  color: BookTheme.accent)),
+          const SizedBox(height: 2),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: b.inkDim)),
+        ],
       ),
     );
   }
 }
 
-/// A year of reading days, oldest first, wrapped into week columns — the shape
-/// everyone already knows how to read.
+/// 84 days laid out 12 columns × 7 rows, index = column × 7 + row — the last
+/// twelve weeks, oldest column first.
 class _Heat extends StatelessWidget {
   const _Heat({required this.days});
 
@@ -126,44 +160,32 @@ class _Heat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
-    if (days.isEmpty) {
-      return Text('No reading recorded yet.',
-          style: TextStyle(fontSize: 12, color: t.nInk2));
-    }
-    const cell = 10.0;
-    const gap = 2.0;
-    final weeks = (days.length / 7).ceil();
+    final b = context.book;
+    // The bridge sends a year; the panel shows the tail of it.
+    final tail = days.length > 84 ? days.sublist(days.length - 84) : days;
     return SizedBox(
-      height: 7 * (cell + gap),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            for (var w = 0; w < weeks; w++)
-              Padding(
-                padding: const EdgeInsets.only(right: gap),
-                child: Column(
-                  children: [
-                    for (var d = 0; d < 7; d++)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: gap),
-                        child: Container(
-                          width: cell,
-                          height: cell,
-                          decoration: BoxDecoration(
-                            color: (w * 7 + d) < days.length && days[w * 7 + d]
-                                ? Tokens.secBooks
-                                : t.nHover,
-                            borderRadius: BorderRadius.circular(2),
-                          ),
-                        ),
-                      ),
-                  ],
+      height: 7 * 15,
+      child: LayoutBuilder(
+        builder: (context, box) {
+          final cell = box.maxWidth / 12;
+          return Stack(
+            children: [
+              for (var i = 0; i < tail.length; i++)
+                Positioned(
+                  left: (i ~/ 7) * cell,
+                  top: (i % 7) * 15,
+                  width: cell - 4,
+                  height: 11,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: tail[i] ? BookTheme.accent : b.track,
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
                 ),
-              ),
-          ],
-        ),
+            ],
+          );
+        },
       ),
     );
   }

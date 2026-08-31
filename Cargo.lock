@@ -7914,6 +7914,7 @@ dependencies = [
  "slint",
  "sqlx",
  "tokio",
+ "tracing",
  "tulipix-common",
  "tulipix-core",
  "tulipix-platform",

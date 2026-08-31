@@ -1573,9 +1573,11 @@ const SEARCH_HITS: usize = 100;
 
 // ---------------------------------------------------------------- snapshot ---
 
-/// One screenful of the grid. Books are big tiles; a hundred of them is a lot
-/// of covers to hold and none of them is on screen.
-const PAGE_SIZE: i64 = 24;
+/// One screenful of the grid: three across, two down, cut from the viewport —
+/// the same six the Slint page shows, and the same six list mode shows as
+/// half-width rows. The page is the grid, so this number and that geometry are
+/// one decision; the pager in the toolbar is what moves between them.
+const PAGE_SIZE: i64 = 6;
 
 fn to_book(r: library::BookRow) -> Book {
     Book {
@@ -1683,6 +1685,18 @@ async fn snapshot() -> Result<BooksState> {
     let offset = (s.page - 1).max(0) * PAGE_SIZE;
     let (rows, filtered_total) = library::list_page(pool, &filter, PAGE_SIZE, offset).await?;
     let page_count = ((filtered_total + PAGE_SIZE - 1) / PAGE_SIZE).max(1);
+    // A page past the end is an empty grid with a pager reading "4 / 1": every
+    // filter setter resets the page, but a trash, a permanent delete or a
+    // rescan can shorten the list under a page that is already showing. The
+    // Slint glue clamps here for the same reason; this one did not.
+    let (page, rows, page_count) = if s.page > page_count {
+        let off = (page_count - 1) * PAGE_SIZE;
+        let (r, _) = library::list_page(pool, &filter, PAGE_SIZE, off).await?;
+        lock().page = page_count;
+        (page_count, r, page_count)
+    } else {
+        (s.page, rows, page_count)
+    };
 
     let home = home::load(pool).await.unwrap_or(home::HomeData {
         continue_reading: None,
@@ -1763,7 +1777,7 @@ async fn snapshot() -> Result<BooksState> {
         books: rows.into_iter().map(to_book).collect(),
         total: home.stats.total,
         filtered_total,
-        page: s.page,
+        page,
         page_count,
         view_mode: s.view_mode,
         sort_index: s.sort_index as i64,

@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/genesis.dart';
 import 'genesis_controller.dart';
@@ -72,13 +73,10 @@ class _Settings extends StatefulWidget {
 class _SettingsState extends State<_Settings> {
   late final TextEditingController _mirrors =
       TextEditingController(text: widget.controller.state?.mirrors ?? '');
-  late final TextEditingController _dest =
-      TextEditingController(text: widget.controller.state?.dest ?? '');
 
   @override
   void dispose() {
     _mirrors.dispose();
-    _dest.dispose();
     super.dispose();
   }
 
@@ -105,6 +103,10 @@ class _SettingsState extends State<_Settings> {
                 ),
                 Flexible(
                   child: ListView(
+                    // Without this the list takes the full 700 of the
+                    // constraint whatever it holds, and the button row is
+                    // pushed to the bottom of a mostly empty card.
+                    shrinkWrap: true,
                     padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
                     children: [
                       const _Label('Download folder'),
@@ -112,23 +114,45 @@ class _SettingsState extends State<_Settings> {
                       Row(
                         children: [
                           Expanded(
-                            child: TextField(
-                              controller: _dest,
-                              style: TextStyle(fontSize: 12.5, color: t.nInk),
-                              decoration: const InputDecoration(
-                                isDense: true,
-                                border: OutlineInputBorder(),
-                                hintText: 'not set',
+                            child: Container(
+                              height: 40,
+                              alignment: Alignment.centerLeft,
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: t.nChip,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: t.nHair),
+                              ),
+                              child: Text(
+                                st.dest.isEmpty ? 'not set' : st.dest,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    fontSize: 12.5,
+                                    color:
+                                        st.dest.isEmpty ? t.nInk2 : t.nInk),
                               ),
                             ),
                           ),
                           const SizedBox(width: 10),
-                          FilledButton(
-                            onPressed: () => widget.controller.send(
-                                GenesisCmd.setDest(path: _dest.text.trim())),
-                            style:
-                                FilledButton.styleFrom(backgroundColor: kGen),
-                            child: const Text('Use folder'),
+                          SizedBox(
+                            height: 40,
+                            child: FilledButton(
+                              // The Slint build opens the desktop's own folder
+                              // dialog here; typing an absolute path from
+                              // memory was never the same control.
+                              onPressed: () async {
+                                final path = await pickDirectory(
+                                    initial: st.dest.isEmpty ? null : st.dest);
+                                if (path == null) return;
+                                await widget.controller
+                                    .send(GenesisCmd.setDest(path: path));
+                              },
+                              style:
+                                  FilledButton.styleFrom(backgroundColor: kGen),
+                              child: const Text('Change…'),
+                            ),
                           ),
                         ],
                       ),
@@ -201,17 +225,20 @@ class _SettingsState extends State<_Settings> {
                   padding: const EdgeInsets.all(14),
                   child: Row(
                     children: [
+                      const Spacer(),
                       OutlinedButton(
                         onPressed: () async {
                           await widget.controller
                               .send(const GenesisCmd.settingsReset());
+                          // Reset clears the stored mirrors and the download
+                          // folder; the box has to show that, not the text
+                          // that was in it a moment ago.
                           _mirrors.text =
                               widget.controller.state?.mirrors ?? '';
-                          _dest.text = widget.controller.state?.dest ?? '';
                         },
                         child: const Text('Reset'),
                       ),
-                      const Spacer(),
+                      const SizedBox(width: 9),
                       FilledButton(
                         onPressed: () => widget.controller
                             .send(const GenesisCmd.settingsSave()),

@@ -1,14 +1,20 @@
-// The detail sheet, and the three small dialogs the section needs.
+// The detail popup, and the three small dialogs the section needs.
+//
+// The popup is ui/page_books.slint's: a 768 × 506 card split 40 / 60 — the
+// book on the left, everything known about it on the right, in one meta pill,
+// a progress pill, the collection chips, a scrolling summary and the actions.
+// The page owns the scrim and the card; this is what goes inside it.
 
 import 'package:flutter/material.dart';
 
-import '../../design/tokens.dart';
+import '../../design/pick.dart';
 import '../../src/rust/api/books.dart';
+import 'book_theme.dart';
 import 'books_controller.dart';
 import 'books_widgets.dart';
 
 /// One book, everything known about it, and everything that can be done to it.
-class BookDetailPanel extends StatelessWidget {
+class BookDetailPanel extends StatefulWidget {
   const BookDetailPanel({
     super.key,
     required this.controller,
@@ -19,263 +25,665 @@ class BookDetailPanel extends StatelessWidget {
   final Book book;
 
   @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    final st = controller.state!;
+  State<BookDetailPanel> createState() => _BookDetailPanelState();
+}
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(24, 18, 24, 40),
-      children: [
-        Row(
-          children: [
-            TextButton.icon(
-              icon: const Icon(Icons.arrow_back, size: 18),
-              label: const Text('Back to the shelf'),
-              onPressed: () => controller.send(const BooksCmd.closeDetail()),
-            ),
-            const Spacer(),
-            if (!book.missing)
-              FilledButton.icon(
-                style: FilledButton.styleFrom(backgroundColor: Tokens.secBooks),
-                icon: Icon(book.percent > 0
-                    ? Icons.play_arrow
-                    : Icons.auto_stories_outlined),
-                label: Text(book.percent > 0 ? 'Resume' : 'Start reading'),
-                onPressed: () =>
-                    controller.send(BooksCmd.openBook(id: book.id)),
-              ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            BookCover(
-                controller: controller, book: book, width: 170, radius: 12),
-            const SizedBox(width: 24),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(book.title,
-                      style: TextStyle(
-                          fontSize: 26,
-                          fontWeight: FontWeight.w800,
-                          color: t.nInk)),
-                  const SizedBox(height: 4),
-                  InkWell(
-                    onTap: () async {
-                      await controller
-                          .send(BooksCmd.setAuthor(author: book.author));
-                      await controller.send(const BooksCmd.closeDetail());
-                    },
-                    child: Text(book.author,
-                        style: const TextStyle(
-                            fontSize: 15, color: Tokens.secBooks)),
-                  ),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 6,
-                    children: [
-                      if (book.series.isNotEmpty)
-                        _Fact(label: 'Series', value: book.series),
-                      if (book.genre.isNotEmpty)
-                        _Fact(label: 'Genre', value: book.genre),
-                      if (book.published.isNotEmpty)
-                        _Fact(label: 'Published', value: book.published),
-                      _Fact(label: 'Format', value: book.format.toUpperCase()),
-                      if (book.sizeBytes > 0)
-                        _Fact(label: 'Size', value: fmtSize(book.sizeBytes)),
-                      if (book.addedAt > 0)
-                        _Fact(label: 'Added', value: fmtDate(book.addedAt)),
-                      if (book.lastRead > 0)
-                        _Fact(
-                            label: 'Last read', value: fmtDate(book.lastRead)),
-                      if (book.timeRead > 0)
-                        _Fact(
-                            label: 'Time read',
-                            value: fmtReadTime(book.timeRead)),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Text('Your rating',
-                          style: TextStyle(fontSize: 12, color: t.nInk2)),
-                      const SizedBox(width: 10),
-                      Stars(
-                        value: book.rating,
-                        size: 22,
-                        onRate: (v) => controller
-                            .send(BooksCmd.setRating(id: book.id, rating: v)),
-                      ),
-                      if (book.netRating > 0) ...[
-                        const SizedBox(width: 20),
-                        Text('Readers',
-                            style: TextStyle(fontSize: 12, color: t.nInk2)),
-                        const SizedBox(width: 8),
-                        Stars(value: book.netRating, size: 16),
-                        const SizedBox(width: 6),
-                        Text(book.netRating.toStringAsFixed(1),
-                            style: TextStyle(fontSize: 12, color: t.nInk3)),
-                      ],
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  if (book.percent > 0) ...[
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(3),
-                      child: LinearProgressIndicator(
-                        value: book.percent.clamp(0.0, 1.0),
-                        minHeight: 6,
-                        backgroundColor: t.nHover,
-                        valueColor:
-                            const AlwaysStoppedAnimation(Tokens.secBooks),
+class _BookDetailPanelState extends State<BookDetailPanel> {
+  /// The delete confirmation replaces the action row rather than opening a
+  /// second dialog on top of this one.
+  bool _confirmDelete = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.ensureSummary(widget.book);
+  }
+
+  @override
+  void didUpdateWidget(BookDetailPanel old) {
+    super.didUpdateWidget(old);
+    if (old.book.id != widget.book.id) {
+      widget.controller.ensureSummary(widget.book);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final b = context.book;
+    final book = widget.book;
+    final st = widget.controller.state!;
+    final c = widget.controller;
+
+    return Padding(
+      padding: const EdgeInsets.all(22),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 40 %: the book itself, which lays down when you point at it.
+          Expanded(
+            flex: 40,
+            child: _DetailCover(controller: c, book: book),
+          ),
+          const SizedBox(width: 20),
+          // 60 %: the info column.
+          Expanded(
+            flex: 60,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(book.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w800,
+                                  color: b.ink)),
+                          const SizedBox(height: 2),
+                          GestureDetector(
+                            onTap: () async {
+                              await c.send(const BooksCmd.closeDetail());
+                              await c.send(
+                                  BooksCmd.setAuthor(author: book.author));
+                            },
+                            child: Text(book.author,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: BookTheme.accent)),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text('${(book.percent * 100).round()}% read',
-                        style: TextStyle(fontSize: 11, color: t.nInk2)),
-                    const SizedBox(height: 16),
+                    IconButton(
+                      iconSize: 15,
+                      visualDensity: VisualDensity.compact,
+                      icon: Icon(Icons.close, color: b.inkDim),
+                      onPressed: () => c.send(const BooksCmd.closeDetail()),
+                    ),
                   ],
+                ),
+                const SizedBox(height: 10),
+                // File type · genre · size · added · time read · publication ·
+                // series · rating are ONE container: the outer spacing must
+                // never get between those lines.
+                _MetaPill(controller: c, book: book),
+                if (book.percent > 0) ...[
+                  const SizedBox(height: 10),
+                  _ProgressPill(percent: book.percent),
+                ],
+                if (st.detailCollections.isNotEmpty) ...[
+                  const SizedBox(height: 10),
                   Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+                    spacing: 6,
+                    runSpacing: 6,
                     children: [
-                      OutlinedButton.icon(
-                        icon: Icon(
-                          book.favorite
-                              ? Icons.favorite
-                              : Icons.favorite_border,
-                          size: 16,
+                      for (final col in st.detailCollections)
+                        _CollectionToggle(
+                          row: col,
+                          onTap: () => c.send(BooksCmd.collectionToggle(
+                              id: col.id, bookId: book.id)),
                         ),
-                        label: Text(
-                            book.favorite ? 'Favourited' : 'Add to favourites'),
-                        onPressed: () => controller
-                            .send(BooksCmd.toggleFavorite(id: book.id)),
-                      ),
-                      OutlinedButton.icon(
-                        icon:
-                            const Icon(Icons.cloud_download_outlined, size: 16),
-                        label: const Text('Fetch description'),
-                        onPressed: () =>
-                            controller.send(BooksCmd.fetchSummary(id: book.id)),
-                      ),
-                      if (book.missing)
-                        OutlinedButton.icon(
-                          icon: const Icon(Icons.link, size: 16),
-                          label: const Text('Relink the file'),
-                          onPressed: () async {
-                            final p = await promptText(
-                              context,
-                              title: 'Where is it now?',
-                              label: 'New absolute path',
-                              confirm: 'Relink',
-                            );
-                            if (p != null) {
-                              await controller
-                                  .send(BooksCmd.relink(id: book.id, path: p));
-                            }
-                          },
-                        ),
-                      OutlinedButton.icon(
-                        icon: Icon(
-                            book.trashed
-                                ? Icons.restore_from_trash
-                                : Icons.delete_outline,
-                            size: 16),
-                        label: Text(book.trashed ? 'Restore' : 'Move to trash'),
-                        onPressed: () => controller.send(book.trashed
-                            ? BooksCmd.restore(id: book.id)
-                            : BooksCmd.trash(id: book.id)),
-                      ),
                     ],
+                  ),
+                ],
+                const SizedBox(height: 10),
+                // The summary absorbs the leftover height — it scrolls, so
+                // capping it would push the slack into the meta pill instead.
+                Expanded(child: _Summary(controller: c, book: book)),
+                const SizedBox(height: 10),
+                if (_confirmDelete)
+                  _ConfirmDelete(
+                    title: book.title,
+                    onCancel: () => setState(() => _confirmDelete = false),
+                    onRemove: () async {
+                      setState(() => _confirmDelete = false);
+                      await c.send(BooksCmd.trash(id: book.id));
+                      await c.send(const BooksCmd.closeDetail());
+                    },
+                  )
+                else
+                  _Actions(
+                    controller: c,
+                    book: book,
+                    onAskDelete: () => setState(() => _confirmDelete = true),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The cover column. It shows the book on its mockup, and swaps to the flat
+/// cover while the pointer is on it — the Slint popup does the same thing with
+/// its `detail-book-hero` rendition, so you can read the art without the
+/// hardcover's tilt across it. Flat means filling the column, not letterboxed
+/// inside it: the whole point of the swap is to see the cover.
+class _DetailCover extends StatefulWidget {
+  const _DetailCover({required this.controller, required this.book});
+
+  final BooksController controller;
+  final Book book;
+
+  @override
+  State<_DetailCover> createState() => _DetailCoverState();
+}
+
+class _DetailCoverState extends State<_DetailCover> {
+  bool _flat = false;
+
+  @override
+  Widget build(BuildContext context) => MouseRegion(
+        onEnter: (_) => setState(() => _flat = true),
+        onExit: (_) => setState(() => _flat = false),
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 160),
+          child: _flat
+              ? LayoutBuilder(
+                  key: const ValueKey('flat'),
+                  builder: (context, box) => Center(
+                    child: BookCover(
+                      controller: widget.controller,
+                      book: widget.book,
+                      width: box.maxWidth,
+                      height: box.maxHeight,
+                      radius: 10,
+                      showProgress: false,
+                    ),
+                  ),
+                )
+              : Book3D(
+                  key: const ValueKey('mockup'),
+                  controller: widget.controller,
+                  book: widget.book,
+                ),
+        ),
+      );
+}
+
+class _MetaPill extends StatelessWidget {
+  const _MetaPill({required this.controller, required this.book});
+
+  final BooksController controller;
+  final Book book;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = context.book;
+    final facts = [
+      book.format.toUpperCase(),
+      if (book.genre.isNotEmpty) book.genre,
+      if (book.sizeBytes > 0) fmtSize(book.sizeBytes),
+      if (book.addedAt > 0) fmtDate(book.addedAt),
+    ].join('  ·  ');
+    final timeRead = fmtReadTime(book.timeRead);
+
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: b.pillBg.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: BookTheme.accent.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(facts, style: TextStyle(fontSize: 12, color: b.inkDim)),
+          if (timeRead.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text('Time read: $timeRead',
+                style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: BookTheme.accent)),
+          ],
+          const SizedBox(height: 4),
+          Text(
+              'Publication Date : '
+              '${book.published.isEmpty ? "—" : book.published}',
+              style: TextStyle(fontSize: 12, color: b.inkDim)),
+          if (book.series.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            GestureDetector(
+              onTap: () async {
+                await controller.send(const BooksCmd.closeDetail());
+                await controller
+                    .send(BooksCmd.setSeries(series: book.series));
+              },
+              child: Text('Series: ${book.series}',
+                  style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: BookTheme.accent)),
+            ),
+          ],
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              RatingPill(
+                rating: book.rating,
+                onRate: (v) => controller
+                    .send(BooksCmd.setRating(id: book.id, rating: v)),
+              ),
+              const SizedBox(width: 10),
+              FavouriteDot(
+                on: book.favorite,
+                side: 26,
+                onTap: () =>
+                    controller.send(BooksCmd.toggleFavorite(id: book.id)),
+              ),
+              if (book.format.toUpperCase() == 'PDF') ...[
+                const SizedBox(width: 10),
+                _Toggle(
+                  label: book.magazine ? '✓ Magazine' : 'Magazine',
+                  on: book.magazine,
+                  hue: BookTheme.amber,
+                  onTap: () =>
+                      controller.send(BooksCmd.toggleMagazine(id: book.id)),
+                ),
+              ],
+              if (book.format.toUpperCase() == 'CBZ' ||
+                  book.format.toUpperCase() == 'CBR') ...[
+                const SizedBox(width: 10),
+                _Toggle(
+                  label: book.rtl ? '✓ RTL' : 'RTL',
+                  on: book.rtl,
+                  hue: BookTheme.pink,
+                  onTap: () =>
+                      controller.send(BooksCmd.toggleRtl(id: book.id)),
+                ),
+              ],
+              if (book.netRating > 0) ...[
+                const SizedBox(width: 10),
+                Container(
+                  height: 22,
+                  padding: const EdgeInsets.symmetric(horizontal: 9),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: BookTheme.amber.withValues(alpha: 0.16),
+                    borderRadius: BorderRadius.circular(11),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.star, size: 12, color: BookTheme.amber),
+                      const SizedBox(width: 4),
+                      Text('${(book.netRating * 10).round() / 10} avg',
+                          style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFFCF8A12))),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Toggle extends StatelessWidget {
+  const _Toggle({
+    required this.label,
+    required this.on,
+    required this.hue,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool on;
+  final Color hue;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: onTap,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: Container(
+            height: 26,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: on ? hue : hue.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(13),
+              border: Border.all(color: hue.withValues(alpha: 0.5)),
+            ),
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: on ? Colors.white : hue)),
+          ),
+        ),
+      );
+}
+
+/// Full-width bar with the percentage at its right edge. The DB stores 0‥1
+/// here, so nothing gets multiplied twice.
+class _ProgressPill extends StatelessWidget {
+  const _ProgressPill({required this.percent});
+
+  final double percent;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = context.book;
+    return Container(
+      height: 28,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: BookTheme.accent.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: BookTheme.accent.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: SizedBox(
+              height: 8,
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: b.track,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                  ),
+                  // See the same fix in the hero card: loose constraints give
+                  // a childless DecoratedBox zero height.
+                  Positioned.fill(
+                    child: FractionallySizedBox(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: percent.clamp(0.0, 1.0),
+                      heightFactor: 1,
+                      child: const DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.all(Radius.circular(4)),
+                          gradient: LinearGradient(
+                              colors: [Color(0xFF6C4DF6), Color(0xFFB9B0FF)]),
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),
             ),
-          ],
-        ),
-        const SizedBox(height: 26),
-        if (st.detailSummary.isNotEmpty) ...[
-          Text('Description',
-              style: TextStyle(
-                  fontSize: 14, fontWeight: FontWeight.w700, color: t.nInk)),
-          const SizedBox(height: 8),
-          Text(st.detailSummary,
-              style: TextStyle(fontSize: 13, height: 1.55, color: t.nInk2)),
-          const SizedBox(height: 26),
+          ),
+          const SizedBox(width: 10),
+          Text('${(percent.clamp(0.0, 1.0) * 100).round()}% read',
+              style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: BookTheme.accent)),
         ],
-        Row(
-          children: [
-            Text('Collections',
-                style: TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.w700, color: t.nInk)),
-            const SizedBox(width: 12),
-            TextButton.icon(
-              icon: const Icon(Icons.add, size: 16),
-              label: const Text('New'),
+      ),
+    );
+  }
+}
+
+class _CollectionToggle extends StatelessWidget {
+  const _CollectionToggle({required this.row, required this.onTap});
+
+  final CollectionRow row;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = context.book;
+    return GestureDetector(
+      onTap: onTap,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          height: 26,
+          constraints: const BoxConstraints(minWidth: 44),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: row.member ? BookTheme.accent : b.pillBg,
+            borderRadius: BorderRadius.circular(13),
+          ),
+          child: Text('${row.member ? "✓ " : "+ "}${row.name}',
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: row.member ? Colors.white : b.ink)),
+        ),
+      ),
+    );
+  }
+}
+
+class _Summary extends StatelessWidget {
+  const _Summary({required this.controller, required this.book});
+
+  final BooksController controller;
+  final Book book;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = context.book;
+    final summary = controller.state?.detailSummary ?? '';
+    final loading = controller.fetching == book.id;
+    return Container(
+      decoration: BoxDecoration(
+        color: b.pillBg.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: BookTheme.accent.withValues(alpha: 0.35)),
+      ),
+      child: ListView(
+        padding: const EdgeInsets.all(10),
+        children: [
+          if (loading)
+            Row(
+              children: [
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 1.6, color: BookTheme.accent),
+                ),
+                const SizedBox(width: 8),
+                Text('Looking this one up…',
+                    style: TextStyle(fontSize: 12, color: b.inkDim)),
+              ],
+            )
+          else ...[
+            Text(summary.isEmpty ? 'No summary yet.' : summary,
+                style: TextStyle(fontSize: 12, height: 1.5, color: b.ink)),
+            if (summary.isEmpty) ...[
+              const SizedBox(height: 6),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: () => controller.fetchSummary(book.id),
+                  child: const Text('Fetch from online →',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: BookTheme.accent)),
+                ),
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _Actions extends StatelessWidget {
+  const _Actions({
+    required this.controller,
+    required this.book,
+    required this.onAskDelete,
+  });
+
+  final BooksController controller;
+  final Book book;
+  final VoidCallback onAskDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = context.book;
+    return Row(
+      children: [
+        Expanded(
+          child: SizedBox(
+            height: 42,
+            child: FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: BookTheme.accent,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(11)),
+              ),
+              icon: Icon(
+                  book.missing
+                      ? Icons.link
+                      : Icons.menu_book_outlined,
+                  size: 16),
+              label: Text(book.missing ? 'Relink' : 'Open'),
               onPressed: () async {
-                final name = await promptText(
-                  context,
-                  title: 'New collection',
-                  label: 'Name',
-                  confirm: 'Create',
+                if (!book.missing) {
+                  await controller.send(BooksCmd.openBook(id: book.id));
+                  return;
+                }
+                final p = await pickFile(
+                  label: 'Book',
+                  extensions: const [
+                    'epub', 'pdf', 'djvu', 'cbz', 'cbr',
+                    'cb7', 'cbt', 'fb2', 'mobi', 'azw3',
+                  ],
                 );
-                if (name != null) {
-                  await controller.send(BooksCmd.collectionCreate(name: name));
+                if (p != null) {
+                  await controller
+                      .send(BooksCmd.relink(id: book.id, path: p));
                 }
               },
             ),
-          ],
+          ),
         ),
-        const SizedBox(height: 8),
-        if (st.detailCollections.isEmpty)
-          Text('No collections yet.',
-              style: TextStyle(fontSize: 12, color: t.nInk2))
+        const SizedBox(width: 10),
+        _SquareBtn(
+          icon: Icons.refresh,
+          tint: BookTheme.accent,
+          onTap: () => controller.fetchSummary(book.id),
+        ),
+        const SizedBox(width: 10),
+        if (book.trashed)
+          _SquareBtn(
+            icon: Icons.restore_from_trash,
+            tint: BookTheme.green,
+            onTap: () => controller.send(BooksCmd.restore(id: book.id)),
+          )
         else
-          Wrap(
-            children: [
-              for (final c in st.detailCollections)
-                BookChipView(
-                  label: c.name,
-                  count: c.count,
-                  active: c.member,
-                  onTap: () => controller.send(
-                      BooksCmd.collectionToggle(id: c.id, bookId: book.id)),
-                ),
-            ],
+          _SquareBtn(
+            icon: Icons.delete_outline,
+            tint: BookTheme.danger,
+            fill: b.card,
+            onTap: onAskDelete,
           ),
       ],
     );
   }
 }
 
-class _Fact extends StatelessWidget {
-  const _Fact({required this.label, required this.value});
+class _SquareBtn extends StatelessWidget {
+  const _SquareBtn({
+    required this.icon,
+    required this.tint,
+    required this.onTap,
+    this.fill,
+  });
 
-  final String label;
-  final String value;
+  final IconData icon;
+  final Color tint;
+  final VoidCallback onTap;
+  final Color? fill;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: onTap,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: Container(
+            width: 46,
+            height: 42,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: fill ?? tint.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(11),
+              border: Border.all(color: tint.withValues(alpha: 0.4)),
+            ),
+            child: Icon(icon, size: 16, color: tint),
+          ),
+        ),
+      );
+}
+
+class _ConfirmDelete extends StatelessWidget {
+  const _ConfirmDelete({
+    required this.title,
+    required this.onCancel,
+    required this.onRemove,
+  });
+
+  final String title;
+  final VoidCallback onCancel;
+  final VoidCallback onRemove;
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: t.nChip,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('$label ', style: TextStyle(fontSize: 10, color: t.nInk3)),
-          Text(value,
-              style: TextStyle(
-                  fontSize: 11, fontWeight: FontWeight.w600, color: t.nInk)),
-        ],
-      ),
+    final b = context.book;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('Move “$title” to the Trash tab? The file on disk is kept.',
+            style: TextStyle(fontSize: 12, color: b.ink)),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: SizedBox(
+                height: 40,
+                child: OutlinedButton(
+                  onPressed: onCancel,
+                  child: const Text('Cancel'),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: SizedBox(
+                height: 40,
+                child: FilledButton(
+                  style: FilledButton.styleFrom(
+                      backgroundColor: BookTheme.danger),
+                  onPressed: onRemove,
+                  child: const Text('Remove'),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }

@@ -322,7 +322,19 @@ pub fn page_image_night(path: &Path, format: &str, idx: usize) -> Result<PathBuf
     if night.exists() {
         return Ok(night);
     }
+    // A page this pass has already judged to be in colour.
+    let colour = day.with_file_name(format!(
+        "{}.colour",
+        day.file_stem().and_then(|s| s.to_str()).unwrap_or("page")
+    ));
+    if colour.exists() {
+        anyhow::bail!("colour page — night render skipped");
+    }
     let mut img = image::open(&day)?.into_rgba8();
+    if is_colour(&img) {
+        std::fs::write(&colour, b"").ok();
+        anyhow::bail!("colour page — night render skipped");
+    }
     for p in img.pixels_mut() {
         p.0[0] = 255 - p.0[0];
         p.0[1] = 255 - p.0[1];
@@ -330,6 +342,40 @@ pub fn page_image_night(path: &Path, format: &str, idx: usize) -> Result<PathBuf
     }
     img.save(&night)?;
     Ok(night)
+}
+
+/// Whether this page carries real colour, rather than being a scan that just
+/// isn't perfectly neutral.
+///
+/// Night mode is a scan trick: inverting a black-on-white page gives a page you
+/// can read in the dark. Inverting a comic gives a negative — the reader asked
+/// for a dark theme and got Superman in cyan. So a page with colour in it is
+/// left as it was drawn, whatever the theme says.
+///
+/// Sampled on a grid rather than pixel by pixel: a comic is colourful
+/// everywhere, so a few thousand pixels settle it, and this runs on a page turn.
+fn is_colour(img: &image::RgbaImage) -> bool {
+    const STEP: u32 = 8;
+    // Below this a pixel is off-white paper or ink bleed, not ink with a hue.
+    const CHROMA: i32 = 40;
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 {
+        return false;
+    }
+    let (mut seen, mut coloured) = (0u32, 0u32);
+    for y in (0..h).step_by(STEP as usize) {
+        for x in (0..w).step_by(STEP as usize) {
+            let p = img.get_pixel(x, y).0;
+            let (r, g, b) = (p[0] as i32, p[1] as i32, p[2] as i32);
+            seen += 1;
+            if r.max(g).max(b) - r.min(g).min(b) > CHROMA {
+                coloured += 1;
+            }
+        }
+    }
+    // 3% of a page is a colour cover or a colour plate; a scan that is merely
+    // yellowed stays well under it, because yellowing moves every channel.
+    seen > 0 && coloured * 100 > seen * 3
 }
 
 /// Bounding box of real content on a page, ignoring a uniform border.
@@ -508,4 +554,35 @@ pub fn prune_page_cache(cap_bytes: u64) {
 pub fn first_page_bytes(path: &Path, format: &str) -> Result<Vec<u8>> {
     let p = page_image(path, format, 0)?;
     Ok(std::fs::read(p)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_colour;
+
+    fn page(f: impl Fn(u32, u32) -> [u8; 4]) -> image::RgbaImage {
+        image::RgbaImage::from_fn(64, 64, |x, y| image::Rgba(f(x, y)))
+    }
+
+    #[test]
+    fn a_scanned_page_is_not_colour() {
+        // Black text on yellowed paper: every channel moves together.
+        assert!(!is_colour(&page(|x, _| {
+            if x % 7 == 0 { [20, 18, 16, 255] } else { [248, 244, 232, 255] }
+        })));
+    }
+
+    #[test]
+    fn a_comic_page_is_colour() {
+        assert!(is_colour(&page(|x, _| {
+            if x % 2 == 0 { [220, 30, 30, 255] } else { [30, 60, 210, 255] }
+        })));
+    }
+
+    #[test]
+    fn one_colour_panel_on_a_grey_page_is_still_colour() {
+        assert!(is_colour(&page(|x, y| {
+            if x < 16 && y < 16 { [10, 200, 90, 255] } else { [200, 200, 200, 255] }
+        })));
+    }
 }
