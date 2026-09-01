@@ -201,6 +201,7 @@ class _MusicChipState extends State<MusicChip> {
                     color: a.withValues(alpha: t.dark ? 0.55 : 0.85),
                   ),
           ),
+          clipBehavior: Clip.antiAlias,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             mainAxisSize: widget.expand ? MainAxisSize.max : MainAxisSize.min,
@@ -208,28 +209,40 @@ class _MusicChipState extends State<MusicChip> {
               if (widget.icon != null) Icon(widget.icon, size: 15, color: ink),
               if (shown && widget.label.isNotEmpty) ...[
                 if (widget.icon != null) const SizedBox(width: 7),
-                Text(
-                  widget.label,
-                  maxLines: 1,
-                  overflow: TextOverflow.clip,
-                  softWrap: false,
-                  style: TextStyle(
-                    fontFamily: Tokens.fontFamily,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: ink,
+                // Flexible, because the label appears the frame `shown` flips
+                // while the width is still animating up from `kChipCollapsed`.
+                // For those few frames the text is wider than the chip, and an
+                // unflexed Text in a Row is a `RenderFlex overflowed` every
+                // time a sub-tab is hovered or collapsed.
+                Flexible(
+                  child: Text(
+                    widget.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.clip,
+                    softWrap: false,
+                    style: TextStyle(
+                      fontFamily: Tokens.fontFamily,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: ink,
+                    ),
                   ),
                 ),
               ],
               if (shown && widget.badge != null) ...[
                 const SizedBox(width: 6),
-                Text(
-                  widget.badge!,
-                  style: TextStyle(
-                    fontFamily: Tokens.fontFamily,
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w800,
-                    color: ink.withValues(alpha: 0.6),
+                Flexible(
+                  child: Text(
+                    widget.badge!,
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.clip,
+                    style: TextStyle(
+                      fontFamily: Tokens.fontFamily,
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w800,
+                      color: ink.withValues(alpha: 0.6),
+                    ),
                   ),
                 ),
               ],

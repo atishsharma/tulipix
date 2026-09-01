@@ -5,6 +5,8 @@
 // right-hand half of an open tool belongs to its preview, and a queue you are
 // not watching does not need a third of the window.
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../design/first_load.dart';
@@ -17,7 +19,6 @@ import 'tools_queue.dart';
 
 /// Wide enough for the form and a preview worth looking at.
 const double _formWidth = 400;
-const double _drawerWidth = 378;
 
 class ToolsPage extends StatefulWidget {
   const ToolsPage({super.key, required this.visible});
@@ -77,16 +78,9 @@ class _ToolsPageState extends State<ToolsPage> {
               Expanded(
                 child: st == null
                     ? FirstLoad(error: _c.error, onRetry: _c.refresh)
-                    : Stack(
-                        children: [
-                          Positioned.fill(
-                            child: _Work(controller: _c, state: st),
-                          ),
-                          _QueueDrawer(controller: _c, state: st),
-                        ],
-                      ),
+                    : _Work(controller: _c, state: st),
               ),
-              if (st != null) ConsoleStrip(controller: _c, state: st),
+              if (st != null) BottomDock(controller: _c, state: st),
             ],
           ),
         );
@@ -125,43 +119,6 @@ class _Work extends StatelessWidget {
   }
 }
 
-/// The queue, off to the side until it has something to say.
-class _QueueDrawer extends StatelessWidget {
-  const _QueueDrawer({required this.controller, required this.state});
-
-  final ToolsController controller;
-  final ToolsState state;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    final open = controller.drawerOpen;
-    return AnimatedPositioned(
-      duration: Duration(milliseconds: t.reduceMotion ? 0 : 240),
-      curve: Curves.easeOutCubic,
-      top: 0,
-      bottom: 0,
-      right: open ? 0 : -_drawerWidth,
-      width: _drawerWidth,
-      // Off-screen it is still in the tree, so it must not eat clicks meant
-      // for the preview under it.
-      child: IgnorePointer(
-        ignoring: !open,
-        child: Material(
-          color: t.panel,
-          elevation: open ? 8 : 0,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              border: Border(left: BorderSide(color: t.nHair)),
-            ),
-            child: QueuePanel(controller: controller, state: state),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _Header extends StatelessWidget {
   const _Header({required this.controller, required this.search});
 
@@ -173,112 +130,178 @@ class _Header extends StatelessWidget {
     final t = context.tokens;
     final st = controller.state;
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 14, 20, 10),
+      padding: const EdgeInsets.fromLTRB(20, 12, 14, 12),
       decoration: BoxDecoration(
         color: t.panel,
         border: Border(bottom: BorderSide(color: t.nHair)),
       ),
-      child: Column(
+      // One row: who you are on the left, where you are in the middle, what
+      // you can do on the right. The tabs used to sit on a second line, which
+      // cost the grid a row of tiles on every screen.
+      child: Row(
         children: [
-          Row(
-            children: [
-              const Icon(Icons.build_outlined,
-                  color: Tokens.secTools, size: 22),
-              const SizedBox(width: 10),
-              Text('Tools',
-                  style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                      color: t.nInk)),
-              const SizedBox(width: 14),
-              if (st != null && st.jobs.isNotEmpty)
-                _QueuePill(controller: controller, state: st),
-              const Spacer(),
-              SizedBox(
-                width: 280,
-                child: TextField(
-                  controller: search,
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    hintText: 'Find a tool…',
-                    prefixIcon: Icon(Icons.search, size: 18),
-                    border: OutlineInputBorder(),
-                  ),
-                  onChanged: (v) =>
-                      controller.send(ToolsCmd.search(text: v.trim())),
+          const Icon(Icons.build_outlined, color: Tokens.secTools, size: 24),
+          const SizedBox(width: 11),
+          Text('Tools',
+              style: TextStyle(
+                  fontSize: 22, fontWeight: FontWeight.w800, color: t.nInk)),
+          // The title and the tabs are different kinds of thing; without a gap
+          // the first tab reads as part of the name.
+          const SizedBox(width: 34),
+          // The tabs take the middle and scroll inside it, so a narrow window
+          // loses tabs off the end rather than pushing the search box away.
+          if (st != null)
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    for (final tab in toolTabs)
+                      _Tab(
+                        tab: tab,
+                        active: st.query.isEmpty && st.category == tab.id,
+                        onTap: () {
+                          search.clear();
+                          controller.send(ToolsCmd.setCategory(name: tab.id));
+                        },
+                      ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 8),
-              _ToolchainButton(controller: controller),
-              _DownloadsButton(controller: controller),
-            ],
-          ),
-          const SizedBox(height: 10),
-          if (st != null && st.query.isEmpty)
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  for (final tab in toolTabs)
-                    _Tab(
-                      tab: tab,
-                      active: st.category == tab.id,
-                      onTap: () =>
-                          controller.send(ToolsCmd.setCategory(name: tab.id)),
-                    ),
-                ],
-              ),
-            ),
+            )
+          else
+            const Spacer(),
+          const SizedBox(width: 12),
+          _SearchPill(controller: controller, search: search),
+          const SizedBox(width: 10),
+          if (st != null) _OpCount(count: st.ops.length),
+          const SizedBox(width: 6),
+          _ToolchainButton(controller: controller),
+          _DownloadsButton(controller: controller),
         ],
       ),
     );
   }
 }
 
-/// The only trace of the queue in the chrome, and only once there is one.
-class _QueuePill extends StatelessWidget {
-  const _QueuePill({required this.controller, required this.state});
+/// The search box, wearing the ring the Music section wears — a gradient hair
+/// around a plain field, cyan here because that is the Tools accent.
+class _SearchPill extends StatefulWidget {
+  const _SearchPill({required this.controller, required this.search});
 
   final ToolsController controller;
-  final ToolsState state;
+  final TextEditingController search;
+
+  @override
+  State<_SearchPill> createState() => _SearchPillState();
+}
+
+class _SearchPillState extends State<_SearchPill> {
+  @override
+  void initState() {
+    super.initState();
+    // The clear button appears and disappears with the text, so the pill has
+    // to rebuild as you type — the field alone would not.
+    widget.search.addListener(_onText);
+  }
+
+  @override
+  void dispose() {
+    widget.search.removeListener(_onText);
+    super.dispose();
+  }
+
+  void _onText() => setState(() {});
+
+  void _clear() {
+    widget.search.clear();
+    widget.controller.send(const ToolsCmd.search(text: ''));
+  }
 
   @override
   Widget build(BuildContext context) {
-    final running = state.jobs.where((j) => j.state == 'running').length;
-    final open = controller.drawerOpen;
-    return Material(
-      color: Tokens.secTools.withValues(alpha: open ? 0.22 : 0.12),
-      borderRadius: BorderRadius.circular(999),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(999),
-        onTap: () => controller.setDrawer(!open),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (running > 0)
-                const SizedBox(
-                  width: 10,
-                  height: 10,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Tokens.secTools),
-                )
-              else
-                const Icon(Icons.list_alt, size: 13, color: Tokens.secTools),
-              const SizedBox(width: 7),
-              Text(
-                state.queueStatus == 'Idle'
-                    ? '${state.jobs.length} in queue'
-                    : state.queueStatus,
-                style: const TextStyle(
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w600,
-                    color: Tokens.secTools),
-              ),
-            ],
-          ),
+    final t = context.tokens;
+    final has = widget.search.text.isNotEmpty;
+    return Container(
+      width: 290,
+      height: 42,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(21),
+        gradient: const LinearGradient(
+          begin: Alignment(-1, -0.58),
+          end: Alignment(1, 0.58),
+          colors: [Color(0xFF06B6D4), Color(0xFF6366F1), Color(0xFF8B5CF6)],
         ),
+      ),
+      padding: const EdgeInsets.all(1.4),
+      child: Container(
+        decoration: BoxDecoration(
+          color: t.nCard,
+          borderRadius: BorderRadius.circular(19.6),
+        ),
+        padding: const EdgeInsets.only(left: 13, right: 5),
+        child: Row(
+          children: [
+            Icon(Icons.search, size: 17, color: t.nInk3),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextField(
+                controller: widget.search,
+                style: TextStyle(fontSize: 15, color: t.nInk),
+                cursorColor: Tokens.secTools,
+                onChanged: (v) =>
+                    widget.controller.send(ToolsCmd.search(text: v.trim())),
+                decoration: InputDecoration(
+                  isCollapsed: true,
+                  border: InputBorder.none,
+                  hintText: 'Find a tool',
+                  hintStyle: TextStyle(fontSize: 15, color: t.nInk3),
+                ),
+              ),
+            ),
+            if (has)
+              SizedBox(
+                width: 26,
+                height: 26,
+                child: Material(
+                  color: Tokens.secTools.withValues(alpha: 0.18),
+                  shape: const CircleBorder(),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    onTap: _clear,
+                    child: const Icon(Icons.close,
+                        size: 15, color: Tokens.secTools),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// How many tools the grid is showing — the whole catalogue on a tab, the
+/// matches while you are searching.
+class _OpCount extends StatelessWidget {
+  const _OpCount({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+      decoration: BoxDecoration(
+        color: Tokens.secTools.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        '$count tool${count == 1 ? '' : 's'}',
+        style: const TextStyle(
+            fontSize: 12.5,
+            fontWeight: FontWeight.w700,
+            color: Tokens.secTools),
       ),
     );
   }
@@ -298,26 +321,48 @@ class _Tab extends StatelessWidget {
       padding: const EdgeInsets.only(right: 8),
       child: Material(
         color: active ? tab.tint.withValues(alpha: 0.16) : t.nChip,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         child: InkWell(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(20),
           onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(tab.icon, size: 15, color: active ? tab.tint : t.nInk2),
-                const SizedBox(width: 7),
-                Text(
-                  tab.label,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: active ? FontWeight.w700 : FontWeight.w500,
-                    color: active ? tab.tint : t.nInk,
-                  ),
+          // Two rings, one inside the other, in the tab's own colour: the open
+          // tab has to be obvious now that the grid no longer repeats its name
+          // in a heading above the tiles.
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: active ? tab.tint : Colors.transparent,
+                width: 1.4,
+              ),
+            ),
+            padding: const EdgeInsets.all(2.5),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: active
+                      ? tab.tint.withValues(alpha: 0.45)
+                      : Colors.transparent,
+                  width: 1,
                 ),
-              ],
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(tab.icon, size: 17, color: active ? tab.tint : t.nInk2),
+                  const SizedBox(width: 7),
+                  Text(
+                    tab.label,
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                      color: active ? tab.tint : t.nInk,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -338,42 +383,35 @@ class _OpGrid extends StatelessWidget {
     final t = context.tokens;
     if (state.ops.isEmpty) {
       return Center(
-        child: Text(
-          state.query.isEmpty
-              ? 'Nothing here.'
-              : 'No tool matches “${state.query}”.',
-          style: TextStyle(fontSize: 13, color: t.nInk2),
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Text(
+            state.query.isNotEmpty
+                ? 'No tool matches “${state.query}”.'
+                : state.category == favouritesTab
+                    ? 'No bookmarks yet.\nTap the ribbon on a tile to keep it here.'
+                    : 'Nothing here.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 13, height: 1.5, color: t.nInk2),
+          ),
         ),
       );
     }
-    final heading = state.query.isEmpty
-        ? toolTabs
-            .firstWhere((x) => x.id == state.category,
-                orElse: () => toolTabs.first)
-            .label
-        : 'Results';
+    // No heading row. It repeated the tab's own label a few pixels below the
+    // tab, and the tab now carries a ring saying it is the open one. The count
+    // it also held moved next to the search box.
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
-            children: [
-              Text(heading,
-                  style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: t.nInk)),
-              const SizedBox(width: 10),
-              Text(
-                '${state.ops.length} tool${state.ops.length == 1 ? '' : 's'}',
-                style: TextStyle(fontSize: 11.5, color: t.nInk3),
-              ),
-            ],
+        if (state.query.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+            child: Text(
+              'Results for “${state.query}”',
+              style: TextStyle(
+                  fontSize: 13.5, fontWeight: FontWeight.w700, color: t.nInk2),
+            ),
           ),
-        ),
         Expanded(
           child: LayoutBuilder(
             builder: (context, box) {
@@ -385,20 +423,21 @@ class _OpGrid extends StatelessWidget {
                       ? 4
                       : 3;
               return GridView.builder(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 26),
+                padding: const EdgeInsets.fromLTRB(20, 5, 20, 26),
                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: columns,
                   crossAxisSpacing: 12,
                   mainAxisSpacing: 12,
-                  // Twice as wide as it is tall: the same five columns, at half
-                  // the height the squares used. A tool tile is an icon and two
-                  // short lines, and the square spent the rest on air.
-                  childAspectRatio: 2,
+                  // Wider than tall, but not by half any more: the icon sits
+                  // in a disc now, and the disc needed the height back.
+                  childAspectRatio: 1.67,
                 ),
                 itemCount: state.ops.length,
                 itemBuilder: (_, i) => _OpCard(
                   op: state.ops[i],
                   onTap: () => controller.openTool(state.ops[i].kind),
+                  onBookmark: () =>
+                      controller.toggleFavourite(state.ops[i].kind),
                 ),
               );
             },
@@ -410,10 +449,15 @@ class _OpGrid extends StatelessWidget {
 }
 
 class _OpCard extends StatefulWidget {
-  const _OpCard({required this.op, required this.onTap});
+  const _OpCard({
+    required this.op,
+    required this.onTap,
+    required this.onBookmark,
+  });
 
   final OpRow op;
   final VoidCallback onTap;
+  final VoidCallback onBookmark;
 
   @override
   State<_OpCard> createState() => _OpCardState();
@@ -431,9 +475,10 @@ class _OpCardState extends State<_OpCard> {
     // missing tool look like a missing feature.
     final off = widget.op.missing.isNotEmpty;
     final tint = off ? t.nInk3 : tintFor(widget.op.category);
-    // What the tile has room for under the name is one line. A missing binary
-    // is the more useful of the two things it could say.
-    final under = off ? 'Needs ${widget.op.missing}' : widget.op.info;
+    // Only the missing binary goes under the name now. The description was a
+    // truncated copy of what the tool's own page says in full, and it was
+    // costing the icon the height it wanted.
+    final under = off ? 'Needs ${widget.op.missing}' : '';
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hover = true),
@@ -442,55 +487,126 @@ class _OpCardState extends State<_OpCard> {
         onTap: widget.onTap,
         child: AnimatedContainer(
           duration: Duration(milliseconds: t.reduceMotion ? 0 : 130),
-          padding: const EdgeInsets.fromLTRB(10, 8, 10, 9),
+          padding: const EdgeInsets.fromLTRB(10, 7, 10, 9),
           decoration: BoxDecoration(
             color: _hover ? tint.withValues(alpha: 0.09) : t.nCard,
             borderRadius: BorderRadius.circular(13),
             border: Border.all(color: _hover ? tint : t.nHair),
           ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+          child: Stack(
             children: [
-              // The icon carries the tile — it is what the eye lands on when
-              // fifteen of these are on screen, so it gets the space the old
-              // square wasted below it.
-              Expanded(
-                child: Center(
-                  child: Icon(
-                    opIcon(widget.op.kind, widget.op.category),
-                    size: 30,
-                    color: tint,
+              Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // The icon carries the tile — it is what the eye lands on
+                  // when fifteen of these are on screen at once, and the disc
+                  // behind it is what makes a category readable at a glance
+                  // across a grid rather than one tile at a time.
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, box) {
+                        // Sized off the tile rather than fixed, so the disc
+                        // still fits when a narrow window drops to three
+                        // columns and every tile loses half its height.
+                        final d = (math.min(box.maxHeight, box.maxWidth) * 0.55)
+                            .clamp(30.0, 62.0);
+                        return Center(
+                          child: AnimatedContainer(
+                            duration: Duration(
+                                milliseconds: t.reduceMotion ? 0 : 130),
+                            width: d,
+                            height: d,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _hover && !off
+                                  ? tint
+                                  : tint.withValues(alpha: off ? 0.10 : 0.16),
+                            ),
+                            child: Center(
+                              child: Icon(
+                                opIcon(widget.op.kind, widget.op.category),
+                                size: d * 0.66,
+                                // Knocked out of the filled disc: a wash that
+                                // only deepens is a change you have to look
+                                // for, and the pointer is already elsewhere.
+                                color: _hover && !off ? t.nCard : tint,
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
                   ),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                widget.op.label,
-                maxLines: 1,
-                textAlign: TextAlign.center,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 12.5,
-                    height: 1.2,
-                    fontWeight: FontWeight.w700,
-                    color: off ? t.nInk3 : t.nInk),
-              ),
-              if (under.isNotEmpty) ...[
-                const SizedBox(height: 2),
-                Text(
-                  under,
-                  maxLines: 1,
-                  textAlign: TextAlign.center,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    height: 1.2,
-                    fontWeight: off ? FontWeight.w600 : FontWeight.w400,
-                    color: t.nInk3,
+                  const SizedBox(height: 6),
+                  Text(
+                    widget.op.label,
+                    maxLines: 1,
+                    textAlign: TextAlign.center,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 20,
+                        height: 1.1,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.3,
+                        color: off ? t.nInk3 : t.nInk),
                   ),
-                ),
-              ],
+                  if (under.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      under,
+                      maxLines: 1,
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        height: 1.2,
+                        fontWeight: off ? FontWeight.w600 : FontWeight.w400,
+                        color: t.nInk3,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              // The ribbon sits over the corner rather than in the column, so
+              // adding it costs the icon no height.
+              Positioned(
+                top: -2,
+                left: -2,
+                child: _Bookmark(
+                    on: widget.op.favourite, onTap: widget.onBookmark),
+              ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The bookmark ribbon in a tile's top-left. Red when it is on, because that
+/// is the one colour no category wears.
+class _Bookmark extends StatelessWidget {
+  const _Bookmark({required this.on, required this.onTap});
+
+  final bool on;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return SizedBox(
+      width: 26,
+      height: 26,
+      child: Material(
+        color: Colors.transparent,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Icon(
+            on ? Icons.bookmark : Icons.bookmark_border,
+            size: 16,
+            color: on ? const Color(0xFFDC2626) : t.nInk3,
           ),
         ),
       ),

@@ -37,7 +37,15 @@ pub struct OpRow {
     /// The tile greys out and says the name; the alternative is a job that
     /// queues, starts, and dies on the first spawn.
     pub missing: String,
+    /// Bookmarked. Eighty tools is more than anyone uses; the six you actually
+    /// reach for are worth a tab of their own.
+    pub favourite: bool,
 }
+
+/// The tab that is not a category: it holds whatever has been bookmarked.
+/// Not a `Category` variant, because an operation belongs to exactly one
+/// category and this is a second axis.
+pub const FAVOURITES_TAB: &str = "favourite";
 
 /// One row of the form the chosen operation asks for.
 pub struct Field {
@@ -65,6 +73,10 @@ pub struct Job {
     pub state: String,
     pub progress: f64,
     pub message: String,
+    /// What the job wrote, once it has written it — the file or folder the
+    /// queue's Open button points at. Empty while it is still running, and for
+    /// the handful of operations that leave nothing on disk.
+    pub output: String,
 }
 
 /// One of the external binaries the section needs, and whether it is there.
@@ -199,6 +211,11 @@ pub enum ToolsCmd {
     /// download page rather than pretending to install them.
     InstallTool {
         name: String,
+    },
+
+    /// Bookmark an operation, or take the bookmark off.
+    ToggleFavourite {
+        kind: String,
     },
 
     /// Show a finished download in the file manager.
@@ -576,6 +593,8 @@ fn wants_probe(kind: &str) -> bool {
                     | catalog::Preview::Convert
                     | catalog::Preview::Pages
             ) || op.kind == "split"
+                // Not a render, but its whole preview is the probe's answer.
+                || op.kind == "mediainfo"
         })
         // ffprobe has nothing to say about a .docx or an .epub. The two
         // document converters draw the same Convert pane and are read by
@@ -727,7 +746,7 @@ async fn run_preview_steps(steps: Vec<Step>, epoch: i64) -> Result<()> {
             "-y".into(),
         ];
         argv.extend(args);
-        spawn_preview(bin("ffmpeg"), &argv, epoch).await?;
+        spawn_preview(ffmpeg_for(&argv), &argv, epoch).await?;
     }
     Ok(())
 }
@@ -858,6 +877,69 @@ fn bin(name: &str) -> std::path::PathBuf {
     tulipix_core::thumbs::tool_bin(name)
 }
 
+/// The ffmpeg to run this particular command with.
+///
+/// The bundled build is a static one, and static builds get trimmed: ours has
+/// 494 filters and `drawtext` is not among them, so every text watermark
+/// failed with "No such filter" — in the preview and in the job, which is why
+/// it looked like the tool did nothing at all. Rather than ship a second
+/// ffmpeg, ask the two we have: if the command needs a filter the bundled one
+/// lacks and the one on PATH has it, use that.
+fn ffmpeg_for(args: &[String]) -> std::path::PathBuf {
+    const CONDITIONAL: &[&str] = &["drawtext"];
+    let bundled = bin("ffmpeg");
+    let Some(needed) = CONDITIONAL
+        .iter()
+        .find(|f| args.iter().any(|a| a.contains(**f)))
+    else {
+        return bundled;
+    };
+    if has_filter(&bundled, needed) {
+        return bundled;
+    }
+    match std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|d| d.join("ffmpeg"))
+            .find(|p| p.exists() && has_filter(p, needed))
+    }) {
+        Some(other) => other,
+        // Nothing here can do it. Run the bundled one anyway: its own error
+        // names the filter, which is more use than a message we invented.
+        None => bundled,
+    }
+}
+
+/// Whether an ffmpeg build has a filter, asked once per binary and filter.
+fn has_filter(exe: &std::path::Path, filter: &str) -> bool {
+    type Cache = OnceLock<Mutex<std::collections::HashMap<(std::path::PathBuf, String), bool>>>;
+    static CACHE: Cache = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let key = (exe.to_path_buf(), filter.to_string());
+    if let Ok(g) = cache.lock() {
+        if let Some(known) = g.get(&key) {
+            return *known;
+        }
+    }
+    let found = std::process::Command::new(exe)
+        .args(["-hide_banner", "-filters"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|listing| {
+            listing
+                .lines()
+                // The name is the second column of " T.. name  V->V  …"; a
+                // substring match would find `drawtext` inside a description.
+                .any(|l| l.split_whitespace().nth(1) == Some(filter))
+        })
+        .unwrap_or(false);
+    if let Ok(mut g) = cache.lock() {
+        g.insert(key, found);
+    }
+    found
+}
+
 /// `NoWindow` is implemented for `std::process::Command`; tokio's wraps one, so
 /// the flag has to be set through the inner handle. A no-op off Windows.
 fn no_window(c: &mut Command) {
@@ -924,9 +1006,15 @@ async fn run_step(
             argv.push("-progress".into());
             argv.push("pipe:1".into());
             argv.push("-nostats".into());
-            spawn_tracked(pool, id, bin("ffmpeg"), &argv, base, span, move |line| {
-                exec::parse_ffmpeg_progress(line, total)
-            })
+            spawn_tracked(
+                pool,
+                id,
+                ffmpeg_for(&argv),
+                &argv,
+                base,
+                span,
+                move |line| exec::parse_ffmpeg_progress(line, total),
+            )
             .await?;
             Ok(String::new())
         }
@@ -1905,9 +1993,15 @@ async fn run_ffmpeg(
     let mut argv: Vec<String> = vec!["-hide_banner".into(), "-y".into()];
     argv.extend(args);
     argv.extend(["-progress".into(), "pipe:1".into(), "-nostats".into()]);
-    spawn_tracked(pool, id, bin("ffmpeg"), &argv, base, span, move |line| {
-        exec::parse_ffmpeg_progress(line, total_s)
-    })
+    spawn_tracked(
+        pool,
+        id,
+        ffmpeg_for(&argv),
+        &argv,
+        base,
+        span,
+        move |line| exec::parse_ffmpeg_progress(line, total_s),
+    )
     .await?;
     Ok(())
 }
@@ -2123,7 +2217,19 @@ async fn apply(cmd: ToolsCmd) -> Result<()> {
             s.error.clear();
             s.result_open = false;
         }
-        ToolsCmd::Search { text } => lock().query = text,
+        ToolsCmd::Search { text } => {
+            let mut s = lock();
+            s.query = text;
+            // Typing means "show me what matches", and results are drawn on the
+            // grid — so a search from inside an open tool goes back to it
+            // rather than filtering a list nobody can see. Clearing the box
+            // leaves you on the grid, which is where the results were.
+            if !s.query.trim().is_empty() {
+                s.active.clear();
+                s.form.clear();
+                s.result_open = false;
+            }
+        }
         ToolsCmd::OpenTool { kind } => {
             let defaults: std::collections::BTreeMap<String, String> = fields_for(&kind)
                 .into_iter()
@@ -2193,9 +2299,11 @@ async fn apply(cmd: ToolsCmd) -> Result<()> {
             }
             queue::submit(pool, &kind, &spec_json, 0).await?;
             tools_start_worker().await.ok();
-            let mut s = lock();
-            s.error.clear();
-            s.active.clear();
+            // The tool stays open. Running used to close it and throw you back
+            // to the grid, which is wrong twice: you lose the settings you just
+            // chose, and the preview — the one place that shows what the job is
+            // doing to your file — disappears at the moment it starts.
+            lock().error.clear();
         }
 
         ToolsCmd::QueueAction { id, action } => {
@@ -2293,6 +2401,13 @@ async fn apply(cmd: ToolsCmd) -> Result<()> {
             // The five-second cache would otherwise keep saying "missing" for
             // a tool that is now on PATH, on the one screen watching for it.
             forget_installed();
+        }
+        ToolsCmd::ToggleFavourite { kind } => {
+            let mut set = favourites().lock().map_err(|_| anyhow!("busy"))?;
+            if !set.remove(&kind) {
+                set.insert(kind);
+            }
+            save_favourites(&set);
         }
         ToolsCmd::OpenDownload { path } => {
             if let Err(e) =
@@ -2458,6 +2573,47 @@ fn spec_from(
 
 // ------------------------------------------------------------------ schema ---
 
+/// Where a finished job's work landed, if it is still there.
+///
+/// `exec::output_of` reads it back off the plan, which is the same argv the job
+/// ran — so this cannot name a file the job was never going to write. What it
+/// can name is a file that is no longer there, or a template like
+/// `clip_%03d.mp4` that stands for several; the first is answered by asking the
+/// disk, the second by pointing at the folder instead.
+fn job_output(
+    id: i64,
+    kind: &str,
+    spec: &str,
+    downloaded: &std::collections::HashMap<i64, String>,
+) -> String {
+    if let Some(path) = downloaded.get(&id) {
+        return if std::path::Path::new(path).exists() {
+            path.clone()
+        } else {
+            String::new()
+        };
+    }
+    let Ok(spec) = serde_json::from_str::<Value>(spec) else {
+        return String::new();
+    };
+    let Some(path) = exec::output_of(kind, &spec) else {
+        return String::new();
+    };
+    let path = if path.contains('%') {
+        std::path::Path::new(&path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        path
+    };
+    if !path.is_empty() && std::path::Path::new(&path).exists() {
+        path
+    } else {
+        String::new()
+    }
+}
+
 /// The label a job carries in the queue and the log. Everything else the
 /// catalogue provides is read straight off the `OpDef` in `snapshot`.
 fn label_of(kind: &str) -> &'static str {
@@ -2603,6 +2759,48 @@ fn have(name: &str) -> bool {
 /// `tool_bin` is not free — for a bundled candidate it will launch the thing to
 /// see whether it starts — so a snapshot asks about each distinct name once
 /// rather than once per tile. Eight names, forty-two tiles.
+/// The bookmarked operations, by kind.
+///
+/// A file rather than a table in `tools.db`: the queue database is wiped by
+/// Clean cache and rebuilt by the worker, and a bookmark surviving that is the
+/// whole point of making one. Same folder as `watched_folders.json`.
+fn favourites() -> &'static Mutex<std::collections::BTreeSet<String>> {
+    static FAVOURITES: OnceLock<Mutex<std::collections::BTreeSet<String>>> = OnceLock::new();
+    FAVOURITES.get_or_init(|| {
+        let loaded = favourites_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|body| serde_json::from_str::<Vec<String>>(&body).ok())
+            .unwrap_or_default();
+        // Filter on the way in: a kind that no longer exists would be a tile
+        // the Favourites tab could never draw.
+        Mutex::new(
+            loaded
+                .into_iter()
+                .filter(|k| catalog::get(k).is_some())
+                .collect(),
+        )
+    })
+}
+
+fn favourites_path() -> Option<std::path::PathBuf> {
+    tulipix_core::paths::config_dir().map(|d| d.join("tools_favourites.json"))
+}
+
+fn save_favourites(set: &std::collections::BTreeSet<String>) {
+    let Some(path) = favourites_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let names: Vec<&String> = set.iter().collect();
+    if let Ok(body) = serde_json::to_string_pretty(&names) {
+        if let Err(e) = std::fs::write(&path, body) {
+            tracing::warn!(error = %e, "tools: could not save favourites");
+        }
+    }
+}
+
 type BinaryCache = OnceLock<Mutex<Option<(std::time::Instant, Vec<(&'static str, bool)>)>>>;
 
 static BINARY_CACHE: BinaryCache = OnceLock::new();
@@ -2664,8 +2862,9 @@ async fn snapshot() -> Result<ToolsState> {
     // Both queries run before the session lock is taken. A `MutexGuard` is not
     // `Send`, and holding one across an `.await` makes the whole dispatch
     // future non-`Send` — which frb's handler will not accept.
-    let job_rows: Vec<(i64, String, String, f64, String)> = sqlx::query_as(
-        "SELECT id, kind, state, COALESCE(progress, 0.0), COALESCE(message, '')
+    let job_rows: Vec<(i64, String, String, f64, String, String)> = sqlx::query_as(
+        "SELECT id, kind, state, COALESCE(progress, 0.0), COALESCE(message, ''),
+                COALESCE(spec_json, '')
          FROM jobs ORDER BY
            CASE state WHEN 'running' THEN 0 WHEN 'queued' THEN 1
                       WHEN 'paused' THEN 2 ELSE 3 END,
@@ -2676,11 +2875,23 @@ async fn snapshot() -> Result<ToolsState> {
     .await
     .unwrap_or_default();
     let slots = queue::worker_slots(pool).await.unwrap_or(2);
+    // The download tools name their own files, so the registry is the only
+    // place that knows where one landed. One query for the lot rather than one
+    // per row.
+    let downloaded: std::collections::HashMap<i64, String> = sqlx::query_as::<_, (i64, String)>(
+        "SELECT COALESCE(job_id, -1), path FROM downloads ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .collect();
 
     let s = lock();
 
     let needle = s.query.trim().to_lowercase();
     let installed = installed_binaries();
+    let starred = favourites().lock().map(|g| g.clone()).unwrap_or_default();
     let ops: Vec<OpRow> = catalog::CATALOG
         .iter()
         .filter(|op| {
@@ -2689,6 +2900,8 @@ async fn snapshot() -> Result<ToolsState> {
             if !needle.is_empty() {
                 op.label.to_lowercase().contains(needle.as_str())
                     || op.kind.contains(needle.as_str())
+            } else if s.category == FAVOURITES_TAB {
+                starred.contains(op.kind)
             } else {
                 op.cat.id() == s.category
             }
@@ -2699,6 +2912,7 @@ async fn snapshot() -> Result<ToolsState> {
             category: op.cat.id().to_string(),
             info: op.info.to_string(),
             missing: missing_for(op, &installed),
+            favourite: starred.contains(op.kind),
         })
         .collect();
 
@@ -2718,8 +2932,13 @@ async fn snapshot() -> Result<ToolsState> {
 
     let jobs: Vec<Job> = job_rows
         .into_iter()
-        .map(|(id, kind, state, progress, message)| Job {
+        .map(|(id, kind, state, progress, message, spec)| Job {
             label: label_of(&kind).to_string(),
+            output: if state == "done" {
+                job_output(id, &kind, &spec, &downloaded)
+            } else {
+                String::new()
+            },
             id,
             kind,
             state,

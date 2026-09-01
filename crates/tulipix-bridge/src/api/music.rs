@@ -1614,17 +1614,33 @@ fn art_for_file(path: &Path) -> Option<String> {
             return Some(c);
         }
     }
-    let dest = art_cache_dir().join(format!("{}.jpg", art_key(&path.to_string_lossy())));
+    let key = art_key(&path.to_string_lossy());
+    let dir = art_cache_dir();
+    let dest = dir.join(format!("{key}.jpg"));
     if dest.exists() {
         return Some(dest.to_string_lossy().into_owned());
     }
+    // Most music has no picture in the file, and asking ffmpeg about the same
+    // artless track on every refresh cost a process each time and printed
+    // "Output file does not contain any stream" each time. The empty marker
+    // remembers the answer; deleting the art cache asks again.
+    let none = dir.join(format!("{key}.none"));
+    if none.exists() {
+        return None;
+    }
     // `-an` and the attached-pic map: without them ffmpeg happily writes the
     // whole audio stream into a .jpg and the tile shows a broken image.
+    //
+    // Both pipes to null: a track with no cover is the ordinary case, not an
+    // error to report, and ffmpeg writes its complaint to the terminal the app
+    // was started from.
     let status = std::process::Command::new(tulipix_core::thumbs::tool_bin("ffmpeg"))
         .args(["-v", "error", "-y", "-i"])
         .arg(path)
         .args(["-an", "-vcodec", "copy"])
         .arg(&dest)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .no_window_compat()
         .status();
     match status {
@@ -1633,6 +1649,7 @@ fn art_for_file(path: &Path) -> Option<String> {
             // Leave nothing behind: a zero-byte file here would be returned
             // forever by the `dest.exists()` check above.
             let _ = std::fs::remove_file(&dest);
+            let _ = std::fs::write(&none, b"");
             None
         }
     }

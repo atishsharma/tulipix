@@ -65,6 +65,55 @@ import 'tools_controller.dart';
         ),
     };
 
+/// The running job's progress, thick enough to read across the room, with the
+/// number beside it. Sits immediately left of the preview kind.
+class _JobBar extends StatelessWidget {
+  const _JobBar({required this.job, required this.live});
+
+  final Job job;
+  final Map<int, double> live;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    // The event stream is ahead of the snapshot between refreshes, so prefer
+    // it — otherwise the bar sits still until the next poll and then jumps.
+    final value = live[job.id] ?? job.progress;
+    final queued = job.state == 'queued';
+    final pct = (value.clamp(0.0, 1.0) * 100).round();
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 108,
+          height: 8,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              // A queued job has no progress to report, and a bar sitting at
+              // zero reads as a stalled one — so it sweeps instead.
+              value: queued ? null : value.clamp(0.0, 1.0),
+              minHeight: 8,
+              backgroundColor: t.nChip,
+              valueColor: const AlwaysStoppedAnimation(Tokens.secTools),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          queued ? 'queued' : '$pct%',
+          style: const TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.w700,
+            color: Tokens.secTools,
+            fontFeatures: [FontFeature.tabularFigures()],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// A row's colour. The words are in the row's own note.
 Color _rowTint(String kind, Tokens t) => switch (kind) {
       'add' => Tokens.ok,
@@ -102,6 +151,8 @@ class PreviewPane extends StatelessWidget {
             declared: declared,
             result: result,
             busy: controller.previewBusy,
+            job: controller.activeJob(),
+            live: controller.liveProgress,
           ),
           Expanded(
             child: _Body(
@@ -123,11 +174,19 @@ class _Head extends StatelessWidget {
     required this.declared,
     required this.result,
     required this.busy,
+    required this.job,
+    required this.live,
   });
 
   final String declared;
   final PreviewResult? result;
   final bool busy;
+
+  /// This tool's own job, while it is queued or running. Running no longer
+  /// closes the tool, so the progress belongs here — next to the preview of
+  /// the thing being worked on, rather than only in a panel you have to open.
+  final Job? job;
+  final Map<int, double> live;
 
   @override
   Widget build(BuildContext context) {
@@ -152,6 +211,10 @@ class _Head extends StatelessWidget {
                   fontSize: 12, fontWeight: FontWeight.w700, color: t.nInk),
             ),
           ),
+          if (job != null) ...[
+            _JobBar(job: job!, live: live),
+            const SizedBox(width: 12),
+          ],
           // A spinner that appears for 40 ms on every keystroke is noise; this
           // one only ever shows up when the disk is genuinely slow.
           if (busy) ...[

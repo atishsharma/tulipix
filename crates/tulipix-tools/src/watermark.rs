@@ -30,10 +30,28 @@ pub fn image_filter(pos: Position, margin: u32, opacity: f64) -> String {
     format!("[1:v]format=rgba,colorchannelmixer=aa={o}[wm];[0:v][wm]overlay={x}:{y}")
 }
 
+/// `(x, y)` for `drawtext`, which names things differently from `overlay`.
+///
+/// This is the bug that put every text watermark off the canvas: `overlay`
+/// calls the base `W,H` and the thing being placed `w,h`, while `drawtext`
+/// calls the base `w,h` and the text `text_w,text_h`. Bottom-right came out as
+/// `W-w-28`, which drawtext reads as width minus width minus 28 — twenty-eight
+/// pixels off the left edge, not the right.
+fn text_xy(pos: Position, margin: u32) -> (String, String) {
+    let m = margin;
+    match pos {
+        Position::TopLeft => (format!("{m}"), format!("{m}")),
+        Position::TopRight => (format!("w-text_w-{m}"), format!("{m}")),
+        Position::BottomLeft => (format!("{m}"), format!("h-text_h-{m}")),
+        Position::BottomRight => (format!("w-text_w-{m}"), format!("h-text_h-{m}")),
+        Position::Center => ("(w-text_w)/2".into(), "(h-text_h)/2".into()),
+    }
+}
+
 /// `-vf drawtext` value for a text watermark.
 pub fn text_filter(text: &str, pos: Position, margin: u32, opacity: f64, size: u32) -> String {
     let o = opacity.clamp(0.0, 1.0);
-    let (x, y) = pos.xy(margin);
+    let (x, y) = text_xy(pos, margin);
     let esc = text.replace('\'', r"\'").replace(':', r"\:");
     format!("drawtext=text='{esc}':x={x}:y={y}:fontsize={size}:fontcolor=white@{o}")
 }
@@ -55,5 +73,16 @@ mod tests {
         assert!(f.contains("overlay=12:12"));
         let t = text_filter("© Me", Position::Center, 0, 0.8, 24);
         assert!(t.contains("fontcolor=white@0.8"));
+    }
+
+    #[test]
+    fn text_is_placed_with_drawtext_variables_not_overlay_ones() {
+        let t = text_filter("hi", Position::BottomRight, 28, 1.0, 24);
+        // `W-w` is overlay's language and evaluates to zero in drawtext, which
+        // is how the watermark ended up off the left edge of every picture.
+        assert!(!t.contains("W-w"), "{t}");
+        assert!(t.contains("x=w-text_w-28"), "{t}");
+        assert!(t.contains("y=h-text_h-28"), "{t}");
+        assert!(text_filter("hi", Position::Center, 0, 1.0, 24).contains("(w-text_w)/2"));
     }
 }

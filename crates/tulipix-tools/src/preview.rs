@@ -258,6 +258,7 @@ pub fn plan_preview(
         "rename" => pure(rename_preview(spec, budget)),
         "folder_diff" => pure(folder_diff_preview(spec, budget)),
         "hash" => pure(hash_preview(spec)),
+        "mediainfo" => pure(mediainfo_preview(spec, probe)),
         "merge" => pure(merge_preview(spec)),
         "split" => pure(split_preview(spec, probe)),
         "cache_clean" => pure(cache_clean_preview(budget)),
@@ -298,7 +299,7 @@ pub fn plan_preview(
         // Both work in source pixels — a collage of full-size photographs, a
         // censor box measured off the original — so neither can run against
         // the pre-scaled frame the others reuse.
-        "collage" => job_render(kind, spec, budget, "The grid it will make."),
+        "collage" => collage_render(spec, budget),
         "censor" => job_render(kind, spec, budget, "The region, hidden."),
         "silence_trim" | "audio_speed" | "replace_audio" => wave_render(spec, budget),
 
@@ -433,6 +434,61 @@ fn folder_diff_preview(spec: &Value, budget: &Budget) -> PreviewData {
         format!("{total} differences by size. The run compares contents.")
     };
     PreviewData::dryrun("Folder diff", rows, more, note)
+}
+
+/// The report itself, before anything is written.
+///
+/// Media info's whole output is a page of facts, and the preview was showing
+/// none of them — you had to run the job and open the result to find out
+/// whether it was even the right file. Everything here comes from the probe
+/// the pane already fetches, so it costs no extra ffprobe.
+fn mediainfo_preview(spec: &Value, probe: Option<&Probe>) -> PreviewData {
+    let Some(src) = text(spec, "input") else {
+        return PreviewData::waiting("Choose a file to see its report.");
+    };
+    let Some(p) = probe else {
+        return PreviewData::waiting("Reading the file…");
+    };
+    let mut rows = vec![
+        Row::plain("File", base_name(&src)),
+        Row::plain(
+            "Size",
+            human(if p.bytes > 0 {
+                p.bytes
+            } else {
+                file_size(&src)
+            }),
+        ),
+    ];
+    if p.duration_s > 0.0 {
+        rows.push(Row::plain("Duration", clock(p.duration_s)));
+    }
+    if !p.dims().is_empty() {
+        rows.push(Row::plain("Dimensions", p.dims()));
+    }
+    if !p.v_codec.is_empty() {
+        rows.push(Row::plain("Video", p.v_codec.clone()));
+    }
+    if !p.a_codec.is_empty() {
+        rows.push(Row::plain("Audio", p.a_codec.clone()));
+    }
+    if rows.len() == 2 {
+        // Two rows means ffprobe found no streams it recognises — a .txt or a
+        // .zip, say. Better to say so than to show a report of nothing.
+        return PreviewData::dryrun(
+            "Media info",
+            rows,
+            0,
+            "ffprobe found no audio or video streams in this file.".to_string(),
+        );
+    }
+    let note = match text(spec, "output") {
+        Some(out) => format!("The full report goes to {}.", base_name(&out)),
+        None => {
+            "The full report — every stream, codec and bitrate — is shown when it runs.".to_string()
+        }
+    };
+    PreviewData::dryrun("Media info", rows, 0, note)
 }
 
 fn hash_preview(spec: &Value) -> PreviewData {
@@ -1901,7 +1957,17 @@ fn video_render(spec: &Value, b: &Budget, probe: Option<&Probe>) -> PreviewPlan 
 /// Operations whose output is already small enough to just make: a thumbnail
 /// is a thumbnail. The job's own plan, pointed at the cache.
 fn job_render(kind: &str, spec: &Value, b: &Budget, note: &str) -> PreviewPlan {
-    let Some(src) = text(spec, "input") else {
+    // `input` for the ops that take one file, the first of `inputs` for the
+    // ones that take several. Collage is the second kind, and asking only for
+    // `input` left it permanently on "choose a source" no matter how many
+    // pictures had been picked.
+    let Some(src) = text(spec, "input").or_else(|| {
+        spec.get("inputs")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }) else {
         return pure(PreviewData::waiting("Choose a source to see the result."));
     };
     if !can_render(b) {
@@ -1922,6 +1988,77 @@ fn job_render(kind: &str, spec: &Value, b: &Budget, note: &str) -> PreviewPlan {
         before: String::new(),
         steps,
         note: note.to_string(),
+    })
+}
+
+/// How many pictures a preview grid draws. Forty photographs is a forty-input
+/// filter graph and several seconds of work for a picture nobody is going to
+/// study — the shape of the grid is the thing being checked, and a couple of
+/// dozen tiles show it.
+const COLLAGE_PREVIEW_TILES: usize = 24;
+
+/// The collage, small.
+///
+/// Its own function rather than `job_render` because the job renders in source
+/// pixels: forty photographs at a 480-pixel cell is a 20-megapixel canvas, and
+/// the pane it lands in is a few hundred pixels wide. This plans the same
+/// operation at a cell that fits the pane, off the same `exec::plan`, so what
+/// is drawn is still what will run.
+fn collage_render(spec: &Value, b: &Budget) -> PreviewPlan {
+    let inputs = strings(spec, "inputs");
+    if inputs.is_empty() {
+        return pure(PreviewData::waiting("Choose pictures to see the grid."));
+    }
+    if !can_render(b) {
+        return pure(PreviewData::none());
+    }
+    let shown = inputs.len().min(COLLAGE_PREVIEW_TILES);
+    let cols = (number(spec, "cols").unwrap_or(3.0).max(1.0) as usize).min(shown);
+    let rows = shown.div_ceil(cols);
+    // The whole sheet inside the budget, rather than one cell at full size.
+    let cell = (b.max_px as usize / cols).clamp(48, 480) as u32;
+    let gap = (number(spec, "gap").unwrap_or(8.0).max(0.0) as u32).min(cell / 8);
+
+    let mut small = spec.clone();
+    if let Some(o) = small.as_object_mut() {
+        o.insert("inputs".into(), json!(inputs[..shown]));
+        o.insert("cols".into(), json!(cols));
+        o.insert("cell".into(), json!(cell));
+        o.insert("gap".into(), json!(gap));
+    }
+    let out = cache_path(
+        b,
+        &format!("{}.png", render_key("collage", &inputs[0], &small, b)),
+    );
+    let steps = if Path::new(&out).exists() {
+        Vec::new()
+    } else {
+        match crate::exec::plan("collage", &respec(&small, None, &out)) {
+            Ok(steps) => steps,
+            Err(e) => return pure(PreviewData::waiting(e.to_string())),
+        }
+    };
+    // The note carries the numbers the picture cannot: the real cell size, and
+    // the fact that this is the first two dozen of a longer list.
+    let full_cell = number(spec, "cell").unwrap_or(480.0).max(16.0) as u32;
+    let full_cols = (number(spec, "cols").unwrap_or(3.0).max(1.0) as usize).min(inputs.len());
+    let full_rows = inputs.len().div_ceil(full_cols);
+    let mut note = format!(
+        "{} picture{} · {full_cols} × {full_rows} · {} × {} pixels",
+        inputs.len(),
+        if inputs.len() == 1 { "" } else { "s" },
+        full_cols as u32 * full_cell,
+        full_rows as u32 * full_cell
+    );
+    if shown < inputs.len() {
+        note.push_str(&format!(" · showing the first {shown}"));
+    }
+    PreviewPlan::Render(RenderPlan {
+        kind: "image",
+        out,
+        before: String::new(),
+        steps,
+        note,
     })
 }
 
@@ -3054,8 +3191,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("holiday");
         std::fs::create_dir_all(&src).unwrap();
+        // Over 1024 between them on purpose: the units are binary, so a
+        // thousand bytes is still "1000 B" and would not exercise the branch
+        // that divides.
         std::fs::write(src.join("one.jpg"), vec![0u8; 900]).unwrap();
-        std::fs::write(src.join("two.jpg"), vec![0u8; 100]).unwrap();
+        std::fs::write(src.join("two.jpg"), vec![0u8; 226]).unwrap();
 
         let zip_path = dir.path().join("holiday.zip");
         let spec = json!({
@@ -3068,7 +3208,7 @@ mod tests {
         };
         assert_eq!(d.rows.len(), 2);
         assert_eq!(d.rows[0].left, "holiday/one.jpg");
-        assert!(d.note.contains("1.0 KB"), "{}", d.note);
+        assert!(d.note.contains("1.1 KB"), "{}", d.note);
         // The preview planned it; nothing was written.
         assert!(!zip_path.exists());
 

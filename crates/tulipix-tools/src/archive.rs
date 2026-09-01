@@ -291,8 +291,8 @@ mod tests {
         std::fs::write(src.join("one.jpg"), b"1").unwrap();
         std::fs::write(src.join("raw/two.dng"), b"2").unwrap();
 
-        let members = members(&src.to_string_lossy(), &[], 100);
-        let names: Vec<&str> = members.iter().map(|(_, n)| n.as_str()).collect();
+        let nested = members(&src.to_string_lossy(), &[], 100);
+        let names: Vec<&str> = nested.iter().map(|(_, n)| n.as_str()).collect();
         // Nested, so extracting does not spray the contents across the folder
         // you happen to be standing in.
         assert_eq!(names, vec!["holiday/one.jpg", "holiday/raw/two.dng"]);

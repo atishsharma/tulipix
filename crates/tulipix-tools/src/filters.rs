@@ -91,8 +91,10 @@ pub fn denoise_filter(strength: f64, deblock: bool) -> String {
 /// Broadband noise reduction, and the high-pass that takes out handling rumble
 /// and air conditioning — which is most of what people mean by "noisy".
 pub fn audio_denoise_filter(reduction_db: f64, rumble: bool) -> String {
-    // `afftdn`'s nr is in dB and refuses 0.
-    let nr = reduction_db.clamp(0.01, 97.0);
+    // `afftdn`'s nr is in dB and refuses 0. The floor has to survive the
+    // formatting as well as the clamp: 0.01 printed to one decimal is "0.0",
+    // which is the value being guarded against.
+    let nr = reduction_db.clamp(0.1, 97.0);
     let core = format!("afftdn=nr={nr:.1}:nf=-25");
     if rumble {
         format!("highpass=f=80,{core}")

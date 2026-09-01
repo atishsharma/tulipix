@@ -262,6 +262,7 @@ const fn files(
     key: &'static str,
     label: &'static str,
     ext: &'static [&'static str],
+    required: bool,
     hint: &'static str,
 ) -> FieldDef {
     field(
@@ -272,7 +273,7 @@ const fn files(
         &[],
         0.0,
         0.0,
-        true,
+        required,
         hint,
         ext,
     )
@@ -506,7 +507,7 @@ pub const CATALOG: &[OpDef] = &[
         preview: Preview::DryRun,
         needs: &["ffmpeg"],
         fields: &[
-            files("inputs", "Source files", AV, "they must share a codec"),
+            files("inputs", "Source files", AV, true, "they must share a codec"),
             save("output", "Output file", true, ANY, ""),
         ],
     },
@@ -539,7 +540,7 @@ pub const CATALOG: &[OpDef] = &[
         preview: Preview::DryRun,
         needs: &[],
         fields: &[
-            files("files", "Files to hash", ANY, "SHA-256"),
+            files("files", "Files to hash", ANY, true, "SHA-256"),
             save(
                 "manifest",
                 "Save manifest to (blank = show inline)",
@@ -573,13 +574,17 @@ pub const CATALOG: &[OpDef] = &[
                 "folder",
                 "Folder to archive",
                 false,
-                "leave blank to use the file list",
+                "or leave blank and add files below",
             ),
             files(
                 "files",
                 "Or these files",
                 ANY,
-                "ignored when a folder is chosen",
+                // Either half will do. Marking both required meant Run
+                // refused a folder on its own, which is the ordinary way to
+                // use this.
+                false,
+                "or leave blank and choose a folder above",
             ),
             save("output", "Archive", true, &["zip"], ""),
             toggle(
@@ -1507,7 +1512,7 @@ pub const CATALOG: &[OpDef] = &[
         preview: Preview::Image,
         needs: &["ffmpeg"],
         fields: &[
-            files("inputs", "Pictures", IMAGE, "in the order you pick them"),
+            files("inputs", "Pictures", IMAGE, true, "in the order you pick them"),
             slider("cols", "Columns", "3", 1.0, 8.0, ""),
             slider("cell", "Each cell", "480", 120.0, 1600.0, "pixels square"),
             slider("gap", "Gap", "8", 0.0, 60.0, "pixels"),
@@ -1832,7 +1837,7 @@ pub const CATALOG: &[OpDef] = &[
         preview: Preview::DryRun,
         needs: &[],
         fields: &[
-            files("inputs", "PDFs", PDF, "at least two, in order"),
+            files("inputs", "PDFs", PDF, true, "at least two, in order"),
             save("output", "Output PDF", true, PDF, ""),
         ],
     },
@@ -2004,7 +2009,7 @@ pub const CATALOG: &[OpDef] = &[
         preview: Preview::DryRun,
         needs: &["ffmpeg"],
         fields: &[
-            files("inputs", "Pictures", IMAGE, "in the order you pick them"),
+            files("inputs", "Pictures", IMAGE, true, "in the order you pick them"),
             save("output", "Output PDF", true, PDF, ""),
         ],
     },

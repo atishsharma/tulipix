@@ -10,10 +10,21 @@ import 'package:flutter/material.dart';
 
 import '../../src/rust/api/tools.dart';
 
+/// The bookmarked tab's id. Not a `catalog::Category`: an operation belongs to
+/// exactly one category, and this is a second axis over all of them.
+const String favouritesTab = 'favourite';
+
 /// The category tabs, and the accent each one wears. One entry per
-/// `catalog::Category` — there is no Queue tab, because the queue was never a
-/// category: it is a drawer now.
+/// `catalog::Category`, plus Favourites at the front — eighty tools is more
+/// than anyone uses, and the handful you keep coming back to should be one
+/// click from the top of the section.
 const List<({String id, String label, IconData icon, Color tint})> toolTabs = [
+  (
+    id: favouritesTab,
+    label: 'Favourite',
+    icon: Icons.bookmark,
+    tint: Color(0xFFDC2626)
+  ),
   (
     id: 'fileops',
     label: 'File ops',
@@ -58,12 +69,17 @@ const List<({String id, String label, IconData icon, Color tint})> toolTabs = [
   ),
 ];
 
+// Favourites is a tab, not a category, so it is never the right answer for a
+// tile asking what colour it is: `toolTabs.first` used to be File ops, and is
+// now the bookmark red.
+const _fallbackTab = 1;
+
 Color tintFor(String category) => toolTabs
-    .firstWhere((t) => t.id == category, orElse: () => toolTabs.first)
+    .firstWhere((t) => t.id == category, orElse: () => toolTabs[_fallbackTab])
     .tint;
 
 IconData tabIconFor(String category) => toolTabs
-    .firstWhere((t) => t.id == category, orElse: () => toolTabs.first)
+    .firstWhere((t) => t.id == category, orElse: () => toolTabs[_fallbackTab])
     .icon;
 
 /// A face for each operation. Purely presentational, so it stays on this side
@@ -166,9 +182,12 @@ class ToolsController extends ChangeNotifier {
   Object? error;
   bool busy = false;
 
-  /// Whether the queue drawer is showing. Local to the UI: the queue is the
-  /// same queue whether or not you are looking at it.
-  bool drawerOpen = false;
+  /// Whether the queue and the console panels are showing. Local to the UI —
+  /// the queue is the same queue whether or not you are looking at it — and
+  /// independent of each other, because watching a job run and reading why the
+  /// last one failed are different questions.
+  bool queueOpen = false;
+  bool consoleOpen = false;
 
   /// What the open tool is about to do. Null until the first answer arrives,
   /// and again whenever the tool changes.
@@ -292,28 +311,45 @@ class ToolsController extends ChangeNotifier {
 
   Future<void> refresh() => send(const ToolsCmd.refresh());
 
-  /// Open a tool. The drawer closes on the way in: the preview is the point of
-  /// the screen you are moving to, and the drawer covers it.
-  Future<void> openTool(String kind) {
-    drawerOpen = false;
-    return send(ToolsCmd.openTool(kind: kind));
-  }
+  Future<void> openTool(String kind) => send(ToolsCmd.openTool(kind: kind));
+
+  Future<void> toggleFavourite(String kind) =>
+      send(ToolsCmd.toggleFavourite(kind: kind));
 
   /// Ask again for whatever the pane is showing. The form has not changed, so
   /// nothing is debounced.
   void refreshPreview() => _schedulePreview(now: true);
 
-  /// Queue the form. This is the one moment the queue is worth looking at, so
-  /// it is the one moment it appears by itself.
-  Future<void> run() async {
-    await send(const ToolsCmd.run());
-    if (state?.error.isEmpty ?? false) setDrawer(true);
+  /// Queue the form. The tool stays open behind it: the settings you chose are
+  /// still there, and the preview keeps showing what the job is doing to the
+  /// file. Running used to close the tool and slide the queue over the top,
+  /// which threw away both.
+  Future<void> run() => send(const ToolsCmd.run());
+
+  void setQueue(bool open) {
+    if (queueOpen == open) return;
+    queueOpen = open;
+    notifyListeners();
   }
 
-  void setDrawer(bool open) {
-    if (drawerOpen == open) return;
-    drawerOpen = open;
+  void setConsole(bool open) {
+    if (consoleOpen == open) return;
+    consoleOpen = open;
     notifyListeners();
+  }
+
+  /// The job this tool most recently put on the queue, if it is still going.
+  /// The preview header draws its progress, so the tool you are looking at
+  /// tells you how far along it is without opening the queue.
+  Job? activeJob() {
+    final kind = state?.activeOp ?? '';
+    if (kind.isEmpty) return null;
+    for (final j in state?.jobs ?? const <Job>[]) {
+      if (j.kind == kind && (j.state == 'running' || j.state == 'queued')) {
+        return j;
+      }
+    }
+    return null;
   }
 
   void clearError() {

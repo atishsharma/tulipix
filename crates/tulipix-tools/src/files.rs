@@ -382,11 +382,16 @@ mod tests {
     #[test]
     fn the_civil_calendar_lands_on_the_right_month() {
         // 2026-09-01T00:00:00Z, and the last second of the month before it.
-        assert_eq!(year_month(1_772_323_200), (2026, 9));
-        assert_eq!(year_month(1_772_323_199), (2026, 8));
+        assert_eq!(year_month(1_788_220_800), (2026, 9));
+        assert_eq!(year_month(1_788_220_799), (2026, 8));
         assert_eq!(year_month(0), (1970, 1));
         // A leap day, which is where naive month arithmetic goes wrong.
         assert_eq!(year_month(1_709_164_800), (2024, 2));
+        // 1 March, and the second before it. Hinnant's year starts in March so
+        // that the leap day falls at the end of it, which makes this boundary
+        // the one where an off-by-one in the shift shows up as a wrong year.
+        assert_eq!(year_month(1_772_323_200), (2026, 3));
+        assert_eq!(year_month(1_772_323_199), (2026, 2));
     }
 
     #[test]

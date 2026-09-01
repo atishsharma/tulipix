@@ -1366,7 +1366,9 @@ pub fn jpeg_size(bytes: &[u8]) -> Option<(u32, u32)> {
         let length = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
         // SOF0..SOF15, minus the two that are not frame headers.
         if (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
-            if i + 9 >= bytes.len() {
+            // The last byte read is `i + 8`, so that one has to be in range —
+            // `i + 9` rejected a frame header that ends the file.
+            if i + 8 >= bytes.len() {
                 return None;
             }
             let h = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;

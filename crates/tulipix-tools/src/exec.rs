@@ -830,7 +830,10 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
                 Some(o) => o,
                 None => output_or_beside(&serde_json::json!({ "input": inputs[0] }), kind, None)?,
             };
-            let cols = num(spec, "cols").unwrap_or(3.0).max(1.0) as u32;
+            // Never wider than there are pictures: two photos in a three-wide
+            // grid is a row with a hole in it, and the empty cell is the user
+            // wondering what went wrong.
+            let cols = (num(spec, "cols").unwrap_or(3.0).max(1.0) as u32).min(inputs.len() as u32);
             let cell = num(spec, "cell").unwrap_or(480.0).max(16.0) as u32;
             let gap = num(spec, "gap").unwrap_or(8.0).max(0.0) as u32;
             let rows = (inputs.len() as u32).div_ceil(cols);
@@ -841,9 +844,17 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
             // will take.
             let mut graph = String::new();
             for i in 0..inputs.len() {
+                // `concat` refuses a set of streams that disagree about pixel
+                // format or sample aspect, and this is exactly where they do:
+                // `pad` derives a new SAR from how much it had to add, so two
+                // photographs of different shapes come out of identical cells
+                // as 639:640 and 640:639 and the graph dies with "parameters
+                // do not match". `setsar` goes last, after `pad` has finished
+                // inventing one.
                 graph.push_str(&format!(
-                    "[{i}:v]scale={cell}:{cell}:force_original_aspect_ratio=decrease,\
-                     pad={cell}:{cell}:(ow-iw)/2:(oh-ih)/2:{colour}[c{i}];"
+                    "[{i}:v]format=rgba,\
+                     scale={cell}:{cell}:force_original_aspect_ratio=decrease,\
+                     pad={cell}:{cell}:(ow-iw)/2:(oh-ih)/2:{colour},setsar=1[c{i}];"
                 ));
             }
             for i in 0..inputs.len() {
@@ -1194,6 +1205,83 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
             }])
         }
         other => Err(anyhow!("unknown tool kind: {other}")),
+    }
+}
+
+/// Where a job's work lands, so the queue can offer to open it.
+///
+/// Read back off the plan rather than recorded when the job finishes: the plan
+/// is the same argv the job ran, so the two cannot drift, and it costs nothing
+/// but path arithmetic. Callers check the path exists before offering it —
+/// a template like `clip_%03d.mp4` is a real answer that is not a real file,
+/// and so is a plan that failed halfway.
+pub fn output_of(kind: &str, spec: &Value) -> Option<String> {
+    // Last first: the ffmpeg steps ahead of a native one write scratch, and
+    // the thing worth opening is what the final step produced.
+    plan(kind, spec).ok()?.iter().rev().find_map(step_output)
+}
+
+fn step_output(step: &Step) -> Option<String> {
+    match step {
+        // ffmpeg's output is always the last word of its argv.
+        Step::Ffmpeg { args, .. } => args.last().filter(|a| !a.starts_with('-')).cloned(),
+        // Every one of these writes into the downloads registry, which is
+        // where the queue and the Downloaded list both read it from.
+        Step::YtDlp { .. } => None,
+        Step::Tool { args, .. } => tool_output(args),
+        Step::Native(n) => native_output(n),
+    }
+}
+
+/// The four shapes the unbundled tools use to name an output.
+fn tool_output(args: &[String]) -> Option<String> {
+    if let Some(i) = args.iter().position(|a| a == "-o" || a == "--output") {
+        return args.get(i + 1).cloned();
+    }
+    if let Some(a) = args.iter().find(|a| a.starts_with("-sOutputFile=")) {
+        return a.split_once('=').map(|(_, v)| v.to_string());
+    }
+    args.last().filter(|a| !a.starts_with('-')).cloned()
+}
+
+fn native_output(n: &Native) -> Option<String> {
+    use Native::*;
+    match n {
+        Merge { output, .. }
+        | Transcribe { output, .. }
+        | MediaInfo { output, .. }
+        | ContactSheet { output, .. }
+        | ArchiveCreate { output, .. }
+        | ArchiveRepack { output, .. }
+        | PdfStamp { output, .. }
+        | PdfPages { output, .. }
+        | Fade { output, .. }
+        | FileList { output, .. }
+        | Crypt { output, .. }
+        | DataConvert { output, .. }
+        | PdfMerge { output, .. }
+        | PdfImpose { output, .. }
+        | PdfRedact { output, .. }
+        | PdfForms { output, .. }
+        | PdfText { output, .. }
+        | PdfFromImages { output, .. }
+        | SubsShift { output, .. }
+        | SubsClean { output, .. }
+        | IconSet { output, .. } => Some(output.clone()),
+        // The ones that write a folderful rather than a file: opening the
+        // folder is the only useful thing to do with a hundred pages.
+        ArchiveExtract { dir, .. }
+        | Rename { dir, .. }
+        | SortFiles { dir, .. }
+        | EmptyDirs { dir, .. }
+        | PdfSplit { dir, .. }
+        | PdfImages { dir, .. } => Some(dir.clone()),
+        PhotoBatch { out_dir, .. } => Some(out_dir.clone()),
+        Mirror { b, .. } => Some(b.clone()),
+        Hash { manifest, .. } | Dedupe { manifest, .. } => manifest.clone(),
+        // A report the app shows in its own pane, and a broom. Neither leaves
+        // anything on disk worth pointing a file manager at.
+        FolderDiff { .. } | CacheClean => None,
     }
 }
 
@@ -1837,6 +1925,36 @@ mod tests {
         // Two columns and three pictures is two rows, not one.
         assert!(graph.contains("tile=2x2"));
         assert_eq!(graph.matches("scale=300:300").count(), 3);
+        // Mixed sources are the normal case here, and `concat` will not take
+        // streams that disagree about pixel format or aspect ratio.
+        assert_eq!(graph.matches("format=rgba").count(), 3);
+        // After the pad, not before it: `pad` is what invents the mismatched
+        // sample aspect that `concat` then refuses.
+        assert_eq!(graph.matches(",setsar=1[c").count(), 3);
+    }
+
+    #[test]
+    fn a_job_says_where_its_work_lands() {
+        // ffmpeg: the last word of the argv.
+        assert_eq!(
+            output_of("resize", &json!({"input":"/p/a.jpg","output":"/p/b.jpg","w":100,"h":100})),
+            Some("/p/b.jpg".to_string())
+        );
+        // A native step names its own output, whatever the ffmpeg steps ahead
+        // of it wrote as scratch.
+        assert_eq!(
+            output_of("favicon", &json!({"input":"/p/logo.png","name":"site"})),
+            Some("/p/site.ico".to_string())
+        );
+        // A folderful is opened as the folder.
+        assert!(
+            output_of("archive_extract", &json!({"input":"/p/a.zip","dir":"/p/out"}))
+                .is_some_and(|o| o.contains("/p/out"))
+        );
+        // Nothing on disk to point at.
+        assert_eq!(output_of("cache_clean", &json!({})), None);
+        // A half-filled form plans nothing, and answers nothing.
+        assert_eq!(output_of("resize", &json!({})), None);
     }
 
     #[test]
