@@ -271,6 +271,36 @@ pub fn plan_preview(
         "convert" | "audio_convert" => pure(convert_preview(spec, probe)),
         "doc_convert" | "ebook_convert" => pure(document_preview(spec)),
         "stems" => pure(stems_preview(spec)),
+        "data_convert" => pure(document_preview(spec)),
+        // Five that change one file into another and have nothing to render
+        // that a still frame would show: a speed change looks identical
+        // frame by frame, and a GIF's palette pass is the job itself.
+        "speed" | "gif" | "fade" | "pdf_compress" | "remove_bg" => {
+            pure(outcome_preview(kind, spec, probe))
+        }
+        "encrypt" => pure(encrypt_preview(spec)),
+        "dedupe" => pure(dedupe_preview(spec, budget)),
+        "sort_files" => pure(sort_preview(spec, budget)),
+        "empty_dirs" => pure(empty_dirs_preview(spec, budget)),
+        "file_list" | "photo_batch" => pure(folder_preview(kind, spec, budget)),
+        "favicon" => pure(favicon_preview(spec)),
+        "pdf_merge" => pure(pdf_merge_preview(spec)),
+        "pdf_from_images" => pure(images_to_pdf_preview(spec)),
+        "pdf_redact" => pure(redact_preview(spec)),
+        "pdf_forms" => pure(forms_preview(spec, budget)),
+        "pdf_images" => pure(pdf_images_preview(spec)),
+        "pdf_split" | "pdf_impose" => pure(pages_preview(kind, spec, budget)),
+        "subs_convert" | "subs_translate" => pure(cue_preview(spec, "sub", budget)),
+        "subs_shift" | "subs_clean" => pure(subs_edit_preview(kind, spec, budget)),
+        "strip_meta" | "border" | "adjust" | "recolour" | "sharpen" | "upscale" => {
+            image_render(kind, spec, budget, probe)
+        }
+        // Both work in source pixels — a collage of full-size photographs, a
+        // censor box measured off the original — so neither can run against
+        // the pre-scaled frame the others reuse.
+        "collage" => job_render(kind, spec, budget, "The grid it will make."),
+        "censor" => job_render(kind, spec, budget, "The region, hidden."),
+        "silence_trim" | "audio_speed" | "replace_audio" => wave_render(spec, budget),
 
         // Answered by a short render into the cache.
         "compress_photo" | "watermark" | "resize" | "denoise" | "image_convert" => {
@@ -687,6 +717,11 @@ fn pages_preview(kind: &str, spec: &Value, b: &Budget) -> PreviewData {
     let Some(count) = crate::pdf::page_count(&input) else {
         return PreviewData::waiting(format!("{}: not a PDF this can read.", base_name(&input)));
     };
+    // Two of them do not take a range at all: a split is decided by where the
+    // cuts fall, an imposition by the layout.
+    if kind == "pdf_split" || kind == "pdf_impose" {
+        return sheet_plan(kind, spec, &input, count, b);
+    }
     let ranges = text(spec, "ranges").unwrap_or_default();
     // Blank means every page when turning them, and means nothing at all when
     // keeping or deleting — where "everything" would be a disaster rather than
@@ -743,6 +778,85 @@ fn pages_preview(kind: &str, spec: &Value, b: &Budget) -> PreviewData {
     PreviewData {
         title: base_name(&input),
         note,
+        more: count as usize - shown,
+        pages,
+        ..PreviewData::empty("pages")
+    }
+}
+
+/// The page chips for a split or an imposition — which is to say, which page
+/// ends up where, before any file is written.
+fn sheet_plan(kind: &str, spec: &Value, input: &str, count: u32, b: &Budget) -> PreviewData {
+    if kind == "pdf_impose" {
+        let how = crate::pdf::Impose::parse(&text(spec, "layout").unwrap_or_default());
+        let order = crate::pdf::impose_order(count, how);
+        let (cols, rows) = how.grid();
+        let per_sheet = (cols * rows) as usize;
+        let shown = order.len().min(b.pages);
+        // The chips are the source pages in the order they will be laid down,
+        // so a booklet's 8-1-2-7 is visible rather than described.
+        let pages: Vec<PageMark> = order
+            .iter()
+            .take(shown)
+            .map(|page| PageMark {
+                page: *page,
+                // A padded slot is a blank sheet face, drawn struck through.
+                kept: *page != 0,
+                turned: 0,
+            })
+            .collect();
+        let blanks = order.iter().filter(|p| **p == 0).count();
+        return PreviewData {
+            title: base_name(input),
+            note: format!(
+                "{count} pages onto {} sheets, {} up{}",
+                order.len() / per_sheet,
+                per_sheet,
+                if blanks > 0 {
+                    format!(" · {blanks} blank")
+                } else {
+                    String::new()
+                }
+            ),
+            more: order.len() - shown,
+            pages,
+            ..PreviewData::empty("pages")
+        };
+    }
+
+    let at = if text(spec, "mode").as_deref() == Some("at") {
+        match crate::pdf::parse_ranges(&text(spec, "at").unwrap_or_default()) {
+            Some(pages) => crate::pdf::SplitAt::Pages(pages),
+            None => return PreviewData::waiting("Name the pages a new file should start at."),
+        }
+    } else {
+        crate::pdf::SplitAt::Every(number(spec, "every").unwrap_or(10.0).max(1.0) as u32)
+    };
+    let groups = crate::pdf::split_groups(count, &at);
+    if groups.len() < 2 {
+        return PreviewData::waiting(format!(
+            "{count} pages, and that leaves the document in one piece."
+        ));
+    }
+    // Every other part is dimmed, so the boundaries read at a glance without
+    // a legend explaining them.
+    let shown = (count as usize).min(b.pages);
+    let pages: Vec<PageMark> = (1..=shown as u32)
+        .map(|page| {
+            let part = groups
+                .iter()
+                .position(|(a, z)| page >= *a && page <= *z)
+                .unwrap_or(0);
+            PageMark {
+                page,
+                kept: part % 2 == 0,
+                turned: 0,
+            }
+        })
+        .collect();
+    PreviewData {
+        title: base_name(input),
+        note: format!("{count} pages into {} files", groups.len()),
         more: count as usize - shown,
         pages,
         ..PreviewData::empty("pages")
@@ -841,6 +955,667 @@ fn stems_preview(spec: &Value) -> PreviewData {
         });
     }
     PreviewData::dryrun("Separate stems", rows, 0, base_name(&input))
+}
+
+// ----------------------------------------------------- the folder chores ---
+
+/// Encryption has one thing worth showing before it runs: which direction it
+/// is going, and what the file will be called afterwards. Both are easy to get
+/// backwards, and getting them backwards means a file that will not open.
+fn encrypt_preview(spec: &Value) -> PreviewData {
+    let Some(input) = text(spec, "input") else {
+        return PreviewData::waiting("Choose a file to lock or unlock.");
+    };
+    let decrypt = text(spec, "mode").as_deref() == Some("decrypt");
+    let out = text(spec, "output").unwrap_or_else(|| {
+        if decrypt {
+            crate::crypt::decrypted_name(&input)
+        } else {
+            crate::crypt::encrypted_name(&input)
+        }
+    });
+    let mut rows = vec![Row {
+        kind: RowKind::Change,
+        left: base_name(&input),
+        right: base_name(&out),
+        note: if decrypt {
+            "unlocked".into()
+        } else {
+            "locked".into()
+        },
+    }];
+    let bytes = file_size(&input);
+    if bytes > 0 {
+        rows.push(Row::plain(human(bytes), "on disk".to_string()));
+    }
+    if !decrypt && input.ends_with(".age") {
+        rows.push(Row {
+            kind: RowKind::Warn,
+            left: "already encrypted".into(),
+            right: String::new(),
+            note: "this would lock it a second time".into(),
+        });
+    }
+    if text(spec, "passphrase").is_none() {
+        rows.push(Row {
+            kind: RowKind::Warn,
+            left: "no passphrase".into(),
+            right: String::new(),
+            note: "there is no way to recover one that is lost".into(),
+        });
+    }
+    PreviewData::dryrun(
+        if decrypt { "Decrypt" } else { "Encrypt" },
+        rows,
+        0,
+        base_name(&input),
+    )
+}
+
+/// Every set of identical files, biggest waste first — and, when the delete
+/// box is ticked, exactly which copies go.
+fn dedupe_preview(spec: &Value, b: &Budget) -> PreviewData {
+    let Some(dir) = text(spec, "dir") else {
+        return PreviewData::waiting("Choose a folder to search.");
+    };
+    let delete = flag(spec, "delete");
+    let groups = crate::files::duplicates(&dir, b.walk);
+    if groups.is_empty() {
+        return PreviewData::dryrun("Find duplicates", Vec::new(), 0, "Nothing is duplicated.");
+    }
+
+    let wasted: u64 = groups.iter().map(|g| g.wasted()).sum();
+    let mut rows: Vec<Row> = Vec::new();
+    for group in groups.iter() {
+        if rows.len() >= b.rows {
+            break;
+        }
+        for (i, path) in group.paths.iter().enumerate() {
+            rows.push(Row {
+                // The first of each set is the one that survives, and it is
+                // marked differently from the ones that do not.
+                kind: if i == 0 {
+                    RowKind::Plain
+                } else if delete {
+                    RowKind::Remove
+                } else {
+                    RowKind::Warn
+                },
+                left: base_name(path),
+                right: if i == 0 {
+                    human(group.bytes)
+                } else {
+                    String::new()
+                },
+                note: if i == 0 { "kept".into() } else { path.clone() },
+            });
+        }
+    }
+    let copies: usize = groups.iter().map(|g| g.paths.len() - 1).sum();
+    PreviewData::dryrun(
+        "Find duplicates",
+        rows,
+        groups.len().saturating_sub(b.rows),
+        if delete {
+            format!("{copies} copies to delete · {} freed", human(wasted))
+        } else {
+            format!("{copies} extra copies · {} wasted", human(wasted))
+        },
+    )
+}
+
+fn sort_preview(spec: &Value, b: &Budget) -> PreviewData {
+    let Some(dir) = text(spec, "dir") else {
+        return PreviewData::waiting("Choose a folder to sort.");
+    };
+    let by = crate::files::SortBy::parse(&text(spec, "by").unwrap_or_default());
+    let moves = crate::files::sort_plan(&dir, by, b.walk);
+    if moves.is_empty() {
+        return PreviewData::dryrun(
+            "Sort into folders",
+            Vec::new(),
+            0,
+            "Nothing loose in that folder.",
+        );
+    }
+    let mut folders: Vec<String> = moves
+        .iter()
+        .filter_map(|(_, to)| {
+            Path::new(to)
+                .parent()
+                .map(|p| base_name(&p.to_string_lossy()))
+        })
+        .collect();
+    folders.dedup();
+    let shown = moves.len().min(b.rows);
+    let rows = moves
+        .iter()
+        .take(shown)
+        .map(|(from, to)| Row {
+            kind: RowKind::Change,
+            left: base_name(from),
+            right: base_name(to),
+            note: Path::new(to)
+                .parent()
+                .map(|p| base_name(&p.to_string_lossy()))
+                .unwrap_or_default(),
+        })
+        .collect();
+    PreviewData::dryrun(
+        "Sort into folders",
+        rows,
+        moves.len() - shown,
+        format!("{} files into {} folders", moves.len(), folders.len()),
+    )
+}
+
+fn empty_dirs_preview(spec: &Value, b: &Budget) -> PreviewData {
+    let Some(dir) = text(spec, "dir") else {
+        return PreviewData::waiting("Choose a folder to tidy.");
+    };
+    let empties = crate::files::empty_dirs(&dir, b.walk);
+    if empties.is_empty() {
+        return PreviewData::dryrun(
+            "Remove empty folders",
+            Vec::new(),
+            0,
+            "Every folder in there holds something.",
+        );
+    }
+    let shown = empties.len().min(b.rows);
+    let rows = empties
+        .iter()
+        .take(shown)
+        .map(|path| Row {
+            kind: RowKind::Remove,
+            left: base_name(path),
+            right: String::new(),
+            note: path.clone(),
+        })
+        .collect();
+    PreviewData::dryrun(
+        "Remove empty folders",
+        rows,
+        empties.len() - shown,
+        format!("{} folders, deepest first", empties.len()),
+    )
+}
+
+/// The two operations that read a whole folder and write beside it.
+fn folder_preview(kind: &str, spec: &Value, b: &Budget) -> PreviewData {
+    let Some(dir) = text(spec, "dir") else {
+        return PreviewData::waiting("Choose a folder.");
+    };
+    if kind == "file_list" {
+        let listing = walk_sizes(&dir, b.walk);
+        let total: u64 = listing.values().sum();
+        let shown = listing.len().min(b.rows);
+        let rows = listing
+            .iter()
+            .take(shown)
+            .map(|(rel, bytes)| Row::plain(rel.clone(), human(*bytes)))
+            .collect();
+        return PreviewData::dryrun(
+            "Export a listing",
+            rows,
+            listing.len() - shown,
+            format!("{} files · {}", listing.len(), human(total)),
+        );
+    }
+
+    // photo_batch: only the pictures, and only the ones sitting directly in
+    // the folder — which is what the operation itself takes.
+    let ext = text(spec, "target_ext").unwrap_or_else(|| "jpg".into());
+    let out_dir =
+        text(spec, "output").unwrap_or_else(|| format!("{}/resized", dir.trim_end_matches('/')));
+    let mut pictures: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_picture = path
+                .extension()
+                .map(|e| {
+                    let e = e.to_string_lossy().to_lowercase();
+                    matches!(
+                        e.as_str(),
+                        "jpg" | "jpeg" | "png" | "webp" | "avif" | "bmp" | "tif" | "tiff" | "heic"
+                    )
+                })
+                .unwrap_or(false);
+            if path.is_file() && is_picture {
+                pictures.push(path.to_string_lossy().to_string());
+            }
+        }
+    }
+    pictures.sort();
+    if pictures.is_empty() {
+        return PreviewData::dryrun("Resize a folder", Vec::new(), 0, "No pictures in there.");
+    }
+    let shown = pictures.len().min(b.rows);
+    let rows = pictures
+        .iter()
+        .take(shown)
+        .map(|path| {
+            let stem = Path::new(path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            Row {
+                kind: RowKind::Change,
+                left: base_name(path),
+                right: format!("{stem}.{ext}"),
+                note: String::new(),
+            }
+        })
+        .collect();
+    PreviewData::dryrun(
+        "Resize a folder",
+        rows,
+        pictures.len() - shown,
+        format!("{} pictures into {}", pictures.len(), base_name(&out_dir)),
+    )
+}
+
+/// What goes in against what comes out, for the operations with no probe
+/// worth taking and nothing worth rendering.
+fn outcome_preview(kind: &str, spec: &Value, probe: Option<&Probe>) -> PreviewData {
+    let Some(input) = text(spec, "input") else {
+        return PreviewData::waiting("Choose a source to see what it becomes.");
+    };
+    let src = file_size(&input);
+    let mut rows: Vec<Row> = Vec::new();
+
+    match kind {
+        "speed" => {
+            let rate = number(spec, "rate").unwrap_or(2.0).max(0.01);
+            rows.push(Row {
+                kind: RowKind::Change,
+                left: format!("{rate}×"),
+                right: if flag(spec, "keep_pitch") {
+                    "pitch kept".into()
+                } else {
+                    "pitch moves".into()
+                },
+                note: "speed".into(),
+            });
+            if let Some(p) = probe.filter(|p| p.duration_s > 0.0) {
+                rows.push(Row {
+                    kind: RowKind::Change,
+                    left: clock(p.duration_s),
+                    right: clock(p.duration_s / rate),
+                    note: "length".into(),
+                });
+            }
+        }
+        "gif" => {
+            let seconds = number(spec, "seconds").unwrap_or(5.0).max(0.1);
+            let width = number(spec, "width").unwrap_or(480.0) as u64;
+            let fps = number(spec, "fps").unwrap_or(15.0).max(1.0);
+            rows.push(Row::plain(
+                format!("{width} px wide"),
+                format!("{fps} fps · {}", clock(seconds)),
+            ));
+            // A GIF is roughly a byte per pixel per frame after the palette
+            // pass — wrong in both directions, and right enough to stop
+            // someone asking for thirty seconds at 1080p.
+            let guess = (width * width * 9 / 16) * (seconds * fps) as u64 / 3;
+            rows.push(Row {
+                kind: if guess > 20 * 1024 * 1024 {
+                    RowKind::Warn
+                } else {
+                    RowKind::Plain
+                },
+                left: human(guess),
+                right: String::new(),
+                note: "roughly, once the palette is built".into(),
+            });
+        }
+        "fade" => {
+            let in_s = number(spec, "in_s").unwrap_or(1.0);
+            let out_s = number(spec, "out_s").unwrap_or(1.0);
+            rows.push(Row::plain(format!("{in_s}s in"), format!("{out_s}s out")));
+            if let Some(p) = probe.filter(|p| p.duration_s > 0.0) {
+                rows.push(Row::plain(
+                    clock(p.duration_s),
+                    format!("fades from {}", clock((p.duration_s - out_s).max(0.0))),
+                ));
+            }
+        }
+        "pdf_compress" => {
+            let quality = text(spec, "quality").unwrap_or_else(|| "ebook".into());
+            rows.push(Row {
+                kind: RowKind::Change,
+                left: human(src),
+                // Ghostscript's own presets, and roughly what each does to a
+                // scanned document. Marked estimated in the pane.
+                right: human(match quality.as_str() {
+                    "screen" => src / 5,
+                    "ebook" => src / 3,
+                    "printer" => src * 2 / 3,
+                    _ => src * 9 / 10,
+                }),
+                note: format!("estimated, at “{quality}”"),
+            });
+        }
+        _ => {
+            rows.push(Row::plain(base_name(&input), human(src)));
+            rows.push(Row {
+                kind: RowKind::Change,
+                left: "background".into(),
+                right: "transparent".into(),
+                note: "the subject is kept".into(),
+            });
+        }
+    }
+    PreviewData::dryrun("Result", rows, 0, base_name(&input))
+}
+
+/// Every file the icon set will write, which is the question people open it
+/// with — a render of one 512px square answers nothing.
+fn favicon_preview(spec: &Value) -> PreviewData {
+    let Some(input) = text(spec, "input") else {
+        return PreviewData::waiting("Choose a square picture.");
+    };
+    let stem = text(spec, "name").unwrap_or_else(|| "favicon".into());
+    let mut rows: Vec<Row> = crate::icons::SIZES
+        .iter()
+        .map(|size| Row {
+            kind: RowKind::Add,
+            left: crate::icons::png_name(&stem, *size),
+            right: format!("{size}×{size}"),
+            note: String::new(),
+        })
+        .collect();
+    rows.push(Row {
+        kind: RowKind::Add,
+        left: format!("{stem}.ico"),
+        right: crate::icons::ICO_SIZES
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(" · "),
+        note: "all in one file".into(),
+    });
+    PreviewData::dryrun(
+        "Icon set",
+        rows,
+        0,
+        format!(
+            "{} files from {}",
+            crate::icons::SIZES.len() + 1,
+            base_name(&input)
+        ),
+    )
+}
+
+// ------------------------------------------------------------------- pdf ---
+
+fn pdf_merge_preview(spec: &Value) -> PreviewData {
+    let inputs = strings(spec, "inputs");
+    if inputs.len() < 2 {
+        return PreviewData::waiting("Pick at least two PDFs, in the order you want them.");
+    }
+    let mut total = 0u32;
+    let mut first_page = 1u32;
+    let rows = inputs
+        .iter()
+        .map(|path| {
+            let pages = crate::pdf::page_count(path).unwrap_or(0);
+            let from = first_page;
+            first_page += pages;
+            total += pages;
+            Row {
+                kind: if pages == 0 {
+                    RowKind::Warn
+                } else {
+                    RowKind::Add
+                },
+                left: base_name(path),
+                right: if pages == 0 {
+                    "not a readable PDF".into()
+                } else {
+                    format!("pages {from}–{}", from + pages - 1)
+                },
+                note: String::new(),
+            }
+        })
+        .collect();
+    PreviewData::dryrun(
+        "Merge",
+        rows,
+        0,
+        format!("{} files · {total} pages", inputs.len()),
+    )
+}
+
+fn images_to_pdf_preview(spec: &Value) -> PreviewData {
+    let inputs = strings(spec, "inputs");
+    if inputs.is_empty() {
+        return PreviewData::waiting("Pick the pictures, in page order.");
+    }
+    let mut converted = 0usize;
+    let rows = inputs
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let jpeg = matches!(
+                Path::new(path)
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default()
+                    .as_str(),
+                "jpg" | "jpeg"
+            );
+            if !jpeg {
+                converted += 1;
+            }
+            Row {
+                kind: RowKind::Add,
+                left: base_name(path),
+                right: format!("page {}", i + 1),
+                note: if jpeg {
+                    "copied straight in".into()
+                } else {
+                    "converted to JPEG first".into()
+                },
+            }
+        })
+        .collect();
+    PreviewData::dryrun(
+        "Pictures to PDF",
+        rows,
+        0,
+        format!("{} pages · {converted} converted", inputs.len()),
+    )
+}
+
+/// The words, and a reminder of what removing them actually does. The hit
+/// count needs the document parsed, which is the run's job — so this lists
+/// what will be searched for rather than claiming a number it has not counted.
+fn redact_preview(spec: &Value) -> PreviewData {
+    let Some(input) = text(spec, "input") else {
+        return PreviewData::waiting("Choose a PDF.");
+    };
+    let words: Vec<String> = text(spec, "words")
+        .unwrap_or_default()
+        .lines()
+        .flat_map(|l| l.split(','))
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    if words.is_empty() {
+        return PreviewData::waiting("Name the words to remove, one per line.");
+    }
+    let mut rows: Vec<Row> = words
+        .iter()
+        .map(|w| Row {
+            kind: RowKind::Remove,
+            left: w.clone(),
+            right: String::new(),
+            note: "removed wherever it appears".into(),
+        })
+        .collect();
+    rows.push(Row {
+        kind: RowKind::Warn,
+        left: "the text is deleted, not covered".into(),
+        right: String::new(),
+        note: "a document's own metadata is dropped as well".into(),
+    });
+    let count = crate::pdf::page_count(&input).unwrap_or(0);
+    PreviewData::dryrun("Redact", rows, 0, format!("{count} pages searched"))
+}
+
+/// The fields the document actually has, beside the values typed for them —
+/// which is the only way to find out that the field is called `name_1`.
+fn forms_preview(spec: &Value, b: &Budget) -> PreviewData {
+    let Some(input) = text(spec, "input") else {
+        return PreviewData::waiting("Choose a PDF form.");
+    };
+    let Ok(fields) = crate::pdf::form_fields(&input) else {
+        return PreviewData::waiting(format!("{}: not a PDF this can read.", base_name(&input)));
+    };
+    if fields.is_empty() {
+        return PreviewData::dryrun(
+            "Fill & flatten",
+            Vec::new(),
+            0,
+            "There are no fillable fields in this document.",
+        );
+    }
+    let typed: Vec<(String, String)> = text(spec, "values")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect();
+
+    let shown = fields.len().min(b.rows);
+    let mut filled = 0usize;
+    let rows: Vec<Row> = fields
+        .iter()
+        .take(shown)
+        .map(|f| {
+            let value = typed
+                .iter()
+                .find(|(k, _)| *k == f.name)
+                .map(|(_, v)| v.clone());
+            if value.is_some() {
+                filled += 1;
+            }
+            Row {
+                kind: if value.is_some() {
+                    RowKind::Change
+                } else {
+                    RowKind::Plain
+                },
+                left: f.name.clone(),
+                right: value.unwrap_or_else(|| f.value.clone()),
+                note: format!("page {} · {}", f.page, f.kind),
+            }
+        })
+        .collect();
+    PreviewData::dryrun(
+        "Fill & flatten",
+        rows,
+        fields.len() - shown,
+        format!(
+            "{} fields · {filled} filled{}",
+            fields.len(),
+            if flag(spec, "flatten") {
+                ", then locked flat"
+            } else {
+                ""
+            }
+        ),
+    )
+}
+
+fn pdf_images_preview(spec: &Value) -> PreviewData {
+    let Some(input) = text(spec, "input") else {
+        return PreviewData::waiting("Choose a PDF.");
+    };
+    let count = crate::pdf::page_count(&input).unwrap_or(0);
+    PreviewData::dryrun(
+        "Extract images",
+        vec![Row::plain(base_name(&input), format!("{count} pages"))],
+        0,
+        "Pictures are counted as they are found — JPEGs come out untouched.",
+    )
+}
+
+// ------------------------------------------------------------- subtitles ---
+
+/// The cues as they will be after a shift or a tidy, with the old timing beside
+/// the new one. This is the preview the whole retiming operation exists for:
+/// a subtitle two seconds out looks exactly like a subtitle four seconds out
+/// until you can see both numbers.
+fn subs_edit_preview(kind: &str, spec: &Value, b: &Budget) -> PreviewData {
+    let Some(path) = text(spec, "sub") else {
+        return PreviewData::waiting("Choose a subtitle file.");
+    };
+    let Ok(body) = std::fs::read_to_string(&path) else {
+        return PreviewData::waiting(format!("{} could not be read.", base_name(&path)));
+    };
+    let lines = crate::subs::parse(&body);
+    if lines.is_empty() {
+        return PreviewData::waiting(format!("No cues found in {}.", base_name(&path)));
+    }
+
+    let edited = if kind == "subs_shift" {
+        let by_ms = (number(spec, "by_s").unwrap_or(0.0) * 1000.0).round() as i64;
+        let rate = match text(spec, "rate").unwrap_or_default().as_str() {
+            "25 to 23.976" => 23.976 / 25.0,
+            "23.976 to 25" => 25.0 / 23.976,
+            "30 to 29.97" => 29.97 / 30.0,
+            "29.97 to 30" => 30.0 / 29.97,
+            _ => 1.0,
+        };
+        crate::subs::retime(&lines, by_ms, rate)
+    } else {
+        crate::subs::tidy(
+            &lines,
+            crate::subs::Tidy {
+                strip_tags: flag(spec, "strip_tags"),
+                fix_overlaps: flag(spec, "fix_overlaps"),
+                drop_empty: flag(spec, "drop_empty"),
+                min_ms: number(spec, "min_ms").unwrap_or(0.0).max(0.0) as i64,
+            },
+        )
+    };
+
+    let shown = edited.len().min(b.cues);
+    let cues: Vec<Cue> = edited
+        .iter()
+        .take(shown)
+        .enumerate()
+        .map(|(i, line)| Cue {
+            index: i + 1,
+            start_ms: line.start_ms.max(0) as u64,
+            end_ms: line.end_ms.max(0) as u64,
+            text: line.text.replace('\n', " "),
+        })
+        .collect();
+
+    let note = if kind == "subs_shift" {
+        let before = lines.first().map(|l| l.start_ms).unwrap_or(0);
+        let after = edited.first().map(|l| l.start_ms).unwrap_or(0);
+        format!(
+            "{} cues · the first moves {} → {}",
+            lines.len(),
+            crate::subs::stamp(before),
+            crate::subs::stamp(after)
+        )
+    } else {
+        format!("{} cues in, {} out", lines.len(), edited.len())
+    };
+    PreviewData {
+        title: base_name(&path),
+        note,
+        more: edited.len() - shown,
+        cues,
+        ..PreviewData::empty("cues")
+    }
 }
 
 fn convert_preview(spec: &Value, probe: Option<&Probe>) -> PreviewData {

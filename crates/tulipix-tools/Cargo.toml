@@ -19,6 +19,19 @@ lopdf = { version = "0.44", default-features = false }
 # Same story as lopdf: this exact version and feature set is already in both
 # lockfiles, because Books reads EPUB and CBZ with it.
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
+# The three genuinely new ones. All pure Rust — no C, no bindgen, nothing that
+# needs a system library present at build time — which is the whole reason
+# these were chosen over the obvious alternatives.
+#
+# age: the file format is specified and audited, and a file encrypted here
+# opens anywhere the `age` command exists. Rolling our own AES would be a
+# smaller dependency graph and a much worse idea.
+age = { version = "0.11", default-features = false }
+# calamine reads .xlsx, rust_xlsxwriter writes it. Two crates for one
+# operation, which is worth it: the alternative is 250 lines of hand-rolled
+# SpreadsheetML over the zip crate, and being wrong about it silently.
+calamine = "0.26"
+rust_xlsxwriter = "0.79"
 tulipix-core = { path = "../tulipix-core" }
 
 [dev-dependencies]

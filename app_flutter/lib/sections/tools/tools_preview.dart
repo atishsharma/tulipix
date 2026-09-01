@@ -714,7 +714,8 @@ class _Wave extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     if (result.peaks.isEmpty) {
-      return _Waiting(declared: 'wave', note: 'Nothing audible in that file.');
+      return const _Waiting(
+          declared: 'wave', note: 'Nothing audible in that file.');
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,

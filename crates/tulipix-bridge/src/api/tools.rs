@@ -10,7 +10,7 @@
 // The queue is a table rather than a channel on purpose: a transcode that was
 // running when the app closed is still there when it opens again.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use flutter_rust_bridge::frb;
 
 use crate::frb_generated::StreamSink;
@@ -80,6 +80,10 @@ pub struct ToolStatus {
     /// 403 is nearly always a binary some weeks old, and "bundled" alone never
     /// said that.
     pub version: String,
+    /// How this one can be got, when it is missing: `pip:<package>` for the
+    /// ones the app can install itself, `web:<url>` for the two that are a
+    /// whole application rather than a binary, empty for anything bundled.
+    pub install: String,
 }
 
 /// A file a download job produced.
@@ -187,6 +191,23 @@ pub enum ToolsCmd {
     /// why it has a self-update channel separate from the app's.
     UpdateTool {
         name: String,
+    },
+    /// Fetch one of the optional tools the catalogue greys out without.
+    ///
+    /// Four of them are Python projects and install into the user's own home
+    /// directory; the other two are applications, and this opens their
+    /// download page rather than pretending to install them.
+    InstallTool {
+        name: String,
+    },
+
+    /// Show a finished download in the file manager.
+    OpenDownload {
+        path: String,
+    },
+    /// Play a finished download in the app's own player.
+    PlayDownload {
+        path: String,
     },
 }
 
@@ -1401,6 +1422,378 @@ async fn run_native(
                 PdfPageOp::Rotate => format!("Turned {done} of {count} pages by {turn}°."),
             })
         }
+
+        // ------------------------------------------------ the folder chores --
+        Native::Crypt {
+            input,
+            output,
+            passphrase,
+            decrypt,
+        } => {
+            let total = std::fs::metadata(&input)
+                .map(|m| m.len())
+                .unwrap_or(0)
+                .max(1);
+            let done = byte_step(pool, id, base, span, total, move |tick| {
+                if decrypt {
+                    tulipix_tools::crypt::decrypt(&input, &output, &passphrase, tick)
+                } else {
+                    tulipix_tools::crypt::encrypt(&input, &output, &passphrase, tick)
+                }
+            })
+            .await?;
+            Ok(format!(
+                "{} {}.",
+                if decrypt { "Unlocked" } else { "Locked" },
+                human_bytes(done)
+            ))
+        }
+        Native::Dedupe {
+            dir,
+            delete,
+            manifest,
+        } => {
+            let groups = tokio::task::spawn_blocking(move || {
+                tulipix_tools::files::duplicates(&dir, WALK_CAP)
+            })
+            .await?;
+            let copies: usize = groups.iter().map(|g| g.paths.len() - 1).sum();
+            let wasted: u64 = groups.iter().map(|g| g.wasted()).sum();
+
+            if let Some(path) = manifest {
+                let mut body = String::new();
+                for group in &groups {
+                    body.push_str(&format!("# {} bytes each\n", group.bytes));
+                    for p in &group.paths {
+                        body.push_str(p);
+                        body.push('\n');
+                    }
+                    body.push('\n');
+                }
+                std::fs::write(&path, body).ok();
+            }
+            if !delete {
+                let _ = (base, span);
+                return Ok(format!(
+                    "{copies} extra copies, {} wasted. Nothing was deleted.",
+                    human_bytes(wasted)
+                ));
+            }
+
+            // The first of each set survives, which is the one the preview
+            // marked "kept" — same ordering, same function, same answer.
+            let mut removed = 0usize;
+            let total = copies.max(1);
+            for group in &groups {
+                for path in group.paths.iter().skip(1) {
+                    if is_stopped(id) {
+                        return Err(anyhow!("cancelled"));
+                    }
+                    if std::fs::remove_file(path).is_ok() {
+                        removed += 1;
+                        log_push(&format!("deleted {path}"));
+                    }
+                    let at = base + removed as f64 / total as f64 * span;
+                    queue::set_progress(pool, id, at.clamp(0.0, 1.0), None)
+                        .await
+                        .ok();
+                }
+            }
+            Ok(format!(
+                "Deleted {removed} copies, freeing {}.",
+                human_bytes(wasted)
+            ))
+        }
+        Native::SortFiles { dir, by } => {
+            let how = tulipix_tools::files::SortBy::parse(&by);
+            let moves = tulipix_tools::files::sort_plan(&dir, how, WALK_CAP);
+            let total = moves.len();
+            let done = archive_step(pool, id, base, span, total, move |tick| {
+                tulipix_tools::files::apply_moves(&moves, tick)
+            })
+            .await?;
+            Ok(format!("Filed {done} of {total} files."))
+        }
+        Native::EmptyDirs { dir } => {
+            let empties = tokio::task::spawn_blocking(move || {
+                tulipix_tools::files::empty_dirs(&dir, WALK_CAP)
+            })
+            .await?;
+            let found = empties.len();
+            let removed =
+                tokio::task::spawn_blocking(move || tulipix_tools::files::remove_dirs(&empties))
+                    .await?;
+            let _ = (base, span);
+            Ok(format!("Removed {removed} of {found} empty folders."))
+        }
+        Native::FileList { dir, output } => {
+            let body = tokio::task::spawn_blocking(move || {
+                tulipix_tools::files::listing_csv(&dir, WALK_CAP)
+            })
+            .await?;
+            let lines = body.lines().count().saturating_sub(1);
+            std::fs::write(&output, body)?;
+            let _ = (base, span);
+            Ok(format!("Listed {lines} files."))
+        }
+        Native::DataConvert { input, output } => {
+            let rows = tokio::task::spawn_blocking(move || {
+                let sheet = tulipix_tools::data::read(&input)?;
+                tulipix_tools::data::write(&sheet, &output)
+            })
+            .await??;
+            let _ = (base, span);
+            Ok(format!("Converted {rows} rows."))
+        }
+        Native::Fade {
+            input,
+            output,
+            in_s,
+            out_s,
+        } => {
+            // The one thing the planner could not know. Everything after this
+            // is the argv it would have built.
+            let duration = probe_duration(&input).await;
+            let (vf, af) = tulipix_tools::filters::fade_filters(in_s, out_s, Some(duration));
+            let args = vec![
+                "-i".into(),
+                input,
+                "-vf".into(),
+                vf,
+                "-af".into(),
+                af,
+                output,
+            ];
+            run_ffmpeg(pool, id, args, base, span, duration).await?;
+            Ok(format!("Faded in over {in_s}s and out over {out_s}s.",))
+        }
+
+        // ------------------------------------------------------------- pdf --
+        Native::PdfMerge { inputs, output } => {
+            let count = inputs.len();
+            let pages =
+                tokio::task::spawn_blocking(move || tulipix_tools::pdf::merge(&inputs, &output))
+                    .await??;
+            let _ = (base, span);
+            Ok(format!("Merged {count} files into {pages} pages."))
+        }
+        Native::PdfSplit {
+            input,
+            at,
+            template,
+            dir,
+        } => {
+            let written = tokio::task::spawn_blocking(move || {
+                tulipix_tools::pdf::split(&input, &at, &template, &dir)
+            })
+            .await??;
+            for path in &written {
+                log_push(path);
+            }
+            let _ = (base, span);
+            Ok(format!("Wrote {} files.", written.len()))
+        }
+        Native::PdfImpose {
+            input,
+            output,
+            layout,
+        } => {
+            let how = tulipix_tools::pdf::Impose::parse(&layout);
+            let sheets = tokio::task::spawn_blocking(move || {
+                tulipix_tools::pdf::impose(&input, how, &output)
+            })
+            .await??;
+            let _ = (base, span);
+            Ok(format!("Laid out {sheets} sheets."))
+        }
+        Native::PdfRedact {
+            input,
+            output,
+            words,
+        } => {
+            let report = tokio::task::spawn_blocking(move || {
+                tulipix_tools::pdf::redact(&input, &words, &output)
+            })
+            .await??;
+            let hits: u32 = report.iter().map(|(_, n)| n).sum();
+            for (page, found) in report.iter().filter(|(_, n)| *n > 0) {
+                log_push(&format!("page {page}: {found} removed"));
+            }
+            let _ = (base, span);
+            Ok(if hits == 0 {
+                // Not an error, and not a success either. A subset font can
+                // hide text from a byte search, and saying so is the only way
+                // the user finds out before they send the file on.
+                "Nothing matched. If the document is a scan, or uses embedded \
+                 subset fonts, the words may not be searchable text."
+                    .to_string()
+            } else {
+                format!("Removed {hits} occurrences.")
+            })
+        }
+        Native::PdfForms {
+            input,
+            output,
+            values,
+            flatten,
+            size,
+        } => {
+            let filled = tokio::task::spawn_blocking(move || {
+                tulipix_tools::pdf::fill_form(&input, &values, flatten, size, &output)
+            })
+            .await??;
+            let _ = (base, span);
+            Ok(if flatten {
+                format!("Filled {filled} fields and flattened the form.")
+            } else {
+                format!("Filled {filled} fields.")
+            })
+        }
+        Native::PdfImages { input, dir } => {
+            let (written, skipped) = tokio::task::spawn_blocking(move || {
+                tulipix_tools::pdf::extract_images(&input, &dir)
+            })
+            .await??;
+            let _ = (base, span);
+            Ok(if skipped == 0 {
+                format!("Saved {} pictures.", written.len())
+            } else {
+                format!(
+                    "Saved {} pictures. {skipped} were stored in a form this cannot hand over as a file.",
+                    written.len()
+                )
+            })
+        }
+        Native::PdfText {
+            input,
+            output,
+            ranges,
+        } => {
+            let text = tokio::task::spawn_blocking(move || {
+                let count = tulipix_tools::pdf::page_count(&input).unwrap_or(0);
+                let pages = tulipix_tools::pdf::selected(&ranges, count);
+                tulipix_tools::pdf::extract_text(&input, &pages)
+            })
+            .await??;
+            let words = text.split_whitespace().count();
+            std::fs::write(&output, &text)?;
+            let _ = (base, span);
+            Ok(if words == 0 {
+                "No text found — this looks like a scan rather than a typeset document.".to_string()
+            } else {
+                format!("Saved {words} words.")
+            })
+        }
+        Native::PdfFromImages {
+            jpegs,
+            output,
+            scratch,
+        } => {
+            let count = jpegs.len();
+            let pages = tokio::task::spawn_blocking(move || {
+                tulipix_tools::pdf::from_jpegs(&jpegs, &output)
+            })
+            .await?;
+            // The temporaries go whether the PDF was written or not.
+            for path in &scratch {
+                std::fs::remove_file(path).ok();
+            }
+            let _ = (base, span);
+            Ok(format!("{} pages from {count} pictures.", pages?))
+        }
+
+        // ------------------------------------------------------ subtitles --
+        Native::SubsShift {
+            input,
+            output,
+            by_ms,
+            rate,
+        } => {
+            let count = tokio::task::spawn_blocking(move || -> Result<usize> {
+                let body = std::fs::read_to_string(&input)?;
+                let lines =
+                    tulipix_tools::subs::retime(&tulipix_tools::subs::parse(&body), by_ms, rate);
+                write_subtitle(&lines, &output)?;
+                Ok(lines.len())
+            })
+            .await??;
+            let _ = (base, span);
+            Ok(format!("Retimed {count} cues."))
+        }
+        Native::SubsClean {
+            input,
+            output,
+            tidy,
+        } => {
+            let (before, after) = tokio::task::spawn_blocking(move || -> Result<(usize, usize)> {
+                let body = std::fs::read_to_string(&input)?;
+                let lines = tulipix_tools::subs::parse(&body);
+                let cleaned = tulipix_tools::subs::tidy(&lines, tidy);
+                let counts = (lines.len(), cleaned.len());
+                write_subtitle(&cleaned, &output)?;
+                Ok(counts)
+            })
+            .await??;
+            let _ = (base, span);
+            Ok(format!("{before} cues in, {after} out."))
+        }
+        Native::IconSet { dir, stem, output } => {
+            let count = tokio::task::spawn_blocking(move || {
+                tulipix_tools::icons::write_ico(&dir, &stem, &output)
+            })
+            .await??;
+            let _ = (base, span);
+            Ok(format!("Wrote an icon holding {count} sizes."))
+        }
+        Native::PhotoBatch {
+            dir,
+            out_dir,
+            max_px,
+            quality,
+            ext,
+        } => {
+            std::fs::create_dir_all(&out_dir)?;
+            let mut pictures: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)?
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && is_picture(p))
+                .collect();
+            pictures.sort();
+            let total = pictures.len().max(1);
+
+            let mut done = 0usize;
+            for path in &pictures {
+                if is_stopped(id) {
+                    return Err(anyhow!("cancelled"));
+                }
+                let stem = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let out = format!("{}/{stem}.{ext}", out_dir.trim_end_matches('/'));
+                let args = vec![
+                    "-i".into(),
+                    path.to_string_lossy().to_string(),
+                    "-vf".into(),
+                    format!(
+                        "scale={max_px}:{max_px}:force_original_aspect_ratio=decrease:force_divisible_by=2"
+                    ),
+                    "-q:v".into(),
+                    // ffmpeg's quality scale runs the other way from the one
+                    // in the form: 1 is best, 31 is worst.
+                    (31 - (quality.clamp(1, 100) * 30 / 100)).to_string(),
+                    out,
+                ];
+                // One picture at a time, so a cancel lands between files and
+                // the bar moves per picture rather than once at the end.
+                let base_here = base + done as f64 / total as f64 * span;
+                run_ffmpeg(pool, id, args, base_here, span / total as f64, 0.0)
+                    .await
+                    .ok();
+                done += 1;
+            }
+            Ok(format!("Resized {done} pictures."))
+        }
     }
 }
 
@@ -1413,6 +1806,112 @@ const ARCHIVE_CAP: usize = 200_000;
 /// The archive crate takes a `FnMut(done, total) -> bool` rather than knowing
 /// about the queue, so this is the only place the two meet. Progress is sent
 /// through a channel because the closure runs off the async runtime.
+/// How far a folder walk goes before it stops. Ten thousand files is a large
+/// photo library; a hundred thousand is a mistake in the folder picker.
+const WALK_CAP: usize = 200_000;
+
+fn is_picture(path: &std::path::Path) -> bool {
+    path.extension()
+        .map(|e| {
+            let e = e.to_string_lossy().to_lowercase();
+            matches!(
+                e.as_str(),
+                "jpg" | "jpeg" | "png" | "webp" | "avif" | "bmp" | "tif" | "tiff" | "heic"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Write cues in whichever format the output name asks for.
+fn write_subtitle(lines: &[tulipix_tools::subs::Line], output: &str) -> Result<()> {
+    let vtt = output.to_lowercase().ends_with(".vtt");
+    let body = if vtt {
+        tulipix_tools::subs::to_vtt(lines)
+    } else {
+        tulipix_tools::subs::to_srt(lines)
+    };
+    std::fs::write(output, body)?;
+    Ok(())
+}
+
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
+}
+
+/// [`archive_step`]'s sibling for work that reports bytes rather than items.
+async fn byte_step<F>(
+    pool: &sqlx::SqlitePool,
+    id: i64,
+    base: f64,
+    span: f64,
+    total: u64,
+    work: F,
+) -> Result<u64>
+where
+    F: FnOnce(&mut dyn FnMut(u64) -> bool) -> Result<u64> + Send + 'static,
+{
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop.clone();
+    let handle = tokio::task::spawn_blocking(move || {
+        let mut tick = |done: u64| {
+            let _ = tx.send(done);
+            !flag.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        work(&mut tick)
+    });
+
+    let total = total.max(1);
+    while let Some(done) = rx.recv().await {
+        if is_stopped(id) {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let at = (base + done as f64 / total as f64 * span).clamp(0.0, 1.0);
+        queue::set_progress(pool, id, at, None).await.ok();
+    }
+    let out = handle.await??;
+    if is_stopped(id) {
+        return Err(anyhow!("cancelled"));
+    }
+    Ok(out)
+}
+
+/// One ffmpeg run, with the flags the worker always adds.
+///
+/// `run_step` does this for a planned `Step::Ffmpeg`; this is for the two
+/// native ops that build their argv at run time, because they needed something
+/// only the worker knows — a probed duration, or the next file in a folder.
+/// Calling `run_step` from inside `run_native` would be mutual recursion
+/// between two async functions, which does not compile without boxing.
+async fn run_ffmpeg(
+    pool: &sqlx::SqlitePool,
+    id: i64,
+    args: Vec<String>,
+    base: f64,
+    span: f64,
+    total_s: f64,
+) -> Result<()> {
+    let mut argv: Vec<String> = vec!["-hide_banner".into(), "-y".into()];
+    argv.extend(args);
+    argv.extend(["-progress".into(), "pipe:1".into(), "-nostats".into()]);
+    spawn_tracked(pool, id, bin("ffmpeg"), &argv, base, span, move |line| {
+        exec::parse_ffmpeg_progress(line, total_s)
+    })
+    .await?;
+    Ok(())
+}
+
 async fn archive_step<T, F>(
     pool: &sqlx::SqlitePool,
     id: i64,
@@ -1605,17 +2104,6 @@ fn clean_cache() -> u64 {
     freed
 }
 
-fn human_bytes(n: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut v = n as f64;
-    let mut u = 0;
-    while v >= 1024.0 && u < UNITS.len() - 1 {
-        v /= 1024.0;
-        u += 1;
-    }
-    format!("{v:.1} {}", UNITS[u])
-}
-
 // ---------------------------------------------------------------- commands ---
 
 async fn apply(cmd: ToolsCmd) -> Result<()> {
@@ -1627,6 +2115,13 @@ async fn apply(cmd: ToolsCmd) -> Result<()> {
             let mut s = lock();
             s.category = name;
             s.query.clear();
+            // Picking a category means "show me that category", including from
+            // inside an open tool — where the tabs are still on screen and used
+            // to change what was underneath the tool rather than going there.
+            s.active.clear();
+            s.form.clear();
+            s.error.clear();
+            s.result_open = false;
         }
         ToolsCmd::Search { text } => lock().query = text,
         ToolsCmd::OpenTool { kind } => {
@@ -1791,6 +2286,131 @@ async fn apply(cmd: ToolsCmd) -> Result<()> {
                 Err(e) => lock().error = format!("yt-dlp update failed: {e}"),
             }
         }
+        ToolsCmd::InstallTool { name } => {
+            if let Err(e) = install_tool(&name).await {
+                lock().error = format!("{name}: {e}");
+            }
+            // The five-second cache would otherwise keep saying "missing" for
+            // a tool that is now on PATH, on the one screen watching for it.
+            forget_installed();
+        }
+        ToolsCmd::OpenDownload { path } => {
+            if let Err(e) =
+                tulipix_platform::fm::reveal_in_file_manager(std::path::Path::new(&path))
+            {
+                lock().error = format!("could not show {path}: {e}");
+            }
+        }
+        ToolsCmd::PlayDownload { path } => {
+            if !std::path::Path::new(&path).exists() {
+                lock().error = format!("{path} is not there any more");
+            } else {
+                crate::vmpv::play(path, None, None, Vec::new(), None);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Install one optional tool, streaming the output into the tools log.
+///
+/// `pipx` first: it gives each tool its own virtualenv and links the command
+/// into `~/.local/bin`, which is what every one of these projects recommends
+/// and what keeps four of them from fighting over one set of dependencies.
+/// `pip --user` is the fallback for a machine with Python but no pipx. Neither
+/// needs root, which is the whole reason this can be a button at all.
+async fn install_tool(name: &str) -> Result<()> {
+    let recipe = TOOLCHAIN
+        .iter()
+        .find(|t| t.name == name)
+        .map(|t| t.install)
+        .unwrap_or("");
+
+    if let Some(url) = recipe.strip_prefix("web:") {
+        // Not an install. `pandoc` and Calibre are applications with their own
+        // installers, and driving someone else's installer unattended is how
+        // an app ends up blamed for a broken machine.
+        tulipix_platform::fm::open_default(std::path::Path::new(url))
+            .map_err(|e| anyhow!("could not open {url}: {e}"))?;
+        return Ok(());
+    }
+
+    let Some(package) = recipe.strip_prefix("pip:") else {
+        bail!("there is nothing to install for {name}");
+    };
+
+    let (exe, args) = if which_on_path("pipx") {
+        ("pipx", vec!["install".to_string(), package.to_string()])
+    } else if let Some(python) = ["python3", "python", "py"]
+        .into_iter()
+        .find(|p| which_on_path(p))
+    {
+        (
+            python,
+            vec![
+                "-m".into(),
+                "pip".into(),
+                "install".into(),
+                "--user".into(),
+                package.to_string(),
+            ],
+        )
+    } else {
+        bail!("no pipx and no Python here — install Python first, then try again");
+    };
+
+    log_reset(&format!("── installing {name} ──"));
+    log_push(&format!("{exe} {}", args.join(" ")));
+    stream_command(exe, &args).await?;
+    log_push(&format!("{name} installed"));
+    Ok(())
+}
+
+/// Run a command to completion, both pipes into the log. No queue job, no
+/// progress: this is for the toolchain dialog, where the output *is* the
+/// progress and a pip install has no percentage to report.
+async fn stream_command(exe: &str, args: &[String]) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut child = quiet(std::path::Path::new(exe))
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow!("{exe} could not be started: {e}"))?;
+
+    let stderr = child.stderr.take();
+    let stdout = child.stdout.take();
+    // stderr in the background: pip writes its warnings there, and a pipe
+    // nobody drains fills up and stops the child.
+    let err_task = stderr.map(|e| {
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(e).lines();
+            let mut tail = String::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                log_push(&line);
+                tail = line;
+            }
+            tail
+        })
+    });
+    if let Some(out) = stdout {
+        let mut lines = BufReader::new(out).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            log_push(&line);
+        }
+    }
+    let status = child.wait().await?;
+    let tail = match err_task {
+        Some(t) => t.await.unwrap_or_default(),
+        None => String::new(),
+    };
+    if !status.success() {
+        return Err(anyhow!(if tail.is_empty() {
+            format!("{exe} exited {status}")
+        } else {
+            tail
+        }));
     }
     Ok(())
 }
@@ -1877,23 +2497,98 @@ fn fields_for(kind: &str) -> Vec<Field> {
 
 /// The external binaries the section shells out to. Reported once so a missing
 /// one is a row that says so, rather than twenty jobs that fail identically.
-const TOOLCHAIN: &[(&str, &str, bool)] = &[
-    (
-        "ffmpeg",
-        "Encoding, trimming, resizing, everything media",
-        false,
-    ),
-    ("ffprobe", "Durations and stream reports", false),
-    ("yt-dlp", "Downloads", true),
-    ("whisper-cli", "Local speech to text", false),
-    // Not bundled, and not going to be. Each is large, each is packaged
-    // everywhere, and the four operations that use them grey out until one
-    // shows up on PATH.
-    ("pandoc", "Document converter", false),
-    ("ebook-convert", "Ebook converter — part of Calibre", false),
-    ("demucs", "Splits a track into stems", false),
-    ("ffsubsync", "Lines subtitles up with the audio", false),
+const TOOLCHAIN: &[Tool] = &[
+    Tool {
+        name: "ffmpeg",
+        detail: "Encoding, trimming, resizing, everything media",
+        updatable: false,
+        install: "",
+    },
+    Tool {
+        name: "ffprobe",
+        detail: "Durations and stream reports",
+        updatable: false,
+        install: "",
+    },
+    Tool {
+        name: "yt-dlp",
+        detail: "Downloads",
+        updatable: true,
+        install: "",
+    },
+    Tool {
+        name: "whisper-cli",
+        detail: "Local speech to text",
+        updatable: false,
+        install: "",
+    },
+    // Not bundled, and not going to be: each is either a whole application or
+    // a Python project with a model behind it, and shipping any of them would
+    // cost more than the rest of the app put together. Four of the six install
+    // themselves from here, which is the next best thing.
+    Tool {
+        name: "pandoc",
+        detail: "Document converter",
+        updatable: false,
+        install: "web:https://pandoc.org/installing.html",
+    },
+    Tool {
+        name: "ebook-convert",
+        detail: "Ebook converter — part of Calibre",
+        updatable: false,
+        install: "web:https://calibre-ebook.com/download",
+    },
+    Tool {
+        name: "demucs",
+        detail: "Splits a track into stems",
+        updatable: false,
+        // Pulls PyTorch behind it — the better part of a gigabyte, and the
+        // dialog says so before the button is pressed.
+        install: "pip:demucs",
+    },
+    Tool {
+        name: "ffsubsync",
+        detail: "Lines subtitles up with the audio",
+        updatable: false,
+        install: "pip:ffsubsync",
+    },
+    Tool {
+        name: "rembg",
+        detail: "Cuts the subject out of a photo",
+        updatable: false,
+        // The CLI is an extra; without it pip installs a library with no
+        // `rembg` command, which looks like a failed install.
+        install: "pip:rembg[cli]",
+    },
+    Tool {
+        name: "gs",
+        detail: "Ghostscript — shrinks a PDF's images",
+        updatable: false,
+        install: "web:https://ghostscript.com/releases/gsdnld.html",
+    },
+    Tool {
+        name: "qpdf",
+        detail: "PDF passwords",
+        updatable: false,
+        install: "web:https://github.com/qpdf/qpdf/releases",
+    },
+    Tool {
+        name: "argos-translate",
+        detail: "Offline subtitle translation",
+        updatable: false,
+        install: "pip:argostranslate",
+    },
 ];
+
+/// One row of the toolchain table.
+struct Tool {
+    name: &'static str,
+    detail: &'static str,
+    updatable: bool,
+    /// `pip:<package>` — installable from the dialog, no root needed.
+    /// `web:<url>` — an application, so the dialog opens its download page.
+    install: &'static str,
+}
 
 /// Whether a binary can be run at all: bundled with the app, or on PATH.
 ///
@@ -1908,7 +2603,36 @@ fn have(name: &str) -> bool {
 /// `tool_bin` is not free — for a bundled candidate it will launch the thing to
 /// see whether it starts — so a snapshot asks about each distinct name once
 /// rather than once per tile. Eight names, forty-two tiles.
+type BinaryCache = OnceLock<Mutex<Option<(std::time::Instant, Vec<(&'static str, bool)>)>>>;
+
+static BINARY_CACHE: BinaryCache = OnceLock::new();
+
+/// Throw the cached answer away, after something has changed on disk.
+fn forget_installed() {
+    if let Some(cache) = BINARY_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            *guard = None;
+        }
+    }
+}
+
 fn installed_binaries() -> Vec<(&'static str, bool)> {
+    // A snapshot runs on every keystroke in the search box and every preview
+    // request. Twelve names is a few dozen syscalls, which is nothing once and
+    // noticeable at four a second — so the answer is held for a few seconds.
+    // Short enough that installing pandoc and coming back finds it; long
+    // enough that typing does not re-stat the PATH.
+    const TTL: std::time::Duration = std::time::Duration::from_secs(5);
+    let cache = BINARY_CACHE.get_or_init(|| Mutex::new(None));
+
+    if let Ok(guard) = cache.lock() {
+        if let Some((at, known)) = guard.as_ref() {
+            if at.elapsed() < TTL {
+                return known.clone();
+            }
+        }
+    }
+
     let mut names: Vec<&'static str> = Vec::new();
     for op in catalog::CATALOG {
         for n in op.needs {
@@ -1917,7 +2641,11 @@ fn installed_binaries() -> Vec<(&'static str, bool)> {
             }
         }
     }
-    names.into_iter().map(|n| (n, have(n))).collect()
+    let resolved: Vec<(&'static str, bool)> = names.into_iter().map(|n| (n, have(n))).collect();
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((std::time::Instant::now(), resolved.clone()));
+    }
+    resolved
 }
 
 /// The first binary an operation needs and cannot find.
@@ -2010,12 +2738,12 @@ async fn snapshot() -> Result<ToolsState> {
 
     let statuses: Vec<ToolStatus> = TOOLCHAIN
         .iter()
-        .map(|(name, detail, updatable)| {
-            let bundled = tulipix_core::thumbs::tool_bin(name);
+        .map(|tool| {
+            let bundled = tulipix_core::thumbs::tool_bin(tool.name);
             let has_bundled = bundled.exists();
-            let on_path = which_on_path(name);
+            let on_path = which_on_path(tool.name);
             ToolStatus {
-                name: (*name).to_string(),
+                name: tool.name.to_string(),
                 source: if has_bundled {
                     "bundled".into()
                 } else if on_path {
@@ -2023,14 +2751,15 @@ async fn snapshot() -> Result<ToolsState> {
                 } else {
                     "missing".into()
                 },
-                detail: (*detail).to_string(),
+                detail: tool.detail.to_string(),
                 available: has_bundled || on_path,
-                updatable: *updatable,
-                version: if *name == "yt-dlp" {
+                updatable: tool.updatable,
+                version: if tool.name == "yt-dlp" {
                     tulipix_core::ytdlp::installed_version().unwrap_or_default()
                 } else {
                     String::new()
                 },
+                install: tool.install.to_string(),
             }
         })
         .collect();

@@ -78,6 +78,46 @@ pub enum Native {
     /// and clamping it to the document both need the page count, and that is
     /// only known once the file is open.
     PdfPages { op: PdfPageOp, input: String, output: String, ranges: String, turn: i64 },
+
+    // ------------------------------------------------ the folder chores --
+    /// Files with identical contents. `delete` keeps the first of each set.
+    Dedupe { dir: String, delete: bool, manifest: Option<String> },
+    /// Move every loose file into a subfolder named after its type, month or
+    /// first letter.
+    SortFiles { dir: String, by: String },
+    EmptyDirs { dir: String },
+    /// Fade in and out. The fade-out has to start `out_s` before the end, and
+    /// only the worker knows where the end is — so it probes, then runs the
+    /// same ffmpeg the planner would have.
+    Fade { input: String, output: String, in_s: f64, out_s: f64 },
+    FileList { dir: String, output: String },
+    /// age, both directions. The passphrase never reaches a command line.
+    Crypt { input: String, output: String, passphrase: String, decrypt: bool },
+    DataConvert { input: String, output: String },
+
+    // -------------------------------------------------------------- pdf --
+    PdfMerge { inputs: Vec<String>, output: String },
+    PdfSplit { input: String, at: crate::pdf::SplitAt, template: String, dir: String },
+    PdfImpose { input: String, output: String, layout: String },
+    PdfRedact { input: String, output: String, words: Vec<String> },
+    PdfForms { input: String, output: String, values: Vec<(String, String)>, flatten: bool, size: f64 },
+    PdfImages { input: String, dir: String },
+    PdfText { input: String, output: String, ranges: String },
+    /// The JPEGs an ffmpeg step wrote just before this one. `scratch` is what
+    /// it deletes afterwards — a picture that was already a JPEG is used where
+    /// it lies and must not be deleted with the temporaries.
+    PdfFromImages { jpegs: Vec<String>, output: String, scratch: Vec<String> },
+
+    // -------------------------------------------------------- subtitles --
+    /// Retime a subtitle file in place of ffmpeg, which cannot stretch one.
+    SubsShift { input: String, output: String, by_ms: i64, rate: f64 },
+    SubsClean { input: String, output: String, tidy: crate::subs::Tidy },
+    /// One square picture into every icon size, then the .ico. The PNGs are
+    /// written by the ffmpeg steps before this one.
+    IconSet { dir: String, stem: String, output: String },
+    /// Every picture in a folder, scaled. The worker runs one ffmpeg per file
+    /// so a cancel lands between pictures.
+    PhotoBatch { dir: String, out_dir: String, max_px: u32, quality: u32, ext: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -563,7 +603,665 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
                 args: vec![input, "-i".into(), subs, "-o".into(), output],
             }])
         }
+        // ================================================= the folder chores ==
+        "encrypt" => {
+            let input = req(spec, "input")?;
+            let decrypt = s(spec, "mode").as_deref() == Some("decrypt");
+            let output = match s(spec, "output").filter(|x| !x.trim().is_empty()) {
+                Some(o) => o,
+                None if decrypt => crate::crypt::decrypted_name(&input),
+                None => crate::crypt::encrypted_name(&input),
+            };
+            Ok(vec![Step::Native(Native::Crypt {
+                input,
+                output,
+                passphrase: req(spec, "passphrase")?,
+                decrypt,
+            })])
+        }
+        "dedupe" => Ok(vec![Step::Native(Native::Dedupe {
+            dir: req(spec, "dir")?,
+            delete: boolean(spec, "delete"),
+            manifest: s(spec, "manifest").filter(|x| !x.trim().is_empty()),
+        })]),
+        "sort_files" => Ok(vec![Step::Native(Native::SortFiles {
+            dir: req(spec, "dir")?,
+            by: s(spec, "by").unwrap_or_else(|| "extension".into()),
+        })]),
+        "empty_dirs" => Ok(vec![Step::Native(Native::EmptyDirs { dir: req(spec, "dir")? })]),
+        "file_list" => {
+            let dir = req(spec, "dir")?;
+            Ok(vec![Step::Native(Native::FileList {
+                output: beside_folder(spec, &dir, "listing", "csv"),
+                dir,
+            })])
+        }
+        "data_convert" => {
+            let input = req(spec, "input")?;
+            let fmt = s(spec, "format").unwrap_or_else(|| "csv".into());
+            Ok(vec![Step::Native(Native::DataConvert {
+                output: output_or_beside(spec, kind, Some(&fmt))?,
+                input,
+            })])
+        }
+
+        // ========================================================== video ==
+        "speed" => {
+            let input = req(spec, "input")?;
+            let out = output_or_beside(spec, kind, None)?;
+            let rate = num(spec, "rate").unwrap_or(2.0).clamp(0.25, 4.0);
+            let audio = if boolean(spec, "keep_pitch") {
+                filters::atempo_chain(rate)
+            } else {
+                // 48 kHz is what the graph resamples back to; the source rate
+                // is irrelevant once aresample has run.
+                filters::asetrate(rate, 48_000)
+            };
+            Ok(one(
+                vec![
+                    "-i".into(),
+                    input.clone(),
+                    "-filter_complex".into(),
+                    format!("[0:v]{}[v];[0:a]{audio}[a]", filters::setpts(rate)),
+                    "-map".into(),
+                    "[v]".into(),
+                    "-map".into(),
+                    "[a]".into(),
+                    out,
+                ],
+                Some(input),
+            ))
+        }
+        "gif" => {
+            let input = req(spec, "input")?;
+            let out = output_or_beside(spec, kind, Some("gif"))?;
+            let start = num(spec, "start_s").unwrap_or(0.0).max(0.0);
+            let seconds = num(spec, "seconds").unwrap_or(5.0).max(0.1);
+            let width = num(spec, "width").unwrap_or(480.0).max(16.0) as u32;
+            let fps = num(spec, "fps").unwrap_or(15.0).clamp(1.0, 50.0) as u32;
+            // One pass, two branches: the palette is built from this clip and
+            // used on it. A GIF made against the default 216-colour palette is
+            // the banded, dithered mess everyone recognises.
+            let graph = format!(
+                "[0:v]fps={fps},scale={width}:-2:flags=lanczos,split[a][b];\
+                 [a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3"
+            );
+            Ok(vec![Step::Ffmpeg {
+                args: vec![
+                    "-ss".into(),
+                    start.to_string(),
+                    "-t".into(),
+                    seconds.to_string(),
+                    "-i".into(),
+                    input,
+                    "-filter_complex".into(),
+                    graph,
+                    "-loop".into(),
+                    "0".into(),
+                    out,
+                ],
+                duration_input: None,
+                duration_s: Some(seconds),
+            }])
+        }
+        "fade" => Ok(vec![Step::Native(Native::Fade {
+            input: req(spec, "input")?,
+            output: output_or_beside(spec, kind, None)?,
+            in_s: num(spec, "in_s").unwrap_or(1.0).max(0.0),
+            out_s: num(spec, "out_s").unwrap_or(1.0).max(0.0),
+        })]),
+
+        // ========================================================== audio ==
+        "tags" => {
+            let input = req(spec, "input")?;
+            let out = output_or_beside(spec, kind, None)?;
+            let mut args = vec!["-i".into(), input.clone()];
+            let cover = s(spec, "cover").filter(|x| !x.trim().is_empty());
+            if let Some(cover) = &cover {
+                args.extend(["-i".into(), cover.clone()]);
+                args.extend(["-map".into(), "0:a".into(), "-map".into(), "1:v".into()]);
+                args.extend(["-c".into(), "copy".into()]);
+                args.extend(["-disposition:v:0".into(), "attached_pic".into()]);
+            } else {
+                args.extend(["-c".into(), "copy".into()]);
+            }
+            for (field, key) in [
+                ("title", "title"),
+                ("artist", "artist"),
+                ("album", "album"),
+                ("year", "date"),
+            ] {
+                // A blank box leaves the tag alone. Writing `-metadata title=`
+                // would erase the one the file already has.
+                if let Some(value) = s(spec, field).filter(|x| !x.trim().is_empty()) {
+                    args.extend(["-metadata".into(), format!("{key}={value}")]);
+                }
+            }
+            args.push(out);
+            Ok(one(args, Some(input)))
+        }
+        "silence_trim" => {
+            let input = req(spec, "input")?;
+            let out = output_or_beside(spec, kind, None)?;
+            let af = filters::silence_filter(
+                num(spec, "threshold").unwrap_or(-50.0),
+                num(spec, "min_ms").unwrap_or(500.0),
+                boolean(spec, "middle"),
+            );
+            Ok(one(
+                vec!["-i".into(), input.clone(), "-af".into(), af, out],
+                Some(input),
+            ))
+        }
+        "audio_speed" => {
+            let input = req(spec, "input")?;
+            let out = output_or_beside(spec, kind, None)?;
+            let rate = num(spec, "rate").unwrap_or(1.5).clamp(0.25, 4.0);
+            let af = if boolean(spec, "keep_pitch") {
+                filters::atempo_chain(rate)
+            } else {
+                filters::asetrate(rate, 48_000)
+            };
+            Ok(one(
+                vec!["-i".into(), input.clone(), "-af".into(), af, out],
+                Some(input),
+            ))
+        }
+        "replace_audio" => {
+            let input = req(spec, "input")?;
+            let audio = req(spec, "audio")?;
+            let out = output_or_beside(spec, kind, None)?;
+            let offset = num(spec, "offset_s").unwrap_or(0.0);
+            let mut args: Vec<String> = vec!["-i".into(), input.clone()];
+            // `-itsoffset` shifts the input that follows it, so it has to come
+            // before the -i it applies to.
+            if offset != 0.0 {
+                args.extend(["-itsoffset".into(), offset.to_string()]);
+            }
+            args.extend(["-i".into(), audio]);
+            args.extend([
+                "-map".into(),
+                "0:v:0".into(),
+                "-map".into(),
+                "1:a:0".into(),
+                "-c:v".into(),
+                "copy".into(),
+            ]);
+            if boolean(spec, "shortest") {
+                args.push("-shortest".into());
+            }
+            args.push(out);
+            Ok(one(args, Some(input)))
+        }
+
+        // ========================================================== photo ==
+        "strip_meta" => {
+            let input = req(spec, "input")?;
+            let out = output_or_beside(spec, kind, None)?;
+            Ok(one(
+                vec![
+                    "-i".into(),
+                    input,
+                    "-map_metadata".into(),
+                    "-1".into(),
+                    "-c".into(),
+                    "copy".into(),
+                    out,
+                ],
+                None,
+            ))
+        }
+        "border" => {
+            let input = req(spec, "input")?;
+            let out = output_or_beside(spec, kind, None)?;
+            let vf = filters::border_filter(
+                num(spec, "width").unwrap_or(40.0).max(0.0) as u32,
+                num(spec, "bottom").unwrap_or(0.0).max(0.0) as u32,
+                &s(spec, "colour").unwrap_or_else(|| "white".into()),
+            );
+            Ok(one(vec!["-i".into(), input, "-vf".into(), vf, out], None))
+        }
+        "collage" => {
+            let inputs = list(spec, "inputs");
+            if inputs.is_empty() {
+                return Err(anyhow!("pick at least one picture"));
+            }
+            let out = match s(spec, "output").filter(|x| !x.trim().is_empty()) {
+                Some(o) => o,
+                None => output_or_beside(&serde_json::json!({ "input": inputs[0] }), kind, None)?,
+            };
+            let cols = num(spec, "cols").unwrap_or(3.0).max(1.0) as u32;
+            let cell = num(spec, "cell").unwrap_or(480.0).max(16.0) as u32;
+            let gap = num(spec, "gap").unwrap_or(8.0).max(0.0) as u32;
+            let rows = (inputs.len() as u32).div_ceil(cols);
+            let colour = filters::safe_colour(&s(spec, "colour").unwrap_or_else(|| "white".into()));
+
+            // Every picture is scaled into an identical cell and padded to fill
+            // it, so `tile` gets a uniform grid — which is the only kind it
+            // will take.
+            let mut graph = String::new();
+            for i in 0..inputs.len() {
+                graph.push_str(&format!(
+                    "[{i}:v]scale={cell}:{cell}:force_original_aspect_ratio=decrease,\
+                     pad={cell}:{cell}:(ow-iw)/2:(oh-ih)/2:{colour}[c{i}];"
+                ));
+            }
+            for i in 0..inputs.len() {
+                graph.push_str(&format!("[c{i}]"));
+            }
+            graph.push_str(&format!(
+                "concat=n={}:v=1:a=0[grid];[grid]tile={cols}x{rows}:padding={gap}:color={colour}",
+                inputs.len()
+            ));
+
+            let mut args: Vec<String> = Vec::new();
+            for path in &inputs {
+                args.extend(["-i".into(), path.clone()]);
+            }
+            args.extend(["-filter_complex".into(), graph, "-frames:v".into(), "1".into(), out]);
+            Ok(vec![Step::Ffmpeg { args, duration_input: None, duration_s: None }])
+        }
+        "adjust" => {
+            let input = req(spec, "input")?;
+            let out = output_or_beside(spec, kind, None)?;
+            let vf = filters::eq_filter(
+                num(spec, "brightness").unwrap_or(0.0),
+                num(spec, "contrast").unwrap_or(1.0),
+                num(spec, "saturation").unwrap_or(1.0),
+                num(spec, "gamma").unwrap_or(1.0),
+            );
+            Ok(one(vec!["-i".into(), input, "-vf".into(), vf, out], None))
+        }
+        "recolour" => {
+            let input = req(spec, "input")?;
+            let out = output_or_beside(spec, kind, None)?;
+            let vf = filters::look_filter(&s(spec, "look").unwrap_or_else(|| "mono".into()));
+            Ok(one(vec!["-i".into(), input, "-vf".into(), vf, out], None))
+        }
+        "sharpen" => {
+            let input = req(spec, "input")?;
+            let out = output_or_beside(spec, kind, None)?;
+            let vf = filters::sharpen_filter(
+                num(spec, "amount").unwrap_or(1.0),
+                num(spec, "radius").unwrap_or(5.0).max(3.0) as u32,
+            );
+            Ok(one(vec!["-i".into(), input, "-vf".into(), vf, out], None))
+        }
+        "censor" => {
+            let input = req(spec, "input")?;
+            let out = output_or_beside(spec, kind, None)?;
+            let graph = filters::censor_filter(
+                &s(spec, "style").unwrap_or_else(|| "pixelate".into()),
+                num(spec, "x").unwrap_or(0.0).max(0.0) as u32,
+                num(spec, "y").unwrap_or(0.0).max(0.0) as u32,
+                num(spec, "w").unwrap_or(200.0).max(1.0) as u32,
+                num(spec, "h").unwrap_or(200.0).max(1.0) as u32,
+            );
+            Ok(one(
+                vec!["-i".into(), input.clone(), "-filter_complex".into(), graph, out],
+                Some(input),
+            ))
+        }
+        "favicon" => {
+            let input = req(spec, "input")?;
+            let stem = s(spec, "name")
+                .filter(|x| !x.trim().is_empty())
+                .unwrap_or_else(|| "favicon".into());
+            let dir = match s(spec, "output").filter(|x| !x.trim().is_empty()) {
+                Some(d) => d,
+                None => parent_of(&input),
+            };
+            // One ffmpeg per size, then the container. Scaling nine times from
+            // the original beats scaling once and resampling the result eight
+            // times, and it costs nothing at these dimensions.
+            let mut steps: Vec<Step> = crate::icons::SIZES
+                .iter()
+                .map(|size| Step::Ffmpeg {
+                    args: vec![
+                        "-i".into(),
+                        input.clone(),
+                        "-vf".into(),
+                        format!("scale={size}:{size}:flags=lanczos"),
+                        "-frames:v".into(),
+                        "1".into(),
+                        format!("{}/{}", dir.trim_end_matches('/'), crate::icons::png_name(&stem, *size)),
+                    ],
+                    duration_input: None,
+                    duration_s: None,
+                })
+                .collect();
+            steps.push(Step::Native(Native::IconSet {
+                output: format!("{}/{stem}.ico", dir.trim_end_matches('/')),
+                dir,
+                stem,
+            }));
+            Ok(steps)
+        }
+        "remove_bg" => {
+            let input = req(spec, "input")?;
+            let output = output_or_beside(spec, kind, Some("png"))?;
+            Ok(vec![Step::Tool {
+                bin: "rembg",
+                args: vec!["i".into(), input, output],
+            }])
+        }
+        "upscale" => {
+            let input = req(spec, "input")?;
+            let out = output_or_beside(spec, kind, None)?;
+            let factor = s(spec, "factor")
+                .and_then(|f| f.parse::<u32>().ok())
+                .unwrap_or(2)
+                .clamp(2, 4);
+            Ok(one(
+                vec![
+                    "-i".into(),
+                    input,
+                    "-vf".into(),
+                    format!("scale=iw*{factor}:ih*{factor}:flags=lanczos"),
+                    out,
+                ],
+                None,
+            ))
+        }
+        "photo_batch" => {
+            let dir = req(spec, "dir")?;
+            let out_dir = match s(spec, "output").filter(|x| !x.trim().is_empty()) {
+                Some(d) => d,
+                None => format!("{}/resized", dir.trim_end_matches('/')),
+            };
+            Ok(vec![Step::Native(Native::PhotoBatch {
+                dir,
+                out_dir,
+                max_px: num(spec, "max_px").unwrap_or(1920.0).max(16.0) as u32,
+                quality: num(spec, "quality").unwrap_or(85.0).clamp(1.0, 100.0) as u32,
+                ext: s(spec, "target_ext").unwrap_or_else(|| "jpg".into()),
+            })])
+        }
+
+        // ============================================================ pdf ==
+        "pdf_merge" => {
+            let inputs = list(spec, "inputs");
+            if inputs.len() < 2 {
+                return Err(anyhow!("merging needs at least two PDFs"));
+            }
+            Ok(vec![Step::Native(Native::PdfMerge {
+                inputs,
+                output: req(spec, "output")?,
+            })])
+        }
+        "pdf_split" => {
+            let input = req(spec, "input")?;
+            let at = if s(spec, "mode").as_deref() == Some("at") {
+                crate::pdf::SplitAt::Pages(
+                    crate::pdf::parse_ranges(&s(spec, "at").unwrap_or_default())
+                        .ok_or_else(|| anyhow!("that is not a list of page numbers"))?,
+                )
+            } else {
+                crate::pdf::SplitAt::Every(num(spec, "every").unwrap_or(10.0).max(1.0) as u32)
+            };
+            let dir = match s(spec, "output").filter(|x| !x.trim().is_empty()) {
+                Some(d) => d,
+                None => parent_of(&input),
+            };
+            Ok(vec![Step::Native(Native::PdfSplit {
+                input,
+                at,
+                template: s(spec, "template").unwrap_or_else(|| "{name}-{n}".into()),
+                dir,
+            })])
+        }
+        "pdf_impose" => Ok(vec![Step::Native(Native::PdfImpose {
+            input: req(spec, "input")?,
+            output: output_or_beside(spec, kind, Some("pdf"))?,
+            layout: s(spec, "layout").unwrap_or_else(|| "booklet".into()),
+        })]),
+        "pdf_redact" => {
+            let words = split_lines(&req(spec, "words")?);
+            if words.is_empty() {
+                return Err(anyhow!("name at least one word to remove"));
+            }
+            Ok(vec![Step::Native(Native::PdfRedact {
+                input: req(spec, "input")?,
+                output: output_or_beside(spec, kind, Some("pdf"))?,
+                words,
+            })])
+        }
+        "pdf_forms" => Ok(vec![Step::Native(Native::PdfForms {
+            input: req(spec, "input")?,
+            output: output_or_beside(spec, kind, Some("pdf"))?,
+            values: parse_pairs(&req(spec, "values")?),
+            flatten: boolean(spec, "flatten"),
+            size: num(spec, "size").unwrap_or(10.0),
+        })]),
+        "pdf_images" => {
+            let input = req(spec, "input")?;
+            let dir = match s(spec, "output").filter(|x| !x.trim().is_empty()) {
+                Some(d) => d,
+                None => strip_ext(&input),
+            };
+            Ok(vec![Step::Native(Native::PdfImages { input, dir })])
+        }
+        "pdf_text" => Ok(vec![Step::Native(Native::PdfText {
+            input: req(spec, "input")?,
+            output: output_or_beside(spec, kind, Some("txt"))?,
+            ranges: s(spec, "ranges").unwrap_or_default(),
+        })]),
+        "pdf_from_images" => {
+            let inputs = list(spec, "inputs");
+            if inputs.is_empty() {
+                return Err(anyhow!("pick at least one picture"));
+            }
+            let output = req(spec, "output")?;
+            let scratch_dir = parent_of(&output);
+            let mut steps: Vec<Step> = Vec::new();
+            let mut jpegs: Vec<String> = Vec::new();
+            let mut scratch: Vec<String> = Vec::new();
+            for (i, path) in inputs.iter().enumerate() {
+                let already = std::path::Path::new(path)
+                    .extension()
+                    .map(|e| {
+                        let e = e.to_string_lossy().to_lowercase();
+                        e == "jpg" || e == "jpeg"
+                    })
+                    .unwrap_or(false);
+                if already {
+                    jpegs.push(path.clone());
+                    continue;
+                }
+                // A leading dot keeps the temporaries out of the way in the
+                // folder the PDF is being written to.
+                let temp = format!("{}/.tpx-page-{i:03}.jpg", scratch_dir.trim_end_matches('/'));
+                steps.push(Step::Ffmpeg {
+                    args: vec![
+                        "-i".into(),
+                        path.clone(),
+                        "-q:v".into(),
+                        "3".into(),
+                        temp.clone(),
+                    ],
+                    duration_input: None,
+                    duration_s: None,
+                });
+                jpegs.push(temp.clone());
+                scratch.push(temp);
+            }
+            steps.push(Step::Native(Native::PdfFromImages { jpegs, output, scratch }));
+            Ok(steps)
+        }
+        "pdf_compress" => {
+            let input = req(spec, "input")?;
+            let output = output_or_beside(spec, kind, Some("pdf"))?;
+            let quality = s(spec, "quality").unwrap_or_else(|| "ebook".into());
+            Ok(vec![Step::Tool {
+                bin: "gs",
+                args: vec![
+                    "-sDEVICE=pdfwrite".into(),
+                    "-dCompatibilityLevel=1.7".into(),
+                    format!("-dPDFSETTINGS=/{quality}"),
+                    "-dNOPAUSE".into(),
+                    "-dQUIET".into(),
+                    "-dBATCH".into(),
+                    format!("-sOutputFile={output}"),
+                    input,
+                ],
+            }])
+        }
+        "pdf_protect" => {
+            let input = req(spec, "input")?;
+            let output = output_or_beside(spec, kind, Some("pdf"))?;
+            let password = req(spec, "password")?;
+            let args = if s(spec, "mode").as_deref() == Some("unlock") {
+                vec![
+                    format!("--password={password}"),
+                    "--decrypt".into(),
+                    input,
+                    output,
+                ]
+            } else {
+                let mut args = vec![
+                    "--encrypt".into(),
+                    password.clone(),
+                    password,
+                    "256".into(),
+                ];
+                if !boolean(spec, "allow_print") {
+                    args.push("--print=none".into());
+                }
+                args.extend(["--".into(), input, output]);
+                args
+            };
+            Ok(vec![Step::Tool { bin: "qpdf", args }])
+        }
+
+        // ====================================================== subtitles ==
+        "subs_convert" => {
+            let sub = req(spec, "sub")?;
+            let fmt = s(spec, "format").unwrap_or_else(|| "srt".into());
+            let output = match s(spec, "output").filter(|x| !x.trim().is_empty()) {
+                Some(o) => o,
+                None => output_or_beside(&serde_json::json!({ "input": sub }), kind, Some(&fmt))?,
+            };
+            Ok(one(vec!["-i".into(), sub, output], None))
+        }
+        "subs_shift" => {
+            let sub = req(spec, "sub")?;
+            let output = match s(spec, "output").filter(|x| !x.trim().is_empty()) {
+                Some(o) => o,
+                None => output_or_beside(&serde_json::json!({ "input": sub }), kind, Some("srt"))?,
+            };
+            Ok(vec![Step::Native(Native::SubsShift {
+                input: sub,
+                output,
+                by_ms: (num(spec, "by_s").unwrap_or(0.0) * 1000.0).round() as i64,
+                rate: framerate_ratio(s(spec, "rate").as_deref().unwrap_or("none")),
+            })])
+        }
+        "subs_clean" => {
+            let sub = req(spec, "sub")?;
+            let output = match s(spec, "output").filter(|x| !x.trim().is_empty()) {
+                Some(o) => o,
+                None => output_or_beside(&serde_json::json!({ "input": sub }), kind, Some("srt"))?,
+            };
+            Ok(vec![Step::Native(Native::SubsClean {
+                input: sub,
+                output,
+                tidy: crate::subs::Tidy {
+                    strip_tags: boolean(spec, "strip_tags"),
+                    fix_overlaps: boolean(spec, "fix_overlaps"),
+                    drop_empty: boolean(spec, "drop_empty"),
+                    min_ms: num(spec, "min_ms").unwrap_or(0.0).max(0.0) as i64,
+                },
+            })])
+        }
+        "subs_translate" => {
+            let sub = req(spec, "sub")?;
+            let output = match s(spec, "output").filter(|x| !x.trim().is_empty()) {
+                Some(o) => o,
+                None => output_or_beside(&serde_json::json!({ "input": sub }), kind, Some("srt"))?,
+            };
+            Ok(vec![Step::Tool {
+                bin: "argos-translate",
+                args: vec![
+                    "--from-lang".into(),
+                    s(spec, "from").unwrap_or_else(|| "en".into()),
+                    "--to-lang".into(),
+                    s(spec, "to").unwrap_or_else(|| "es".into()),
+                    "-f".into(),
+                    sub,
+                    "-o".into(),
+                    output,
+                ],
+            }])
+        }
         other => Err(anyhow!("unknown tool kind: {other}")),
+    }
+}
+
+fn list(v: &Value, k: &str) -> Vec<String> {
+    v.get(k)
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+fn parent_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| ".".into())
+}
+
+fn strip_ext(path: &str) -> String {
+    match path.rsplit_once('.') {
+        Some((stem, _)) if !stem.is_empty() => stem.to_string(),
+        _ => format!("{path}-out"),
+    }
+}
+
+/// A name for something written beside a folder rather than beside a file.
+fn beside_folder(spec: &Value, dir: &str, what: &str, ext: &str) -> String {
+    if let Some(explicit) = s(spec, "output").filter(|x| !x.trim().is_empty()) {
+        return explicit;
+    }
+    let dir = dir.trim_end_matches('/');
+    let name = std::path::Path::new(dir)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "folder".into());
+    format!("{dir}/{name}-{what}.{ext}")
+}
+
+/// One entry per line, or per comma. Both, because people type both.
+fn split_lines(body: &str) -> Vec<String> {
+    body.lines()
+        .flat_map(|line| line.split(','))
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// `field = value`, one per line. Only the first `=` splits, so a value may
+/// contain one.
+fn parse_pairs(body: &str) -> Vec<(String, String)> {
+    body.lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .filter(|(k, _)| !k.is_empty())
+        .collect()
+}
+
+/// The stretch factor for a subtitle written against one frame rate and played
+/// at another. Named in the form rather than typed, because the four that
+/// matter are the four that keep happening.
+fn framerate_ratio(choice: &str) -> f64 {
+    match choice {
+        "25 to 23.976" => 23.976 / 25.0,
+        "23.976 to 25" => 25.0 / 23.976,
+        "30 to 29.97" => 29.97 / 30.0,
+        "29.97 to 30" => 30.0 / 29.97,
+        _ => 1.0,
     }
 }
 
@@ -1022,6 +1720,213 @@ mod tests {
             tool_argv("subs_sync", json!({"input":"/v/film.mkv","sub":"/v/dutch.srt"}));
         assert_eq!(bin, "ffsubsync");
         assert_eq!(args, vec!["/v/film.mkv", "-i", "/v/dutch.srt", "-o", "/v/dutch-subs-sync.srt"]);
+    }
+
+    // ------------------------------------------------------- the new eighty --
+
+    fn args_of(kind: &str, spec: Value) -> Vec<String> {
+        match plan(kind, &spec).unwrap().remove(0) {
+            Step::Ffmpeg { args, .. } => args,
+            other => panic!("expected ffmpeg, got {other:?}"),
+        }
+    }
+
+    fn native_of(kind: &str, spec: Value) -> Native {
+        match plan(kind, &spec).unwrap().remove(0) {
+            Step::Native(n) => n,
+            other => panic!("expected a native op, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encrypting_and_decrypting_name_each_other_s_output() {
+        let Native::Crypt { output, decrypt, .. } =
+            native_of("encrypt", json!({"input":"/v/tax.pdf","passphrase":"x"}))
+        else {
+            panic!("expected Crypt")
+        };
+        assert!(!decrypt);
+        assert_eq!(output, "/v/tax.pdf.age");
+
+        let Native::Crypt { output, decrypt, .. } = native_of(
+            "encrypt",
+            json!({"input":"/v/tax.pdf.age","mode":"decrypt","passphrase":"x"}),
+        ) else {
+            panic!("expected Crypt")
+        };
+        assert!(decrypt);
+        assert_eq!(output, "/v/tax.pdf");
+    }
+
+    #[test]
+    fn a_listing_is_named_after_the_folder_rather_than_a_file() {
+        let Native::FileList { output, .. } = native_of("file_list", json!({"dir":"/home/a/Photos"}))
+        else {
+            panic!("expected FileList")
+        };
+        assert_eq!(output, "/home/a/Photos/Photos-listing.csv");
+    }
+
+    #[test]
+    fn speed_moves_the_picture_and_the_sound_by_the_same_amount() {
+        let args = args_of("speed", json!({"input":"/v/a.mp4","rate":4,"keep_pitch":true}));
+        let graph = args.iter().find(|a| a.contains("setpts")).expect("a filter graph");
+        assert!(graph.contains("setpts=0.250000*PTS"));
+        // 4x is out of atempo's range and has to be a chain.
+        assert!(graph.contains("atempo=2.0,atempo=2.0000"));
+
+        // Pitch off is a resample, not a tempo change.
+        let args = args_of("speed", json!({"input":"/v/a.mp4","rate":2,"keep_pitch":false}));
+        assert!(args.iter().any(|a| a.contains("asetrate=96000")));
+    }
+
+    #[test]
+    fn a_gif_builds_its_palette_from_the_clip_it_is_making() {
+        let steps = plan("gif", &json!({"input":"/v/a.mp4","start_s":3,"seconds":4})).unwrap();
+        let Step::Ffmpeg { args, duration_s, .. } = &steps[0] else { panic!() };
+        // The progress bar is the clip's length, not the film's.
+        assert_eq!(*duration_s, Some(4.0));
+        let graph = args.iter().find(|a| a.contains("palettegen")).expect("a palette");
+        assert!(graph.contains("paletteuse"));
+        // -ss before -i, so ffmpeg seeks instead of decoding up to the point.
+        assert_eq!(args[0], "-ss");
+        assert!(args.iter().position(|a| a == "-ss") < args.iter().position(|a| a == "-i"));
+    }
+
+    #[test]
+    fn a_blank_tag_leaves_the_one_the_file_already_has() {
+        let args = args_of("tags", json!({"input":"/m/a.mp3","title":"Blue","artist":"  "}));
+        assert!(args.windows(2).any(|w| w == ["-metadata", "title=Blue"]));
+        assert!(!args.iter().any(|a| a.starts_with("artist=")));
+        // No cover picked, so nothing is mapped and the stream is copied.
+        assert!(args.windows(2).any(|w| w == ["-c", "copy"]));
+    }
+
+    #[test]
+    fn a_cover_image_is_attached_rather_than_encoded_as_video() {
+        let args = args_of("tags", json!({"input":"/m/a.mp3","cover":"/m/art.jpg"}));
+        assert!(args.windows(2).any(|w| w == ["-disposition:v:0", "attached_pic"]));
+        assert!(args.windows(2).any(|w| w == ["-map", "1:v"]));
+    }
+
+    #[test]
+    fn replacing_a_soundtrack_copies_the_picture_through() {
+        let args = args_of(
+            "replace_audio",
+            json!({"input":"/v/a.mp4","audio":"/m/b.wav","offset_s":-1.5,"shortest":true}),
+        );
+        assert!(args.windows(2).any(|w| w == ["-c:v", "copy"]));
+        // -itsoffset applies to the input that follows it, so it must sit
+        // between the two -i flags rather than at the front.
+        let offset = args.iter().position(|a| a == "-itsoffset").unwrap();
+        let first_i = args.iter().position(|a| a == "-i").unwrap();
+        assert!(offset > first_i);
+        assert_eq!(args[offset + 1], "-1.5");
+        assert!(args.iter().any(|a| a == "-shortest"));
+    }
+
+    #[test]
+    fn a_collage_gives_every_picture_the_same_cell() {
+        let args = args_of(
+            "collage",
+            json!({"inputs":["/p/1.jpg","/p/2.jpg","/p/3.jpg"],"cols":2,"cell":300}),
+        );
+        // Three pictures, three -i flags.
+        assert_eq!(args.iter().filter(|a| *a == "-i").count(), 3);
+        let graph = args.iter().find(|a| a.contains("tile=")).expect("a grid");
+        // Two columns and three pictures is two rows, not one.
+        assert!(graph.contains("tile=2x2"));
+        assert_eq!(graph.matches("scale=300:300").count(), 3);
+    }
+
+    #[test]
+    fn the_icon_set_is_one_scale_per_size_and_then_the_container() {
+        let steps = plan("favicon", &json!({"input":"/p/logo.png","name":"site"})).unwrap();
+        assert_eq!(steps.len(), crate::icons::SIZES.len() + 1);
+        let Step::Native(Native::IconSet { output, stem, dir }) = steps.last().unwrap() else {
+            panic!("the last step builds the .ico")
+        };
+        assert_eq!(stem, "site");
+        assert_eq!(dir, "/p");
+        assert_eq!(output, "/p/site.ico");
+        // Every ffmpeg step scales from the original rather than from the one
+        // before it.
+        for step in &steps[..steps.len() - 1] {
+            let Step::Ffmpeg { args, .. } = step else { panic!() };
+            assert_eq!(args[1], "/p/logo.png");
+        }
+    }
+
+    #[test]
+    fn pictures_that_are_already_jpegs_are_not_converted_again() {
+        let steps = plan(
+            "pdf_from_images",
+            &json!({"inputs":["/p/a.jpg","/p/b.png"],"output":"/p/out.pdf"}),
+        )
+        .unwrap();
+        // One conversion, for the PNG only, plus the assembly.
+        assert_eq!(steps.len(), 2);
+        let Step::Native(Native::PdfFromImages { jpegs, scratch, .. }) = steps.last().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(jpegs.len(), 2);
+        assert_eq!(jpegs[0], "/p/a.jpg");
+        // Only the temporary is cleaned up — deleting the user's own JPEG
+        // would be the worst bug in the section.
+        assert_eq!(scratch.len(), 1);
+        assert!(scratch[0].ends_with(".jpg"));
+        assert!(!scratch.contains(&"/p/a.jpg".to_string()));
+    }
+
+    #[test]
+    fn qpdf_is_given_both_passwords_and_a_terminator() {
+        let Step::Tool { bin, args } =
+            plan("pdf_protect", &json!({"input":"/d/a.pdf","password":"hunter2"}))
+                .unwrap()
+                .remove(0)
+        else {
+            panic!("expected qpdf")
+        };
+        assert_eq!(bin, "qpdf");
+        // User password, owner password, key length — then `--` so a filename
+        // starting with a dash is not read as a flag.
+        assert_eq!(&args[..4], ["--encrypt", "hunter2", "hunter2", "256"]);
+        assert!(args.iter().any(|a| a == "--"));
+        assert_eq!(args.last().unwrap(), "/d/a-pdf-protect.pdf");
+    }
+
+    #[test]
+    fn a_framerate_fix_is_a_ratio_and_none_is_exactly_one() {
+        let Native::SubsShift { rate, by_ms, .. } = native_of(
+            "subs_shift",
+            json!({"sub":"/v/a.srt","by_s":-2.5,"rate":"25 to 23.976"}),
+        ) else {
+            panic!()
+        };
+        assert_eq!(by_ms, -2500);
+        assert!((rate - 0.95904).abs() < 0.0001);
+
+        let Native::SubsShift { rate, .. } =
+            native_of("subs_shift", json!({"sub":"/v/a.srt","by_s":0,"rate":"none"}))
+        else {
+            panic!()
+        };
+        assert_eq!(rate, 1.0);
+    }
+
+    #[test]
+    fn form_values_split_on_the_first_equals_only() {
+        let pairs = parse_pairs("name = Ada Lovelace\nnote = a = b\n\nbad line\n");
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], ("name".into(), "Ada Lovelace".into()));
+        assert_eq!(pairs[1], ("note".into(), "a = b".into()));
+    }
+
+    #[test]
+    fn redaction_words_come_off_lines_or_commas() {
+        assert_eq!(split_lines("Ada, Grace\nHopper\n"), ["Ada", "Grace", "Hopper"]);
+        assert!(plan("pdf_redact", &json!({"input":"/d/a.pdf","words":"  "})).is_err());
     }
 
     // ------------------------------------------------------ catalogue ↔ plan --

@@ -111,6 +111,51 @@ const Map<String, IconData> _opIcons = {
   'ebook_convert': Icons.menu_book_outlined,
   'stems': Icons.graphic_eq,
   'subs_sync': Icons.av_timer,
+  // File ops
+  'encrypt': Icons.lock_outline,
+  'dedupe': Icons.copy_all,
+  'sort_files': Icons.sort,
+  'empty_dirs': Icons.delete_sweep,
+  'file_list': Icons.list_alt,
+  // Convert
+  'data_convert': Icons.table_chart,
+  // Video
+  'speed': Icons.speed,
+  'gif': Icons.gif,
+  'fade': Icons.gradient,
+  // Audio
+  'tags': Icons.label_outline,
+  'silence_trim': Icons.volume_off,
+  'audio_speed': Icons.fast_forward,
+  'replace_audio': Icons.swap_vert,
+  // Photo
+  'strip_meta': Icons.privacy_tip,
+  'border': Icons.crop_din,
+  'collage': Icons.grid_on,
+  'adjust': Icons.tune,
+  'recolour': Icons.filter_b_and_w,
+  'sharpen': Icons.details,
+  'censor': Icons.blur_circular,
+  'favicon': Icons.star_outline,
+  'remove_bg': Icons.auto_fix_high,
+  'upscale': Icons.zoom_out_map,
+  'photo_batch': Icons.photo_library,
+  // PDF
+  'pdf_merge': Icons.merge_type,
+  'pdf_split': Icons.splitscreen,
+  'pdf_impose': Icons.import_contacts,
+  'pdf_redact': Icons.password,
+  'pdf_forms': Icons.edit_note,
+  'pdf_images': Icons.image_search,
+  'pdf_text': Icons.text_snippet,
+  'pdf_from_images': Icons.picture_as_pdf_outlined,
+  'pdf_compress': Icons.compress,
+  'pdf_protect': Icons.enhanced_encryption,
+  // Subtitles
+  'subs_convert': Icons.translate,
+  'subs_shift': Icons.schedule,
+  'subs_clean': Icons.cleaning_services_outlined,
+  'subs_translate': Icons.g_translate,
 };
 
 IconData opIcon(String kind, String category) =>

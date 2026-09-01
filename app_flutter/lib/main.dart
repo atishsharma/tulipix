@@ -190,7 +190,7 @@ class _TulipixAppState extends State<TulipixApp> {
                               const MusicPage(),
                               const BooksPage(),
                               const CloudPage(),
-                              const ToolsPage(),
+                              ToolsPage(visible: at == Section.tools),
                               TransferPage(visible: at == Section.transfer),
                               const FinancesPage(),
                               SettingsPage(visible: at == Section.settings),

@@ -20,7 +20,17 @@ const double _formWidth = 400;
 const double _drawerWidth = 378;
 
 class ToolsPage extends StatefulWidget {
-  const ToolsPage({super.key});
+  const ToolsPage({super.key, required this.visible});
+
+  /// Whether Tools is the section on screen.
+  ///
+  /// `IndexedStack` builds all ten pages at launch and keeps them, so without
+  /// this the first thing a cold app does is open `tools.db`, start the job
+  /// worker, sweep the preview cache and stat every binary the catalogue names
+  /// — for a section nobody has clicked. Nothing here touches the bridge until
+  /// Tools is opened for the first time; after that the state stays, because
+  /// the queue is the same queue whether or not you are looking at it.
+  final bool visible;
 
   @override
   State<ToolsPage> createState() => _ToolsPageState();
@@ -33,7 +43,15 @@ class _ToolsPageState extends State<ToolsPage> {
   @override
   void initState() {
     super.initState();
-    _c.refresh();
+    if (widget.visible) _c.refresh();
+  }
+
+  @override
+  void didUpdateWidget(ToolsPage old) {
+    super.didUpdateWidget(old);
+    // First open only. `refresh` is idempotent, but re-running it on every
+    // return to the section would throw away an open tool's form.
+    if (widget.visible && !old.visible && _c.state == null) _c.refresh();
   }
 
   @override
@@ -308,7 +326,7 @@ class _Tab extends StatelessWidget {
   }
 }
 
-/// The operations in the open category, as square tiles five to a row.
+/// The operations in the open category, five to a row.
 class _OpGrid extends StatelessWidget {
   const _OpGrid({required this.controller, required this.state});
 
@@ -372,6 +390,10 @@ class _OpGrid extends StatelessWidget {
                   crossAxisCount: columns,
                   crossAxisSpacing: 12,
                   mainAxisSpacing: 12,
+                  // Twice as wide as it is tall: the same five columns, at half
+                  // the height the squares used. A tool tile is an icon and two
+                  // short lines, and the square spent the rest on air.
+                  childAspectRatio: 2,
                 ),
                 itemCount: state.ops.length,
                 itemBuilder: (_, i) => _OpCard(
@@ -409,6 +431,9 @@ class _OpCardState extends State<_OpCard> {
     // missing tool look like a missing feature.
     final off = widget.op.missing.isNotEmpty;
     final tint = off ? t.nInk3 : tintFor(widget.op.category);
+    // What the tile has room for under the name is one line. A missing binary
+    // is the more useful of the two things it could say.
+    final under = off ? 'Needs ${widget.op.missing}' : widget.op.info;
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hover = true),
@@ -417,69 +442,51 @@ class _OpCardState extends State<_OpCard> {
         onTap: widget.onTap,
         child: AnimatedContainer(
           duration: Duration(milliseconds: t.reduceMotion ? 0 : 130),
-          padding: const EdgeInsets.all(13),
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 9),
           decoration: BoxDecoration(
             color: _hover ? tint.withValues(alpha: 0.09) : t.nCard,
             borderRadius: BorderRadius.circular(13),
             border: Border.all(color: _hover ? tint : t.nHair),
           ),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  color: tint.withValues(alpha: 0.16),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(
-                  opIcon(widget.op.kind, widget.op.category),
-                  size: 18,
-                  color: tint,
+              // The icon carries the tile — it is what the eye lands on when
+              // fifteen of these are on screen, so it gets the space the old
+              // square wasted below it.
+              Expanded(
+                child: Center(
+                  child: Icon(
+                    opIcon(widget.op.kind, widget.op.category),
+                    size: 30,
+                    color: tint,
+                  ),
                 ),
               ),
-              const Spacer(),
+              const SizedBox(height: 4),
               Text(
                 widget.op.label,
-                maxLines: 2,
+                maxLines: 1,
+                textAlign: TextAlign.center,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                    fontSize: 13,
-                    height: 1.25,
+                    fontSize: 12.5,
+                    height: 1.2,
                     fontWeight: FontWeight.w700,
                     color: off ? t.nInk3 : t.nInk),
               ),
-              if (off) ...[
-                const SizedBox(height: 5),
-                Row(
-                  children: [
-                    Icon(Icons.block,
-                        size: 11, color: t.nInk3),
-                    const SizedBox(width: 4),
-                    Flexible(
-                      child: Text(
-                        'Needs ${widget.op.missing}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 10.5,
-                            height: 1.35,
-                            fontWeight: FontWeight.w600,
-                            color: t.nInk3),
-                      ),
-                    ),
-                  ],
-                ),
-              ] else if (widget.op.info.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Flexible(
-                  child: Text(
-                    widget.op.info,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: 10.5, height: 1.35, color: t.nInk3),
+              if (under.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text(
+                  under,
+                  maxLines: 1,
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    height: 1.2,
+                    fontWeight: off ? FontWeight.w600 : FontWeight.w400,
+                    color: t.nInk3,
                   ),
                 ),
               ],
@@ -545,19 +552,23 @@ class _ToolchainButton extends StatelessWidget {
                             ? s.detail
                             : '${s.detail} · ${s.version}',
                       ),
+                      // Buttons first, the source word last: the word is the
+                      // status, and a status reads better at the end of the
+                      // row than wedged between the name and the action.
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          if (s.updatable && s.available)
+                            _UpdateToolButton(
+                                controller: controller, name: s.name),
+                          if (!s.available && s.install.isNotEmpty)
+                            _InstallToolButton(controller: controller, tool: s),
+                          const SizedBox(width: 8),
                           Text(
                             s.source,
                             style: TextStyle(
                                 fontSize: 11, color: context.tokens.nInk2),
                           ),
-                          if (s.updatable && s.available) ...[
-                            const SizedBox(width: 8),
-                            _UpdateToolButton(
-                                controller: controller, name: s.name),
-                          ],
                         ],
                       ),
                     ),
@@ -613,11 +624,35 @@ class _DownloadsButton extends StatelessWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.delete_outline, size: 18),
-                              tooltip: 'Delete the file',
-                              onPressed: () => controller.send(
-                                  ToolsCmd.removeDownload(path: rows[i].path)),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.play_arrow, size: 19),
+                                  tooltip: 'Play it here',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () => controller.send(
+                                      ToolsCmd.playDownload(
+                                          path: rows[i].path)),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.folder_open, size: 18),
+                                  tooltip: 'Show it in the file manager',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () => controller.send(
+                                      ToolsCmd.openDownload(
+                                          path: rows[i].path)),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline,
+                                      size: 18),
+                                  tooltip: 'Delete the file',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () => controller.send(
+                                      ToolsCmd.removeDownload(
+                                          path: rows[i].path)),
+                                ),
+                              ],
                             ),
                           ),
                         ),
@@ -719,6 +754,92 @@ class _UpdateToolButtonState extends State<_UpdateToolButton> {
     return TextButton(
       onPressed: _run,
       child: const Text('Update', style: TextStyle(fontSize: 11.5)),
+    );
+  }
+}
+
+/// "Install" beside a tool that is missing and can be had without leaving the
+/// app: the four Python ones go into the user's own home directory, no root.
+///
+/// The two that are whole applications — pandoc and Calibre — get "Get"
+/// instead, which opens their download page. Driving somebody else's installer
+/// unattended is how an app gets blamed for a broken machine.
+class _InstallToolButton extends StatefulWidget {
+  const _InstallToolButton({required this.controller, required this.tool});
+
+  final ToolsController controller;
+  final ToolStatus tool;
+
+  @override
+  State<_InstallToolButton> createState() => _InstallToolButtonState();
+}
+
+class _InstallToolButtonState extends State<_InstallToolButton> {
+  bool _busy = false;
+
+  bool get _isWeb => widget.tool.install.startsWith('web:');
+
+  /// The one that is a gigabyte of PyTorch rather than a few megabytes. Saying
+  /// so before the download starts is cheaper than explaining it afterwards.
+  bool get _isLarge => widget.tool.name == 'demucs';
+
+  Future<void> _run() async {
+    if (!_isWeb && _isLarge) {
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('Install ${widget.tool.name}?'),
+          content: const Text(
+            'demucs brings PyTorch with it — around a gigabyte, and a few '
+            'minutes on a fast connection. It installs into your home folder; '
+            'nothing else on the machine is touched.',
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Not now')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Install')),
+          ],
+        ),
+      );
+      if (go != true) return;
+    }
+    setState(() => _busy = true);
+    await widget.controller.send(ToolsCmd.installTool(name: widget.tool.name));
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (_isWeb) return;
+    final err = widget.controller.state?.error ?? '';
+    final done = widget.controller.state?.statuses
+            .firstWhere((x) => x.name == widget.tool.name,
+                orElse: () => widget.tool)
+            .available ??
+        false;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(err.isNotEmpty
+          ? err
+          : done
+              ? '${widget.tool.name} is ready'
+              : '${widget.tool.name} installed — it may need a new session '
+                  'before the app can see it'),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_busy) {
+      return const SizedBox(
+        width: 18,
+        height: 18,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+    return TextButton(
+      onPressed: _run,
+      child: Text(_isWeb ? 'Get' : 'Install',
+          style: const TextStyle(fontSize: 11.5)),
     );
   }
 }
