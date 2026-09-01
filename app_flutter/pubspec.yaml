@@ -33,6 +33,10 @@ dependencies:
   # open three of these through `rfd` and its xdg-portal backend; every other
   # path in the app was typed. See lib/design/pick.dart.
   file_selector: ^1.1.0
+  # The other half of "a path is chosen, never typed": dropping a file onto a
+  # Tools field fills it. Flutter has no built-in desktop file drop, and this
+  # is the small, plugin-only way to get it — GTK drag-dest on Linux.
+  desktop_drop: ^0.8.3
 
 dev_dependencies:
   flutter_test:

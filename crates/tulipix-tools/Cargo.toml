@@ -12,6 +12,13 @@ serde_json.workspace = true
 # tokio appears only as #[tokio::test]; the dev-dependency covers that.
 sqlx.workspace = true
 sha2.workspace = true
+# Already resolved in both lockfiles via tulipix-books and tulipix-finances, at
+# this exact version and these features — so the PDF operations add a use, not
+# a dependency.
+lopdf = { version = "0.44", default-features = false }
+# Same story as lopdf: this exact version and feature set is already in both
+# lockfiles, because Books reads EPUB and CBZ with it.
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 tulipix-core = { path = "../tulipix-core" }
 
 [dev-dependencies]

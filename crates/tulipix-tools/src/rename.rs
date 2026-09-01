@@ -6,7 +6,7 @@
 //! collisions before anything touches disk.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Expand a pattern for one file. `tags` supplies `{tag}` values; `seq` feeds
 /// `{n}` / `{n:0W}`. Unknown tags expand to empty. Extension is appended from
@@ -53,6 +53,24 @@ fn sanitize(s: &str) -> String {
 pub struct Preview {
     pub renames: Vec<(String, String)>, // (old_path, new_name)
     pub collisions: Vec<String>,        // new names produced more than once
+}
+
+/// The files a rename operates on: every file directly in `dir`, sorted by
+/// path, each carrying its own stem as the `{name}` tag.
+///
+/// Both the preview and the run call this. They used to read the directory
+/// each their own way, which is the difference that makes a preview show
+/// `shot_01` where the run writes `shot_02`.
+pub fn scan(dir: &str) -> std::io::Result<Vec<(String, HashMap<String, String>)>> {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_file()).collect();
+    paths.sort();
+    Ok(paths.iter().map(|p| {
+        let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let mut tags = HashMap::new();
+        tags.insert("name".to_string(), stem);
+        (p.to_string_lossy().to_string(), tags)
+    }).collect())
 }
 
 /// Dry-run a batch. `files`: `(path, tags)`. Sequence starts at `start`.

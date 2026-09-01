@@ -1,8 +1,9 @@
-// The queue, and the console under it.
+// The queue drawer, and the status rail under the whole section.
 //
-// Both are always on screen. The whole reason the section is a queue and not a
-// series of modal progress bars is that you should be able to start a
-// two-hour transcode and go and do something else.
+// The queue slides in when you press Run and otherwise stays out of the way.
+// The whole reason the section is a queue and not a series of modal progress
+// bars is that you should be able to start a two-hour transcode and go and do
+// something else — which also means you should not have to look at it.
 
 import 'package:flutter/material.dart';
 
@@ -41,6 +42,12 @@ class QueuePanel extends StatelessWidget {
                 tooltip: 'Clear finished',
                 icon: const Icon(Icons.clear_all),
                 onPressed: () => controller.send(const ToolsCmd.clearQueue()),
+              ),
+              IconButton(
+                iconSize: 17,
+                tooltip: 'Hide the queue',
+                icon: const Icon(Icons.close),
+                onPressed: () => controller.setDrawer(false),
               ),
             ],
           ),
@@ -225,8 +232,9 @@ class _JobMenu extends StatelessWidget {
   }
 }
 
-/// The live output of whatever is running. Collapsed by default: it is the
-/// thing you want only when something has gone wrong.
+/// The bottom rail: one line saying whether anything is running, and the
+/// console folded up behind it. Collapsed by default — it is the thing you
+/// want only when something has gone wrong.
 class ConsoleStrip extends StatefulWidget {
   const ConsoleStrip({
     super.key,
@@ -269,31 +277,39 @@ class _ConsoleStripState extends State<ConsoleStrip> {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final log = widget.state.log;
+    final running =
+        widget.state.jobs.any((j) => j.state == 'running');
+    final tail = _lastLine(log);
     return Container(
       decoration: BoxDecoration(
-        color: t.panel,
+        color: t.nCard,
         border: Border(top: BorderSide(color: t.nHair)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          InkWell(
-            onTap: () => setState(() => _open = !_open),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-              child: Row(
-                children: [
-                  Icon(_open ? Icons.expand_more : Icons.expand_less, size: 18),
-                  const SizedBox(width: 8),
-                  Text('Console',
-                      style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: t.nInk)),
-                  const SizedBox(width: 10),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 10, 6),
+            child: Row(
+              children: [
+                Container(
+                  width: 6,
+                  height: 6,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: running ? const Color(0xFF2FBF71) : t.nInk3,
+                  ),
+                ),
+                const SizedBox(width: 9),
+                Text(
+                  widget.state.queueStatus,
+                  style: TextStyle(fontSize: 11, color: t.nInk2),
+                ),
+                if (tail.isNotEmpty) ...[
+                  const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      _open ? '' : _lastLine(log),
+                      tail,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -302,26 +318,30 @@ class _ConsoleStripState extends State<ConsoleStrip> {
                           color: t.nInk3),
                     ),
                   ),
-                  if (_open)
-                    IconButton(
-                      iconSize: 15,
-                      icon: const Icon(Icons.delete_outline),
-                      tooltip: 'Clear',
-                      onPressed: () =>
-                          widget.controller.send(const ToolsCmd.clearLog()),
-                    ),
-                ],
-              ),
+                ] else
+                  const Spacer(),
+                TextButton(
+                  onPressed: () => setState(() => _open = !_open),
+                  child: Text(_open ? 'Hide console' : 'Console',
+                      style: const TextStyle(fontSize: 11)),
+                ),
+                TextButton(
+                  onPressed: () =>
+                      widget.controller.send(const ToolsCmd.clearLog()),
+                  child: const Text('Clear',
+                      style: TextStyle(fontSize: 11)),
+                ),
+              ],
             ),
           ),
           if (_open)
             Container(
-              height: 180,
+              height: 150,
               width: double.infinity,
               color: t.nCanvas,
               child: SingleChildScrollView(
                 controller: _scroll,
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
                 child: SelectableText(
                   log.isEmpty ? 'Nothing has run yet.' : log,
                   style: TextStyle(

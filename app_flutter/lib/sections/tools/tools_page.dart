@@ -1,8 +1,9 @@
-// The Tools shell: pick a category, pick an operation, fill its form, watch it
-// run.
+// The Tools shell: pick a category, pick an operation, fill its form, watch
+// what it is about to do, then queue it.
 //
-// The queue is always visible on the right, because the point of the section is
-// that you can start something long and go do something else.
+// The queue used to sit in the layout permanently. It is a drawer now — the
+// right-hand half of an open tool belongs to its preview, and a queue you are
+// not watching does not need a third of the window.
 
 import 'package:flutter/material.dart';
 
@@ -11,7 +12,12 @@ import '../../design/tokens.dart';
 import '../../src/rust/api/tools.dart';
 import 'tools_controller.dart';
 import 'tools_form.dart';
+import 'tools_preview.dart';
 import 'tools_queue.dart';
+
+/// Wide enough for the form and a preview worth looking at.
+const double _formWidth = 400;
+const double _drawerWidth = 378;
 
 class ToolsPage extends StatefulWidget {
   const ToolsPage({super.key});
@@ -53,22 +59,12 @@ class _ToolsPageState extends State<ToolsPage> {
               Expanded(
                 child: st == null
                     ? FirstLoad(error: _c.error, onRetry: _c.refresh)
-                    : Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                    : Stack(
                         children: [
-                          Expanded(
-                            flex: 3,
-                            child: st.resultOpen
-                                ? ResultPanel(controller: _c, state: st)
-                                : (st.activeOp.isEmpty
-                                    ? _OpGrid(controller: _c, state: st)
-                                    : ToolForm(controller: _c, state: st)),
+                          Positioned.fill(
+                            child: _Work(controller: _c, state: st),
                           ),
-                          Container(width: 1, color: t.nHair),
-                          SizedBox(
-                            width: 380,
-                            child: QueuePanel(controller: _c, state: st),
-                          ),
+                          _QueueDrawer(controller: _c, state: st),
                         ],
                       ),
               ),
@@ -77,6 +73,73 @@ class _ToolsPageState extends State<ToolsPage> {
           ),
         );
       },
+    );
+  }
+}
+
+/// Catalogue, or the open tool split into form and preview.
+class _Work extends StatelessWidget {
+  const _Work({required this.controller, required this.state});
+
+  final ToolsController controller;
+  final ToolsState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    if (state.resultOpen) {
+      return ResultPanel(controller: controller, state: state);
+    }
+    if (state.activeOp.isEmpty) {
+      return _OpGrid(controller: controller, state: state);
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          width: _formWidth,
+          child: ToolForm(controller: controller, state: state),
+        ),
+        Container(width: 1, color: t.nHair),
+        Expanded(child: PreviewPane(controller: controller, state: state)),
+      ],
+    );
+  }
+}
+
+/// The queue, off to the side until it has something to say.
+class _QueueDrawer extends StatelessWidget {
+  const _QueueDrawer({required this.controller, required this.state});
+
+  final ToolsController controller;
+  final ToolsState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final open = controller.drawerOpen;
+    return AnimatedPositioned(
+      duration: Duration(milliseconds: t.reduceMotion ? 0 : 240),
+      curve: Curves.easeOutCubic,
+      top: 0,
+      bottom: 0,
+      right: open ? 0 : -_drawerWidth,
+      width: _drawerWidth,
+      // Off-screen it is still in the tree, so it must not eat clicks meant
+      // for the preview under it.
+      child: IgnorePointer(
+        ignoring: !open,
+        child: Material(
+          color: t.panel,
+          elevation: open ? 8 : 0,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              border: Border(left: BorderSide(color: t.nHair)),
+            ),
+            child: QueuePanel(controller: controller, state: state),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -110,9 +173,8 @@ class _Header extends StatelessWidget {
                       fontWeight: FontWeight.w800,
                       color: t.nInk)),
               const SizedBox(width: 14),
-              if (st != null)
-                Text(st.queueStatus,
-                    style: TextStyle(fontSize: 12, color: t.nInk2)),
+              if (st != null && st.jobs.isNotEmpty)
+                _QueuePill(controller: controller, state: st),
               const Spacer(),
               SizedBox(
                 width: 280,
@@ -150,6 +212,55 @@ class _Header extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// The only trace of the queue in the chrome, and only once there is one.
+class _QueuePill extends StatelessWidget {
+  const _QueuePill({required this.controller, required this.state});
+
+  final ToolsController controller;
+  final ToolsState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final running = state.jobs.where((j) => j.state == 'running').length;
+    final open = controller.drawerOpen;
+    return Material(
+      color: Tokens.secTools.withValues(alpha: open ? 0.22 : 0.12),
+      borderRadius: BorderRadius.circular(999),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: () => controller.setDrawer(!open),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (running > 0)
+                const SizedBox(
+                  width: 10,
+                  height: 10,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Tokens.secTools),
+                )
+              else
+                const Icon(Icons.list_alt, size: 13, color: Tokens.secTools),
+              const SizedBox(width: 7),
+              Text(
+                state.queueStatus == 'Idle'
+                    ? '${state.jobs.length} in queue'
+                    : state.queueStatus,
+                style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    color: Tokens.secTools),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -197,7 +308,7 @@ class _Tab extends StatelessWidget {
   }
 }
 
-/// The operations in the open category, as cards.
+/// The operations in the open category, as square tiles five to a row.
 class _OpGrid extends StatelessWidget {
   const _OpGrid({required this.controller, required this.state});
 
@@ -209,23 +320,69 @@ class _OpGrid extends StatelessWidget {
     final t = context.tokens;
     if (state.ops.isEmpty) {
       return Center(
-        child: Text('Nothing here.',
-            style: TextStyle(fontSize: 13, color: t.nInk2)),
+        child: Text(
+          state.query.isEmpty
+              ? 'Nothing here.'
+              : 'No tool matches “${state.query}”.',
+          style: TextStyle(fontSize: 13, color: t.nInk2),
+        ),
       );
     }
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Wrap(
-        spacing: 14,
-        runSpacing: 14,
-        children: [
-          for (final op in state.ops)
-            _OpCard(
-              op: op,
-              onTap: () => controller.send(ToolsCmd.openTool(kind: op.kind)),
-            ),
-        ],
-      ),
+    final heading = state.query.isEmpty
+        ? toolTabs
+            .firstWhere((x) => x.id == state.category,
+                orElse: () => toolTabs.first)
+            .label
+        : 'Results';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(heading,
+                  style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: t.nInk)),
+              const SizedBox(width: 10),
+              Text(
+                '${state.ops.length} tool${state.ops.length == 1 ? '' : 's'}',
+                style: TextStyle(fontSize: 11.5, color: t.nInk3),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, box) {
+              // Five to a row is the shape; below that the squares would be
+              // postage stamps, so narrow windows drop columns instead.
+              final columns = box.maxWidth >= 720
+                  ? 5
+                  : box.maxWidth >= 520
+                      ? 4
+                      : 3;
+              return GridView.builder(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 26),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: columns,
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
+                ),
+                itemCount: state.ops.length,
+                itemBuilder: (_, i) => _OpCard(
+                  op: state.ops[i],
+                  onTap: () => controller.openTool(state.ops[i].kind),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }
@@ -246,7 +403,12 @@ class _OpCardState extends State<_OpCard> {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final tint = tintFor(widget.op.category);
+    // A tool whose binary is not installed keeps its place in the grid and
+    // loses its colour. It stays tappable: the form and the preview are where
+    // the reason is spelled out, and hiding the tile would only make the
+    // missing tool look like a missing feature.
+    final off = widget.op.missing.isNotEmpty;
+    final tint = off ? t.nInk3 : tintFor(widget.op.category);
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hover = true),
@@ -254,45 +416,71 @@ class _OpCardState extends State<_OpCard> {
       child: GestureDetector(
         onTap: widget.onTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 130),
-          width: 260,
-          padding: const EdgeInsets.all(16),
+          duration: Duration(milliseconds: t.reduceMotion ? 0 : 130),
+          padding: const EdgeInsets.all(13),
           decoration: BoxDecoration(
-            color: _hover ? tint.withValues(alpha: 0.10) : t.nCard,
-            borderRadius: BorderRadius.circular(12),
+            color: _hover ? tint.withValues(alpha: 0.09) : t.nCard,
+            borderRadius: BorderRadius.circular(13),
             border: Border.all(color: _hover ? tint : t.nHair),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
             children: [
-              Row(
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration:
-                        BoxDecoration(color: tint, shape: BoxShape.circle),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      widget.op.label,
-                      style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: t.nInk),
-                    ),
-                  ),
-                ],
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: tint.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  opIcon(widget.op.kind, widget.op.category),
+                  size: 18,
+                  color: tint,
+                ),
               ),
-              if (widget.op.info.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text(
-                  widget.op.info,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 11.5, height: 1.4, color: t.nInk2),
+              const Spacer(),
+              Text(
+                widget.op.label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 13,
+                    height: 1.25,
+                    fontWeight: FontWeight.w700,
+                    color: off ? t.nInk3 : t.nInk),
+              ),
+              if (off) ...[
+                const SizedBox(height: 5),
+                Row(
+                  children: [
+                    Icon(Icons.block,
+                        size: 11, color: t.nInk3),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        'Needs ${widget.op.missing}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 10.5,
+                            height: 1.35,
+                            fontWeight: FontWeight.w600,
+                            color: t.nInk3),
+                      ),
+                    ),
+                  ],
+                ),
+              ] else if (widget.op.info.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Flexible(
+                  child: Text(
+                    widget.op.info,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 10.5, height: 1.35, color: t.nInk3),
+                  ),
                 ),
               ],
             ],

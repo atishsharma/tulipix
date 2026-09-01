@@ -18,7 +18,9 @@ use serde_json::{Value, json};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tokio::process::Command;
 
+use tulipix_tools::catalog;
 use tulipix_tools::exec::{self, Native, Step};
+use tulipix_tools::preview;
 use tulipix_tools::queue;
 
 use crate::db::tools_pool;
@@ -31,13 +33,18 @@ pub struct OpRow {
     pub label: String,
     pub category: String,
     pub info: String,
+    /// The binary this operation needs and cannot find — empty when it can run.
+    /// The tile greys out and says the name; the alternative is a job that
+    /// queues, starts, and dies on the first spawn.
+    pub missing: String,
 }
 
 /// One row of the form the chosen operation asks for.
 pub struct Field {
     pub key: String,
     pub label: String,
-    /// file | files | folder | text | number | dropdown | slider | toggle.
+    /// file | files | folder | save | text | number | dropdown | slider |
+    /// toggle.
     pub kind: String,
     pub value: String,
     pub options: Vec<String>,
@@ -45,6 +52,8 @@ pub struct Field {
     pub max: f64,
     pub required: bool,
     pub hint: String,
+    /// What the file dialog filters to, without the dot. Empty means anything.
+    pub ext: Vec<String>,
 }
 
 /// A job in the queue.
@@ -96,7 +105,8 @@ pub struct DiffRow {
 }
 
 pub struct ToolsState {
-    /// fileops | video | audio | photo | subtitles | queue.
+    /// One of `catalog::Category::id` — fileops | video | audio | photo |
+    /// subtitles.
     pub category: String,
     pub query: String,
     pub ops: Vec<OpRow>,
@@ -104,6 +114,9 @@ pub struct ToolsState {
     pub active_op: String,
     pub active_label: String,
     pub active_info: String,
+    /// `OpDef::preview` for the open tool: image | video | wave | pages | cues
+    /// | dryrun | convert | plain. Empty when no tool is open.
+    pub active_preview: String,
     pub fields: Vec<Field>,
 
     pub jobs: Vec<Job>,
@@ -196,6 +209,69 @@ pub enum ToolsEvent {
     },
 }
 
+// ----------------------------------------------------------------- preview ---
+
+/// One line of a dry run.
+pub struct PreviewRow {
+    /// plain | add | remove | change | warn. A colour, not a meaning — the
+    /// words are in `note`.
+    pub kind: String,
+    pub left: String,
+    pub right: String,
+    pub note: String,
+}
+
+/// One subtitle cue, in milliseconds.
+pub struct PreviewCue {
+    pub index: i64,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub text: String,
+}
+
+/// One page of a document, for the `pages` preview.
+pub struct PreviewPage {
+    pub page: i64,
+    /// False for a page the operation removes.
+    pub kept: bool,
+    /// Degrees it ends up turned by, on top of what it already carried.
+    pub turned: i64,
+}
+
+/// What the run is likely to produce. Always a guess, and the footer says so.
+pub struct PreviewEstimate {
+    pub src: i64,
+    pub out: i64,
+    /// Encode seconds. Zero means not known yet.
+    pub secs: f64,
+}
+
+pub struct PreviewResult {
+    /// The request this answers. Anything older than what the caller has
+    /// already drawn is thrown away rather than drawn over it.
+    pub epoch: i64,
+    /// dryrun | cues | pages | image | wave | waiting | none | stale.
+    pub kind: String,
+    /// The op it describes, so a late answer cannot be shown under a different
+    /// tool.
+    pub op: String,
+    pub title: String,
+    pub note: String,
+    pub rows: Vec<PreviewRow>,
+    pub cues: Vec<PreviewCue>,
+    pub pages: Vec<PreviewPage>,
+    /// Rows the budget cut. `rows.len() + more` is the real total.
+    pub more: i64,
+    /// A rendered picture in the preview cache, for `kind == "image"`.
+    pub image: String,
+    /// The untouched side of a before/after. Empty when the render stands
+    /// alone — a thumbnail has no "before".
+    pub before: String,
+    /// One 0..1 peak per bucket, for `kind == "wave"`.
+    pub peaks: Vec<f64>,
+    pub estimate: Option<PreviewEstimate>,
+}
+
 // ----------------------------------------------------------------- session ---
 
 #[frb(ignore)]
@@ -209,6 +285,9 @@ struct Session {
     error: String,
     result_open: bool,
     result_id: i64,
+    /// The newest preview request. Anything older that comes back late is
+    /// dropped rather than drawn over the answer the user is looking at.
+    preview_epoch: i64,
     downloads: Vec<(String, String, String)>,
 }
 
@@ -306,6 +385,380 @@ pub async fn tools_dispatch(cmd: ToolsCmd) -> Result<ToolsState> {
     snapshot().await
 }
 
+/// What the open tool is about to do, drawn while the form is still being
+/// filled in.
+///
+/// A third entry point rather than another field on `ToolsState`, because a
+/// preview is expensive, per-keystroke and droppable, and a snapshot is none of
+/// those. The spec comes from the session rather than the caller: it is the
+/// same form `Run` submits, so the preview cannot describe a job different
+/// from the one that would be queued.
+///
+/// `epoch` counts up on the Flutter side. The newest one wins; an answer that
+/// finishes after a newer request started comes back marked `stale`.
+pub async fn tools_preview(epoch: i64) -> Result<PreviewResult> {
+    let (kind, form) = {
+        let mut s = lock();
+        if epoch > s.preview_epoch {
+            s.preview_epoch = epoch;
+        }
+        (s.active.clone(), s.form.clone())
+    };
+    if kind.is_empty() {
+        return Ok(blank_preview(epoch, "none", &kind));
+    }
+
+    // A tool whose binary is missing previews as the reason, not as an error.
+    // The tile is greyed already; this is what the pane says if one is opened
+    // from a search result anyway.
+    if let Some(op) = catalog::get(&kind) {
+        let absent = missing_for(op, &installed_binaries());
+        if !absent.is_empty() {
+            let mut waiting = blank_preview(epoch, "waiting", &kind);
+            waiting.note = format!("Needs {absent}, and it is not installed.");
+            return Ok(waiting);
+        }
+    }
+
+    let schema = fields_for(&kind);
+    let spec = spec_from(&kind, &form, &schema);
+    let input = spec
+        .get("input")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    // One ffprobe per source, ever. Duration, dimensions and codec names are
+    // what turn Convert and Split from guesses into statements, and they are
+    // also where a frame is worth grabbing from. The dry-run previews need
+    // none of it and do not pay for it.
+    let probe = if input.is_empty() || !wants_probe(&kind) {
+        None
+    } else {
+        probe_of(&input).await
+    };
+
+    // Walking a folder of ten thousand files is not something to do on the
+    // async runtime's own thread, however fast it usually is.
+    let budget = preview::Budget {
+        cache: preview_cache().unwrap_or_default(),
+        ..Default::default()
+    };
+    let planning = kind.clone();
+    let planning_probe = probe;
+    let (plan, estimate) = tokio::task::spawn_blocking(move || {
+        let plan = preview::plan_preview(&planning, &spec, &budget, planning_probe.as_ref());
+        let src = spec
+            .get("input")
+            .and_then(|v| v.as_str())
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let estimate = preview::estimate(&planning, &spec, src, planning_probe.as_ref());
+        (plan, estimate)
+    })
+    .await?;
+
+    let (data, image, before, peaks) = match plan {
+        preview::PreviewPlan::Pure(d) => (d, String::new(), String::new(), Vec::new()),
+        preview::PreviewPlan::Render(r) => match render(r, epoch).await {
+            Ok(done) => done,
+            Err(e) => {
+                if lock().preview_epoch > epoch {
+                    return Ok(blank_preview(epoch, "stale", &kind));
+                }
+                return Ok(PreviewResult {
+                    note: e.to_string(),
+                    ..blank_preview(epoch, "waiting", &kind)
+                });
+            }
+        },
+    };
+
+    // The form moved on while we were reading the disk. Whatever is on screen
+    // is newer than this.
+    if lock().preview_epoch > epoch {
+        return Ok(blank_preview(epoch, "stale", &kind));
+    }
+
+    Ok(PreviewResult {
+        epoch,
+        kind: data.kind.to_string(),
+        op: kind,
+        image,
+        before,
+        peaks,
+        title: data.title,
+        note: data.note,
+        rows: data
+            .rows
+            .into_iter()
+            .map(|r| PreviewRow {
+                kind: r.kind.as_str().to_string(),
+                left: r.left,
+                right: r.right,
+                note: r.note,
+            })
+            .collect(),
+        cues: data
+            .cues
+            .into_iter()
+            .map(|c| PreviewCue {
+                index: c.index as i64,
+                start_ms: c.start_ms as i64,
+                end_ms: c.end_ms as i64,
+                text: c.text,
+            })
+            .collect(),
+        pages: data
+            .pages
+            .into_iter()
+            .map(|p| PreviewPage {
+                page: p.page as i64,
+                kept: p.kept,
+                turned: p.turned,
+            })
+            .collect(),
+        more: data.more as i64,
+        estimate: estimate.map(|e| PreviewEstimate {
+            src: e.src as i64,
+            out: e.out as i64,
+            secs: e.secs,
+        }),
+    })
+}
+
+/// How many peaks a waveform is reduced to. Wider than any pane it is drawn
+/// in, so the drawing never has to interpolate upwards.
+const PEAK_BUCKETS: usize = 480;
+
+/// The preview cache holds this much before the oldest renders are dropped.
+const PREVIEW_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Where rendered previews live. Under the app's own cache directory, which
+/// means Clean cache already clears them and there is no second broom.
+fn preview_cache() -> Option<std::path::PathBuf> {
+    let dir = tulipix_core::paths::cache_dir()?.join("tools-preview");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Which previews are worth an ffprobe. The dry runs are about files on disk,
+/// not about what is inside them.
+fn wants_probe(kind: &str) -> bool {
+    catalog::get(kind)
+        .map(|op| {
+            matches!(
+                op.preview,
+                catalog::Preview::Image
+                    | catalog::Preview::Video
+                    | catalog::Preview::Convert
+                    | catalog::Preview::Pages
+            ) || op.kind == "split"
+        })
+        // ffprobe has nothing to say about a .docx or an .epub. The two
+        // document converters draw the same Convert pane and are read by
+        // pandoc and Calibre, not by ffmpeg.
+        .map(|wants| {
+            wants
+                && catalog::get(kind)
+                    .map(|op| op.needs.contains(&"ffmpeg") || op.needs.contains(&"ffprobe"))
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+/// One ffprobe per source per session, keyed by path, size and mtime — so
+/// dragging a CRF slider for a minute costs exactly one.
+fn probes() -> &'static Mutex<std::collections::HashMap<String, preview::Probe>> {
+    static P: OnceLock<Mutex<std::collections::HashMap<String, preview::Probe>>> = OnceLock::new();
+    P.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+async fn probe_of(path: &str) -> Option<preview::Probe> {
+    let meta = std::fs::metadata(path).ok()?;
+    let stamp = format!(
+        "{path}|{}|{}",
+        meta.len(),
+        meta.modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
+    if let Some(hit) = probes().lock().ok().and_then(|g| g.get(&stamp).cloned()) {
+        return Some(hit);
+    }
+    let out = quiet(&bin("ffprobe"))
+        .args([
+            "-v",
+            "error",
+            "-show_format",
+            "-show_streams",
+            "-of",
+            "json",
+            path,
+        ])
+        .output()
+        .await
+        .ok()?;
+    let json: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let probe = parse_probe(&json, meta.len());
+    if let Ok(mut g) = probes().lock() {
+        g.insert(stamp, probe.clone());
+    }
+    Some(probe)
+}
+
+fn parse_probe(v: &Value, bytes: u64) -> preview::Probe {
+    let mut p = preview::Probe {
+        bytes,
+        // A still image has no duration, which is the right answer for it.
+        duration_s: v["format"]["duration"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0),
+        ..Default::default()
+    };
+    for stream in v["streams"].as_array().into_iter().flatten() {
+        let name = stream["codec_name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        match stream["codec_type"].as_str() {
+            Some("video") if p.v_codec.is_empty() => {
+                p.v_codec = name;
+                p.width = stream["width"].as_u64().unwrap_or(0) as u32;
+                p.height = stream["height"].as_u64().unwrap_or(0) as u32;
+            }
+            Some("audio") if p.a_codec.is_empty() => p.a_codec = name,
+            _ => {}
+        }
+    }
+    p
+}
+
+/// One preview render at a time, process-wide.
+///
+/// This is the whole of the "no more than one ffmpeg alive" rule. Without it,
+/// a slider dragged across its range forks one encoder per stop and they all
+/// finish at once, several seconds after the value they describe is gone.
+fn render_gate() -> &'static tokio::sync::Mutex<()> {
+    static G: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    G.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Execute a render plan and report what it produced.
+async fn render(
+    plan: preview::RenderPlan,
+    epoch: i64,
+) -> Result<(preview::PreviewData, String, String, Vec<f64>)> {
+    run_preview_steps(plan.steps, epoch).await?;
+    if plan.kind == "wave" {
+        // The artifact is raw PCM, which is only a preview once it has been
+        // reduced to peaks.
+        let peaks = tokio::fs::read(&plan.out)
+            .await
+            .map(|bytes| {
+                preview::peaks_from_pcm(&bytes, PEAK_BUCKETS)
+                    .into_iter()
+                    .map(f64::from)
+                    .collect::<Vec<f64>>()
+            })
+            .unwrap_or_default();
+        return Ok((
+            preview::PreviewData::rendered("wave", plan.note),
+            String::new(),
+            String::new(),
+            peaks,
+        ));
+    }
+    Ok((
+        preview::PreviewData::rendered("image", plan.note),
+        plan.out,
+        plan.before,
+        Vec::new(),
+    ))
+}
+
+async fn run_preview_steps(steps: Vec<Step>, epoch: i64) -> Result<()> {
+    if steps.is_empty() {
+        return Ok(());
+    }
+    let _gate = render_gate().lock().await;
+    for step in steps {
+        // The gate is a queue: by the time our turn comes the form may have
+        // moved on twice.
+        if lock().preview_epoch > epoch {
+            return Err(anyhow!("superseded"));
+        }
+        let Step::Ffmpeg { args, .. } = step else {
+            continue;
+        };
+        // `-nostdin` because a preview must never take the terminal, and
+        // `-loglevel error` because nothing here is worth a line in the
+        // console the user is watching a real job in.
+        let mut argv: Vec<String> = vec![
+            "-hide_banner".into(),
+            "-nostdin".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-y".into(),
+        ];
+        argv.extend(args);
+        spawn_preview(bin("ffmpeg"), &argv, epoch).await?;
+    }
+    Ok(())
+}
+
+/// Spawn one short-lived child and watch the epoch while it runs. A render
+/// whose answer nobody wants any more is killed, not waited for.
+async fn spawn_preview(exe: std::path::PathBuf, args: &[String], epoch: i64) -> Result<()> {
+    let mut child = quiet(&exe)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow!("{} could not be started: {e}", exe.display()))?;
+    loop {
+        tokio::select! {
+            // `Child::wait` is cancel-safe, so losing this race costs nothing.
+            status = child.wait() => {
+                return if status?.success() {
+                    Ok(())
+                } else {
+                    Err(anyhow!("This one could not be previewed."))
+                };
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(120)) => {
+                if lock().preview_epoch > epoch {
+                    child.kill().await.ok();
+                    return Err(anyhow!("superseded"));
+                }
+            }
+        }
+    }
+}
+
+fn blank_preview(epoch: i64, kind: &str, op: &str) -> PreviewResult {
+    PreviewResult {
+        epoch,
+        kind: kind.to_string(),
+        op: op.to_string(),
+        title: String::new(),
+        note: String::new(),
+        rows: Vec::new(),
+        cues: Vec::new(),
+        pages: Vec::new(),
+        more: 0,
+        image: String::new(),
+        before: String::new(),
+        peaks: Vec::new(),
+        estimate: None,
+    }
+}
+
 #[frb(sync)]
 pub fn tools_events(sink: StreamSink<ToolsEvent>) {
     let _ = events().set(sink);
@@ -323,6 +776,14 @@ pub async fn tools_start_worker() -> Result<()> {
     // A job left "running" by a process that died is not running. Put it back
     // in the queue before anything claims new work.
     queue::recover_stale(pool).await.ok();
+
+    // Once, here, rather than after every render: a render that stops to
+    // delete things is a render the user is waiting on.
+    if let Some(dir) = preview_cache() {
+        tokio::task::spawn_blocking(move || preview::sweep_cache(&dir, PREVIEW_CACHE_BYTES))
+            .await
+            .ok();
+    }
 
     tokio::spawn(async move {
         loop {
@@ -459,6 +920,14 @@ async fn run_step(
                 queue::record_download(pool, id, &dest).await.ok();
                 return Ok(dest);
             }
+            Ok(String::new())
+        }
+        Step::Tool { bin: name, args } => {
+            // No progress parser: see `Step::Tool`. The step's share of the bar
+            // is claimed up front so a four-minute demucs run does not look
+            // stalled at whatever the previous step left behind.
+            queue::set_progress(pool, id, base, Some(name)).await.ok();
+            spawn_tracked(pool, id, bin(name), &args, base, span, |_| None).await?;
             Ok(String::new())
         }
         Step::Native(n) => run_native(pool, id, n, base, span).await,
@@ -624,25 +1093,11 @@ async fn run_native(
             pattern,
             start,
         } => {
-            // The crate plans; it deliberately does not touch the disk. Sorted
-            // by name so `{n}` numbers the way the folder reads.
-            let mut files: Vec<(String, std::collections::HashMap<String, String>)> = Vec::new();
-            let mut names: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-                .map_err(|e| anyhow!("{dir}: {e}"))?
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.is_file())
-                .collect();
-            names.sort();
-            for p in &names {
-                let stem = p
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let mut tags = std::collections::HashMap::new();
-                tags.insert("name".to_string(), stem);
-                files.push((p.to_string_lossy().to_string(), tags));
-            }
+            // Sorted by name so `{n}` numbers the way the folder reads. The
+            // listing is `rename::scan` rather than a read_dir here, because
+            // the preview pane runs the same one — a preview that numbers the
+            // files differently from the run is worse than no preview.
+            let files = tulipix_tools::rename::scan(&dir).map_err(|e| anyhow!("{dir}: {e}"))?;
             let preview = tulipix_tools::rename::dry_run(&files, &pattern, start);
             if !preview.collisions.is_empty() {
                 // Renaming into a collision loses a file. The plan is rejected
@@ -800,8 +1255,208 @@ async fn run_native(
             let freed = clean_cache();
             Ok(format!("Freed {}.", human_bytes(freed)))
         }
+        Native::Mirror { a, b, delete_extra } => {
+            // The same plan the preview showed, built the same way. The worker
+            // only carries it out — one action at a time, so cancelling lands
+            // between files rather than halfway through one.
+            let actions = tulipix_tools::folder_diff::plan_mirror(&a, &b, delete_extra, MIRROR_CAP);
+            if actions.is_empty() {
+                return Ok("Already identical.".into());
+            }
+            let total = actions.len();
+            let (mut copied, mut deleted) = (0usize, 0usize);
+            for (i, action) in actions.into_iter().enumerate() {
+                if is_stopped(id) {
+                    return Err(anyhow!("cancelled"));
+                }
+                match action {
+                    tulipix_tools::folder_diff::MirrorAction::Copy { from, to, rel, .. } => {
+                        if let Some(parent) = std::path::Path::new(&to).parent() {
+                            std::fs::create_dir_all(parent).ok();
+                        }
+                        match std::fs::copy(&from, &to) {
+                            Ok(_) => {
+                                copied += 1;
+                                log_push(&format!("copy  {rel}"));
+                            }
+                            Err(e) => log_push(&format!("skip  {rel}: {e}")),
+                        }
+                    }
+                    tulipix_tools::folder_diff::MirrorAction::Delete { path, rel, .. } => {
+                        match std::fs::remove_file(&path) {
+                            Ok(()) => {
+                                deleted += 1;
+                                log_push(&format!("del   {rel}"));
+                            }
+                            Err(e) => log_push(&format!("skip  {rel}: {e}")),
+                        }
+                    }
+                }
+                let at = base + (i + 1) as f64 / total as f64 * span;
+                queue::set_progress(pool, id, at.clamp(0.0, 1.0), None)
+                    .await
+                    .ok();
+                emit(ToolsEvent::Progress {
+                    id,
+                    progress: at.clamp(0.0, 1.0),
+                    message: String::new(),
+                });
+            }
+            Ok(format!("Copied {copied}, deleted {deleted}."))
+        }
+        Native::ArchiveCreate {
+            root,
+            files,
+            output,
+            store,
+        } => {
+            // The same member list the preview showed, from the same function.
+            let members = tulipix_tools::archive::members(&root, &files, ARCHIVE_CAP);
+            let total = members.len();
+            let count = archive_step(pool, id, base, span, total, move |tick| {
+                tulipix_tools::archive::create(&members, &output, store, tick)
+            })
+            .await?;
+            Ok(format!("Put {count} files in the archive."))
+        }
+        Native::ArchiveExtract { input, dir } => {
+            let total = tulipix_tools::archive::list(&input)
+                .map(|e| e.len())
+                .unwrap_or(0);
+            let (written, refused) = archive_step(pool, id, base, span, total, move |tick| {
+                tulipix_tools::archive::extract(&input, &dir, tick)
+            })
+            .await?;
+            Ok(if refused == 0 {
+                format!("Unpacked {written} files.")
+            } else {
+                // Not an error: one member trying to climb out of the folder
+                // should not lose the other four hundred.
+                format!("Unpacked {written} files. {refused} were skipped as unsafe or unreadable.")
+            })
+        }
+        Native::ArchiveRepack {
+            input,
+            output,
+            store,
+        } => {
+            let total = tulipix_tools::archive::list(&input)
+                .map(|e| e.len())
+                .unwrap_or(0);
+            let count = archive_step(pool, id, base, span, total, move |tick| {
+                tulipix_tools::archive::repack(&input, &output, store, tick)
+            })
+            .await?;
+            Ok(format!("Repacked {count} files."))
+        }
+        Native::PdfStamp {
+            input,
+            output,
+            ranges,
+            pattern,
+            corner,
+            size,
+        } => {
+            use tulipix_tools::pdf;
+            let count = pdf::page_count(&input)
+                .ok_or_else(|| anyhow!("{input} could not be opened as a PDF"))?;
+            let pages = pdf::selected(&ranges, count);
+            let corner = pdf::Corner::parse(&corner);
+            let done = tokio::task::spawn_blocking(move || {
+                pdf::stamp_pages(&input, &pages, &pattern, corner, size, &output)
+            })
+            .await??;
+            let _ = (base, span);
+            Ok(format!("Stamped {done} of {count} pages."))
+        }
+        Native::PdfPages {
+            op,
+            input,
+            output,
+            ranges,
+            turn,
+        } => {
+            use tulipix_tools::exec::PdfPageOp;
+            use tulipix_tools::pdf;
+            let count = pdf::page_count(&input)
+                .ok_or_else(|| anyhow!("{input} could not be opened as a PDF"))?;
+            let pages = pdf::selected(&ranges, count);
+            if pages.is_empty() && op != PdfPageOp::Rotate {
+                return Err(anyhow!(
+                    "that range names no page in a {count}-page document"
+                ));
+            }
+            // lopdf holds the whole document, so this is one blocking chunk of
+            // work rather than something to report progress across.
+            let done = tokio::task::spawn_blocking(move || match op {
+                PdfPageOp::Keep => pdf::keep_pages(&input, &pages, &output),
+                PdfPageOp::Drop => pdf::drop_pages(&input, &pages, &output),
+                PdfPageOp::Rotate => pdf::rotate_pages(&input, &pages, turn, &output),
+            })
+            .await??;
+            let _ = (base, span);
+            Ok(match op {
+                PdfPageOp::Keep => format!("Kept {done} of {count} pages."),
+                PdfPageOp::Drop => format!("Deleted {done} of {count} pages."),
+                PdfPageOp::Rotate => format!("Turned {done} of {count} pages by {turn}°."),
+            })
+        }
     }
 }
+
+/// An archive job will not gather more members than this.
+const ARCHIVE_CAP: usize = 200_000;
+
+/// Run one archive operation on a blocking thread, reporting progress from
+/// inside it and stopping when the job is cancelled.
+///
+/// The archive crate takes a `FnMut(done, total) -> bool` rather than knowing
+/// about the queue, so this is the only place the two meet. Progress is sent
+/// through a channel because the closure runs off the async runtime.
+async fn archive_step<T, F>(
+    pool: &sqlx::SqlitePool,
+    id: i64,
+    base: f64,
+    span: f64,
+    total: usize,
+    work: F,
+) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut dyn FnMut(usize, usize) -> bool) -> Result<T> + Send + 'static,
+{
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<usize>();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop.clone();
+    let handle = tokio::task::spawn_blocking(move || {
+        let mut tick = |done: usize, _total: usize| {
+            let _ = tx.send(done);
+            !flag.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        work(&mut tick)
+    });
+
+    // Drain progress while it runs, and tell it to stop when the queue says so.
+    let total = total.max(1);
+    while let Some(done) = rx.recv().await {
+        if is_stopped(id) {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let at = (base + done as f64 / total as f64 * span).clamp(0.0, 1.0);
+        queue::set_progress(pool, id, at, None).await.ok();
+        emit(ToolsEvent::Progress {
+            id,
+            progress: at,
+            message: String::new(),
+        });
+    }
+    handle.await?
+}
+
+/// A mirror will not walk more files than this. A photo library is a plausible
+/// source; a whole home directory chosen by accident is not something to
+/// enumerate before saying so.
+const MIRROR_CAP: usize = 200_000;
 
 fn remember(id: i64, r: Report) {
     if let Ok(mut g) = reports().lock() {
@@ -1183,653 +1838,39 @@ fn spec_from(
 
 // ------------------------------------------------------------------ schema ---
 
+/// The label a job carries in the queue and the log. Everything else the
+/// catalogue provides is read straight off the `OpDef` in `snapshot`.
 fn label_of(kind: &str) -> &'static str {
-    match kind {
-        "compress_video" => "Compress video",
-        "compress_audio" => "Compress audio",
-        "compress_photo" => "Compress photo",
-        "convert" => "Convert",
-        "trim" => "Trim",
-        "resize" => "Resize",
-        "thumbnail" => "Thumbnail",
-        "extract" => "Extract audio",
-        "normalize" => "Normalise",
-        "watermark" => "Watermark",
-        "burn_subs" => "Burn subtitles",
-        "split" => "Split",
-        "merge" => "Merge",
-        "download" => "Download",
-        "download_playlist" => "Playlist download",
-        "download_live" => "Live record",
-        "hash" => "Hash",
-        "folder_diff" => "Folder diff",
-        "rename" => "Rename",
-        "transcribe" => "Transcribe",
-        "mediainfo" => "Media info",
-        "contact_sheet" => "Contact sheet",
-        "cache_clean" => "Clean cache",
-        _ => "Job",
-    }
-}
-
-fn info_of(kind: &str) -> &'static str {
-    match kind {
-        "compress_video" => {
-            "Re-encode to a smaller file. CRF is the quality dial: lower is better and bigger, and every +6 roughly halves the size."
-        }
-        "compress_audio" => {
-            "Re-encode audio at a chosen bitrate. Opus is the best of these per kilobit; mp3 is the one everything plays."
-        }
-        "compress_photo" => {
-            "Re-encode an image. AVIF is smallest, WebP is widely supported, JPEG is universal."
-        }
-        "convert" => {
-            "Change container or codec. Picking an audio extension on a video file extracts the audio."
-        }
-        "trim" => {
-            "Cut a section out. Lossless snaps to keyframes and does not re-encode, so it is fast and the cut may land a moment early."
-        }
-        "resize" => {
-            "Scale an image or video. Fit keeps the aspect ratio inside the box; exact will distort."
-        }
-        "thumbnail" => "Grab one frame as an image.",
-        "extract" => "Pull an audio or subtitle track out into its own file.",
-        "normalize" => "Level the loudness to a target. -23 LUFS is the broadcast standard.",
-        "watermark" => "Burn a line of text into the bottom-right corner.",
-        "burn_subs" => "Render a subtitle file into the picture, permanently.",
-        "split" => "Cut into fixed-length segments.",
-        "merge" => {
-            "Join files end to end. They must share a codec — this copies streams rather than re-encoding."
-        }
-        "download" => "Fetch a video from any of the sites yt-dlp supports.",
-        "download_playlist" => "Fetch every video in a playlist.",
-        "download_live" => "Record a live stream until it ends or you cancel.",
-        "hash" => "SHA-256 every file, to a manifest or to the report.",
-        "folder_diff" => "Compare two folders by content, not by timestamp.",
-        "rename" => {
-            "Rename in bulk from a pattern. Collisions are refused rather than half-applied."
-        }
-        "transcribe" => "Speech to an SRT subtitle file, locally, with Whisper.",
-        "mediainfo" => "Report every stream, codec and bitrate.",
-        "contact_sheet" => "One image of evenly spaced frames.",
-        "cache_clean" => "Delete the app's thumbnail and temporary files.",
-        _ => "",
-    }
-}
-
-fn category_of(kind: &str) -> &'static str {
-    match kind {
-        "rename" | "merge" | "split" | "hash" | "folder_diff" | "cache_clean" => "fileops",
-        "compress_video" | "trim" | "convert" | "thumbnail" | "resize" | "contact_sheet"
-        | "download" | "download_live" | "download_playlist" => "video",
-        "compress_audio" | "normalize" | "extract" => "audio",
-        "compress_photo" | "watermark" => "photo",
-        "transcribe" | "burn_subs" => "subtitles",
-        _ => "queue",
-    }
+    catalog::get(kind).map(|o| o.label).unwrap_or("Job")
 }
 
 /// How many operations the catalogue offers. Home's hub tile prints it, and it
 /// must be the same number the Tools page lists rather than a second count.
 pub(crate) fn op_count() -> i64 {
-    ALL_OPS.len() as i64
+    catalog::CATALOG.len() as i64
 }
 
-const ALL_OPS: &[&str] = &[
-    "rename",
-    "merge",
-    "split",
-    "hash",
-    "folder_diff",
-    "cache_clean",
-    "compress_video",
-    "trim",
-    "convert",
-    "thumbnail",
-    "resize",
-    "contact_sheet",
-    "download",
-    "download_live",
-    "download_playlist",
-    "compress_audio",
-    "normalize",
-    "extract",
-    "compress_photo",
-    "watermark",
-    "transcribe",
-    "burn_subs",
-    "mediainfo",
-];
-
-fn f(
-    key: &str,
-    label: &str,
-    kind: &str,
-    value: &str,
-    required: bool,
-    hint: &str,
-    options: &[&str],
-    min: f64,
-    max: f64,
-) -> Field {
-    Field {
-        key: key.into(),
-        label: label.into(),
-        kind: kind.into(),
-        value: value.into(),
-        options: options.iter().map(|s| s.to_string()).collect(),
-        min,
-        max,
-        required,
-        hint: hint.into(),
-    }
-}
-
-/// The form one operation asks for. Kept here rather than derived from the
-/// planner because the planner reads a spec and does not describe one.
+/// The form one operation asks for, as the UI's `Field` rather than the
+/// catalogue's `FieldDef`. Values are filled in from the session afterwards.
 fn fields_for(kind: &str) -> Vec<Field> {
-    let file = |k: &str, l: &str| f(k, l, "file", "", true, "", &[], 0.0, 0.0);
-    let out = || {
-        f(
-            "output",
-            "Output (blank = beside source)",
-            "text",
-            "",
-            false,
-            "auto-named next to the source",
-            &[],
-            0.0,
-            0.0,
-        )
+    let Some(op) = catalog::get(kind) else {
+        return Vec::new();
     };
-    match kind {
-        "compress_video" => vec![
-            file("input", "Source video"),
-            f(
-                "codec",
-                "Codec",
-                "dropdown",
-                "h264",
-                true,
-                "",
-                &["h264", "h265", "av1"],
-                0.0,
-                0.0,
-            ),
-            f(
-                "crf",
-                "Quality — CRF (lower = better, bigger)",
-                "slider",
-                "23",
-                false,
-                "~18 near-lossless · 23 default · 28 small · each +6 ≈ half the size",
-                &[],
-                18.0,
-                35.0,
-            ),
-            out(),
-        ],
-        "compress_audio" => vec![
-            file("input", "Source audio"),
-            f(
-                "codec",
-                "Codec",
-                "dropdown",
-                "mp3",
-                true,
-                "",
-                &["mp3", "aac", "opus", "vorbis"],
-                0.0,
-                0.0,
-            ),
-            f(
-                "kbps",
-                "Bitrate (kbps)",
-                "slider",
-                "192",
-                false,
-                "",
-                &[],
-                64.0,
-                320.0,
-            ),
-            out(),
-        ],
-        "compress_photo" => vec![
-            file("input", "Source image"),
-            f(
-                "format",
-                "Format",
-                "dropdown",
-                "jpeg",
-                true,
-                "",
-                &["jpeg", "webp", "avif"],
-                0.0,
-                0.0,
-            ),
-            f(
-                "quality",
-                "Quality",
-                "slider",
-                "82",
-                false,
-                "1–100",
-                &[],
-                1.0,
-                100.0,
-            ),
-            out(),
-        ],
-        "convert" => vec![
-            file("input", "Source file"),
-            f(
-                "target_ext",
-                "Convert to",
-                "dropdown",
-                "mp4",
-                true,
-                "",
-                &[
-                    "mp4", "mkv", "webm", "mp3", "m4a", "opus", "flac", "png", "jpg", "webp",
-                ],
-                0.0,
-                0.0,
-            ),
-            out(),
-        ],
-        "trim" => vec![
-            file("input", "Source video"),
-            f(
-                "start_s",
-                "Start (seconds)",
-                "number",
-                "0",
-                true,
-                "e.g. 12.5",
-                &[],
-                0.0,
-                0.0,
-            ),
-            f(
-                "end_s",
-                "End (seconds)",
-                "number",
-                "",
-                true,
-                "e.g. 48",
-                &[],
-                0.0,
-                0.0,
-            ),
-            f(
-                "lossless",
-                "Lossless cut (keyframe-aligned)",
-                "toggle",
-                "true",
-                false,
-                "fast, no re-encode",
-                &[],
-                0.0,
-                0.0,
-            ),
-            out(),
-        ],
-        "resize" => vec![
-            file("input", "Source image/video"),
-            f(
-                "mode",
-                "Aspect",
-                "dropdown",
-                "fit",
-                false,
-                "fit keeps the aspect inside W×H · exact may distort · width/height scale one edge",
-                &["fit", "exact", "width", "height"],
-                0.0,
-                0.0,
-            ),
-            f("w", "Width (px)", "number", "1920", true, "", &[], 0.0, 0.0),
-            f(
-                "h",
-                "Height (px)",
-                "number",
-                "1080",
-                true,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-            out(),
-        ],
-        "thumbnail" => vec![
-            file("input", "Source video"),
-            f(
-                "at_s",
-                "At timestamp (seconds)",
-                "number",
-                "1",
-                false,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-            f(
-                "width",
-                "Thumbnail width (px)",
-                "number",
-                "320",
-                false,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-            out(),
-        ],
-        "extract" => vec![
-            file("input", "Source video"),
-            f(
-                "stream",
-                "Stream",
-                "dropdown",
-                "audio",
-                true,
-                "",
-                &["audio", "subtitle"],
-                0.0,
-                0.0,
-            ),
-            f(
-                "index",
-                "Track index",
-                "number",
-                "0",
-                false,
-                "0 = first",
-                &[],
-                0.0,
-                0.0,
-            ),
-            out(),
-        ],
-        "normalize" => vec![
-            file("input", "Source audio/video"),
-            f(
-                "lufs",
-                "Target loudness (LUFS)",
-                "number",
-                "-23",
-                false,
-                "EBU R128 = -23",
-                &[],
-                0.0,
-                0.0,
-            ),
-            out(),
-        ],
-        "watermark" => vec![
-            file("input", "Source image/video"),
-            f(
-                "text",
-                "Watermark text",
-                "text",
-                "",
-                true,
-                "shown bottom-right",
-                &[],
-                0.0,
-                0.0,
-            ),
-            out(),
-        ],
-        "burn_subs" => vec![
-            file("input", "Source video"),
-            f(
-                "sub",
-                "Subtitle file (.srt/.ass)",
-                "file",
-                "",
-                true,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-            out(),
-        ],
-        "split" => vec![
-            file("input", "Source video"),
-            f(
-                "every_s",
-                "Segment length (seconds)",
-                "number",
-                "60",
-                true,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-            f(
-                "output",
-                "Output template (blank = beside source)",
-                "text",
-                "",
-                false,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-        ],
-        "merge" => vec![
-            f(
-                "inputs",
-                "Source files (one path per line)",
-                "files",
-                "",
-                true,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-            f("output", "Output file", "text", "", true, "", &[], 0.0, 0.0),
-        ],
-        "download" | "download_playlist" | "download_live" => vec![
-            f(
-                "url",
-                "URL",
-                "text",
-                "",
-                true,
-                "YouTube / Vimeo / 1800+ sites",
-                &[],
-                0.0,
-                0.0,
-            ),
-            f(
-                "audio_only",
-                "Audio only",
-                "toggle",
-                "false",
-                false,
-                "extract audio",
-                &[],
-                0.0,
-                0.0,
-            ),
-            f(
-                "max_height",
-                "Resolution",
-                "dropdown",
-                "1080",
-                false,
-                "“Best” grabs the highest available",
-                &["Best", "2160", "1440", "1080", "720", "480", "360", "240"],
-                0.0,
-                0.0,
-            ),
-            f(
-                "embed_subs",
-                "Embed subtitles",
-                "toggle",
-                "false",
-                false,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-            f(
-                "embed_thumbnail",
-                "Embed thumbnail",
-                "toggle",
-                "false",
-                false,
-                "cover art from the video thumbnail",
-                &[],
-                0.0,
-                0.0,
-            ),
-            f(
-                "output",
-                "Save folder (blank = Downloads)",
-                "folder",
-                "",
-                false,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-        ],
-        "transcribe" => vec![
-            file("input", "Audio/video file"),
-            f(
-                "language",
-                "Source language",
-                "dropdown",
-                "auto",
-                false,
-                "auto-detect, or pick to sharpen accuracy",
-                &[
-                    "auto", "en", "es", "fr", "de", "it", "pt", "nl", "ru", "uk", "pl", "tr", "ar",
-                    "fa", "hi", "ur", "bn", "ta", "th", "vi", "id", "ja", "ko", "zh",
-                ],
-                0.0,
-                0.0,
-            ),
-            f(
-                "translate",
-                "Translate to English",
-                "toggle",
-                "false",
-                false,
-                "transcribe any language straight to English",
-                &[],
-                0.0,
-                0.0,
-            ),
-            f(
-                "output",
-                "Output .srt (blank = beside source)",
-                "text",
-                "",
-                false,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-        ],
-        "hash" => vec![
-            f(
-                "files",
-                "Files to hash (one path per line)",
-                "files",
-                "",
-                true,
-                "SHA-256",
-                &[],
-                0.0,
-                0.0,
-            ),
-            f(
-                "manifest",
-                "Save manifest to (blank = show inline)",
-                "text",
-                "",
-                false,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-        ],
-        "folder_diff" => vec![
-            f("a", "Folder A", "folder", "", true, "", &[], 0.0, 0.0),
-            f("b", "Folder B", "folder", "", true, "", &[], 0.0, 0.0),
-        ],
-        "rename" => vec![
-            f("dir", "Folder", "folder", "", true, "", &[], 0.0, 0.0),
-            f(
-                "pattern",
-                "Pattern",
-                "text",
-                "{n:03}_{name}",
-                true,
-                "{n}, {n:03} = sequence · {name} = original name",
-                &[],
-                0.0,
-                0.0,
-            ),
-            f(
-                "start",
-                "Start number",
-                "number",
-                "1",
-                false,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-        ],
-        "mediainfo" => vec![
-            file("input", "File to inspect"),
-            f(
-                "output",
-                "Report .txt (blank = show inline)",
-                "text",
-                "",
-                false,
-                "codec/stream/bitrate report",
-                &[],
-                0.0,
-                0.0,
-            ),
-        ],
-        "contact_sheet" => vec![
-            file("input", "Source video"),
-            f("cols", "Columns", "number", "4", false, "", &[], 0.0, 0.0),
-            f("rows", "Rows", "number", "4", false, "", &[], 0.0, 0.0),
-            f(
-                "output",
-                "Output .jpg (blank = beside source)",
-                "text",
-                "",
-                false,
-                "",
-                &[],
-                0.0,
-                0.0,
-            ),
-        ],
-        _ => Vec::new(),
-    }
+    op.fields
+        .iter()
+        .map(|d| Field {
+            key: d.key.to_string(),
+            label: d.label.to_string(),
+            kind: d.kind.as_str().to_string(),
+            value: d.value.to_string(),
+            options: d.options.iter().map(|s| (*s).to_string()).collect(),
+            min: d.min,
+            max: d.max,
+            required: d.required,
+            hint: d.hint.to_string(),
+            ext: d.ext.iter().map(|s| (*s).to_string()).collect(),
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------- snapshot ---
@@ -1845,7 +1886,49 @@ const TOOLCHAIN: &[(&str, &str, bool)] = &[
     ("ffprobe", "Durations and stream reports", false),
     ("yt-dlp", "Downloads", true),
     ("whisper-cli", "Local speech to text", false),
+    // Not bundled, and not going to be. Each is large, each is packaged
+    // everywhere, and the four operations that use them grey out until one
+    // shows up on PATH.
+    ("pandoc", "Document converter", false),
+    ("ebook-convert", "Ebook converter — part of Calibre", false),
+    ("demucs", "Splits a track into stems", false),
+    ("ffsubsync", "Lines subtitles up with the audio", false),
 ];
+
+/// Whether a binary can be run at all: bundled with the app, or on PATH.
+///
+/// Cheap, but not free — it stats a handful of directories. `snapshot` asks it
+/// once per distinct binary rather than once per tile.
+fn have(name: &str) -> bool {
+    tulipix_core::thumbs::tool_bin(name).exists() || which_on_path(name)
+}
+
+/// Every binary the catalogue names, resolved once.
+///
+/// `tool_bin` is not free — for a bundled candidate it will launch the thing to
+/// see whether it starts — so a snapshot asks about each distinct name once
+/// rather than once per tile. Eight names, forty-two tiles.
+fn installed_binaries() -> Vec<(&'static str, bool)> {
+    let mut names: Vec<&'static str> = Vec::new();
+    for op in catalog::CATALOG {
+        for n in op.needs {
+            if !names.contains(n) {
+                names.push(*n);
+            }
+        }
+    }
+    names.into_iter().map(|n| (n, have(n))).collect()
+}
+
+/// The first binary an operation needs and cannot find.
+fn missing_for(op: &catalog::OpDef, known: &[(&'static str, bool)]) -> String {
+    op.needs
+        .iter()
+        .copied()
+        .find(|n| !known.iter().any(|(name, ok)| name == n && *ok))
+        .map(str::to_string)
+        .unwrap_or_default()
+}
 
 async fn snapshot() -> Result<ToolsState> {
     let pool = tools_pool().await?;
@@ -1869,22 +1952,25 @@ async fn snapshot() -> Result<ToolsState> {
     let s = lock();
 
     let needle = s.query.trim().to_lowercase();
-    let ops: Vec<OpRow> = ALL_OPS
+    let installed = installed_binaries();
+    let ops: Vec<OpRow> = catalog::CATALOG
         .iter()
-        .filter(|k| {
+        .filter(|op| {
             // A search crosses categories: if you know what you want, the tab
             // you happen to be on should not hide it.
             if !needle.is_empty() {
-                label_of(k).to_lowercase().contains(&needle) || k.to_lowercase().contains(&needle)
+                op.label.to_lowercase().contains(needle.as_str())
+                    || op.kind.contains(needle.as_str())
             } else {
-                category_of(k) == s.category
+                op.cat.id() == s.category
             }
         })
-        .map(|k| OpRow {
-            kind: (*k).to_string(),
-            label: label_of(k).to_string(),
-            category: category_of(k).to_string(),
-            info: info_of(k).to_string(),
+        .map(|op| OpRow {
+            kind: op.kind.to_string(),
+            label: op.label.to_string(),
+            category: op.cat.id().to_string(),
+            info: op.info.to_string(),
+            missing: missing_for(op, &installed),
         })
         .collect();
 
@@ -2012,11 +2098,12 @@ async fn snapshot() -> Result<ToolsState> {
         } else {
             label_of(&s.active).to_string()
         },
-        active_info: if s.active.is_empty() {
-            String::new()
-        } else {
-            info_of(&s.active).to_string()
-        },
+        active_info: catalog::get(&s.active)
+            .map(|op| op.info.to_string())
+            .unwrap_or_default(),
+        active_preview: catalog::get(&s.active)
+            .map(|op| op.preview.id().to_string())
+            .unwrap_or_default(),
         fields,
         jobs,
         queue_status,

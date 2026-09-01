@@ -1,46 +1,22 @@
 //! `np.p4.tools.section` — Tools sidebar entry + landing page.
 //!
-//! The landing page groups operations into categories (File ops · Video ·
-//! Audio · Photo · Subtitles · Queue). This owns the category taxonomy and the
-//! op→category mapping the landing grid renders from.
+//! The taxonomy itself lives in [`crate::catalog`]; this module is the landing
+//! page's view of it. It used to hold a second `category_of` in kebab-case that
+//! had drifted from the bridge's — `resize` under Photo where the bridge said
+//! Video, a `pdf` op the bridge had never heard of — so it is a re-export now.
 
-use serde::{Deserialize, Serialize};
+pub use crate::catalog::Category;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Category { FileOps, Video, Audio, Photo, Subtitles, Queue }
-
-impl Category {
-    pub const ALL: [Category; 6] = [Category::FileOps, Category::Video, Category::Audio, Category::Photo, Category::Subtitles, Category::Queue];
-    pub fn label(self) -> &'static str {
-        match self {
-            Category::FileOps => "File ops", Category::Video => "Video", Category::Audio => "Audio",
-            Category::Photo => "Photo", Category::Subtitles => "Subtitles", Category::Queue => "Queue",
-        }
-    }
+/// Category for an operation kind. Accepts the kebab spelling the CLI uses.
+pub fn category_of(op: &str) -> Option<Category> {
+    crate::catalog::resolve(op)
+        .and_then(crate::catalog::get)
+        .map(|o| o.cat)
 }
 
-/// Category for an operation kind (matches [`crate::cli`] op names).
-pub fn category_of(op: &str) -> Category {
-    match op {
-        "rename" | "merge" | "split" | "hash" | "folder-diff" => Category::FileOps,
-        "compress-video" | "trim" | "convert" | "thumbnail" | "download" | "download-live" | "download-playlist" => Category::Video,
-        "compress-audio" | "normalize" | "extract" => Category::Audio,
-        "compress-photo" | "resize" | "watermark" | "pdf" => Category::Photo,
-        "transcribe" | "burn-subs" => Category::Subtitles,
-        _ => Category::Queue,
-    }
-}
-
-/// Op kinds shown under a category on the landing page.
+/// Op kinds shown under a category on the landing page, in catalogue order.
 pub fn ops_in(category: Category) -> Vec<&'static str> {
-    const OPS: &[&str] = &[
-        "rename","merge","split","hash","folder-diff",
-        "compress-video","trim","convert","thumbnail","download","download-live","download-playlist",
-        "compress-audio","normalize","extract",
-        "compress-photo","resize","watermark","pdf",
-        "transcribe","burn-subs",
-    ];
-    OPS.iter().copied().filter(|op| category_of(op) == category).collect()
+    crate::catalog::in_category(category).map(|o| o.kind).collect()
 }
 
 #[cfg(test)]
@@ -49,10 +25,21 @@ mod tests {
 
     #[test]
     fn categorization() {
-        assert_eq!(category_of("rename"), Category::FileOps);
-        assert_eq!(category_of("transcribe"), Category::Subtitles);
-        assert_eq!(category_of("compress-photo"), Category::Photo);
+        assert_eq!(category_of("rename"), Some(Category::FileOps));
+        assert_eq!(category_of("transcribe"), Some(Category::Subtitles));
+        assert_eq!(category_of("compress_photo"), Some(Category::Photo));
+        // The CLI's spelling resolves to the same op.
+        assert_eq!(category_of("compress-photo"), Some(Category::Photo));
+        assert_eq!(category_of("frobnicate"), None);
         assert!(ops_in(Category::Audio).contains(&"normalize"));
-        assert_eq!(Category::ALL.len(), 6);
+        assert_eq!(Category::ALL.len(), 7);
+    }
+
+    #[test]
+    fn one_taxonomy_not_two() {
+        // `resize` was Video in the bridge and Photo here. The bridge rendered
+        // the grid, so the bridge was right; this asserts they cannot diverge
+        // again because there is only one answer now.
+        assert_eq!(category_of("resize"), Some(Category::Video));
     }
 }

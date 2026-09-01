@@ -1,18 +1,23 @@
 //! `np.p4.tools.cli` — `tulipix` CLI parity layer.
 //!
-//! Every Tools op is a CLI subcommand (rename/merge/split/compress/convert/
-//! trim/extract/transcribe/…) sharing this crate's logic and `tools.db` queue
-//! with the GUI. This parses argv into a [`ParsedCommand`] with the shared
-//! `--json` / `--dry-run` / `--queue` flags; the binary dispatches on it.
+//! Every Tools op is a CLI subcommand sharing this crate's logic and `tools.db`
+//! queue with the GUI. This parses argv into a [`ParsedCommand`] with the
+//! shared `--json` / `--dry-run` / `--queue` flags; the binary dispatches on it.
+//!
+//! The list used to be hand-maintained here in kebab-case, and had drifted: it
+//! offered `metadata` and `pdf`, neither of which `exec::plan` has an arm for,
+//! and it never translated `compress-video` to the `compress_video` the rest of
+//! the crate matches on. Both are fixed by deriving from [`crate::catalog`].
 
 use serde::{Deserialize, Serialize};
 
-/// Every subcommand the CLI exposes (kebab-case, matches GUI op kinds).
-pub const SUBCOMMANDS: &[&str] = &[
-    "rename", "merge", "split", "compress-video", "compress-audio", "compress-photo",
-    "convert", "trim", "extract", "metadata", "thumbnail", "watermark", "normalize",
-    "transcribe", "download", "burn-subs", "resize", "pdf", "hash", "folder-diff", "queue",
-];
+/// The one subcommand that is not an operation.
+pub const QUEUE: &str = "queue";
+
+/// Every subcommand the CLI exposes: one per catalogue op, plus `queue`.
+pub fn subcommands() -> impl Iterator<Item = &'static str> {
+    crate::catalog::kinds().chain(std::iter::once(QUEUE))
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ParsedCommand {
@@ -38,11 +43,15 @@ pub enum ParseError {
 /// Parse argv (without the program name) into a command.
 pub fn parse(args: &[String]) -> Result<ParsedCommand, ParseError> {
     let mut it = args.iter();
-    let sub = it.next().ok_or(ParseError::NoSubcommand)?.clone();
-    if !SUBCOMMANDS.contains(&sub.as_str()) {
-        return Err(ParseError::UnknownSubcommand(sub));
-    }
-    let mut cmd = ParsedCommand { subcommand: sub, ..Default::default() };
+    let raw = it.next().ok_or(ParseError::NoSubcommand)?;
+    // Resolved, not just validated: `compress-video` becomes `compress_video`
+    // here so everything downstream sees the one canonical spelling.
+    let sub = if raw.as_str() == QUEUE {
+        QUEUE
+    } else {
+        crate::catalog::resolve(raw).ok_or_else(|| ParseError::UnknownSubcommand(raw.clone()))?
+    };
+    let mut cmd = ParsedCommand { subcommand: sub.to_string(), ..Default::default() };
     let mut pending: Option<String> = None;
     for arg in it {
         if let Some(key) = pending.take() {
@@ -93,6 +102,23 @@ mod tests {
     fn rejects_unknown_and_empty() {
         assert_eq!(parse(&argv(&[])), Err(ParseError::NoSubcommand));
         assert_eq!(parse(&argv(&["frobnicate"])), Err(ParseError::UnknownSubcommand("frobnicate".into())));
+        // Both were listed as subcommands and neither has an `exec::plan` arm.
+        assert!(parse(&argv(&["metadata"])).is_err());
+        assert!(parse(&argv(&["pdf"])).is_err());
+    }
+
+    #[test]
+    fn kebab_resolves_to_the_canonical_kind() {
+        let cmd = parse(&argv(&["compress-video", "in.mov"])).unwrap();
+        assert_eq!(cmd.subcommand, "compress_video");
+        assert_eq!(parse(&argv(&["folder-diff"])).unwrap().subcommand, "folder_diff");
+    }
+
+    #[test]
+    fn queue_is_a_subcommand_but_not_an_op() {
+        assert_eq!(parse(&argv(&["queue"])).unwrap().subcommand, "queue");
+        assert!(subcommands().any(|s| s == "queue"));
+        assert!(crate::catalog::get("queue").is_none());
     }
 
     #[test]

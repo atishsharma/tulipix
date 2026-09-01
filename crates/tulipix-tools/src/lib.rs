@@ -6,8 +6,10 @@
 //! them to a single persisted job queue (`tools.db`) so workers, progress, and
 //! retries are identical across front-ends.
 
+pub mod catalog;
 pub mod schema;
 
+pub mod archive;
 pub mod burn_subs;
 pub mod cli;
 pub mod compress_audio;
@@ -20,12 +22,14 @@ pub mod download_playlist;
 pub mod download_routing;
 pub mod exec;
 pub mod extract;
+pub mod filters;
 pub mod folder_diff;
 pub mod hash;
 pub mod merge;
 pub mod metadata;
 pub mod normalize;
 pub mod pdf;
+pub mod preview;
 pub mod queue;
 pub mod rename;
 pub mod resize;

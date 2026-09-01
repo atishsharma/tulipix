@@ -12,14 +12,18 @@ fn main() -> Result<()> {
 
     match cli::parse(&args) {
         Ok(cmd) => {
-            let category = section::category_of(&cmd.subcommand);
+            // `queue` is a subcommand without a category — it is the queue,
+            // not an operation.
+            let category = section::category_of(&cmd.subcommand)
+                .map(|c| c.label())
+                .unwrap_or("Queue");
             if cmd.json {
                 println!("{}", serde_json::to_string(&cmd)?);
             } else {
                 println!(
                     "tulipix {} [{}]{}{}",
                     cmd.subcommand,
-                    category.label(),
+                    category,
                     if cmd.dry_run { " (dry-run)" } else { "" },
                     if cmd.queue { " (queued)" } else { "" },
                 );
@@ -28,7 +32,7 @@ fn main() -> Result<()> {
         }
         Err(ParseError::NoSubcommand) => {
             println!("tulipix — Tools CLI. Subcommands:");
-            for s in cli::SUBCOMMANDS {
+            for s in cli::subcommands() {
                 println!("  {s}");
             }
             println!("\nShared flags: --json  --dry-run  --queue");

@@ -52,9 +52,19 @@ Future<String?> pickFile({
 
 /// Several files at once. Empty when cancelled, never null, because every
 /// caller is about to iterate it.
-Future<List<String>> pickFiles({String? initial}) async {
+Future<List<String>> pickFiles({
+  String label = 'Any file',
+  List<String> extensions = const [],
+  String? initial,
+}) async {
   try {
-    final files = await openFiles(initialDirectory: initial);
+    final files = await openFiles(
+      initialDirectory: initial,
+      acceptedTypeGroups: [
+        if (extensions.isNotEmpty)
+          XTypeGroup(label: label, extensions: extensions),
+      ],
+    );
     return [for (final f in files) f.path];
   } catch (e) {
     debugPrint('picker: $e');

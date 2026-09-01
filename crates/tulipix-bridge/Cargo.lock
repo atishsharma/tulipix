@@ -4707,11 +4707,13 @@ name = "tulipix-tools"
 version = "1.0.1"
 dependencies = [
  "anyhow",
+ "lopdf",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
  "tulipix-core",
+ "zip",
 ]
 
 [[package]]
