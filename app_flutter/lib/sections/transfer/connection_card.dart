@@ -241,13 +241,19 @@ class ConnectionCard extends StatelessWidget {
             // empty — but `Outline` asks for it either way.
             empty: '',
             isEmpty: false,
-            // One row, not two. The QR plate is a hard 140px and has first
-            // claim on the panel above: on a laptop with both Wi-Fi and
-            // Ethernet the interface picker already takes two runs, and a
-            // second row of peers here is enough to push the plate into
-            // `PanelBody`'s scroll — the card's headline element quietly cut,
-            // with nothing on screen saying so. Past one row this box scrolls
-            // instead, which is a truncation you can see and undo.
+            // One row, not two: the QR plate above has first claim on the
+            // panel's height. It is a fixed 140x140, which is 171px once the
+            // panel's padding and border are counted, and with two interfaces
+            // the panel lands at about 186 — so the plate fits with roughly
+            // 15px to spare, and a second row here would have taken 38 of it.
+            //
+            // That margin rests on the interface picker staying on one row. A
+            // long name beside a long address — `enp0s31f6` next to
+            // 192.168.100.100 — wraps it, costs about 34px, and the plate is
+            // cut again. Silently: `PanelBody` scrolls rather than overflows,
+            // so nothing throws and no test goes red. Past one row this box
+            // scrolls instead, which is a truncation inside a bordered box
+            // that you can see and undo.
             rows: 1,
             // The chip plus the run gap that follows it, stated once rather
             // than as a number that has to be kept in step by hand.
