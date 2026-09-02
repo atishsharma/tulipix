@@ -5,6 +5,7 @@
 //! fallible step is a `let … else` or a `match`, and every mutex is taken
 //! through [`lock`], which recovers a poisoned guard instead of unwrapping it.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -110,6 +111,16 @@ pub struct Pairing {
     pub approved: bool,
 }
 
+/// A push somebody has announced but nobody has answered yet.
+pub struct Offer {
+    /// Who it is from, as the consent panel names them.
+    pub peer: String,
+    pub files: u32,
+    pub bytes: u64,
+    /// `None` until a person answers; then accepted or not.
+    pub answer: Option<bool>,
+}
+
 pub struct AppState {
     pub auth: Mutex<Auth>,
     pub tray: Mutex<Tray>,
@@ -142,6 +153,11 @@ pub struct AppState {
     /// dialogs asking to compare different digits is how a person approves the
     /// wrong one.
     pub pairing: Mutex<Option<Pairing>>,
+    /// Announced pushes, by id. Kept after they are answered as well as before:
+    /// an accepted offer has to stay readable for as long as its uploads are
+    /// still arriving, and a declined one has to keep saying no.
+    pub offers: Mutex<HashMap<u64, Offer>>,
+    next_offer: AtomicU64,
 }
 
 pub type Shared = Arc<AppState>;
@@ -241,6 +257,42 @@ impl AppState {
         }
         guard.take()
     }
+
+    /// File an announced push and return the id its uploads must carry.
+    pub fn new_offer(&self, offer: Offer) -> u64 {
+        // Starts at 1: zero is what a missing or unparsed header would look
+        // like, and an id nobody can accidentally produce is worth one integer.
+        let id = self.next_offer.fetch_add(1, Ordering::Relaxed) + 1;
+        lock(&self.offers).insert(id, offer);
+        id
+    }
+
+    /// Whether a person has answered this offer, and how. `None` for both
+    /// "not yet" and "no such offer" — the upload gate treats them alike.
+    pub fn offer_answer(&self, id: u64) -> Option<bool> {
+        lock(&self.offers).get(&id)?.answer
+    }
+
+    /// A person answered. Returns false if there was no such offer.
+    pub fn answer_offer(&self, id: u64, accept: bool) -> bool {
+        let mut offers = lock(&self.offers);
+        let Some(offer) = offers.get_mut(&id) else { return false };
+        offer.answer = Some(accept);
+        true
+    }
+
+    /// The offers still waiting on a person, for the Receive card.
+    pub fn pending_offers(&self) -> Vec<(u64, String, u32, u64)> {
+        let offers = lock(&self.offers);
+        let mut out: Vec<(u64, String, u32, u64)> = offers
+            .iter()
+            .filter(|(_, o)| o.answer.is_none())
+            .map(|(id, o)| (*id, o.peer.clone(), o.files, o.bytes))
+            .collect();
+        // Oldest first: the card asks about them in the order they arrived.
+        out.sort_by_key(|(id, ..)| *id);
+        out
+    }
 }
 
 pub struct Config {
@@ -294,6 +346,17 @@ impl Running {
     pub fn cancel_pairing(&self) {
         self.state.cancel_pairing();
     }
+
+    /// A person accepted an announced push.
+    pub fn accept_offer(&self, id: u64) -> bool {
+        self.state.answer_offer(id, true)
+    }
+
+    /// A person refused it. Nothing was written — the gate is above the point
+    /// where anything is created.
+    pub fn decline_offer(&self, id: u64) -> bool {
+        self.state.answer_offer(id, false)
+    }
 }
 
 pub async fn start(cfg: Config) -> anyhow::Result<Running> {
@@ -342,6 +405,8 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
         ca: Mutex::new(None),
         fingerprint: Mutex::new(String::new()),
         pairing: Mutex::new(None),
+        offers: Mutex::new(HashMap::new()),
+        next_offer: AtomicU64::new(0),
     });
 
     let app = Router::new()
@@ -367,6 +432,8 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
         .route("/auth", post(auth_post))
         .route("/api/peer/pair", post(peer_pair))
         .route("/api/peer/pair/confirm", post(peer_pair_confirm))
+        .route("/api/peer/offer", post(peer_offer))
+        .route("/api/peer/offer/{id}", get(peer_offer_status))
         .route("/api/files", get(files))
         .route("/api/status", get(status))
         // What the gateway probes. Unauthenticated on purpose: the answer it is
@@ -855,6 +922,82 @@ async fn peer_pair_confirm(State(state): State<Shared>, body: String) -> Respons
     )
 }
 
+#[derive(serde::Deserialize)]
+struct OfferBody {
+    files: Vec<OfferFile>,
+    total: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct OfferFile {
+    #[allow(dead_code)]
+    name: String,
+    #[allow(dead_code)]
+    bytes: u64,
+}
+
+/// Announce an incoming push. Returns the id every upload in the batch must
+/// carry, so the consent covers exactly the batch that was described and not
+/// whatever arrives next.
+async fn peer_offer(
+    State(st): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    // `caller` only hands back the token value, not the record behind it, and
+    // the display name below needs the record — so the check is inlined
+    // rather than routed through `caller` and then looked up a second time.
+    let Some(value) = token_in(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(token) = lock(&st.auth).check(&value, now_secs()) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Ok(body) = serde_json::from_str::<OfferBody>(&body) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let name = {
+        let named = token.display_name().to_string();
+        if named.is_empty() { peer_ip(peer) } else { named }
+    };
+    let id = st.new_offer(Offer {
+        peer: name,
+        files: body.files.len() as u32,
+        bytes: body.total,
+        answer: None,
+    });
+    json(
+        serde_json::to_string(&serde_json::json!({ "offer": id }))
+            .unwrap_or_else(|_| "{}".into()),
+    )
+}
+
+/// Has anybody answered yet? Polled by a sender between announcing a batch and
+/// sending it — the thing it is waiting for is a person, so it is polled at
+/// human speed, not machine speed.
+async fn peer_offer_status(
+    State(st): State<Shared>,
+    Path(id): Path<u64>,
+    headers: HeaderMap,
+) -> Response {
+    if caller(&st, &headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let offers = lock(&st.offers);
+    let Some(offer) = offers.get(&id) else {
+        // Unknown id: never announced, or long gone. A caller treats this the
+        // same as a refusal — there is nothing here to wait for.
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let answer = offer.answer;
+    drop(offers);
+    json(
+        serde_json::to_string(&serde_json::json!({ "answer": answer }))
+            .unwrap_or_else(|_| "{}".into()),
+    )
+}
+
 async fn files(State(st): State<Shared>, headers: HeaderMap) -> Response {
     // `caller`, not `authorised`: the list is now per device, so the identity
     // behind the cookie is the answer and not just the fact that there is one.
@@ -1088,6 +1231,25 @@ async fn upload(
     let Some(token) = caller(&st, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+
+    // A push announced through /api/peer/offer may not write until a person
+    // here has accepted it. This sits above `Sink::create` deliberately: a
+    // refusal must leave nothing behind, not an empty file someone has to
+    // notice and delete.
+    //
+    // An upload with no offer header is a browser upload. Those are already
+    // covered by the token check above and are unaffected — this gate only
+    // constrains pushes that announced themselves.
+    if let Some(raw) = headers.get("x-tulipix-offer").and_then(|v| v.to_str().ok()) {
+        // An unparseable id is a malformed push, not an unannounced one:
+        // refuse it rather than letting it through as a browser upload.
+        let Ok(id) = raw.parse::<u64>() else {
+            return StatusCode::FORBIDDEN.into_response();
+        };
+        if st.offer_answer(id) != Some(true) {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    }
 
     let dir = lock(&st.inbox).clone();
     let Ok(mut sink) = inbox::Sink::create(&dir, &name).await else {
@@ -1567,5 +1729,101 @@ mod tests {
             "the window is half-open"
         );
         assert!(!AppState::pairing_fresh(1_000, 999), "a clock that went backwards expires it");
+    }
+
+    #[tokio::test]
+    async fn an_unaccepted_offer_refuses_the_upload_that_follows_it() {
+        let (run, base, _dir) = started().await;
+        let c = client();
+        c.post(format!("{base}/auth")).body(run.pin.clone()).send().await.unwrap();
+
+        let res = c
+            .post(format!("{base}/api/peer/offer"))
+            .json(&serde_json::json!({
+                "files": [{ "name": "a.bin", "bytes": 4 }],
+                "total": 4
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let offer = res.json::<serde_json::Value>().await.unwrap()["offer"].as_u64().unwrap();
+
+        // Nobody has accepted yet.
+        let refused = c
+            .put(format!("{base}/upload/a.bin"))
+            .header("x-tulipix-offer", offer.to_string())
+            .body("abcd")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 403, "bytes must not land before a person says yes");
+
+        assert!(run.accept_offer(offer), "the offer id must still be the one just minted");
+
+        let allowed = c
+            .put(format!("{base}/upload/a.bin"))
+            .header("x-tulipix-offer", offer.to_string())
+            .body("abcd")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), 200, "and must land once they have");
+        run.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_declined_offer_leaves_nothing_in_the_inbox() {
+        let (run, base, dir) = started().await;
+        let c = client();
+        c.post(format!("{base}/auth")).body(run.pin.clone()).send().await.unwrap();
+
+        let offer = c
+            .post(format!("{base}/api/peer/offer"))
+            .json(&serde_json::json!({ "files": [{ "name": "b.bin", "bytes": 4 }], "total": 4 }))
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap()["offer"]
+            .as_u64()
+            .unwrap();
+
+        assert!(run.decline_offer(offer), "the offer id must still be the one just minted");
+
+        let refused = c
+            .put(format!("{base}/upload/b.bin"))
+            .header("x-tulipix-offer", offer.to_string())
+            .body("abcd")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 403);
+        assert!(!dir.path().join("b.bin").exists(), "a declined push writes no partial file");
+        run.stop().await;
+    }
+
+    #[tokio::test]
+    async fn an_unparseable_offer_header_is_refused_rather_than_waved_through() {
+        let (run, base, dir) = started().await;
+        let c = client();
+        c.post(format!("{base}/auth")).body(run.pin.clone()).send().await.unwrap();
+
+        let refused = c
+            .put(format!("{base}/upload/sneaky.bin"))
+            .header("x-tulipix-offer", "banana")
+            .body("abcd")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            refused.status(),
+            403,
+            "a push that claims an offer must name a real one, not any string at all"
+        );
+        assert!(!dir.path().join("sneaky.bin").exists(), "and nothing is written");
+
+        run.stop().await;
     }
 }

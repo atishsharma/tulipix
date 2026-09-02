@@ -69,6 +69,14 @@ pub struct PeerRow {
     pub paired: bool,
 }
 
+/// A push another machine has announced, waiting on an answer here.
+pub struct OfferRow {
+    pub id: u64,
+    pub peer: String,
+    pub files: u32,
+    pub bytes: u64,
+}
+
 /// Mark each discovered peer against the addresses we hold tokens for.
 fn peer_rows(found: &[discover::Found], paired_ips: &[String]) -> Vec<PeerRow> {
     found
@@ -157,6 +165,8 @@ pub struct Snapshot {
     pub devices: Vec<DeviceRow>,
     /// Other tulipix machines seen on the network, paired or not.
     pub peers: Vec<PeerRow>,
+    /// Pushes announced from elsewhere, still waiting on a person here.
+    pub offers: Vec<OfferRow>,
     /// `(address, wrong guesses)`, worst first. Empty when nobody has missed.
     pub attempts: Vec<(String, u32)>,
     pub uploads: Vec<UploadRow>,
@@ -457,6 +467,16 @@ impl TransferService {
         lock(&run.state.auth).pairing_live(server::now_secs())
     }
 
+    /// Let an announced push write to the inbox.
+    pub fn accept_offer(&self, id: u64) -> bool {
+        self.running.as_ref().is_some_and(|run| run.accept_offer(id))
+    }
+
+    /// Refuse it.
+    pub fn decline_offer(&self, id: u64) -> bool {
+        self.running.as_ref().is_some_and(|run| run.decline_offer(id))
+    }
+
     /// The chosen interface's address, or the best one available.
     fn address(&self) -> String {
         if !self.iface.is_empty() && self.ifaces.iter().any(|(_, ip)| ip.to_string() == self.iface)
@@ -600,6 +620,13 @@ impl TransferService {
             .map(|s| SendRow { row: s.row, done: s.done, total: s.total })
             .collect();
 
+        let offers = run
+            .state
+            .pending_offers()
+            .into_iter()
+            .map(|(id, peer, files, bytes)| OfferRow { id, peer, files, bytes })
+            .collect();
+
         Snapshot {
             running: true,
             port: run.port,
@@ -615,6 +642,7 @@ impl TransferService {
             share_target,
             devices,
             peers: self.peers(),
+            offers,
             attempts,
             uploads,
             sends,
