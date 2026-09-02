@@ -29,6 +29,12 @@ const INBOX_KEY: &str = "transfer.inbox";
 /// what actually refuses the eleventh; this is the caption.
 const DEVICE_MAX: i64 = 10;
 
+/// Give up retrying a pairing this session started. Mirrors
+/// `PEER_PAIRING_TTL` in `tulipix-transfer/src/server.rs`, which is the clock
+/// that actually expires the proposal on the far end; this just stops a
+/// dialog nobody ever answered from being polled forever.
+const PAIR_TTL_SECS: u64 = 120;
+
 // ----------------------------------------------------------------- types ----
 
 /// One file the desktop is offering. `id` is the tray id, never a path — the
@@ -235,6 +241,12 @@ pub struct TransferState {
     /// The record to add, while waiting. `_acme-challenge.<host>` and its value.
     pub cert_record: String,
     pub cert_value: String,
+
+    /// The six digits to compare, while a pairing is on screen. Empty closes
+    /// the dialog — there is no separate "is it open" flag to fall out of step.
+    pub pair_code: String,
+    /// Which machine those digits belong to.
+    pub pair_peer: String,
 }
 
 #[derive(Debug, Clone)]
@@ -276,6 +288,22 @@ pub enum TransferCmd {
     SetPage { page: i64 },
     SetSort { col: i64, desc: bool },
     DismissUpload { id: i64 },
+
+    /// Start pairing with another tulipix. Shows digits; issues nothing.
+    PairPeer { base: String },
+    /// A person compared the digits on both screens and they matched.
+    ConfirmPair,
+    /// They did not match, or nobody answered. Nothing was issued, so this only
+    /// clears the dialog — but clearing it is the point: a stale code on screen
+    /// is a code somebody might confirm later.
+    CancelPair,
+    /// Let an announced push write to the inbox.
+    AcceptOffer { id: i64 },
+    /// Refuse it. No partial file is left behind — the gate is above the point
+    /// where anything is created.
+    DeclineOffer { id: i64 },
+    /// Send the tray to every ticked machine at once, one lane each.
+    SendTray { bases: Vec<String> },
 }
 
 // --------------------------------------------------------------- session ----
@@ -334,9 +362,16 @@ struct TransferSession {
     qr_rev: i64,
     /// The URL the code on screen was drawn for.
     qr_for: String,
-    /// The lanes of the fan-out in flight. Nothing in this task writes to it —
-    /// the sender that drives a fan-out lands in a later task.
+    /// The lanes of the current fan-out, written by `SendTray`.
     lanes: Vec<tulipix_transfer::fanout::Lane>,
+    /// base -> token, for the machines we have paired with. Held here rather
+    /// than in `tulipix-transfer` because it is our half of the pairing: the
+    /// other machine stores the mirror of it in its own `Auth`.
+    peer_tokens: HashMap<String, String>,
+    /// The pairing this session started, while it waits for an answer. `None`
+    /// on the machine that only *received* a proposal — that side has nothing
+    /// to poll, it just approves what arrived. See `TransferCmd::ConfirmPair`.
+    pending_pair: Option<PendingPair>,
 }
 
 impl TransferSession {
@@ -350,6 +385,27 @@ impl TransferSession {
             ..Self::default()
         }
     }
+}
+
+/// A pairing this session asked another machine to start, on its way to a
+/// token.
+///
+/// `confirmed` and `started` exist for one reason: `peer::confirm` answers 409
+/// until the person at the far end presses their own button, which is usually
+/// still seconds away when this one is pressed. Rather than fail that click,
+/// `ConfirmPair` sets `confirmed` and `TransferCmd::Refresh` retries the call
+/// on every 600 ms tick until it succeeds or `started` says it has been too
+/// long.
+#[frb(ignore)]
+#[derive(Clone)]
+struct PendingPair {
+    base: String,
+    /// Their fingerprint, as returned by `peer::pair` — what `peer::confirm`
+    /// has to send back to identify which proposal this is.
+    fingerprint: String,
+    code: String,
+    confirmed: bool,
+    started: std::time::Instant,
 }
 
 fn session() -> &'static Mutex<TransferSession> {
@@ -382,7 +438,10 @@ fn lifecycle() -> &'static tokio::sync::Mutex<()> {
 /// chooser: the alternative is a UI that has to guess when to ask again.
 pub async fn transfer_dispatch(cmd: TransferCmd) -> Result<TransferState> {
     match cmd {
-        TransferCmd::Refresh => {}
+        // A dialog this session started polls itself here: `peer::confirm`
+        // answers 409 until the far end's person presses their button too, so
+        // one attempt at the moment of the click is not enough.
+        TransferCmd::Refresh => retry_pending_pair().await,
         TransferCmd::Start => start_service().await,
         TransferCmd::Stop => stop_service().await,
         TransferCmd::AddFiles { paths } => {
@@ -528,8 +587,101 @@ pub async fn transfer_dispatch(cmd: TransferCmd) -> Result<TransferState> {
         TransferCmd::DismissUpload { id } => {
             let _ = with(|svc| svc.dismiss_upload(id.max(0) as u64));
         }
+        TransferCmd::PairPeer { base } => {
+            let ours = with(|svc| svc.snapshot().fingerprint).unwrap_or_default();
+            match tulipix_transfer::peer::pair(&base, &ours).await {
+                Ok((code, theirs)) => {
+                    sess().pending_pair = Some(PendingPair {
+                        base,
+                        fingerprint: theirs,
+                        code,
+                        confirmed: false,
+                        started: std::time::Instant::now(),
+                    });
+                }
+                Err(e) => {
+                    // A machine that went away between the grid and the click.
+                    // Reported in the status line, not as a dialog.
+                    tracing::debug!(error = %e, "transfer: pairing did not start");
+                    sess().pending_pair = None;
+                }
+            }
+        }
+        // One command, two meanings, told apart by whose session this is:
+        //
+        // - The machine that *started* the pairing has `pending_pair` set —
+        //   its job is to tell the far end, which is `peer::confirm`. That
+        //   call is likely to answer 409 (the far end's person has not
+        //   clicked yet), so this only marks the click and hands the actual
+        //   call to `retry_pending_pair`, which `Refresh` drives every tick.
+        // - The machine that only *received* a proposal has nothing pending
+        //   here — the proposal lives in `tulipix-transfer`'s own state, not
+        //   this session's. Its job is to approve it locally, so that the
+        //   initiator's `peer::confirm` — arriving any moment now — has
+        //   something to find.
+        TransferCmd::ConfirmPair => {
+            let initiating = { sess().pending_pair.is_some() };
+            if initiating {
+                if let Some(p) = sess().pending_pair.as_mut() {
+                    p.confirmed = true;
+                }
+                retry_pending_pair().await;
+            } else {
+                let _ = with(|svc| svc.confirm_pair());
+            }
+        }
+        TransferCmd::CancelPair => {
+            sess().pending_pair = None;
+            // A no-op on the initiating side, where there is nothing of ours
+            // to cancel; on the receiving side this drops the proposal so it
+            // is not still answerable after the person just said no.
+            let _ = with(|svc| svc.cancel_pair());
+        }
+        TransferCmd::AcceptOffer { id } => {
+            let _ = with(|svc| svc.accept_offer(id.max(0) as u64));
+        }
+        TransferCmd::DeclineOffer { id } => {
+            let _ = with(|svc| svc.decline_offer(id.max(0) as u64));
+        }
+        TransferCmd::SendTray { bases } => {
+            let files = with(|svc| svc.tray_paths()).unwrap_or_default();
+            let state = last_state().unwrap_or_else(off_state);
+            let tokens = sess().peer_tokens.clone();
+            let dests = destinations(&bases, &state.peers, &tokens);
+            if !files.is_empty() && !dests.is_empty() {
+                let pool = with(|svc| svc.pool()).flatten();
+                let lanes = tulipix_transfer::fanout::send(files, dests, pool).await;
+                sess().lanes = lanes;
+            }
+        }
     }
     snapshot().await
+}
+
+/// Retry the `peer::confirm` call for a pairing this session started, if the
+/// local person has already said the digits match.
+///
+/// Silent on failure beyond a debug log: a 409 here just means the other
+/// person has not clicked yet, which is the ordinary case on the first several
+/// ticks and not something worth a warning.
+async fn retry_pending_pair() {
+    let pending = { sess().pending_pair.clone() };
+    let Some(p) = pending else { return };
+    if p.started.elapsed().as_secs() >= PAIR_TTL_SECS {
+        sess().pending_pair = None;
+        return;
+    }
+    if !p.confirmed {
+        return;
+    }
+    match tulipix_transfer::peer::confirm(&p.base, &p.fingerprint).await {
+        Ok(token) => {
+            let mut s = sess();
+            s.peer_tokens.insert(p.base, token);
+            s.pending_pair = None;
+        }
+        Err(e) => tracing::debug!(error = %e, "transfer: pairing not confirmed yet"),
+    }
 }
 
 /// The pairing code currently on screen, or `None` when not sharing.
@@ -833,6 +985,37 @@ async fn snapshot() -> Result<TransferState> {
         (s.page, s.pages.max(1), s.sort, s.sort_desc, if snap.running { s.qr_rev } else { 0 })
     };
 
+    let peers: Vec<TransferPeer> = snap
+        .peers
+        .iter()
+        .map(|p| TransferPeer {
+            base: format!("{}://{}:{}", if snap.secure { "https" } else { "http" }, p.ip, p.port),
+            host: p.host.clone(),
+            ip: p.ip.clone(),
+            port: p.port as i64,
+            paired: p.paired,
+        })
+        .collect();
+
+    // Only the machine that started a pairing has anything to show here.
+    // `sess().pending_pair` is that machine's own bookkeeping; the machine
+    // that only *received* a proposal has no session state for it at all — see
+    // the task-12 report for why that side's dialog is not wired up yet.
+    let (pair_code, pair_peer) = {
+        let s = sess();
+        match &s.pending_pair {
+            Some(p) => (
+                p.code.clone(),
+                peers
+                    .iter()
+                    .find(|peer| peer.base == p.base)
+                    .map(|peer| peer.ip.clone())
+                    .unwrap_or_else(|| p.base.clone()),
+            ),
+            None => (String::new(), String::new()),
+        }
+    };
+
     let state = TransferState {
         running: snap.running,
         status: status_line(&snap),
@@ -862,22 +1045,7 @@ async fn snapshot() -> Result<TransferState> {
         share_target: snap.share_target.clone(),
         devices,
         device_max: DEVICE_MAX,
-        peers: snap
-            .peers
-            .iter()
-            .map(|p| TransferPeer {
-                base: format!(
-                    "{}://{}:{}",
-                    if snap.secure { "https" } else { "http" },
-                    p.ip,
-                    p.port
-                ),
-                host: p.host.clone(),
-                ip: p.ip.clone(),
-                port: p.port as i64,
-                paired: p.paired,
-            })
-            .collect(),
+        peers,
         offers: snap.offers.iter().map(offer_view).collect(),
         lanes: sess().lanes.iter().map(lane_view).collect(),
         uploads,
@@ -898,6 +1066,8 @@ async fn snapshot() -> Result<TransferState> {
         cert_waiting: cert.waiting,
         cert_record: cert.record,
         cert_value: cert.value,
+        pair_code,
+        pair_peer,
     };
     *last().lock().unwrap_or_else(|e| e.into_inner()) = Some(state.clone());
     Ok(state)
@@ -949,6 +1119,8 @@ fn off_state() -> TransferState {
         cert_waiting: false,
         cert_record: String::new(),
         cert_value: String::new(),
+        pair_code: String::new(),
+        pair_peer: String::new(),
     }
 }
 
@@ -1217,6 +1389,33 @@ fn lane_view(lane: &tulipix_transfer::fanout::Lane) -> TransferLane {
     TransferLane { name: lane.name.clone(), pct, state: state.into(), detail }
 }
 
+/// Turn the bases a person ticked into somewhere to actually send.
+///
+/// Silently drops anything unpaired or unknown rather than failing the whole
+/// send: the list came from a grid that was drawn a tick ago, and a machine
+/// that left the network between the draw and the click is ordinary, not an
+/// error worth a dialog.
+fn destinations(
+    picked: &[String],
+    peers: &[TransferPeer],
+    tokens: &HashMap<String, String>,
+) -> Vec<tulipix_transfer::fanout::Destination> {
+    picked
+        .iter()
+        .filter_map(|base| {
+            let peer = peers.iter().find(|p| &p.base == base)?;
+            if !peer.paired {
+                return None;
+            }
+            Some(tulipix_transfer::fanout::Destination {
+                name: peer.ip.clone(),
+                base: base.clone(),
+                token: tokens.get(base)?.clone(),
+            })
+        })
+        .collect()
+}
+
 fn offer_view(row: &tulipix_transfer::OfferRow) -> TransferOffer {
     TransferOffer {
         id: row.id as i64,
@@ -1445,5 +1644,42 @@ mod tests {
         });
         assert!(many.summary.starts_with("3 files "), "plural: {}", many.summary);
         assert_eq!(many.peer, "studio");
+    }
+
+    #[test]
+    fn only_paired_peers_become_destinations() {
+        let peers = vec![
+            TransferPeer {
+                host: "tulipix.local".into(),
+                ip: "192.168.1.31".into(),
+                port: 8420,
+                base: "https://192.168.1.31:8420".into(),
+                paired: true,
+            },
+            TransferPeer {
+                host: "tulipix.local".into(),
+                ip: "192.168.1.99".into(),
+                port: 8420,
+                base: "https://192.168.1.99:8420".into(),
+                paired: false,
+            },
+        ];
+        let tokens: HashMap<String, String> =
+            [("https://192.168.1.31:8420".to_string(), "abc123".to_string())].into();
+
+        let picked = vec![
+            "https://192.168.1.31:8420".to_string(),
+            "https://192.168.1.99:8420".to_string(),
+            "https://10.0.0.7:8420".to_string(),
+        ];
+        let dests = destinations(&picked, &peers, &tokens);
+
+        assert_eq!(dests.len(), 1, "an unpaired peer and an unknown address are both dropped");
+        assert_eq!(dests[0].token, "abc123");
+        assert_eq!(
+            dests[0].name,
+            "192.168.1.31",
+            "a lane is labelled by something a person recognises"
+        );
     }
 }

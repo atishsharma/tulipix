@@ -478,6 +478,23 @@ impl TransferService {
         self.running.as_ref().is_some_and(|run| run.decline_offer(id))
     }
 
+    /// A person on *this* machine compared the digits of a pairing someone else
+    /// proposed and said they match. Approves it locally so the far end's
+    /// `peer::confirm` call — which has been answering 409 until now — can
+    /// succeed.
+    pub fn confirm_pair(&self) -> bool {
+        self.running.as_ref().is_some_and(|run| run.approve_pairing())
+    }
+
+    /// They did not match, or the dialog was dismissed without an answer.
+    /// Drops the proposal itself, so a "no" here does not sit answerable until
+    /// it ages out on its own.
+    pub fn cancel_pair(&self) {
+        if let Some(run) = &self.running {
+            run.cancel_pairing();
+        }
+    }
+
     /// The chosen interface's address, or the best one available.
     fn address(&self) -> String {
         if !self.iface.is_empty() && self.ifaces.iter().any(|(_, ip)| ip.to_string() == self.iface)
@@ -532,6 +549,20 @@ impl TransferService {
         let Some(run) = &self.running else { return Vec::new() };
         let Some(browser) = run.browser.as_ref() else { return Vec::new() };
         peer_rows(&browser.peers(), &self.paired_ips())
+    }
+
+    /// The files in the tray, as paths on this machine.
+    ///
+    /// Deliberately not on `FileRow`, which crosses to a phone and must never
+    /// carry a path. This is for the fan-out, which runs here on the desktop
+    /// and has to open the files it is sending.
+    ///
+    /// Uses `Tray::readable`, so a file that has been moved or deleted since it
+    /// was added is one fewer file rather than one failed lane.
+    pub fn tray_paths(&self) -> Vec<std::path::PathBuf> {
+        let Some(run) = &self.running else { return Vec::new() };
+        let tray = lock(&run.state.tray);
+        tray.items().iter().filter_map(|i| tray.readable(i.id)).collect()
     }
 
     /// Addresses we already hold a device token for. Empty today: pairing a
