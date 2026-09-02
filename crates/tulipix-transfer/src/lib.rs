@@ -6,6 +6,7 @@
 //! exactly one type, [`TransferService`], and one read model, [`Snapshot`].
 
 pub mod auth;
+pub mod discover;
 pub mod inbox;
 pub mod ledger;
 pub mod mdns;
