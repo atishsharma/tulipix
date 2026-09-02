@@ -7,6 +7,7 @@
 
 pub mod auth;
 pub mod discover;
+pub mod fanout;
 pub mod inbox;
 pub mod ledger;
 pub mod mdns;
