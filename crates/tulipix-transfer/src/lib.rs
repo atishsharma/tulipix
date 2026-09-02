@@ -12,6 +12,7 @@ pub mod ledger;
 pub mod mdns;
 pub mod names;
 pub mod net;
+pub mod peer;
 pub mod range;
 pub mod server;
 pub mod share;
