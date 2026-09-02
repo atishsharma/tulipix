@@ -15,6 +15,7 @@ import 'package:tulipix/sections/transfer/connection_card.dart';
 import 'package:tulipix/sections/transfer/receive_card.dart';
 import 'package:tulipix/sections/transfer/send_card.dart';
 import 'package:tulipix/sections/transfer/transfer_controller.dart';
+import 'package:tulipix/sections/transfer/transfer_widgets.dart';
 import 'package:tulipix/sections/transfer/transfers_table.dart';
 import 'package:tulipix/src/rust/api/transfer.dart';
 
@@ -27,6 +28,7 @@ TransferState _state({
   int ifaces = 1,
   int peers = 0,
   String attempts = '',
+  List<TransferLane> lanes = const [],
 }) {
   return TransferState(
     running: running,
@@ -77,10 +79,10 @@ TransferState _state({
           paired: i.isEven,
         ),
     ],
-    // Neither has a widget yet; they are here so this file compiles against
-    // the state the bridge actually hands over.
+    // No widget yet; here so this file compiles against the state the bridge
+    // actually hands over.
     offers: const [],
-    lanes: const [],
+    lanes: lanes,
     uploads: [
       for (var i = 0; i < uploads; i++)
         TransferUpload(
@@ -136,6 +138,30 @@ TransferState _state({
     pairPeer: '',
   );
 }
+
+/// A fan-out in flight: one machine finished, one still moving, one refused.
+/// The three states a lane can be caught in, and the only one of them that has
+/// something to say afterwards is the failure.
+TransferState _stateWithLanes() => _state(files: 2, lanes: const [
+      TransferLane(
+        name: '192.168.1.31',
+        pct: 1,
+        state: 'done',
+        detail: '',
+      ),
+      TransferLane(
+        name: '192.168.1.32',
+        pct: 0.25,
+        state: 'sending',
+        detail: '5 MB / 20 MB',
+      ),
+      TransferLane(
+        name: '192.168.1.33',
+        pct: 0,
+        state: 'failed',
+        detail: 'connection refused',
+      ),
+    ]);
 
 Widget _host(Widget child, {double width = 360, double height = 560}) {
   return MaterialApp(
@@ -203,7 +229,11 @@ void main() {
         await pumpClean(
           tester,
           _host(
-            SendCard(controller: c, state: _state(files: 6, devices: 3)),
+            SendCard(
+              controller: c,
+              state: _state(files: 6, devices: 3),
+              onSendTo: (_) {},
+            ),
             width: width,
           ),
         );
@@ -231,7 +261,11 @@ void main() {
         onDeviceTap: (_) {},
         onPair: (_) {},
       ),
-      SendCard(controller: c, state: _state(running: false)),
+      SendCard(
+        controller: c,
+        state: _state(running: false),
+        onSendTo: (_) {},
+      ),
       ReceiveCard(controller: c, state: _state(running: false)),
     ]) {
       await tester.pumpWidget(_host(card));
@@ -281,6 +315,98 @@ void main() {
     // box being absent that leaves the QR plate its height.
     expect(find.text('OTHER TULIPIX MACHINES'), findsNothing,
         reason: 'an empty box would still cost the panel its height');
+  });
+
+  testWidgets('a fan-out draws one lane per destination, failures included',
+      (tester) async {
+    await pumpClean(
+      tester,
+      _host(SendCard(
+        controller: c,
+        state: _stateWithLanes(),
+        onSendTo: (_) {},
+      )),
+    );
+
+    expect(find.byType(LaneRow), findsNWidgets(3));
+    // The failure is legible without opening anything, and it keeps its row
+    // rather than dropping out of a list of three.
+    expect(find.text('connection refused'), findsOneWidget);
+    // And the lanes stand in for the drop zone rather than being stacked under
+    // it: the card is pinned to one height, and a fourth block would take it
+    // out of the only panel that gives way.
+    expect(find.text('Choose files to share'), findsNothing);
+  });
+
+  testWidgets('picking two destinations sends to both, in the order ticked',
+      (tester) async {
+    List<String>? sent;
+    await pumpClean(
+      tester,
+      _host(
+        SendCard(
+          controller: c,
+          state: _state(files: 1, peers: 4),
+          onSendTo: (bases) => sent = bases,
+        ),
+        // Wide enough that both chips sit on the box's one row. Narrower and
+        // the second wraps out of sight and cannot be tapped — which is a fact
+        // about the box's height, and the test below is where that belongs.
+        width: 560,
+      ),
+    );
+
+    // Peers 0 and 2 are the paired ones in the helper, and only those two can
+    // be aimed at: an unpaired machine has no token to present.
+    expect(find.byType(PeerChip), findsNWidgets(2));
+    expect(find.text('192.168.1.32'), findsNothing,
+        reason: 'pairing belongs to the Connection card, not to this one');
+
+    // Ticked in the reverse of the order they are listed in, because the order
+    // that matters is the one the person picked.
+    await tester.tap(find.text('192.168.1.33'));
+    await tester.pump();
+    await tester.tap(find.text('192.168.1.31'));
+    await tester.pump();
+    await tester.tap(find.text('Send to 2'));
+    await tester.pump();
+
+    expect(sent, [
+      'https://192.168.1.33:8420',
+      'https://192.168.1.31:8420',
+    ], reason: 'one send, two destinations, in the order they were ticked');
+  });
+
+  testWidgets('the destination box does not squeeze the drop zone off the card',
+      (tester) async {
+    await pumpClean(
+      tester,
+      _host(
+        SendCard(
+          controller: c,
+          state: _state(files: 6, devices: 3, peers: 4),
+          onSendTo: (_) {},
+        ),
+        width: 520,
+        // What transfer_page pins the three cards to. The 560 the other tests
+        // use is deliberately crueller than the real thing; this one has to be
+        // the real thing, because what it measures is whether the content fits
+        // rather than whether it throws.
+        height: 620,
+      ),
+    );
+
+    // The drop zone scrolls rather than overflowing, so one that no longer fits
+    // is truncated in silence: nothing throws and pumpClean stays green. The
+    // scroll extent is the only witness.
+    final zone = tester.state<ScrollableState>(
+      find.descendant(
+        of: find.byType(PanelBody),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    expect(zone.position.maxScrollExtent, 0,
+        reason: 'SEND TO has taken height the drop zone needed');
   });
 
   testWidgets('the ledger lays out with every row state in it', (tester) async {

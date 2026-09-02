@@ -19,8 +19,10 @@ const _chipExtent = 66.0;
 
 /// Height of one peer chip. Stated rather than left to the padding, because
 /// `Outline`'s box is sized in whole rows and a chip that is 31px in one build
-/// of Sora and 33px in the next takes the row count with it.
-const _peerChipH = 32.0;
+/// of Sora and 33px in the next takes the row count with it. Public because
+/// the Send card draws the same chip as a destination and has to size its own
+/// box in the same rows — two copies of 32 would drift.
+const peerChipH = 32.0;
 
 /// The glyph a device type gets. Anything unrecognised gets the desktop icon
 /// rather than no icon: an unknown browser is still a device.
@@ -257,7 +259,7 @@ class ConnectionCard extends StatelessWidget {
             rows: 1,
             // The chip plus the run gap that follows it, stated once rather
             // than as a number that has to be kept in step by hand.
-            rowH: _peerChipH + 6,
+            rowH: peerChipH + 6,
             tint: Tint.pair,
             children: [
               // One `Wrap` as the box's only row: a peer is as wide as its
@@ -525,7 +527,7 @@ class PeerChip extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(9),
         child: Container(
-          height: _peerChipH,
+          height: peerChipH,
           padding: const EdgeInsets.symmetric(horizontal: 10),
           decoration: BoxDecoration(
             color: wash(tint, selected ? 0.2 : 0.1),

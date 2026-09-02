@@ -187,7 +187,14 @@ class _Cards extends StatelessWidget {
         // on the next snapshot, on both machines at once.
         onPair: (base) => controller.send(TransferCmd.pairPeer(base: base)),
       ),
-      SendCard(controller: controller, state: state),
+      SendCard(
+        controller: controller,
+        state: state,
+        // Like pairing beside it: one command, and the lanes it opens arrive
+        // on the next snapshot rather than through a callback of their own.
+        onSendTo: (bases) =>
+            controller.send(TransferCmd.sendTray(bases: bases)),
+      ),
       ReceiveCard(controller: controller, state: state),
     ];
     return LayoutBuilder(

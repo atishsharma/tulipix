@@ -9,30 +9,121 @@ import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
 import '../../src/rust/api/transfer.dart';
-import 'connection_card.dart' show deviceGlyph;
+import 'connection_card.dart' show PeerChip, deviceGlyph, peerChipH;
 import 'transfer_controller.dart';
 import 'transfer_widgets.dart';
 
-class SendCard extends StatelessWidget {
-  const SendCard({super.key, required this.controller, required this.state});
+class SendCard extends StatefulWidget {
+  const SendCard({
+    super.key,
+    required this.controller,
+    required this.state,
+    required this.onSendTo,
+  });
 
   final TransferController controller;
   final TransferState state;
 
+  /// Push the tray to these machines, in the order they were ticked.
+  final ValueChanged<List<String>> onSendTo;
+
+  @override
+  State<SendCard> createState() => _SendCardState();
+}
+
+class _SendCardState extends State<SendCard> {
+  /// Which other tulipix machines the tray is aimed at.
+  ///
+  /// A `Set` because it is a set, and a `LinkedHashSet` — Dart's default —
+  /// because the order the chips were ticked in is the order the lanes should
+  /// come up in. It lives here rather than on the bridge because nothing
+  /// outside this card reads it: a round trip to remember a tick would make
+  /// the chip lag the click by a whole poll.
+  final _picked = <String>{};
+
   @override
   Widget build(BuildContext context) {
+    final state = widget.state;
+    // Only a paired machine can be a destination — an unpaired one has no
+    // token to present, so sending to it could only ever produce a failed
+    // lane. Its chip belongs in the Connection card, where tapping it pairs.
+    final dests = [for (final p in state.peers) if (p.paired) p];
+    // A machine that left the network between the tick and the click is not a
+    // destination any more, and must not be counted as one on the button.
+    final picked = [
+      for (final b in _picked)
+        if (dests.any((p) => p.base == b)) b,
+    ];
+
     return TCard(
       title: 'Send',
       subtitle: 'Share files with the phone — never the library.',
       icon: Icons.upload,
       tint: Tint.send,
+      // Only once the tray is aimed at something. With nothing ticked — which
+      // is every machine that has never paired another tulipix — this card is
+      // exactly the card it was before: the phone pulls, and there is nothing
+      // to press.
+      action: picked.isEmpty ? '' : 'Send to ${picked.length}',
+      actionIcon: Icons.send,
+      actionEnabled: state.files.isNotEmpty,
+      onAction: () => widget.onSendTo(picked),
       children: [
         Expanded(
-          child: _PickZone(
-            onFiles: controller.addFiles,
-            onFolder: controller.addFolder,
-          ),
+          // A fan-out and picking files never overlap — nobody chooses a file
+          // mid-send — so the lanes take the drop zone's place rather than a
+          // block of their own. The card is pinned to one height with its two
+          // neighbours, and progress you have to scroll to is progress nobody
+          // watches.
+          child: state.lanes.isEmpty
+              ? _PickZone(
+                  onFiles: widget.controller.addFiles,
+                  onFolder: widget.controller.addFolder,
+                )
+              : ListView(
+                  padding: EdgeInsets.zero,
+                  children: [
+                    for (final l in state.lanes) LaneRow(lane: l),
+                  ],
+                ),
         ),
+        // Drawn only when there is a machine to send to. Amber, like the same
+        // chips in the Connection card: both answer "which machine", and the
+        // tick here is the sequel to the pairing there.
+        if (dests.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Outline(
+            label: 'SEND TO',
+            note: picked.isEmpty ? '' : '${picked.length} ticked',
+            // Unreachable: the block is not drawn when there is nothing in it.
+            empty: '',
+            isEmpty: false,
+            // One row, and it scrolls past that. The drop zone above is the
+            // only panel here that gives way, so every pixel this box takes is
+            // one the drop zone loses.
+            rows: 1,
+            rowH: peerChipH + 6,
+            tint: Tint.pair,
+            children: [
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final p in dests)
+                    PeerChip(
+                      peer: p,
+                      selected: picked.contains(p.base),
+                      // Paired already, so there is nothing to pair: the useful
+                      // thing to do with this machine is aim the tray at it.
+                      onTap: () => setState(() {
+                        if (!_picked.remove(p.base)) _picked.add(p.base);
+                      }),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ],
         const SizedBox(height: 12),
         // What is on offer, always visible. Two rows, then it scrolls inside
         // its own border rather than growing the card.
@@ -45,18 +136,18 @@ class SendCard extends StatelessWidget {
           rowH: 62,
           tint: Tint.send,
           action: state.files.isEmpty ? '' : 'Clear all',
-          onAction: controller.clearTray,
+          onAction: widget.controller.clearTray,
           trailing: _TargetSelect(
             devices: state.devices,
             target: state.shareTarget,
             targetName: state.shareTargetName,
-            onPick: controller.setShareTarget,
+            onPick: widget.controller.setShareTarget,
           ),
           children: [
             for (final f in state.files)
               _TrayRow(
                 file: f,
-                onRemove: () => controller.removeFile(f.id),
+                onRemove: () => widget.controller.removeFile(f.id),
               ),
           ],
         ),
@@ -330,6 +421,86 @@ class _TrayRow extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           RowBtn(label: 'Remove', onTap: onRemove),
+        ],
+      ),
+    );
+  }
+}
+
+/// One destination's progress inside a fan-out.
+///
+/// Indigo, because a lane is giving. A failed lane keeps its row and turns red
+/// rather than vanishing: the useful thing to know about a fan-out is which two
+/// of the three machines actually got the files, and why the third did not.
+class LaneRow extends StatelessWidget {
+  const LaneRow({super.key, required this.lane});
+
+  final TransferLane lane;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final failed = lane.state == 'failed';
+    final tint = failed
+        ? Tokens.error
+        : lane.state == 'done'
+            ? Tokens.ok
+            : Tint.send;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 9),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(
+                failed ? Icons.error_outline : Icons.laptop,
+                size: 14,
+                color: tint,
+              ),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  lane.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: t.text,
+                  ),
+                ),
+              ),
+              // Bytes while it moves, the reason when it fails, and nothing at
+              // all once it lands — a finished lane has nothing left to say.
+              if (lane.detail.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    lane.detail,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.right,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      color: failed ? Tokens.error : t.textDim,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 5),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: lane.pct,
+              minHeight: 4,
+              backgroundColor: t.outline,
+              valueColor: AlwaysStoppedAnimation(tint),
+            ),
+          ),
         ],
       ),
     );
