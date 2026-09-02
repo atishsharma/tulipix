@@ -200,16 +200,35 @@ impl AppState {
         self.bump();
     }
 
-    /// Record a proposal and return the digits. Replaces any earlier one:
-    /// the newest proposal is the one the dialog is showing.
-    pub fn offer_pairing(&self, fingerprint: &str, code: &str, ip: &str, now: u64) {
-        *lock(&self.pairing) = Some(Pairing {
+    /// Record a proposal, unless one is already on screen.
+    ///
+    /// First proposal wins for its two minutes, and a second is refused rather
+    /// than allowed to replace it. Replacing was the obvious reading — the
+    /// newest proposal is the one worth showing — but it hands an attacker the
+    /// whole feature: flood this route while somebody is walking to the other
+    /// machine, and the digits they are reading belong to the peer they
+    /// trust while the fingerprint their click approves belongs to whoever
+    /// posted last. The comparison is the only security here, so what it
+    /// approves has to be what it compared.
+    ///
+    /// The cost is that two machines proposing at once make the second wait,
+    /// which is the same cost `pairing` already pays for holding one at a
+    /// time, and pairing is a deliberate act seconds apart, not a race.
+    pub fn offer_pairing(&self, fingerprint: &str, code: &str, ip: &str, now: u64) -> bool {
+        let mut guard = lock(&self.pairing);
+        if let Some(p) = guard.as_ref() {
+            if Self::pairing_fresh(p.at, now) {
+                return false;
+            }
+        }
+        *guard = Some(Pairing {
             fingerprint: fingerprint.to_string(),
             code: code.to_string(),
             ip: ip.to_string(),
             at: now,
             approved: false,
         });
+        true
     }
 
     /// Whether a proposal made at `at` is still answerable at `now`.
@@ -888,7 +907,12 @@ async fn peer_pair(
     };
     let ours = lock(&state.fingerprint).clone();
     let code = crate::peer::pairing_code(&ours, &body.fingerprint);
-    state.offer_pairing(&body.fingerprint, &code, &peer_ip(peer), now_secs());
+    if !state.offer_pairing(&body.fingerprint, &code, &peer_ip(peer), now_secs()) {
+        // Somebody is already looking at digits. Answering 409 rather than
+        // queueing: the caller retries, and two minutes from now the screen is
+        // free. `peer::pair` treats this the same as any other refusal.
+        return StatusCode::CONFLICT.into_response();
+    }
     json(
         serde_json::to_string(&serde_json::json!({ "code": code, "fingerprint": ours }))
             .unwrap_or_else(|_| "{}".into()),
