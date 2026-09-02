@@ -344,10 +344,22 @@ impl AppState {
         }
     }
 
-    /// A person answered. Returns false if there was no such offer.
+    /// A person answered. Returns false if there was no such offer, or if it
+    /// had already been answered.
+    ///
+    /// One answer per question. Letting an answer change read as a useful
+    /// cancel — declining a batch already accepted stops the files that have
+    /// not started — but the same door opens the other way: a decline could be
+    /// flipped to an accept and reopen a batch somebody refused, which is the
+    /// one thing a consent gate exists to make impossible. Cancelling a
+    /// transfer in flight is a different feature and belongs on the transfer,
+    /// not on the consent that authorised it.
     pub fn answer_offer(&self, id: u64, accept: bool) -> bool {
         let mut offers = lock(&self.offers);
         let Some(offer) = offers.get_mut(&id) else { return false };
+        if offer.answer.is_some() {
+            return false;
+        }
         offer.answer = Some(accept);
         true
     }
@@ -418,13 +430,14 @@ impl Running {
         self.state.cancel_pairing();
     }
 
-    /// A person accepted an announced push.
+    /// A person accepted an announced push. False if there was no such offer,
+    /// or if it has already been answered — see `answer_offer`.
     pub fn accept_offer(&self, id: u64) -> bool {
         self.state.answer_offer(id, true)
     }
 
     /// A person refused it. Nothing was written — the gate is above the point
-    /// where anything is created.
+    /// where anything is created. False on the same terms as `accept_offer`.
     pub fn decline_offer(&self, id: u64) -> bool {
         self.state.answer_offer(id, false)
     }
@@ -1335,7 +1348,15 @@ async fn upload(
         };
         // An unparseable id is a malformed push, not an unannounced one:
         // refuse it rather than letting it through as a browser upload.
-        let Ok(id) = raw.trim().parse::<u64>() else {
+        //
+        // Digits only, checked before parsing: `u64::from_str` accepts a
+        // leading `+`, so `+1` and `1` are the same offer to it and two
+        // spellings of one id is one more than a gate should have.
+        let raw = raw.trim();
+        if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+        let Ok(id) = raw.parse::<u64>() else {
             return StatusCode::FORBIDDEN.into_response();
         };
         let Some(left) = st.claim_offer_slot(id) else {
