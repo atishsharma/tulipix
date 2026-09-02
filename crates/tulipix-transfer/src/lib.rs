@@ -56,6 +56,34 @@ pub struct DeviceRow {
     pub busy: bool,
 }
 
+/// One other tulipix on the network, as the Connection card's grid wants it.
+///
+/// `paired` is the whole point: a found peer is drawn differently from a
+/// trusted one, and clicking an unpaired row starts pairing rather than a
+/// transfer.
+pub struct PeerRow {
+    pub host: String,
+    pub ip: String,
+    pub port: u16,
+    pub paired: bool,
+}
+
+/// Mark each discovered peer against the addresses we hold tokens for.
+fn peer_rows(found: &[discover::Found], paired_ips: &[String]) -> Vec<PeerRow> {
+    found
+        .iter()
+        .map(|f| {
+            let ip = f.ip.to_string();
+            PeerRow {
+                paired: paired_ips.iter().any(|p| p == &ip),
+                host: f.host.clone(),
+                port: f.port,
+                ip,
+            }
+        })
+        .collect()
+}
+
 /// What the Status dashboard reads about the transfer service — see
 /// [`TransferService::status_snapshot`]. Separate from [`Snapshot`], which is
 /// the much larger thing the Transfer *page* draws: the dashboard wants a
@@ -126,6 +154,8 @@ pub struct Snapshot {
     /// Which device the next file added will be for. Empty is everyone.
     pub share_target: String,
     pub devices: Vec<DeviceRow>,
+    /// Other tulipix machines seen on the network, paired or not.
+    pub peers: Vec<PeerRow>,
     /// `(address, wrong guesses)`, worst first. Empty when nobody has missed.
     pub attempts: Vec<(String, u32)>,
     pub uploads: Vec<UploadRow>,
@@ -474,6 +504,29 @@ impl TransferService {
         self.state().and_then(|st| st.pool.clone())
     }
 
+    /// Other tulipix machines on this network. Empty is normal — see
+    /// `discover.rs` on why mDNS is a convenience and never the path.
+    pub fn peers(&self) -> Vec<PeerRow> {
+        let Some(run) = &self.running else { return Vec::new() };
+        let Some(browser) = run.browser.as_ref() else { return Vec::new() };
+        peer_rows(&browser.peers(), &self.paired_ips())
+    }
+
+    /// Addresses we already hold a device token for. Empty today: pairing a
+    /// discovered peer (rather than typing an address and a PIN) is a later
+    /// task, and no token is issued with `kind == "tulipix"` yet — so every
+    /// discovered peer currently draws as unpaired, which is correct for now
+    /// rather than a gap.
+    fn paired_ips(&self) -> Vec<String> {
+        let Some(run) = &self.running else { return Vec::new() };
+        lock(&run.state.auth)
+            .devices(server::now_secs())
+            .into_iter()
+            .filter(|t| t.kind == "tulipix")
+            .map(|t| t.ip)
+            .collect()
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let interfaces: Vec<(String, String)> =
             self.ifaces.iter().map(|(n, ip)| (n.clone(), ip.to_string())).collect();
@@ -560,6 +613,7 @@ impl TransferService {
             files,
             share_target,
             devices,
+            peers: self.peers(),
             attempts,
             uploads,
             sends,
@@ -648,5 +702,28 @@ mod tests {
     #[test]
     fn the_default_inbox_is_a_named_folder_not_the_documents_root() {
         assert!(default_inbox().ends_with("Tulipix Inbox"));
+    }
+
+    #[test]
+    fn a_paired_peer_is_marked_and_an_unpaired_one_is_not() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let found = vec![
+            crate::discover::Found {
+                host: "tulipix.local".into(),
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 31)),
+                port: 8420,
+            },
+            crate::discover::Found {
+                host: "tulipix.local".into(),
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 99)),
+                port: 8420,
+            },
+        ];
+        let paired_ips = ["192.168.1.31".to_string()];
+        let rows = peer_rows(&found, &paired_ips);
+
+        assert_eq!(rows.len(), 2, "both are listed");
+        assert!(rows[0].paired, "the one we have a token for is paired");
+        assert!(!rows[1].paired, "the other is only found");
     }
 }

@@ -180,6 +180,9 @@ pub struct Running {
     /// Kept alive for as long as the server is: dropping the daemon withdraws
     /// the `tulipix.local` record.
     _mdns: Option<crate::mdns::Advert>,
+    /// Other tulipix machines on this network, as mDNS finds them. Same
+    /// lifetime as `_mdns`: starts when the server starts, drops when it stops.
+    pub browser: Option<crate::discover::Browser>,
 }
 
 impl Running {
@@ -321,6 +324,7 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
     }
 
     let mdns = crate::mdns::advertise(&ips, port, secure);
+    let browser = crate::discover::browse(secure, ips.clone());
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     let svc = app.into_make_service_with_connect_info::<SocketAddr>();
@@ -349,7 +353,7 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
         }
     });
 
-    Ok(Running { port, pin, state, secure, shutdown: tx, handle, _mdns: mdns })
+    Ok(Running { port, pin, state, secure, shutdown: tx, handle, _mdns: mdns, browser })
 }
 
 // ── responses ───────────────────────────────────────────────────────────────
