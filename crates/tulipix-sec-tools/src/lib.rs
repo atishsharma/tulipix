@@ -238,6 +238,17 @@ async fn ffprobe_duration(path: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Everything about a clip that has to match before a concat can copy streams
+/// instead of re-encoding them. `None` when ffprobe cannot read the file.
+async fn ffprobe_clip_spec(path: &str) -> Option<tulipix_tools::merge::ClipSpec> {
+    let bin = tulipix_core::thumbs::tool_bin("ffprobe");
+    let out = tokio::process::Command::new(&bin)
+        .args(["-v", "error", "-show_streams", "-of", "json", path])
+        .output().await.ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    Some(tulipix_tools::merge::ClipSpec::from_probe_json(&json))
+}
+
 /// Spawn the queue drainer. Idempotent-ish: call once at startup.
 fn tools_start_worker() {
     let handle = tokio::runtime::Handle::current();
@@ -788,6 +799,19 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
             }
         }
         Native::Merge { inputs, output } => {
+            // The concat demuxer writes the first input's header and appends
+            // everyone else's packets under it, so clips that disagree copy
+            // into a file that describes only the first of them. Same check the
+            // GUI worker makes; a job that fails beats a file that plays wrong.
+            let mut specs = Vec::new();
+            for p in &inputs {
+                specs.push(ffprobe_clip_spec(p).await
+                    .ok_or_else(|| anyhow::anyhow!("could not read {p}"))?);
+            }
+            if !tulipix_tools::merge::can_stream_copy(&specs) {
+                anyhow::bail!("merge copies streams rather than re-encoding them, \
+                               and these files do not match — convert them first");
+            }
             let refs: Vec<&str> = inputs.iter().map(|s| s.as_str()).collect();
             let list = tulipix_tools::merge::concat_list(&refs);
             let tmp = std::env::temp_dir().join(format!("tulipix-merge-{id}.txt"));

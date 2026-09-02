@@ -657,16 +657,24 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
                 // is irrelevant once aresample has run.
                 filters::asetrate(rate, 48_000)
             };
+            // `-vf`/`-af` and an optional audio map rather than one
+            // filter_complex with a `[0:a]` pad in it: a filter_complex naming
+            // a stream the file has not got is a hard error before a frame is
+            // read — "Stream specifier ':a' matches no streams" — so every
+            // silent video, screen capture and GIF-sourced clip failed here.
+            // Per-stream filters simply have nothing to run on.
             Ok(one(
                 vec![
                     "-i".into(),
                     input.clone(),
-                    "-filter_complex".into(),
-                    format!("[0:v]{}[v];[0:a]{audio}[a]", filters::setpts(rate)),
+                    "-vf".into(),
+                    filters::setpts(rate),
+                    "-af".into(),
+                    audio,
                     "-map".into(),
-                    "[v]".into(),
+                    "0:v".into(),
                     "-map".into(),
-                    "[a]".into(),
+                    "0:a?".into(),
                     out,
                 ],
                 Some(input),
@@ -682,8 +690,13 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
             // One pass, two branches: the palette is built from this clip and
             // used on it. A GIF made against the default 216-colour palette is
             // the banded, dithered mess everyone recognises.
+            // `scale=iw*sar:ih` first: a GIF has no pixel-aspect field, so
+            // whatever shape the frames are in when they are written is the
+            // shape they are watched at. An anamorphic source without this is
+            // exported squashed, permanently.
             let graph = format!(
-                "[0:v]fps={fps},scale={width}:-2:flags=lanczos,split[a][b];\
+                "[0:v]fps={fps},scale=iw*sar:ih,\
+                 scale={width}:-2:flags=lanczos,setsar=1,split[a][b];\
                  [a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3"
             );
             Ok(vec![Step::Ffmpeg {
@@ -1858,10 +1871,14 @@ mod tests {
     #[test]
     fn speed_moves_the_picture_and_the_sound_by_the_same_amount() {
         let args = args_of("speed", json!({"input":"/v/a.mp4","rate":4,"keep_pitch":true}));
-        let graph = args.iter().find(|a| a.contains("setpts")).expect("a filter graph");
-        assert!(graph.contains("setpts=0.250000*PTS"));
+        assert!(args.iter().any(|a| a.contains("setpts=0.250000*PTS")));
         // 4x is out of atempo's range and has to be a chain.
-        assert!(graph.contains("atempo=2.0,atempo=2.0000"));
+        assert!(args.iter().any(|a| a.contains("atempo=2.0,atempo=2.0000")));
+        // The sound is optional. A silent video is a video, and a
+        // filter_complex naming `[0:a]` on one is an error before the first
+        // frame is read.
+        assert!(args.windows(2).any(|w| w == ["-map", "0:a?"]));
+        assert!(!args.iter().any(|a| a.contains("[0:a]")));
 
         // Pitch off is a resample, not a tempo change.
         let args = args_of("speed", json!({"input":"/v/a.mp4","rate":2,"keep_pitch":false}));
@@ -1876,6 +1893,9 @@ mod tests {
         assert_eq!(*duration_s, Some(4.0));
         let graph = args.iter().find(|a| a.contains("palettegen")).expect("a palette");
         assert!(graph.contains("paletteuse"));
+        // A GIF has no pixel-aspect field, so the squash has to be spent
+        // before it is written or it is permanent.
+        assert!(graph.contains("scale=iw*sar:ih"));
         // -ss before -i, so ffmpeg seeks instead of decoding up to the point.
         assert_eq!(args[0], "-ss");
         assert!(args.iter().position(|a| a == "-ss") < args.iter().position(|a| a == "-i"));

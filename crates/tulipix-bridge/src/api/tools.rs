@@ -661,6 +661,11 @@ fn parse_probe(v: &Value, bytes: u64) -> preview::Probe {
         ..Default::default()
     };
     for stream in v["streams"].as_array().into_iter().flatten() {
+        // Cover art is carried as a video stream. Reporting an MP3 as a
+        // 600x600 mjpeg video is wrong everywhere it is read from.
+        if stream["disposition"]["attached_pic"].as_i64().unwrap_or(0) == 1 {
+            continue;
+        }
         let name = stream["codec_name"]
             .as_str()
             .unwrap_or_default()
@@ -670,8 +675,23 @@ fn parse_probe(v: &Value, bytes: u64) -> preview::Probe {
                 p.v_codec = name;
                 p.width = stream["width"].as_u64().unwrap_or(0) as u32;
                 p.height = stream["height"].as_u64().unwrap_or(0) as u32;
+                // Already in the JSON this call fetched — it was simply being
+                // thrown away, and it is what Merge needs to know whether two
+                // clips can be joined without re-encoding them.
+                p.sar = stream["sample_aspect_ratio"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                p.pix_fmt = stream["pix_fmt"].as_str().unwrap_or_default().to_string();
             }
-            Some("audio") if p.a_codec.is_empty() => p.a_codec = name,
+            Some("audio") if p.a_codec.is_empty() => {
+                p.a_codec = name;
+                p.sample_rate = stream["sample_rate"]
+                    .as_str()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                p.channels = stream["channels"].as_u64().unwrap_or(0) as u32;
+            }
             _ => {}
         }
     }
@@ -1229,6 +1249,61 @@ async fn run_native(
             Ok(format!("Renamed {done} of {}.", preview.renames.len()))
         }
         Native::Merge { inputs, output } => {
+            // The concat demuxer writes one header — the first input's — and
+            // appends everyone else's packets underneath it. Two clips that
+            // disagree about size, pixel aspect or format therefore copy
+            // without a single warning into a file that describes the first of
+            // them and stops being true half way through. Refusing is the only
+            // honest answer here: a job that says it failed costs a minute, and
+            // a file that quietly plays wrong costs however long it takes to
+            // notice.
+            let mut specs: Vec<tulipix_tools::merge::ClipSpec> = Vec::new();
+            for path in &inputs {
+                let p = probe_of(path)
+                    .await
+                    .ok_or_else(|| anyhow!("could not read {path}"))?;
+                specs.push(tulipix_tools::merge::ClipSpec {
+                    v_codec: p.v_codec,
+                    a_codec: p.a_codec,
+                    width: p.width,
+                    height: p.height,
+                    sar: p.sar,
+                    pix_fmt: p.pix_fmt,
+                    sample_rate: p.sample_rate,
+                    channels: p.channels,
+                });
+            }
+            if !tulipix_tools::merge::can_stream_copy(&specs) {
+                let name = |p: &str| {
+                    std::path::Path::new(p)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| p.to_string())
+                };
+                let said = |v: String| if v.is_empty() { "none".to_string() } else { v };
+                let odd = specs
+                    .iter()
+                    .enumerate()
+                    .skip(1)
+                    .find_map(|(i, c)| {
+                        tulipix_tools::merge::first_difference(&specs[0], c).map(|d| (i, d))
+                    })
+                    .map(|(i, (what, first, other))| {
+                        format!(
+                            "{} has a different {} from {} — {} against {}",
+                            name(&inputs[i]),
+                            what,
+                            name(&inputs[0]),
+                            said(other),
+                            said(first),
+                        )
+                    })
+                    .unwrap_or_else(|| "these files do not match".to_string());
+                return Err(anyhow!(
+                    "Merge copies streams rather than re-encoding them, and {odd}. \
+                     Convert them to the same shape first."
+                ));
+            }
             // ffmpeg's concat demuxer needs a list file, not an argv.
             let list = std::env::temp_dir().join(format!("tulipix-merge-{id}.txt"));
             let body: String = inputs
@@ -1338,11 +1413,11 @@ async fn run_native(
             rows,
         } => {
             let dur = probe_duration(&input).await;
-            let tiles = (cols * rows).max(1);
-            // One frame per even slice of the running time, so the sheet is a
-            // summary rather than the first N seconds.
-            let every = if dur > 0.0 { dur / tiles as f64 } else { 1.0 };
-            let filter = format!("fps=1/{every:.4},scale=320:-1,tile={cols}x{rows}");
+            // The same builder the preview uses. This used to be a second copy
+            // of the filter written out by hand here, which is the one way a
+            // preview and the job it previews are guaranteed to drift apart —
+            // and they had: only one of the two knew about display aspect.
+            let filter = tulipix_tools::thumbnail::contact_sheet_filter(dur, cols, rows, 320);
             let args: Vec<String> = vec![
                 "-hide_banner".into(),
                 "-y".into(),

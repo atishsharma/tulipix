@@ -196,6 +196,16 @@ pub struct Probe {
     pub height: u32,
     pub v_codec: String,
     pub a_codec: String,
+    /// ffprobe's `sample_aspect_ratio`, verbatim — "1:1", "16:15", "N/A".
+    /// Two clips can agree on codec and on every dimension and still refuse to
+    /// be joined, because this is what decides the shape they are watched at.
+    pub sar: String,
+    pub pix_fmt: String,
+    /// The audio half of the same question: two MP3s copied into one file
+    /// share a header, so a 48 kHz clip appended to a 44.1 kHz one plays at
+    /// the wrong speed from the join onwards.
+    pub sample_rate: u32,
+    pub channels: u32,
     pub bytes: u64,
 }
 
@@ -550,7 +560,9 @@ fn merge_preview(spec: &Value) -> PreviewData {
         });
         "One file is not a merge.".to_string()
     } else if extensions(&inputs).len() > 1 {
-        // The copy is stream-level. Mixed containers is the failure people hit.
+        // The copy is stream-level. Mixed containers is the failure people hit
+        // first — the run checks size, pixel aspect and format too, and stops
+        // rather than writing a file that describes only its first clip.
         rows.push(Row {
             kind: RowKind::Warn,
             left: "Mixed formats".into(),
@@ -558,7 +570,7 @@ fn merge_preview(spec: &Value) -> PreviewData {
             note: "streams are copied, not re-encoded".into(),
         });
         format!(
-            "{} files, {} — these may not share a codec.",
+            "{} files, {} — these may not match.",
             inputs.len(),
             human(total)
         )
@@ -2212,8 +2224,16 @@ fn ffmpeg(args: Vec<String>) -> Step {
 /// Cap the longest edge without distorting. Sources smaller than the cap are
 /// scaled up to it, which costs nothing and keeps both sides of a before/after
 /// the same size.
+///
+/// `scale=iw*sar:ih` first, because "without distorting" was only true of
+/// sources whose pixels are square. `force_original_aspect_ratio` works in
+/// stored pixels, so an anamorphic video — 720x576 carrying a 4:3 picture —
+/// came out of the cap at 5:4, faithfully preserving a squash that no player
+/// shows. The first scale spends the pixel aspect, and `setsar=1` says so.
 fn cap_filter(px: u32) -> String {
-    format!("scale={px}:{px}:force_original_aspect_ratio=decrease:force_divisible_by=2")
+    format!(
+        "scale=iw*sar:ih,scale={px}:{px}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1"
+    )
 }
 
 /// A tenth of the way in. The first frame of a video is very often black.
@@ -2935,7 +2955,7 @@ mod tests {
             unreachable!()
         };
         assert!(d.rows.last().unwrap().kind == RowKind::Warn);
-        assert!(d.note.contains("may not share a codec"));
+        assert!(d.note.contains("may not match"));
     }
 
     #[test]
@@ -3284,6 +3304,7 @@ mod tests {
             v_codec: "h264".into(),
             a_codec: "aac".into(),
             bytes: 100,
+            ..Probe::default()
         };
         let PreviewPlan::Pure(d) = plan_preview("convert", &spec, &Budget::default(), Some(&probe))
         else {

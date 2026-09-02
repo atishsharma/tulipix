@@ -132,33 +132,61 @@ class _JobRow extends StatelessWidget {
             job.kind == 'hash');
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+      padding: const EdgeInsets.fromLTRB(16, 9, 8, 9),
       decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: t.nHair)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // One line: what it is, how it is going, and what you can do about
+          // it. The message used to sit on a line of its own under the name,
+          // which made a list of six finished jobs twelve rows tall for two
+          // words of "Wrote 4 files."
           Row(
             children: [
               Icon(look.icon, size: 15, color: look.colour),
               const SizedBox(width: 8),
               Expanded(
-                child: Text(job.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
+                child: Text.rich(
+                  TextSpan(children: [
+                    TextSpan(
+                      text: job.label,
+                      style: TextStyle(
                         fontSize: 12.5,
                         fontWeight: FontWeight.w600,
-                        color: t.nInk)),
+                        color: t.nInk,
+                      ),
+                    ),
+                    if (job.message.isNotEmpty)
+                      TextSpan(
+                        text: '  ·  ${job.message}',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: job.state == 'failed' ? Tokens.error : t.nInk2,
+                        ),
+                      ),
+                  ]),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-              if (running)
+              if (running) ...[
+                const SizedBox(width: 8),
                 Text('${(progress * 100).round()}%',
-                    style: TextStyle(fontSize: 11, color: look.colour)),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: look.colour,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    )),
+              ],
+              const SizedBox(width: 6),
+              // Last in the row, after the Expanded, so the cluster sits on
+              // the right edge whatever length the name in front of it is.
+              _JobActions(
+                  controller: controller, job: job, hasReport: hasReport),
             ],
           ),
-          const SizedBox(height: 4),
-          _JobActions(controller: controller, job: job, hasReport: hasReport),
           if (running || job.state == 'paused') ...[
             const SizedBox(height: 6),
             ClipRRect(
@@ -170,15 +198,6 @@ class _JobRow extends StatelessWidget {
                 valueColor: AlwaysStoppedAnimation(look.colour),
               ),
             ),
-          ],
-          if (job.message.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text(job.message,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 11,
-                    color: job.state == 'failed' ? Tokens.error : t.nInk2)),
           ],
         ],
       ),
@@ -236,6 +255,7 @@ class _JobActions extends StatelessWidget {
         controller.send(ToolsCmd.queueAction(id: job.id, action: a));
 
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         if (hasReport)
           _Act(
@@ -283,7 +303,6 @@ class _JobActions extends StatelessWidget {
               tip: 'Later',
               onTap: () => act('down')),
         ],
-        const Spacer(),
         _Act(
             icon: Icons.close,
             tip: 'Take it off the list',
