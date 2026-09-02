@@ -119,6 +119,11 @@ pub struct Offer {
     pub bytes: u64,
     /// `None` until a person answers; then accepted or not.
     pub answer: Option<bool>,
+    /// How much of the announced batch has actually been claimed. An accepted
+    /// id is a permission to send *this* batch, not a standing one, so it is
+    /// spent as it is used.
+    pub used_files: u32,
+    pub used_bytes: u64,
 }
 
 pub struct AppState {
@@ -303,6 +308,40 @@ impl AppState {
     /// "not yet" and "no such offer" — the upload gate treats them alike.
     pub fn offer_answer(&self, id: u64) -> Option<bool> {
         lock(&self.offers).get(&id)?.answer
+    }
+
+    /// Charge one file against an accepted offer, refusing once the batch has
+    /// had everything it announced.
+    ///
+    /// The consent panel names a number — "3 files · 41.2 MB" — and that
+    /// number is what somebody agreed to. Checking only `answer` made an
+    /// accepted id a standing permission: announce three small files, collect
+    /// the yes, then push three hundred large ones under the same header. The
+    /// person would have consented to a sentence that was true when they read
+    /// it and false by the time it finished.
+    ///
+    /// Takes the file slot and hands back what is left of the byte budget, or
+    /// `None` when the batch has already had everything it announced.
+    ///
+    /// `Content-Length` is deliberately not what this measures. `peer::push`
+    /// streams a chunked body and sends none, and a sender who wanted past the
+    /// cap could declare any length it liked — a claim is not a measurement.
+    /// The caller charges bytes as they land instead.
+    pub fn claim_offer_slot(&self, id: u64) -> Option<u64> {
+        let mut offers = lock(&self.offers);
+        let o = offers.get_mut(&id)?;
+        if o.answer != Some(true) || o.used_files >= o.files {
+            return None;
+        }
+        o.used_files += 1;
+        Some(o.bytes.saturating_sub(o.used_bytes))
+    }
+
+    /// Charge bytes that actually landed against the batch's total.
+    pub fn spend_offer_bytes(&self, id: u64, n: u64) {
+        if let Some(o) = lock(&self.offers).get_mut(&id) {
+            o.used_bytes = o.used_bytes.saturating_add(n);
+        }
     }
 
     /// A person answered. Returns false if there was no such offer.
@@ -1003,6 +1042,8 @@ async fn peer_offer(
         files: body.files.len() as u32,
         bytes: body.total,
         answer: None,
+        used_files: 0,
+        used_bytes: 0,
     });
     json(
         serde_json::to_string(&serde_json::json!({ "offer": id }))
@@ -1282,6 +1323,12 @@ async fn upload(
     // header carrying bytes outside UTF-8 — which HTTP permits — and folding
     // that into "no header present" would let a push claim an offer in bytes
     // nobody can read and be waved through as a browser upload instead.
+    //
+    // An accepted id is permission to send the batch that was described, not a
+    // standing one: the panel said "3 files · 41.2 MB" and that sentence has
+    // to still be true when the last byte lands. So the slot is taken here and
+    // the bytes are charged as they arrive.
+    let mut offer: Option<(u64, u64)> = None;
     if let Some(raw) = headers.get("x-tulipix-offer") {
         let Ok(raw) = raw.to_str() else {
             return StatusCode::FORBIDDEN.into_response();
@@ -1291,9 +1338,10 @@ async fn upload(
         let Ok(id) = raw.trim().parse::<u64>() else {
             return StatusCode::FORBIDDEN.into_response();
         };
-        if st.offer_answer(id) != Some(true) {
+        let Some(left) = st.claim_offer_slot(id) else {
             return StatusCode::FORBIDDEN.into_response();
-        }
+        };
+        offer = Some((id, left));
     }
 
     let dir = lock(&st.inbox).clone();
@@ -1336,12 +1384,28 @@ async fn upload(
             let _ = st.record(ledger::Row::received(&name, "", written as i64, &peer_ip).failed()).await;
             return StatusCode::INSUFFICIENT_STORAGE.into_response();
         }
+        if let Some((_, left)) = offer {
+            if sink.written > left {
+                // Past what the batch announced. Cut it off here rather than
+                // at the end: the whole point of a budget is that the disk
+                // never holds more than somebody agreed to.
+                sink.abort().await;
+                finish_upload(&st, id, "failed");
+                let _ = st
+                    .record(ledger::Row::received(&name, "", total as i64, &peer_ip).failed())
+                    .await;
+                return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+            }
+        }
         st.recv_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
         progress(&st, id, sink.written);
         lock(&st.auth).mark_active(&token, now_secs());
     }
 
     let written = sink.written;
+    if let Some((oid, _)) = offer {
+        st.spend_offer_bytes(oid, written);
+    }
     match sink.finish().await {
         Ok(path) => {
             finish_upload(&st, id, "done");

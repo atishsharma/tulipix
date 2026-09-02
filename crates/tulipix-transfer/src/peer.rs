@@ -155,11 +155,28 @@ impl Peer {
             tokio::fs::File::create(to).await?
         };
         let mut written = if resuming { from_byte } else { 0 };
+        // What the far end said the body would be, if it said. This is the
+        // body's length, not the file's, so the file's expected size is what
+        // was already on disk plus that.
+        let expected = res.content_length().map(|n| written + n);
         while let Some(chunk) = res.chunk().await? {
             file.write_all(&chunk).await?;
             written += chunk.len() as u64;
         }
         file.flush().await?;
+        // A body can end cleanly and short: a server that died mid-file, a
+        // proxy that closed the connection tidily. Without this check the
+        // truncated file is indistinguishable from a complete one, and the
+        // ledger records it as received — the worst outcome available, because
+        // nobody goes looking for a file that is already ticked off.
+        //
+        // What is on disk stays there. It is not garbage, it is exactly the
+        // prefix the next `download` resumes from.
+        if let Some(want) = expected {
+            if written != want {
+                return Err(anyhow!("truncated: {written} bytes of {want}"));
+            }
+        }
         Ok(written)
     }
 
