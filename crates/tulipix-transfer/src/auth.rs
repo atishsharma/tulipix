@@ -17,6 +17,10 @@ pub const MAX_ATTEMPTS: u32 = 5;
 const PAIRING_TTL: u64 = 600;
 /// "48 hours, then re-token."
 pub const TOKEN_TTL: u64 = 48 * 3600;
+/// How long a paired tulipix stays trusted. A year rather than for ever, so a
+/// machine that is gone for good eventually stops occupying one of the ten
+/// slots; `Auth::forget` is still how you revoke one early.
+pub const PEER_TOKEN_TTL: u64 = 365 * 24 * 3600;
 /// Phones paired at once. The eleventh is refused rather than quietly evicting
 /// one of the ten: whoever is holding the desktop decides which device loses its
 /// place, and the Connection card is where they do it.
@@ -76,6 +80,12 @@ impl Token {
             last_seen: now,
             ..Self::default()
         }
+    }
+
+    /// A token for another tulipix rather than a browser. Identical to
+    /// [`Token::issue`] but for its lifetime — see [`PEER_TOKEN_TTL`].
+    pub fn issue_peer(now: u64) -> Self {
+        Self { expires: now + PEER_TOKEN_TTL, ..Self::issue(now) }
     }
 
     pub fn valid_at(&self, now: u64) -> bool {
@@ -490,6 +500,21 @@ mod tests {
         assert!(!tok.valid_at(issued + 49 * H), "accepted past the window");
         // Exactly 48h is the boundary: expired, not valid.
         assert!(!tok.valid_at(issued + 48 * H));
+    }
+
+    #[test]
+    fn a_peer_token_outlives_a_phone_token() {
+        let now = 1_000_000;
+        let phone = Token::issue(now);
+        let peer = Token::issue_peer(now);
+        assert!(
+            peer.expires > phone.expires,
+            "a laptop you deliberately paired is not a phone that wandered past"
+        );
+        assert!(phone.valid_at(now + TOKEN_TTL - 1), "the phone token still holds inside 48h");
+        assert!(!phone.valid_at(now + TOKEN_TTL + 1), "and not outside it");
+        assert!(peer.valid_at(now + TOKEN_TTL + 1), "the peer token is unaffected by 48h");
+        assert!(!peer.valid_at(now + PEER_TOKEN_TTL + 1), "but it does expire eventually");
     }
 
     /// One paired device, as the handlers would file it.
