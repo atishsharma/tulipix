@@ -1240,10 +1240,18 @@ async fn upload(
     // An upload with no offer header is a browser upload. Those are already
     // covered by the token check above and are unaffected — this gate only
     // constrains pushes that announced themselves.
-    if let Some(raw) = headers.get("x-tulipix-offer").and_then(|v| v.to_str().ok()) {
+    //
+    // Presence is decided before decoding, deliberately. `to_str()` fails on a
+    // header carrying bytes outside UTF-8 — which HTTP permits — and folding
+    // that into "no header present" would let a push claim an offer in bytes
+    // nobody can read and be waved through as a browser upload instead.
+    if let Some(raw) = headers.get("x-tulipix-offer") {
+        let Ok(raw) = raw.to_str() else {
+            return StatusCode::FORBIDDEN.into_response();
+        };
         // An unparseable id is a malformed push, not an unannounced one:
         // refuse it rather than letting it through as a browser upload.
-        let Ok(id) = raw.parse::<u64>() else {
+        let Ok(id) = raw.trim().parse::<u64>() else {
             return StatusCode::FORBIDDEN.into_response();
         };
         if st.offer_answer(id) != Some(true) {
@@ -1823,6 +1831,58 @@ mod tests {
             "a push that claims an offer must name a real one, not any string at all"
         );
         assert!(!dir.path().join("sneaky.bin").exists(), "and nothing is written");
+
+        run.stop().await;
+    }
+
+    #[tokio::test]
+    async fn an_offer_header_that_is_not_even_text_is_refused() {
+        let (run, base, dir) = started().await;
+        let c = client();
+        c.post(format!("{base}/auth")).body(run.pin.clone()).send().await.unwrap();
+
+        // A header value HTTP permits but UTF-8 does not. The gate must treat
+        // this as a malformed claim, not as no claim at all.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "x-tulipix-offer",
+            reqwest::header::HeaderValue::from_bytes(&[0x80]).unwrap(),
+        );
+
+        let refused = c
+            .put(format!("{base}/upload/smuggled.bin"))
+            .headers(headers)
+            .body("abcd")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 403, "an undecodable claim is still a claim");
+        assert!(!dir.path().join("smuggled.bin").exists(), "and nothing is written");
+
+        run.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_offer_routes_refuse_a_caller_with_no_token() {
+        let (run, base, _dir) = started().await;
+        // A bare client: no PIN exchanged, so no cookie.
+        let bare = reqwest::Client::new();
+
+        let announced = bare
+            .post(format!("{base}/api/peer/offer"))
+            .body(r#"{"files":[{"name":"a.bin","bytes":4}],"total":4}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(announced.status(), 401, "announcing a push needs a token");
+
+        let asked = bare.get(format!("{base}/api/peer/offer/1")).send().await.unwrap();
+        assert_eq!(
+            asked.status(),
+            401,
+            "and so does asking about one — 401 before 404, so a stranger cannot probe which \
+             ids exist"
+        );
 
         run.stop().await;
     }
