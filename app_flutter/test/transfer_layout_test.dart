@@ -25,6 +25,7 @@ TransferState _state({
   int uploads = 0,
   int rows = 0,
   int ifaces = 1,
+  int peers = 0,
   String attempts = '',
 }) {
   return TransferState(
@@ -66,6 +67,20 @@ TransferState _state({
         ),
     ],
     deviceMax: 10,
+    peers: [
+      for (var i = 0; i < peers; i++)
+        TransferPeer(
+          host: 'tulipix.local',
+          ip: '192.168.1.${31 + i}',
+          port: 8420,
+          base: 'https://192.168.1.${31 + i}:8420',
+          paired: i.isEven,
+        ),
+    ],
+    // Neither has a widget yet; they are here so this file compiles against
+    // the state the bridge actually hands over.
+    offers: const [],
+    lanes: const [],
     uploads: [
       for (var i = 0; i < uploads; i++)
         TransferUpload(
@@ -117,6 +132,8 @@ TransferState _state({
     certWaiting: false,
     certRecord: '',
     certValue: '',
+    pairCode: '',
+    pairPeer: '',
   );
 }
 
@@ -170,10 +187,12 @@ void main() {
               state: _state(
                   devices: 10,
                   ifaces: 3,
+                  peers: 3,
                   attempts: '192.168.1.9 — 3 wrong of 5'),
               qrInverted: false,
               onQrInvert: (_) {},
               onDeviceTap: (_) {},
+              onPair: (_) {},
             ),
             width: width,
           ),
@@ -210,12 +229,54 @@ void main() {
         qrInverted: false,
         onQrInvert: (_) {},
         onDeviceTap: (_) {},
+        onPair: (_) {},
       ),
       SendCard(controller: c, state: _state(running: false)),
       ReceiveCard(controller: c, state: _state(running: false)),
     ]) {
       await tester.pumpWidget(_host(card));
     }
+  });
+
+  testWidgets('the peer grid separates paired machines from found ones',
+      (tester) async {
+    final tapped = <String>[];
+    await pumpClean(
+      tester,
+      _host(ConnectionCard(
+        controller: c,
+        state: _state(peers: 3),
+        qrInverted: false,
+        onQrInvert: (_) {},
+        onDeviceTap: (_) {},
+        onPair: tapped.add,
+      )),
+    );
+
+    expect(find.byType(PeerChip), findsNWidgets(3));
+    // Pairing is what an unpaired chip is for; a paired one sends.
+    await tester.tap(find.text('192.168.1.32'));
+    await tester.pump();
+    expect(tapped, ['https://192.168.1.32:8420'],
+        reason: 'tapping a found peer starts pairing with that machine');
+  });
+
+  testWidgets('no peers on the network leaves no empty grid behind',
+      (tester) async {
+    await pumpClean(
+      tester,
+      _host(ConnectionCard(
+        controller: c,
+        state: _state(devices: 10, ifaces: 3),
+        qrInverted: false,
+        onQrInvert: (_) {},
+        onDeviceTap: (_) {},
+        onPair: (_) {},
+      )),
+    );
+    expect(find.byType(PeerChip), findsNothing);
+    expect(tester.takeException(), isNull,
+        reason: 'the card still lays out at its pinned height');
   });
 
   testWidgets('the ledger lays out with every row state in it', (tester) async {

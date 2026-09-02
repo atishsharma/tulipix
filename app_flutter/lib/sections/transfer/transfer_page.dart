@@ -182,6 +182,10 @@ class _Cards extends StatelessWidget {
         qrInverted: qrInverted,
         onQrInvert: onQrInvert,
         onDeviceTap: onDeviceTap,
+        // Straight to the controller, like the interface picker beside it:
+        // pairing has no dialog of its own to open first — the digits arrive
+        // on the next snapshot, on both machines at once.
+        onPair: (base) => controller.send(TransferCmd.pairPeer(base: base)),
       ),
       SendCard(controller: controller, state: state),
       ReceiveCard(controller: controller, state: state),

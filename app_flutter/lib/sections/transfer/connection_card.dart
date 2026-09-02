@@ -17,6 +17,11 @@ import 'transfer_widgets.dart';
 /// caption. `Outline`'s `rowH` has to leave room for two of these.
 const _chipExtent = 66.0;
 
+/// Height of one peer chip. Stated rather than left to the padding, because
+/// `Outline`'s box is sized in whole rows and a chip that is 31px in one build
+/// of Sora and 33px in the next takes the row count with it.
+const _peerChipH = 32.0;
+
 /// The glyph a device type gets. Anything unrecognised gets the desktop icon
 /// rather than no icon: an unknown browser is still a device.
 IconData deviceGlyph(String kind) => switch (kind) {
@@ -34,6 +39,7 @@ class ConnectionCard extends StatelessWidget {
     required this.qrInverted,
     required this.onQrInvert,
     required this.onDeviceTap,
+    required this.onPair,
   });
 
   final TransferController controller;
@@ -41,6 +47,9 @@ class ConnectionCard extends StatelessWidget {
   final bool qrInverted;
   final ValueChanged<bool> onQrInvert;
   final ValueChanged<TransferDevice> onDeviceTap;
+
+  /// The machine to start pairing with, by its base URL.
+  final ValueChanged<String> onPair;
 
   @override
   Widget build(BuildContext context) {
@@ -215,6 +224,45 @@ class ConnectionCard extends StatelessWidget {
             ),
           ],
         ),
+
+        // Machines rather than phones: another tulipix has an inbox of its own,
+        // so a found one is offered pairing instead of a PIN. Amber, and a
+        // sibling of the box above it, because it answers the same question —
+        // who is let in. Drawn only when something was actually found: on a
+        // network that filters multicast finding nothing is the normal case,
+        // and a permanently empty box would take 100px off the panel that
+        // holds the QR to say so.
+        if (state.peers.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Outline(
+            label: 'OTHER TULIPIX MACHINES',
+            note: '${state.peers.length} found',
+            // Unreachable — the block is not drawn at all when the list is
+            // empty — but `Outline` asks for it either way.
+            empty: '',
+            isEmpty: false,
+            rows: 2,
+            // Two chip rows plus the run gap between them, stated once rather
+            // than as a number that has to be kept in step by hand. A third
+            // row would have to come out of the panel above, so past two the
+            // box scrolls instead.
+            rowH: _peerChipH + 6,
+            tint: Tint.pair,
+            children: [
+              // One `Wrap` as the box's only row: a peer is as wide as its
+              // address, and a fixed column count would leave a gap beside the
+              // short ones and clip the long ones.
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final p in state.peers)
+                    PeerChip(peer: p, onTap: () => onPair(p.base)),
+                ],
+              ),
+            ],
+          ),
+        ],
       ],
     );
   }
@@ -430,6 +478,92 @@ class _DeviceChipState extends State<_DeviceChip>
           ),
         ),
       ],
+    );
+  }
+}
+
+/// One other tulipix on this network.
+///
+/// Amber like the device chips above it, because both answer the same
+/// question: who is allowed in. What separates them is the weight of the edge
+/// — a found machine is one nobody has said yes to yet, and it should not look
+/// like one somebody has.
+class PeerChip extends StatelessWidget {
+  const PeerChip({
+    super.key,
+    required this.peer,
+    required this.onTap,
+    this.selected = false,
+  });
+
+  final TransferPeer peer;
+  final VoidCallback onTap;
+
+  /// The destination picker draws the same chip ticked.
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final tint = peer.paired ? Tint.pair : t.textDim;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: peer.paired ? 'Paired with ${peer.ip}' : 'Pair with ${peer.ip}',
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(9),
+        child: Container(
+          height: _peerChipH,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            color: wash(tint, selected ? 0.2 : 0.1),
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(
+              color: edge(tint, peer.paired ? 0.42 : 0.24),
+              // Flutter has no dashed border, so weight carries "provisional"
+              // without needing a word for it.
+              width: peer.paired ? 1 : 0.5,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // A peer has no device kind to switch on the way `deviceGlyph`
+              // does — it is always a desktop running this same app.
+              Icon(
+                peer.paired ? Icons.laptop : Icons.laptop_outlined,
+                size: 14,
+                color: tint,
+              ),
+              const SizedBox(width: 7),
+              // The address, not the host name: every machine on the network
+              // announces itself as tulipix.local, so the name tells two of
+              // them apart only by accident.
+              Text(
+                peer.ip,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: t.text,
+                ),
+              ),
+              if (!peer.paired) ...[
+                const SizedBox(width: 7),
+                Text(
+                  'Pair',
+                  style: TextStyle(
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.3,
+                    color: tint,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
