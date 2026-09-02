@@ -66,6 +66,49 @@ pub struct TransferDevice {
     pub busy: bool,
 }
 
+/// Another tulipix on this network. Not a phone: it has an inbox of its own, so
+/// it can be sent to and taken from.
+///
+/// `paired` is the whole distinction the grid draws. A found peer gets a
+/// pairing dialog when you click it; a paired one gets a transfer.
+#[derive(Debug, Clone)]
+pub struct TransferPeer {
+    pub host: String,
+    pub ip: String,
+    pub port: i64,
+    /// "https://192.168.1.31:8420" — how every command names this machine.
+    pub base: String,
+    pub paired: bool,
+}
+
+/// A push another machine has announced and nobody has answered yet.
+///
+/// One line, because that is the whole question: something is about to land in
+/// your inbox, and you say yes or no before a byte of it is written.
+#[derive(Debug, Clone)]
+pub struct TransferOffer {
+    pub id: i64,
+    pub peer: String,
+    /// "3 files · 41.2 MB".
+    pub summary: String,
+}
+
+/// One destination's share of a fan-out.
+///
+/// A lane is per-machine, not per-file: sending three files to three peers is
+/// three lanes, because the thing that fails is a link, not a file.
+#[derive(Debug, Clone)]
+pub struct TransferLane {
+    pub name: String,
+    /// 0.0–1.0. Zero when there is nothing to send, never NaN.
+    pub pct: f64,
+    /// waiting | sending | done | failed.
+    pub state: String,
+    /// "5 MB / 20 MB" while moving, the failure reason when failed, empty
+    /// otherwise — a lane that finished has nothing left to say.
+    pub detail: String,
+}
+
 /// One upload in flight, or just finished. `state` is active | done | failed.
 #[derive(Debug, Clone)]
 pub struct TransferUpload {
@@ -158,6 +201,14 @@ pub struct TransferState {
     pub total: String,
     pub devices: Vec<TransferDevice>,
     pub device_max: i64,
+    /// Other tulipix machines seen on this network. Empty is the normal case on
+    /// a network that filters multicast — discovery is a convenience on top of
+    /// the address-and-PIN path, never a replacement for it.
+    pub peers: Vec<TransferPeer>,
+    /// Pushes waiting on a yes or a no.
+    pub offers: Vec<TransferOffer>,
+    /// The lanes of the fan-out in flight. Empty when nothing is being sent.
+    pub lanes: Vec<TransferLane>,
     pub uploads: Vec<TransferUpload>,
     pub rows: Vec<TransferLedgerRow>,
     pub ifaces: Vec<TransferIface>,
@@ -283,6 +334,9 @@ struct TransferSession {
     qr_rev: i64,
     /// The URL the code on screen was drawn for.
     qr_for: String,
+    /// The lanes of the fan-out in flight. Nothing in this task writes to it —
+    /// the sender that drives a fan-out lands in a later task.
+    lanes: Vec<tulipix_transfer::fanout::Lane>,
 }
 
 impl TransferSession {
@@ -808,6 +862,24 @@ async fn snapshot() -> Result<TransferState> {
         share_target: snap.share_target.clone(),
         devices,
         device_max: DEVICE_MAX,
+        peers: snap
+            .peers
+            .iter()
+            .map(|p| TransferPeer {
+                base: format!(
+                    "{}://{}:{}",
+                    if snap.secure { "https" } else { "http" },
+                    p.ip,
+                    p.port
+                ),
+                host: p.host.clone(),
+                ip: p.ip.clone(),
+                port: p.port as i64,
+                paired: p.paired,
+            })
+            .collect(),
+        offers: snap.offers.iter().map(offer_view).collect(),
+        lanes: sess().lanes.iter().map(lane_view).collect(),
         uploads,
         rows,
         ifaces: snap
@@ -858,6 +930,9 @@ fn off_state() -> TransferState {
         total: String::new(),
         devices: Vec::new(),
         device_max: DEVICE_MAX,
+        peers: Vec::new(),
+        offers: Vec::new(),
+        lanes: Vec::new(),
         uploads: Vec::new(),
         rows: Vec::new(),
         ifaces: Vec::new(),
@@ -1125,6 +1200,31 @@ fn plural(n: usize, word: &str) -> String {
     if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
 }
 
+fn lane_view(lane: &tulipix_transfer::fanout::Lane) -> TransferLane {
+    use tulipix_transfer::fanout::LaneState;
+
+    // Zero total is a send of nothing, not a failure — and dividing by it is
+    // how a progress bar becomes NaN and paints nothing at all.
+    let pct = if lane.total == 0 { 0.0 } else { lane.sent as f64 / lane.total as f64 };
+    let (state, detail) = match &lane.state {
+        LaneState::Waiting => ("waiting", String::new()),
+        LaneState::Sending => {
+            ("sending", format!("{} / {}", human_size(lane.sent), human_size(lane.total)))
+        }
+        LaneState::Done => ("done", String::new()),
+        LaneState::Failed(why) => ("failed", why.clone()),
+    };
+    TransferLane { name: lane.name.clone(), pct, state: state.into(), detail }
+}
+
+fn offer_view(row: &tulipix_transfer::OfferRow) -> TransferOffer {
+    TransferOffer {
+        id: row.id as i64,
+        peer: row.peer.clone(),
+        summary: format!("{} · {}", plural(row.files as usize, "file"), human_size(row.bytes)),
+    }
+}
+
 /// How long a pairing has left. Coarse on purpose: the number that matters is
 /// "today" or "tomorrow", and a ticking countdown would redraw the list every
 /// second to say nothing new.
@@ -1281,5 +1381,69 @@ mod tests {
         // in the table at its last speed.
         let gone = sample_rates(&[]);
         assert!(gone.is_empty());
+    }
+
+    #[test]
+    fn a_moving_lane_shows_its_bytes_and_a_failed_one_shows_why() {
+        use tulipix_transfer::fanout::{Lane, LaneState};
+
+        let moving = lane_view(&Lane {
+            name: "thinkpad".into(),
+            sent: 5_000_000,
+            total: 20_000_000,
+            state: LaneState::Sending,
+        });
+        assert_eq!(moving.state, "sending");
+        assert!((moving.pct - 0.25).abs() < 0.001, "a quarter through");
+        assert!(moving.detail.contains('/'), "moving lanes read '5 MB / 20 MB': {}", moving.detail);
+
+        let dead = lane_view(&Lane {
+            name: "studio".into(),
+            sent: 0,
+            total: 20_000_000,
+            state: LaneState::Failed("connection refused".into()),
+        });
+        assert_eq!(dead.state, "failed");
+        assert_eq!(
+            dead.detail,
+            "connection refused",
+            "the reason is the whole point of a failed lane"
+        );
+        assert_eq!(dead.pct, 0.0);
+    }
+
+    #[test]
+    fn an_empty_lane_does_not_divide_by_zero() {
+        use tulipix_transfer::fanout::{Lane, LaneState};
+        let empty = lane_view(&Lane {
+            name: "a".into(),
+            sent: 0,
+            total: 0,
+            state: LaneState::Waiting,
+        });
+        assert_eq!(empty.pct, 0.0, "no files is not an error and is not NaN");
+        assert_eq!(empty.state, "waiting");
+        assert!(empty.detail.is_empty());
+    }
+
+    #[test]
+    fn an_offer_asks_one_question_in_one_line() {
+        let one = offer_view(&tulipix_transfer::OfferRow {
+            id: 3,
+            peer: "studio".into(),
+            files: 1,
+            bytes: 4_100_000,
+        });
+        assert!(one.summary.starts_with("1 file "), "singular: {}", one.summary);
+        assert!(!one.summary.starts_with("1 files"), "never '1 files'");
+
+        let many = offer_view(&tulipix_transfer::OfferRow {
+            id: 4,
+            peer: "studio".into(),
+            files: 3,
+            bytes: 41_200_000,
+        });
+        assert!(many.summary.starts_with("3 files "), "plural: {}", many.summary);
+        assert_eq!(many.peer, "studio");
     }
 }
