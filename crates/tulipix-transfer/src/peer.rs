@@ -110,16 +110,18 @@ impl Peer {
             .as_array()
             .or_else(|| body["files"].as_array())
             .ok_or_else(|| anyhow!("unexpected listing shape"))?;
-        Ok(rows
-            .iter()
-            .filter_map(|r| {
+        rows.iter()
+            .map(|r| {
                 Some(RemoteFile {
                     id: r["id"].as_u64()?,
                     name: r["name"].as_str()?.to_string(),
                     bytes: r["bytes"].as_u64().unwrap_or(0),
                 })
             })
-            .collect())
+            .collect::<Option<Vec<_>>>()
+            // Our own server wrote these rows, so one we cannot read means a
+            // version mismatch worth surfacing — not a file worth hiding.
+            .ok_or_else(|| anyhow!("unreadable file listing"))
     }
 
     /// Stream one file to disk. `from_byte` resumes a partial take through the
@@ -137,12 +139,18 @@ impl Peer {
             return Err(anyhow!("download refused: {}", res.status()));
         }
 
-        let mut file = if from_byte > 0 {
+        // The server does not always honour a Range: `range::parse` refuses an
+        // offset at or past the end, and the handler then sends the whole file
+        // with a 200. Appending that to what is already on disk would duplicate
+        // the prefix and report success. So the response decides the mode, not
+        // the request: 206 continues, 200 starts again.
+        let resuming = res.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+        let mut file = if resuming {
             tokio::fs::OpenOptions::new().append(true).open(to).await?
         } else {
             tokio::fs::File::create(to).await?
         };
-        let mut written = from_byte;
+        let mut written = if resuming { from_byte } else { 0 };
         while let Some(chunk) = res.chunk().await? {
             file.write_all(&chunk).await?;
             written += chunk.len() as u64;
@@ -236,6 +244,50 @@ mod tests {
         assert_eq!(
             std::fs::read(&landing).unwrap(),
             b"hello from the other machine"
+        );
+
+        run.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_resume_past_the_end_starts_again_instead_of_duplicating() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let offered = dir.path().join("short.txt");
+        let mut f = std::fs::File::create(&offered).unwrap();
+        f.write_all(b"twelve bytes").unwrap();
+        drop(f);
+
+        let inbox = tempfile::tempdir().unwrap();
+        let run = crate::server::start(crate::server::Config {
+            inbox: inbox.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            pool: None,
+            tls: false,
+        })
+        .await
+        .unwrap();
+        let base = format!("http://127.0.0.1:{}", run.port);
+        run.state.tray.lock().unwrap().add(&offered);
+
+        let (_code, theirs) = pair(&base, "our:fp").await.unwrap();
+        assert!(run.approve_pairing());
+        let token = confirm(&base, &theirs).await.unwrap();
+        let p = connect(&base, &token).unwrap();
+        let files = p.list().await.unwrap();
+
+        // Ask to resume from beyond the end. The server answers 200 with the
+        // whole file; the client must not append it to a file it already has.
+        let landing = inbox.path().join("taken.txt");
+        std::fs::write(&landing, b"twelve bytes").unwrap();
+        let got = p.download(files[0].id, &landing, 99).await.unwrap();
+
+        assert_eq!(got, 12, "the whole file, counted once");
+        assert_eq!(
+            std::fs::read(&landing).unwrap(),
+            b"twelve bytes",
+            "a rejected resume restarts the file rather than doubling it"
         );
 
         run.stop().await;
