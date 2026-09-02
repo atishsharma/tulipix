@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS transfers (
     bytes     INTEGER NOT NULL,
     peer      TEXT    NOT NULL,
     status    TEXT    NOT NULL,
-    at        INTEGER NOT NULL
+    at        INTEGER NOT NULL,
+    job       INTEGER
 );
 CREATE INDEX IF NOT EXISTS transfers_at_idx ON transfers(at DESC);
 
@@ -85,23 +86,30 @@ pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-/// The four columns the round-button device list needs, added to a `devices`
-/// table that predates them. `CREATE TABLE IF NOT EXISTS` does nothing to a table
-/// that already exists, so a database from before this change would otherwise be
-/// missing them for good.
+/// Columns added to tables that predate them: the four the round-button
+/// device list needs on `devices`, plus `job` on `transfers`. `CREATE TABLE IF
+/// NOT EXISTS` does nothing to a table that already exists, so a database from
+/// before one of these columns was added would otherwise be missing it for
+/// good.
 async fn add_missing_columns(pool: &SqlitePool) -> Result<()> {
-    for (column, decl) in
-        [("kind", "TEXT NOT NULL DEFAULT ''"), ("ip", "TEXT NOT NULL DEFAULT ''"),
-         ("name", "TEXT NOT NULL DEFAULT ''"), ("pin", "TEXT NOT NULL DEFAULT ''")]
-    {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('devices') WHERE name = ?)",
-        )
+    for (table, column, decl) in [
+        ("devices", "kind", "TEXT NOT NULL DEFAULT ''"),
+        ("devices", "ip", "TEXT NOT NULL DEFAULT ''"),
+        ("devices", "name", "TEXT NOT NULL DEFAULT ''"),
+        ("devices", "pin", "TEXT NOT NULL DEFAULT ''"),
+        ("transfers", "job", "INTEGER"),
+    ] {
+        // `table` is one of the literals above, never a caller-supplied
+        // string, so formatting it into the probe carries no injection
+        // surface the way a bound parameter would still need one for `column`.
+        let exists: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?)"
+        ))
         .bind(column)
         .fetch_one(pool)
         .await?;
         if !exists {
-            sqlx::query(&format!("ALTER TABLE devices ADD COLUMN {column} {decl}"))
+            sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))
                 .execute(pool)
                 .await?;
         }
@@ -126,6 +134,10 @@ pub struct Row {
     pub bytes: i64,
     pub peer: String,
     pub status: &'static str,
+    /// Which fan-out this row belongs to. `None` for a send with one
+    /// destination, which is most of them — a job id for one row would be a
+    /// group of one.
+    pub job: Option<i64>,
 }
 
 impl Row {
@@ -148,6 +160,7 @@ impl Row {
             bytes,
             peer: peer.into(),
             status: "sending",
+            job: None,
         }
     }
 
@@ -159,11 +172,18 @@ impl Row {
             bytes,
             peer: peer.into(),
             status: "ok",
+            job: None,
         }
     }
 
     pub fn failed(mut self) -> Self {
         self.status = "failed";
+        self
+    }
+
+    /// File this row under a fan-out.
+    pub fn for_job(mut self, job: i64) -> Self {
+        self.job = Some(job);
         self
     }
 }
@@ -172,8 +192,8 @@ impl Row {
 /// is later settled by — see [`finish`].
 pub async fn record(pool: &SqlitePool, row: Row, at: i64) -> Result<i64> {
     let done = sqlx::query(
-        "INSERT INTO transfers (direction, name, abs_path, bytes, peer, status, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO transfers (direction, name, abs_path, bytes, peer, status, at, job)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(row.direction)
     .bind(&row.name)
@@ -182,9 +202,25 @@ pub async fn record(pool: &SqlitePool, row: Row, at: i64) -> Result<i64> {
     .bind(row.peer.as_str())
     .bind(row.status)
     .bind(at)
+    .bind(row.job)
     .execute(pool)
     .await?;
     Ok(done.last_insert_rowid())
+}
+
+/// A fresh job id. Monotonic off the existing rows, so it survives a restart
+/// without a counter of its own.
+///
+/// Two fan-outs started in the same instant could read the same `MAX(job)`
+/// before either has inserted a row, and end up sharing an id — no locking
+/// or sequence table guards against it. Considered and accepted: fan-outs are
+/// user-initiated and seconds apart, and the only consequence is cosmetic
+/// grouping in a history table, never a lost or misattributed row.
+pub async fn next_job_id(pool: &SqlitePool) -> Result<i64> {
+    let max: Option<i64> = sqlx::query_scalar("SELECT MAX(job) FROM transfers")
+        .fetch_one(pool)
+        .await?;
+    Ok(max.unwrap_or(0) + 1)
 }
 
 /// Settle a row that was written while its bytes were still moving: `ok` when
@@ -569,5 +605,32 @@ mod tests {
         let pool = mem_pool().await;
         record(&pool, Row::sent("x", "/tmp/out", 1, "1.2.3.4").failed(), 100).await.unwrap();
         assert_eq!(newest(&pool, 0).await[0].status, "failed");
+    }
+
+    #[tokio::test]
+    async fn one_fan_out_groups_its_rows_under_one_job() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        apply_schema(&pool).await.unwrap();
+
+        let job = next_job_id(&pool).await.unwrap();
+        for peer in ["studio", "thinkpad", "Pixel 8"] {
+            record(&pool, Row::sent("a.bin", "/tmp/a.bin", 10, peer).for_job(job), 1_000)
+                .await
+                .unwrap();
+        }
+        record(&pool, Row::sent("solo.bin", "/tmp/solo.bin", 5, "studio"), 1_001).await.unwrap();
+
+        let grouped: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transfers WHERE job = ?")
+            .bind(job)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(grouped, 3, "three lanes, one job");
+
+        let ungrouped: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transfers WHERE job IS NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(ungrouped, 1, "a single-destination send needs no job at all");
     }
 }
