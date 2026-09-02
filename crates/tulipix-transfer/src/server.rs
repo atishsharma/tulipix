@@ -29,6 +29,13 @@ const COOKIE: &str = "tx";
 /// Read size for downloads. Big enough that a 4 GB file is not a syscall storm,
 /// small enough that a cancelled download stops promptly.
 const CHUNK: usize = 64 * 1024;
+/// How long a proposed peer pairing stays answerable. Two minutes is a person
+/// walking to the other machine; anything longer is a code left on a screen.
+///
+/// Deliberately not `auth::PAIRING_TTL`, which is the ten minutes a PIN pairing
+/// gets. That is one person typing a number they can see; this is two people at
+/// two screens, and the shorter window is the point.
+const PEER_PAIRING_TTL: u64 = 120;
 
 pub use tulipix_core::util::unix_secs as now_secs;
 
@@ -85,6 +92,24 @@ pub struct Outgoing {
     pub total: u64,
 }
 
+/// A pairing another machine has proposed, waiting on the person at this one.
+///
+/// Not an `Auth` concern: nothing is trusted yet, and nothing here may outlive
+/// the dialog it belongs to. `approved` is the whole security property — it
+/// flips only when someone presses the button on this desktop.
+pub struct Pairing {
+    /// Their leaf fingerprint, as they sent it.
+    pub fingerprint: String,
+    /// The six digits on both screens.
+    pub code: String,
+    /// The address the proposal arrived from, so the token records where the
+    /// machine actually is rather than what it claimed to be.
+    pub ip: String,
+    /// When it was proposed. Anything older than `PEER_PAIRING_TTL` is dead.
+    pub at: u64,
+    pub approved: bool,
+}
+
 pub struct AppState {
     pub auth: Mutex<Auth>,
     pub tray: Mutex<Tray>,
@@ -113,6 +138,10 @@ pub struct AppState {
     /// plain HTTP. Shown on the desktop and on the gateway so the certificate a
     /// phone accepts on first use is one that can be checked.
     pub fingerprint: Mutex<String>,
+    /// The peer pairing on screen, if any. One at a time on purpose: two
+    /// dialogs asking to compare different digits is how a person approves the
+    /// wrong one.
+    pub pairing: Mutex<Option<Pairing>>,
 }
 
 pub type Shared = Arc<AppState>;
@@ -153,6 +182,57 @@ impl AppState {
             }
         }
         self.bump();
+    }
+
+    /// Record a proposal and return the digits. Replaces any earlier one:
+    /// the newest proposal is the one the dialog is showing.
+    pub fn offer_pairing(&self, fingerprint: &str, code: &str, ip: &str, now: u64) {
+        *lock(&self.pairing) = Some(Pairing {
+            fingerprint: fingerprint.to_string(),
+            code: code.to_string(),
+            ip: ip.to_string(),
+            at: now,
+            approved: false,
+        });
+    }
+
+    /// The pairing awaiting an answer here, if it has not expired.
+    pub fn pending_pairing(&self, now: u64) -> Option<(String, String)> {
+        let guard = lock(&self.pairing);
+        let p = guard.as_ref()?;
+        (now.saturating_sub(p.at) < PEER_PAIRING_TTL)
+            .then(|| (p.fingerprint.clone(), p.code.clone()))
+    }
+
+    /// A person pressed "They match". The only path that sets `approved`.
+    pub fn approve_pairing(&self, now: u64) -> bool {
+        let mut guard = lock(&self.pairing);
+        let Some(p) = guard.as_mut() else { return false };
+        if now.saturating_sub(p.at) >= PEER_PAIRING_TTL {
+            *guard = None;
+            return false;
+        }
+        p.approved = true;
+        true
+    }
+
+    /// They did not match, or nobody answered.
+    pub fn cancel_pairing(&self) {
+        *lock(&self.pairing) = None;
+    }
+
+    /// Take the approved pairing for this fingerprint, consuming it so one
+    /// approval cannot be redeemed twice.
+    fn claim_pairing(&self, fingerprint: &str, now: u64) -> Option<Pairing> {
+        let mut guard = lock(&self.pairing);
+        let p = guard.as_ref()?;
+        let usable = p.approved
+            && p.fingerprint == fingerprint
+            && now.saturating_sub(p.at) < PEER_PAIRING_TTL;
+        if !usable {
+            return None;
+        }
+        guard.take()
     }
 }
 
@@ -196,6 +276,16 @@ impl Running {
     pub fn abort(self) {
         let _ = self.shutdown.send(());
         self.handle.abort();
+    }
+
+    /// A person compared the digits and they matched.
+    pub fn approve_pairing(&self) -> bool {
+        self.state.approve_pairing(now_secs())
+    }
+
+    /// They did not, or the dialog was dismissed.
+    pub fn cancel_pairing(&self) {
+        self.state.cancel_pairing();
     }
 }
 
@@ -244,6 +334,7 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
         recv_bytes: AtomicU64::new(0),
         ca: Mutex::new(None),
         fingerprint: Mutex::new(String::new()),
+        pairing: Mutex::new(None),
     });
 
     let app = Router::new()
@@ -267,6 +358,8 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
         // the page rather than a 404 at least lands somewhere useful.
         .route("/share", get(page).post(share_fallback))
         .route("/auth", post(auth_post))
+        .route("/api/peer/pair", post(peer_pair))
+        .route("/api/peer/pair/confirm", post(peer_pair_confirm))
         .route("/api/files", get(files))
         .route("/api/status", get(status))
         // What the gateway probes. Unauthenticated on purpose: the answer it is
@@ -683,6 +776,71 @@ async fn auth_post(
         res.headers_mut().insert(header::SET_COOKIE, value);
     }
     res
+}
+
+#[derive(serde::Deserialize)]
+struct PairBody {
+    fingerprint: String,
+}
+
+/// Step one of pairing: both sides learn the other's fingerprint and can
+/// therefore derive the same digits. Nothing is trusted yet — this issues no
+/// token, and the proposal it records is inert until a person answers it.
+///
+/// The body is read as `String`, the same as `auth_post` above, rather than
+/// through an axum `Json` extractor: that extractor sits behind axum's `json`
+/// feature, which is off in this workspace, and the crate already has a
+/// `serde_json::from_str` + `json()` idiom for this.
+async fn peer_pair(
+    State(state): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: String,
+) -> Response {
+    let Ok(body) = serde_json::from_str::<PairBody>(&body) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let ours = lock(&state.fingerprint).clone();
+    let code = crate::peer::pairing_code(&ours, &body.fingerprint);
+    state.offer_pairing(&body.fingerprint, &code, &peer_ip(peer), now_secs());
+    json(
+        serde_json::to_string(&serde_json::json!({ "code": code, "fingerprint": ours }))
+            .unwrap_or_else(|_| "{}".into()),
+    )
+}
+
+/// Step two: collect the token, but only once a person at *this* machine has
+/// said the digits match. Until then this answers 409, and the caller is
+/// expected to ask again — the thing it is waiting for is a human.
+async fn peer_pair_confirm(State(state): State<Shared>, body: String) -> Response {
+    let Ok(body) = serde_json::from_str::<PairBody>(&body) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let now = now_secs();
+    let Some(pairing) = state.claim_pairing(&body.fingerprint, now) else {
+        // Either nothing was proposed, or it was proposed and nobody here has
+        // approved it. Both answers are the same to a caller, deliberately: a
+        // different status for "pending" than for "never existed" would tell an
+        // attacker which fingerprints are in flight.
+        return (
+            StatusCode::CONFLICT,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({ "error": "not confirmed" }).to_string(),
+        )
+            .into_response();
+    };
+    let token = crate::auth::Token::issue_peer(now);
+    let Some(token) = lock(&state.auth).remember(token, "tulipix", "tulipix", &pairing.ip) else {
+        return (
+            StatusCode::CONFLICT,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({ "error": "too many devices" }).to_string(),
+        )
+            .into_response();
+    };
+    json(
+        serde_json::to_string(&serde_json::json!({ "token": token.value }))
+            .unwrap_or_else(|_| "{}".into()),
+    )
 }
 
 async fn files(State(st): State<Shared>, headers: HeaderMap) -> Response {
@@ -1266,5 +1424,124 @@ mod tests {
         let (run, base, _dir) = started().await;
         run.stop().await;
         assert!(reqwest::get(format!("{base}/")).await.is_err(), "port still answering");
+    }
+
+    #[tokio::test]
+    async fn pairing_shows_the_same_code_to_both_machines() {
+        let (run, base, _dir) = started().await;
+        let c = client();
+
+        let theirs = "b2:04:71:ee:5c:39:aa:10:7f:c3";
+        let res = c
+            .post(format!("{base}/api/peer/pair"))
+            .json(&serde_json::json!({ "fingerprint": theirs }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+
+        let body: serde_json::Value = res.json().await.unwrap();
+        let ours = body["fingerprint"].as_str().unwrap();
+        let code = body["code"].as_str().unwrap();
+
+        assert_eq!(
+            code,
+            crate::peer::pairing_code(ours, theirs),
+            "the server must show what the caller can derive for itself"
+        );
+        run.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_pairing_is_refused_until_somebody_here_says_the_digits_match() {
+        let (run, base, _dir) = started().await;
+        let c = client();
+        let theirs = "b2:04:71:ee:5c:39:aa:10:7f:c3";
+
+        c.post(format!("{base}/api/peer/pair"))
+            .json(&serde_json::json!({ "fingerprint": theirs }))
+            .send()
+            .await
+            .unwrap();
+
+        // Nobody has looked at the digits yet.
+        let early = c
+            .post(format!("{base}/api/peer/pair/confirm"))
+            .json(&serde_json::json!({ "fingerprint": theirs }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            early.status(),
+            409,
+            "a machine cannot approve its own pairing — that is the whole point of the digits"
+        );
+
+        assert!(run.approve_pairing(), "the person at this desktop presses the button");
+
+        let res = c
+            .post(format!("{base}/api/peer/pair/confirm"))
+            .json(&serde_json::json!({ "fingerprint": theirs }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let token = res.json::<serde_json::Value>().await.unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(!token.is_empty(), "an approved pairing yields a token");
+
+        // The token is the point: it must open a route a cookie-less stranger
+        // is refused from. The cookie is named `tx` — see `COOKIE` in this file.
+        let bare = reqwest::Client::new();
+        let refused = bare.get(format!("{base}/api/files")).send().await.unwrap();
+        assert_eq!(refused.status(), 401, "no token, no listing");
+
+        let allowed = bare
+            .get(format!("{base}/api/files"))
+            .header("cookie", format!("tx={token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), 200, "the peer token opens the same door the phone uses");
+
+        run.stop().await;
+    }
+
+    #[tokio::test]
+    async fn one_approval_cannot_be_redeemed_twice() {
+        let (run, base, _dir) = started().await;
+        let c = client();
+        let theirs = "b2:04:71:ee:5c:39:aa:10:7f:c3";
+
+        c.post(format!("{base}/api/peer/pair"))
+            .json(&serde_json::json!({ "fingerprint": theirs }))
+            .send()
+            .await
+            .unwrap();
+        assert!(run.approve_pairing());
+
+        let first = c
+            .post(format!("{base}/api/peer/pair/confirm"))
+            .json(&serde_json::json!({ "fingerprint": theirs }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first.status(), 200);
+
+        let second = c
+            .post(format!("{base}/api/peer/pair/confirm"))
+            .json(&serde_json::json!({ "fingerprint": theirs }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            second.status(),
+            409,
+            "the approval is consumed — a replayed confirm must not mint a second token"
+        );
+
+        run.stop().await;
     }
 }

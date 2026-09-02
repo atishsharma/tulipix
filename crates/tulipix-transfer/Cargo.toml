@@ -21,6 +21,9 @@ mdns-sd = "0.13"
 # already resolved in this tree; the default would be free to pick aws-lc-rs and
 # link a second crypto library in beside it.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+# The client half of peer-to-peer. Already resolved in this tree; `cookies` is
+# how a peer carries the same device token a browser does.
+reqwest = { workspace = true, features = ["cookies", "json", "stream"] }
 # Reading the ACME chain and key back off disk. rcgen writes PEM but does not
 # read it, and rustls wants DER; this is the two-function crate that bridges
 # them, and it is already in the tree under hyper-rustls.
@@ -29,6 +32,9 @@ rustls-pemfile = "2"
 # against. Already compiled in this tree — rcgen and rustls below both resolve to
 # it — so naming it here costs a line and nothing else.
 ring = "0.17"
+# For `#[derive(Deserialize)]` on request bodies. Already in the lockfile under
+# serde_json below; naming it directly is what makes the derive available here.
+serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 # `net` for the listener: the workspace default trims tokio to what the media
@@ -43,5 +49,4 @@ tulipix-core = { path = "../tulipix-core" }
 [dev-dependencies]
 filetime = "0.2"
 tempfile = "3"
-reqwest = { workspace = true, features = ["cookies"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
