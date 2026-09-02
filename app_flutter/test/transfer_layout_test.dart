@@ -15,6 +15,7 @@ import 'package:tulipix/sections/transfer/connection_card.dart';
 import 'package:tulipix/sections/transfer/receive_card.dart';
 import 'package:tulipix/sections/transfer/send_card.dart';
 import 'package:tulipix/sections/transfer/transfer_controller.dart';
+import 'package:tulipix/sections/transfer/transfer_dialogs.dart';
 import 'package:tulipix/sections/transfer/transfer_widgets.dart';
 import 'package:tulipix/sections/transfer/transfers_table.dart';
 import 'package:tulipix/src/rust/api/transfer.dart';
@@ -29,6 +30,7 @@ TransferState _state({
   int peers = 0,
   String attempts = '',
   List<TransferLane> lanes = const [],
+  List<TransferOffer> offers = const [],
 }) {
   return TransferState(
     running: running,
@@ -79,9 +81,7 @@ TransferState _state({
           paired: i.isEven,
         ),
     ],
-    // No widget yet; here so this file compiles against the state the bridge
-    // actually hands over.
-    offers: const [],
+    offers: offers,
     lanes: lanes,
     uploads: [
       for (var i = 0; i < uploads; i++)
@@ -163,6 +163,19 @@ TransferState _stateWithLanes() => _state(files: 2, lanes: const [
       ),
     ]);
 
+/// `n` pushes waiting on an answer, oldest first, the way the bridge sorts
+/// them. Spelled out rather than counted like the other lists, because a test
+/// has to name the one it taps.
+List<TransferOffer> _offers(int n) => [
+      const TransferOffer(id: 7, peer: 'studio', summary: '3 files · 41.2 MB'),
+      for (var i = 1; i < n; i++)
+        TransferOffer(
+          id: 7 + i,
+          peer: 'laptop-$i',
+          summary: '1 file · 2.0 MB',
+        ),
+    ];
+
 Widget _host(Widget child, {double width = 360, double height = 560}) {
   return MaterialApp(
     theme: tulipixTheme(Tokens.dark()),
@@ -243,7 +256,16 @@ void main() {
         await pumpClean(
           tester,
           _host(
-            ReceiveCard(controller: c, state: _state(uploads: 3)),
+            ReceiveCard(
+              controller: c,
+              // An offer and three arrivals at once: the consent panel takes
+              // its height from the panel the inbox stretches into, so the
+              // narrow sweep has to see them together. Two offers, to draw
+              // the "more waiting" line as well.
+              state: _state(uploads: 3, offers: _offers(2)),
+              onAccept: (_) {},
+              onDecline: (_) {},
+            ),
             width: width,
           ),
         );
@@ -266,7 +288,12 @@ void main() {
         state: _state(running: false),
         onSendTo: (_) {},
       ),
-      ReceiveCard(controller: c, state: _state(running: false)),
+      ReceiveCard(
+        controller: c,
+        state: _state(running: false),
+        onAccept: (_) {},
+        onDecline: (_) {},
+      ),
     ]) {
       await tester.pumpWidget(_host(card));
     }
@@ -403,11 +430,11 @@ void main() {
           // threshold once the card and box padding come off, so `FILES TO
           // SEND` is at its tallest here — the worst case for what is left.
           width: 387,
-          // What transfer_page pins the three cards to. The 560 the sweep
-          // above uses is deliberately crueller than the real thing; this one
-          // has to be the real thing, because it measures whether the content
-          // fits rather than whether it throws.
-          height: 620,
+          // What transfer_page pins the three cards to — though `_host` puts
+          // it in a `Center` inside the 800x600 test surface, so a `SizedBox`
+          // taller than that is clamped and the card really gets 600. Crueller
+          // than the real card by 20px, which is the direction this file
+          // always errs in, and the difference below does not depend on it.
         ),
       );
       // The only `PanelBody` in this card is the drop zone's.
@@ -432,6 +459,102 @@ void main() {
     // never sees.
     expect(free - taken, lessThan(110),
         reason: 'SEND TO has taken height the drop zone was budgeted');
+  });
+
+  testWidgets('an offer asks before anything lands', (tester) async {
+    int? accepted;
+    int? declined;
+    await pumpClean(
+      tester,
+      _host(
+        ReceiveCard(
+          controller: c,
+          state: _state(offers: _offers(1)),
+          onAccept: (id) => accepted = id,
+          onDecline: (id) => declined = id,
+        ),
+        width: 387,
+        height: 620,
+      ),
+    );
+
+    expect(find.byType(OfferPanel), findsOneWidget);
+    expect(find.text('3 files · 41.2 MB'), findsOneWidget,
+        reason: 'the whole question is one line');
+
+    await tester.tap(find.text('Decline'));
+    await tester.pump();
+    expect(declined, 7);
+    expect(accepted, isNull, reason: 'declining is not accepting');
+  });
+
+  testWidgets('only the oldest offer is asked about at once', (tester) async {
+    await pumpClean(
+      tester,
+      _host(
+        ReceiveCard(
+          controller: c,
+          state: _state(offers: _offers(3)),
+          onAccept: (_) {},
+          onDecline: (_) {},
+        ),
+        width: 387,
+        height: 620,
+      ),
+    );
+
+    // Three arrived; one is asked. Stacking all three would take the inbox
+    // panel's whole budget, and answering the wrong one is the mistake the
+    // gate exists to prevent.
+    expect(find.byType(OfferPanel), findsOneWidget);
+    expect(find.text('3 files · 41.2 MB'), findsOneWidget);
+    expect(find.text('2 more waiting'), findsOneWidget);
+  });
+
+  testWidgets('the pairing dialog shows six digits and nothing else to read',
+      (tester) async {
+    var confirmed = false;
+    var cancelled = false;
+    await pumpClean(
+      tester,
+      _host(
+        Builder(
+          builder: (context) => TextButton(
+            onPressed: () => showPairDialog(
+              context,
+              code: '418902',
+              peer: '192.168.1.31',
+              onConfirm: () => confirmed = true,
+              onCancel: () => cancelled = true,
+            ),
+            child: const Text('open'),
+          ),
+        ),
+        // Only the button lives in here; the dialog renders in the app's
+        // overlay at the full test surface.
+        width: 300,
+        height: 120,
+      ),
+    );
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    // Six separate boxes, so a person can read them aloud a digit at a time.
+    // '0' is the one digit in 418902 that appears once and nowhere in the
+    // address beside it, so it is the one worth counting.
+    expect(find.text('4'), findsOneWidget);
+    expect(find.text('0'), findsOneWidget);
+    expect(find.textContaining('192.168.1.31'), findsOneWidget);
+    // The barrier is not a way out: a comparison nobody made is not consent.
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+    expect(find.text('They match'), findsOneWidget,
+        reason: 'tapping outside must not dismiss a consent dialog');
+
+    await tester.tap(find.text('They match'));
+    await tester.pumpAndSettle();
+    expect(confirmed, isTrue);
+    expect(cancelled, isFalse);
   });
 
   testWidgets('the ledger lays out with every row state in it', (tester) async {

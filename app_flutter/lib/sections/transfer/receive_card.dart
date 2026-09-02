@@ -13,10 +13,23 @@ import 'transfer_controller.dart';
 import 'transfer_widgets.dart';
 
 class ReceiveCard extends StatelessWidget {
-  const ReceiveCard({super.key, required this.controller, required this.state});
+  const ReceiveCard({
+    super.key,
+    required this.controller,
+    required this.state,
+    required this.onAccept,
+    required this.onDecline,
+  });
 
   final TransferController controller;
   final TransferState state;
+
+  /// Answering an offer goes out as a callback rather than through the
+  /// controller, like pairing and the fan-out: the card stays a widget that
+  /// can be pumped without the bridge, and the page owns which command an
+  /// answer becomes.
+  final ValueChanged<int> onAccept;
+  final ValueChanged<int> onDecline;
 
   @override
   Widget build(BuildContext context) {
@@ -27,6 +40,19 @@ class ReceiveCard extends StatelessWidget {
       icon: Icons.download,
       tint: Tint.recv,
       children: [
+        // Above everything, because it is the only thing on this card that is
+        // waiting on a person. One at a time even when several machines are
+        // asking: two consent panels stacked would take the inbox panel's
+        // whole budget, and answering the wrong one is exactly the mistake a
+        // consent gate exists to prevent. The queue is oldest first, so the
+        // next one appears as soon as this is answered.
+        if (state.offers.isNotEmpty)
+          OfferPanel(
+            offer: state.offers.first,
+            waiting: state.offers.length - 1,
+            onAccept: onAccept,
+            onDecline: onDecline,
+          ),
         Expanded(
           child: Container(
             padding: const EdgeInsets.all(14),
@@ -155,6 +181,92 @@ class ReceiveCard extends StatelessWidget {
           ],
         ),
       ],
+    );
+  }
+}
+
+/// A push waiting on a yes or a no.
+///
+/// Green, because this is the receiving card, but at full strength rather than
+/// the wash the upload rows use: it is the one thing on this card that needs
+/// answering, and everything else can wait. Nothing is written until the
+/// answer arrives — the gate in the server sits above the point where the file
+/// is created — so declining leaves no partial behind to notice and delete.
+class OfferPanel extends StatelessWidget {
+  const OfferPanel({
+    super.key,
+    required this.offer,
+    required this.onAccept,
+    required this.onDecline,
+    this.waiting = 0,
+  });
+
+  final TransferOffer offer;
+  final ValueChanged<int> onAccept;
+  final ValueChanged<int> onDecline;
+
+  /// How many more are queued behind this one. Said plainly rather than drawn,
+  /// so a person answering the first one knows there is a second.
+  final int waiting;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(11),
+      decoration: BoxDecoration(
+        color: wash(Tint.recv, 0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: edge(Tint.recv, 0.42)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '${offer.peer} wants to send you',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 10.5, color: t.textDim),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            offer.summary,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: t.text,
+            ),
+          ),
+          const SizedBox(height: 9),
+          // Wrap and not Row: on the narrowest column these two buttons are
+          // wider than the card, and a consent control that runs off the edge
+          // is one nobody can press.
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: [
+              ActionBtn(
+                label: 'Accept',
+                icon: Icons.download,
+                tint: Tint.recv,
+                onTap: () => onAccept(offer.id),
+              ),
+              RowBtn(label: 'Decline', onTap: () => onDecline(offer.id)),
+            ],
+          ),
+          if (waiting > 0) ...[
+            const SizedBox(height: 6),
+            Text(
+              waiting == 1 ? '1 more waiting' : '$waiting more waiting',
+              style: TextStyle(fontSize: 10.5, color: t.textDim),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

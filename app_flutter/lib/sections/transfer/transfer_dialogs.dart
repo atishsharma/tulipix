@@ -7,6 +7,8 @@
 // is the firewall hint, which Rust builds with this machine's real port and
 // link in it — a rule naming the wrong port is worse than no rule.
 
+import 'dart:ui' show FontFeature;
+
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
@@ -442,6 +444,94 @@ class _NameFieldState extends State<_NameField> {
 
 /// The distinction worth spelling out: this is a log, and people reach for it
 /// expecting a delete.
+/// Six digits, one question, two buttons.
+///
+/// The digits are the security of this whole feature. They are derived from
+/// both machines' certificate fingerprints, so somebody in the middle can
+/// present a certificate of their own but cannot make the two screens agree.
+/// That is why the copy says "on both screens", why the barrier does not
+/// dismiss it, and why there is no "skip" — a dialog you can wave away is not
+/// a comparison anybody made.
+///
+/// Nothing is issued by pressing "They match" here alone: this answers for
+/// this machine, and the far end has its own button.
+Future<void> showPairDialog(
+  BuildContext context, {
+  required String code,
+  required String peer,
+  required VoidCallback onConfirm,
+  required VoidCallback onCancel,
+}) {
+  return showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) {
+      final t = context.tokens;
+      return AlertDialog(
+        backgroundColor: t.modal,
+        title: const Text('Do these match?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // One box per digit, so this can be read aloud down a phone line
+            // a digit at a time — which is how two machines in two rooms
+            // actually get compared.
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                for (final d in code.split(''))
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    width: 34,
+                    height: 44,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: wash(Tint.pair, 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: edge(Tint.pair, 0.42)),
+                    ),
+                    child: Text(
+                      d,
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w700,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                        color: t.text,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Compare these six digits with the ones on $peer. '
+              'Only confirm if they are identical on both screens.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11.5, color: t.textDim),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              onCancel();
+              Navigator.of(context).pop();
+            },
+            child: const Text('They do not'),
+          ),
+          FilledButton(
+            onPressed: () {
+              onConfirm();
+              Navigator.of(context).pop();
+            },
+            child: const Text('They match'),
+          ),
+        ],
+      );
+    },
+  );
+}
+
 Future<bool> confirmClearHistory(BuildContext context) async {
   final ok = await showDialog<bool>(
     context: context,

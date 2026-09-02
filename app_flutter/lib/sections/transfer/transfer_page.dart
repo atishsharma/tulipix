@@ -59,11 +59,51 @@ class _TransferPageState extends State<TransferPage> {
   /// and it should still be that way next time.
   bool _qrInverted = false;
 
+  /// Whether the pairing dialog is on screen.
+  ///
+  /// `state.pairCode` is the open flag — non-empty means two machines are
+  /// waiting on a person — so this is not a second source of truth, only the
+  /// record that this window has already acted on the current code. Without
+  /// it the dialog would be opened again on every poll for as long as the
+  /// digits stand.
+  bool _pairing = false;
+
   @override
   void initState() {
     super.initState();
+    // Not inside the ListenableBuilder: a dialog cannot be opened during a
+    // build, and the pairing question arrives on a poll rather than on a tap.
+    _c.addListener(_syncPairDialog);
     _c.setVisible(widget.visible);
     _c.start();
+  }
+
+  /// Follow `pairCode`: show the digits when they appear, take them away when
+  /// they go.
+  ///
+  /// They go when the far end cancelled, when the two minutes ran out, or when
+  /// this machine answered. Leaving stale digits up would invite somebody to
+  /// confirm a pairing that no longer exists — the server refuses it, so this
+  /// is honesty rather than security, but a dialog that lies is its own bug.
+  void _syncPairDialog() {
+    if (!mounted) return;
+    final state = _c.state;
+    final code = state?.pairCode ?? '';
+    if (code.isNotEmpty && !_pairing) {
+      _pairing = true;
+      showPairDialog(
+        context,
+        code: code,
+        peer: state?.pairPeer ?? '',
+        onConfirm: () => _c.send(const TransferCmd.confirmPair()),
+        onCancel: () => _c.send(const TransferCmd.cancelPair()),
+      ).then((_) => _pairing = false);
+    } else if (code.isEmpty && _pairing) {
+      _pairing = false;
+      // Safe to pop blind: this dialog blocks its barrier, so nothing a person
+      // could open sits above it, and only it can be the top route here.
+      Navigator.of(context).pop();
+    }
   }
 
   @override
@@ -77,6 +117,7 @@ class _TransferPageState extends State<TransferPage> {
     // The server is not stopped here. Sharing lasts as long as the app does, so
     // a phone can keep pulling a 4 GB file while the desktop is used for
     // something else. Stop is an explicit button, or app exit.
+    _c.removeListener(_syncPairDialog);
     _c.dispose();
     super.dispose();
   }
@@ -195,7 +236,14 @@ class _Cards extends StatelessWidget {
         onSendTo: (bases) =>
             controller.send(TransferCmd.sendTray(bases: bases)),
       ),
-      ReceiveCard(controller: controller, state: state),
+      ReceiveCard(
+        controller: controller,
+        state: state,
+        // Like pairing and the fan-out above: the card asks, the page turns
+        // the answer into a command.
+        onAccept: (id) => controller.send(TransferCmd.acceptOffer(id: id)),
+        onDecline: (id) => controller.send(TransferCmd.declineOffer(id: id)),
+      ),
     ];
     return LayoutBuilder(
       builder: (context, box) {
