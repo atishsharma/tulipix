@@ -254,6 +254,8 @@ void main() {
     );
 
     expect(find.byType(PeerChip), findsNWidgets(3));
+    expect(find.text('Pair'), findsOneWidget,
+        reason: 'one of the three is unpaired, and only that one offers to pair');
     // Pairing is what an unpaired chip is for; a paired one sends.
     await tester.tap(find.text('192.168.1.32'));
     await tester.pump();
@@ -275,8 +277,10 @@ void main() {
       )),
     );
     expect(find.byType(PeerChip), findsNothing);
-    expect(tester.takeException(), isNull,
-        reason: 'the card still lays out at its pinned height');
+    // Not just "no chips" — an empty `Outline` draws none either, and it is the
+    // box being absent that leaves the QR plate its height.
+    expect(find.text('OTHER TULIPIX MACHINES'), findsNothing,
+        reason: 'an empty box would still cost the panel its height');
   });
 
   testWidgets('the ledger lays out with every row state in it', (tester) async {
