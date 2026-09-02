@@ -5,9 +5,12 @@
 //! other module either serves them or plans them.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use futures_util::TryStreamExt;
 use tokio::io::AsyncWriteExt;
 
 /// Six digits both machines can derive independently from the two leaf
@@ -228,8 +231,17 @@ impl Peer {
             use tokio::io::AsyncSeekExt;
             file.seek(std::io::SeekFrom::Start(from_byte)).await?;
         }
-        let len = file.metadata().await?.len().saturating_sub(from_byte);
-        let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
+
+        // Counted as it streams rather than stat'ed beforehand: the body is
+        // chunked, so a file that changes size mid-push goes out without
+        // complaint and a pre-flight `len` would be a number nobody sent. This
+        // return value becomes the next resume offset, so it has to be true.
+        let sent = Arc::new(AtomicU64::new(0));
+        let tally = Arc::clone(&sent);
+        let stream = tokio_util::io::ReaderStream::new(file).inspect_ok(move |chunk| {
+            tally.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        });
+        let body = reqwest::Body::wrap_stream(stream);
 
         let res = self
             .http
@@ -242,7 +254,7 @@ impl Peer {
         if !res.status().is_success() {
             return Err(anyhow!("upload refused: {}", res.status()));
         }
-        Ok(len)
+        Ok(sent.load(Ordering::Relaxed))
     }
 }
 
@@ -443,6 +455,42 @@ mod tests {
 
         let unknown = p.await_answer(9_999, Duration::from_secs(5)).await.unwrap();
         assert!(!unknown, "an offer that does not exist is not something to wait for");
+
+        run.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_sender_keeps_asking_until_the_person_answers_yes() {
+        let inbox = tempfile::tempdir().unwrap();
+        let run = crate::server::start(crate::server::Config {
+            inbox: inbox.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            pool: None,
+            tls: false,
+        })
+        .await
+        .unwrap();
+        let base = format!("http://127.0.0.1:{}", run.port);
+
+        let (_code, theirs) = pair(&base, "our:fp").await.unwrap();
+        assert!(run.approve_pairing());
+        let token = confirm(&base, &theirs).await.unwrap();
+        let p = connect(&base, &token).unwrap();
+
+        let offer = p.offer(&[("patient.bin".to_string(), 4)]).await.unwrap();
+
+        // Nobody has answered yet, so the first poll must come back pending and
+        // the loop must go round again. Answering from another task after a
+        // delay is what makes this a test of the loop rather than of one
+        // request — a single-shot implementation returns false here.
+        let waiter = p.await_answer(offer, Duration::from_secs(10));
+        let answerer = async {
+            tokio::time::sleep(Duration::from_millis(1_500)).await;
+            assert!(run.accept_offer(offer), "the person says yes, a beat later");
+        };
+        let (answer, ()) = tokio::join!(waiter, answerer);
+
+        assert!(answer.unwrap(), "an offer accepted while we waited is accepted");
 
         run.stop().await;
     }
