@@ -5,6 +5,7 @@
 //! other module either serves them or plans them.
 
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use tokio::io::AsyncWriteExt;
@@ -158,6 +159,91 @@ impl Peer {
         file.flush().await?;
         Ok(written)
     }
+
+    /// Announce a batch before sending it. The returned id must accompany every
+    /// upload in the batch.
+    pub async fn offer(&self, files: &[(String, u64)]) -> Result<u64> {
+        let listed: Vec<serde_json::Value> = files
+            .iter()
+            .map(|(name, bytes)| serde_json::json!({ "name": name, "bytes": bytes }))
+            .collect();
+        let total: u64 = files.iter().map(|(_, b)| *b).sum();
+        let res = self
+            .http
+            .post(format!("{}/api/peer/offer", self.base))
+            .header("cookie", self.cookie())
+            .json(&serde_json::json!({ "files": listed, "total": total }))
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            return Err(anyhow!("offer refused: {}", res.status()));
+        }
+        let body: serde_json::Value = res.json().await?;
+        body["offer"].as_u64().ok_or_else(|| anyhow!("no offer id in reply"))
+    }
+
+    /// Wait for the person at the far end to answer an announced batch.
+    ///
+    /// Polled at human speed rather than machine speed: the thing being waited
+    /// on is somebody reading a dialog, and a tighter loop would only spend the
+    /// other machine's CPU to learn the same nothing. A 404 means the offer is
+    /// gone — never announced, or long since cleared — which is a refusal as
+    /// far as a sender is concerned.
+    pub async fn await_answer(&self, offer: u64, timeout: Duration) -> Result<bool> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let res = self
+                .http
+                .get(format!("{}/api/peer/offer/{offer}", self.base))
+                .header("cookie", self.cookie())
+                .send()
+                .await?;
+            if res.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(false);
+            }
+            if !res.status().is_success() {
+                return Err(anyhow!("cannot read the answer: {}", res.status()));
+            }
+            let body: serde_json::Value = res.json().await?;
+            if let Some(answer) = body["answer"].as_bool() {
+                return Ok(answer);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(false);
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    /// Send one file of an accepted batch. `from_byte` resumes a lane that died
+    /// partway, which is what makes a retry cheap.
+    pub async fn push(&self, offer: u64, path: &Path, from_byte: u64) -> Result<u64> {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow!("unnameable file: {}", path.display()))?;
+
+        let mut file = tokio::fs::File::open(path).await?;
+        if from_byte > 0 {
+            use tokio::io::AsyncSeekExt;
+            file.seek(std::io::SeekFrom::Start(from_byte)).await?;
+        }
+        let len = file.metadata().await?.len().saturating_sub(from_byte);
+        let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
+
+        let res = self
+            .http
+            .put(format!("{}/upload/{name}", self.base))
+            .header("cookie", self.cookie())
+            .header("x-tulipix-offer", offer.to_string())
+            .body(body)
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            return Err(anyhow!("upload refused: {}", res.status()));
+        }
+        Ok(len)
+    }
 }
 
 #[cfg(test)]
@@ -289,6 +375,74 @@ mod tests {
             b"twelve bytes",
             "a rejected resume restarts the file rather than doubling it"
         );
+
+        run.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_push_lands_only_after_the_receiver_accepts() {
+        use std::io::Write;
+
+        let src = tempfile::tempdir().unwrap();
+        let file = src.path().join("push.bin");
+        let mut f = std::fs::File::create(&file).unwrap();
+        f.write_all(b"pushed bytes").unwrap();
+        drop(f);
+
+        let inbox = tempfile::tempdir().unwrap();
+        let run = crate::server::start(crate::server::Config {
+            inbox: inbox.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            pool: None,
+            tls: false,
+        })
+        .await
+        .unwrap();
+        let base = format!("http://127.0.0.1:{}", run.port);
+
+        let (_code, theirs) = pair(&base, "our:fp").await.unwrap();
+        assert!(run.approve_pairing(), "the person at the far machine says the digits match");
+        let token = confirm(&base, &theirs).await.unwrap();
+        let p = connect(&base, &token).unwrap();
+
+        let offer = p.offer(&[("push.bin".to_string(), 12)]).await.unwrap();
+        assert!(p.push(offer, &file, 0).await.is_err(), "refused before consent");
+
+        run.accept_offer(offer);
+        let sent = p.push(offer, &file, 0).await.unwrap();
+        assert_eq!(sent, 12);
+        assert_eq!(std::fs::read(inbox.path().join("push.bin")).unwrap(), b"pushed bytes");
+
+        run.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_sender_waits_for_the_answer_rather_than_pushing_blind() {
+        let inbox = tempfile::tempdir().unwrap();
+        let run = crate::server::start(crate::server::Config {
+            inbox: inbox.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            pool: None,
+            tls: false,
+        })
+        .await
+        .unwrap();
+        let base = format!("http://127.0.0.1:{}", run.port);
+
+        let (_code, theirs) = pair(&base, "our:fp").await.unwrap();
+        assert!(run.approve_pairing());
+        let token = confirm(&base, &theirs).await.unwrap();
+        let p = connect(&base, &token).unwrap();
+
+        let offer = p.offer(&[("waited.bin".to_string(), 4)]).await.unwrap();
+        assert!(run.decline_offer(offer), "the person says no");
+        assert!(
+            !p.await_answer(offer, Duration::from_secs(5)).await.unwrap(),
+            "a refusal is reported as a refusal, not as a timeout"
+        );
+
+        let unknown = p.await_answer(9_999, Duration::from_secs(5)).await.unwrap();
+        assert!(!unknown, "an offer that does not exist is not something to wait for");
 
         run.stop().await;
     }

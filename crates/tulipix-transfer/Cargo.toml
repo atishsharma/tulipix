@@ -43,6 +43,9 @@ tokio = { workspace = true, features = ["net", "io-util", "time", "rt"] }
 # Already in the tree under reqwest, so this costs no new dependency — only the
 # feature that lets us be the server end rather than the client end.
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+# Streaming a file into a request body without reading it into memory first —
+# a 12 GB push must not become a 12 GB allocation.
+tokio-util = { version = "0.7", default-features = false, features = ["io"] }
 tracing.workspace = true
 tulipix-core = { path = "../tulipix-core" }
 
