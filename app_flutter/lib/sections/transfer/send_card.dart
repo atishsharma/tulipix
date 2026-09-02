@@ -487,9 +487,10 @@ class LaneRow extends StatelessWidget {
                   ),
                 ),
               ),
-              // The total that moved, the reason when it failed, and nothing
-              // at all once it landed — a lane that worked has nothing left to
-              // say.
+              // What the lane moved in total, the reason when it failed, and
+              // nothing at all once it landed — a lane that worked has nothing
+              // left to say. Never a running total: see the note on the
+              // `Expanded` above.
               if (lane.detail.isNotEmpty) ...[
                 const SizedBox(width: 8),
                 Flexible(

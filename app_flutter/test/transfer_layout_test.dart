@@ -379,42 +379,58 @@ void main() {
 
   testWidgets('the destination box leaves the drop zone its budget',
       (tester) async {
-    await pumpClean(
-      tester,
-      _host(
-        SendCard(
-          controller: c,
-          state: _state(files: 6, devices: 3, peers: 4),
-          onSendTo: (_) {},
+    // Measured twice, and what is asserted is the *difference*. The drop
+    // zone's absolute height is the card height less the header, the card
+    // padding, two gaps, `FILES TO SEND`, and the drop zone's own 16px
+    // padding and 1.5px border — six terms, any one of which being a few
+    // pixels off turns an absolute floor into a test that is red before the
+    // regression it is meant to catch exists. The difference depends on
+    // `SEND TO` and nothing else, which is the thing under test.
+    Future<double> zone(int peers) async {
+      await pumpClean(
+        tester,
+        _host(
+          SendCard(
+            controller: c,
+            state: _state(files: 6, devices: 3, peers: peers),
+            onSendTo: (_) {},
+          ),
+          // The narrowest a card ever really is. `_threeColumnMin` is checked
+          // against the width the page's ListView already padded, so the real
+          // floor is (1240 - 40 of gutters) / 3 = 400; 387 is under it on
+          // purpose, because a budget that survives the cruel case survives
+          // the real one. It is also under `Outline`'s 340px control-stacking
+          // threshold once the card and box padding come off, so `FILES TO
+          // SEND` is at its tallest here — the worst case for what is left.
+          width: 387,
+          // What transfer_page pins the three cards to. The 560 the sweep
+          // above uses is deliberately crueller than the real thing; this one
+          // has to be the real thing, because it measures whether the content
+          // fits rather than whether it throws.
+          height: 620,
         ),
-        // The narrowest a card ever really is: the three-column layout at its
-        // 1240px minimum, less 40 of page padding and 40 of gutters, divided
-        // by three. Not the 300-520 sweep above — this measures a budget, and
-        // 387 is where the budget binds. It is also where `FILES TO SEND`
-        // crosses `Outline`'s 340px control-stacking threshold and grows by a
-        // row on its own, which is the whole reason it is the worst case.
-        width: 387,
-        // What transfer_page pins the three cards to. The 560 the sweep above
-        // uses is deliberately crueller than the real thing; this one has to
-        // be the real thing, because it measures whether the content fits
-        // rather than whether it throws.
-        height: 620,
-      ),
-    );
+      );
+      // The only `PanelBody` in this card is the drop zone's.
+      return tester.getSize(find.byType(PanelBody)).height;
+    }
 
-    // 620 pinned, less 32 of card padding, less the header and its 14px gap,
-    // leaves about 533 for the three blocks. `FILES TO SEND` takes ~195 here
-    // (stacked controls), `SEND TO` ~76, the two gaps 22 — so the drop zone
-    // should land near 240.
+    // No paired peer, no destination box: the drop zone has the whole budget.
+    final free = await zone(0);
+    // Two of four peers are paired, so the box is drawn.
+    final taken = await zone(4);
+
+    // `SEND TO` costs the 10px gap above it, `Outline`'s own chrome — 3 of
+    // border, 20 of padding, its label line and an 8px gap, call it 44 — and
+    // one row of `peerChipH + 6`. About 92. A second row is another 38, and
+    // growing by a row is the obvious way for this block to eat the panel
+    // that gives way. 110 sits between the two with room on both sides.
     //
     // Asserting the space rather than what is in it, deliberately: the drop
     // zone scrolls rather than overflowing, so a squeezed one throws nothing
     // and pumpClean stays green, and the test font is far wider than the real
-    // one so measuring the *content* would fail here for reasons a person
-    // never sees. The floor is set so that `SEND TO` growing to two rows —
-    // 38px, the obvious way for this to regress — takes it to ~202 and fails.
-    final zone = tester.getSize(find.byType(PanelBody)).height;
-    expect(zone, greaterThan(220),
+    // one, so measuring the *content* would fail here for reasons a person
+    // never sees.
+    expect(free - taken, lessThan(110),
         reason: 'SEND TO has taken height the drop zone was budgeted');
   });
 

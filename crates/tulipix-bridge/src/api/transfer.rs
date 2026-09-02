@@ -110,8 +110,9 @@ pub struct TransferLane {
     pub pct: f64,
     /// waiting | sending | done | failed.
     pub state: String,
-    /// "5 MB / 20 MB" while moving, the failure reason when failed, empty
-    /// otherwise — a lane that finished has nothing left to say.
+    /// What the lane moved — "5 MB / 20 MB" — or the reason it failed, and
+    /// empty once it landed: a lane that worked has nothing left to say.
+    /// A total, not a running one; see `lanes` below.
     pub detail: String,
 }
 
@@ -213,7 +214,12 @@ pub struct TransferState {
     pub peers: Vec<TransferPeer>,
     /// Pushes waiting on a yes or a no.
     pub offers: Vec<TransferOffer>,
-    /// The lanes of the fan-out in flight. Empty when nothing is being sent.
+    /// How the last fan-out went, one lane per destination. Empty until one
+    /// has finished, because `SendTray` awaits the whole thing before it
+    /// answers — every lane arrives with its outcome already decided, and no
+    /// bar here ever moves. Reporting progress while it runs needs
+    /// `fanout::send` to send through a channel, which is a backend change.
+    /// Cleared by the next pick: AddFiles, AddFolder, Remove and Clear.
     pub lanes: Vec<TransferLane>,
     pub uploads: Vec<TransferUpload>,
     pub rows: Vec<TransferLedgerRow>,
@@ -465,6 +471,11 @@ pub async fn transfer_dispatch(cmd: TransferCmd) -> Result<TransferState> {
             }
         }
         TransferCmd::Remove { id } => {
+            // Same as Clear, one row at a time. Without this, emptying the
+            // tray by hand while lanes are up dead-ends the card: the lanes
+            // hide the picker, and `Clear all` — the other way back — is drawn
+            // only while the tray has something in it.
+            sess().lanes.clear();
             let _ = with(|svc| svc.remove(id.max(0) as u64));
         }
         TransferCmd::Clear => {
