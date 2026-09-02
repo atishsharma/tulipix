@@ -67,6 +67,14 @@ CREATE TABLE IF NOT EXISTS transfers (
 );
 CREATE INDEX IF NOT EXISTS transfers_at_idx ON transfers(at DESC);
 
+-- Job ids, allocated by SQLite rather than counted by us. One row per
+-- fan-out, and the row exists only so that its rowid can be handed out: two
+-- fan-outs asking at the same instant get two inserts and therefore two ids,
+-- which reading MAX(job) could never guarantee.
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT
+);
+
 CREATE TABLE IF NOT EXISTS devices (
     token     TEXT    PRIMARY KEY,
     label     TEXT    NOT NULL,
@@ -83,6 +91,31 @@ CREATE TABLE IF NOT EXISTS devices (
 pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(SCHEMA).execute(pool).await?;
     add_missing_columns(pool).await?;
+    seed_jobs(pool).await?;
+    Ok(())
+}
+
+/// Start the job sequence above whatever the old `MAX(job) + 1` scheme already
+/// handed out, once, on the first open after `jobs` appears.
+///
+/// Without it a fresh `jobs` table starts at 1 and the first fan-out on an
+/// existing database reuses a job id that is already in `transfers` — merging
+/// today's send into a group from months ago. The guard is `jobs` being empty,
+/// and nothing ever deletes from it, so this fires exactly once per database.
+async fn seed_jobs(pool: &SqlitePool) -> Result<()> {
+    sqlx::query(
+        // The guard sits outside the aggregate on purpose. `SELECT MAX(job)
+        // FROM transfers WHERE <false>` still returns one row — NULL — and
+        // inserting a NULL id into an AUTOINCREMENT column means "pick one",
+        // so the obvious spelling burns an id on every launch. Filtering the
+        // aggregate's own row instead inserts nothing when there is nothing
+        // to seed.
+        "INSERT INTO jobs(id)
+         SELECT m FROM (SELECT MAX(job) AS m FROM transfers)
+         WHERE m IS NOT NULL AND (SELECT COUNT(*) FROM jobs) = 0",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -208,19 +241,18 @@ pub async fn record(pool: &SqlitePool, row: Row, at: i64) -> Result<i64> {
     Ok(done.last_insert_rowid())
 }
 
-/// A fresh job id. Monotonic off the existing rows, so it survives a restart
-/// without a counter of its own.
+/// A fresh job id, allocated by inserting a row and taking its rowid.
 ///
-/// Two fan-outs started in the same instant could read the same `MAX(job)`
-/// before either has inserted a row, and end up sharing an id — no locking
-/// or sequence table guards against it. Considered and accepted: fan-outs are
-/// user-initiated and seconds apart, and the only consequence is cosmetic
-/// grouping in a history table, never a lost or misattributed row.
+/// This used to read `MAX(job)` and add one, which is a read followed by a
+/// write with nothing holding the gap: two fan-outs starting together both saw
+/// the same maximum and shared an id, and their rows merged into one group in
+/// Recent Transfers. An insert has no gap — SQLite hands out two rowids or it
+/// hands out none — and `AUTOINCREMENT` keeps the counter in `sqlite_sequence`
+/// so it also survives a restart, which is what the old scheme was really
+/// buying by reading off the rows.
 pub async fn next_job_id(pool: &SqlitePool) -> Result<i64> {
-    let max: Option<i64> = sqlx::query_scalar("SELECT MAX(job) FROM transfers")
-        .fetch_one(pool)
-        .await?;
-    Ok(max.unwrap_or(0) + 1)
+    let done = sqlx::query("INSERT INTO jobs DEFAULT VALUES").execute(pool).await?;
+    Ok(done.last_insert_rowid())
 }
 
 /// Settle a row that was written while its bytes were still moving: `ok` when
