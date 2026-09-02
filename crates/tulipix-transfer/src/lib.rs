@@ -168,6 +168,13 @@ pub struct Snapshot {
     pub peers: Vec<PeerRow>,
     /// Pushes announced from elsewhere, still waiting on a person here.
     pub offers: Vec<OfferRow>,
+    /// The six digits a machine on this network is asking us to compare, and
+    /// the address it came from. Both empty when nobody is asking.
+    ///
+    /// Two plain strings rather than an `Option`, because this crosses to a UI
+    /// that draws an empty string as "no dialog" and has no `Option` to test.
+    pub pair_code: String,
+    pub pair_from: String,
     /// `(address, wrong guesses)`, worst first. Empty when nobody has missed.
     pub attempts: Vec<(String, u32)>,
     pub uploads: Vec<UploadRow>,
@@ -659,6 +666,10 @@ impl TransferService {
             .map(|(id, peer, files, bytes)| OfferRow { id, peer, files, bytes })
             .collect();
 
+        // Empty when nobody has proposed a pairing to this machine, which is
+        // the normal case and is what blanks the dialog.
+        let inbound = run.state.inbound_pairing(now).unwrap_or_default();
+
         Snapshot {
             running: true,
             port: run.port,
@@ -675,6 +686,8 @@ impl TransferService {
             devices,
             peers: self.peers(),
             offers,
+            pair_code: inbound.0,
+            pair_from: inbound.1,
             attempts,
             uploads,
             sends,

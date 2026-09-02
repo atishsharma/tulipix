@@ -997,10 +997,10 @@ async fn snapshot() -> Result<TransferState> {
         })
         .collect();
 
-    // Only the machine that started a pairing has anything to show here.
-    // `sess().pending_pair` is that machine's own bookkeeping; the machine
-    // that only *received* a proposal has no session state for it at all — see
-    // the task-12 report for why that side's dialog is not wired up yet.
+    // Whichever side of the pairing this machine is on, the dialog is the same
+    // dialog: six digits and the other machine's address. The initiator has
+    // them in the session because it asked; the receiver has them on the
+    // snapshot because it was asked.
     let (pair_code, pair_peer) = {
         let s = sess();
         match &s.pending_pair {
@@ -1012,7 +1012,7 @@ async fn snapshot() -> Result<TransferState> {
                     .map(|peer| peer.ip.clone())
                     .unwrap_or_else(|| p.base.clone()),
             ),
-            None => (String::new(), String::new()),
+            None => (snap.pair_code.clone(), snap.pair_from.clone()),
         }
     };
 

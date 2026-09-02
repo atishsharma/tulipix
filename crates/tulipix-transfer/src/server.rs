@@ -228,6 +228,19 @@ impl AppState {
         Self::pairing_fresh(p.at, now).then(|| (p.fingerprint.clone(), p.code.clone()))
     }
 
+    /// The proposal waiting on somebody here, as the dialog needs it: the
+    /// digits to compare, and where it came from. Empty when there is nothing
+    /// to answer.
+    ///
+    /// Separate from `pending_pairing`, which hands back the fingerprint for
+    /// the protocol. A fingerprint is not something to put in front of a
+    /// person; the address they can check against the other machine is.
+    pub fn inbound_pairing(&self, now: u64) -> Option<(String, String)> {
+        let guard = lock(&self.pairing);
+        let p = guard.as_ref()?;
+        Self::pairing_fresh(p.at, now).then(|| (p.code.clone(), p.ip.clone()))
+    }
+
     /// A person pressed "They match". The only path that sets `approved`.
     pub fn approve_pairing(&self, now: u64) -> bool {
         let mut guard = lock(&self.pairing);
@@ -1723,6 +1736,38 @@ mod tests {
             409,
             "the approval is consumed — a replayed confirm must not mint a second token"
         );
+
+        run.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_machine_being_asked_can_see_the_digits_too() {
+        let (run, base, _dir) = started().await;
+        let c = client();
+        let theirs = "b2:04:71:ee:5c:39:aa:10:7f:c3";
+
+        assert!(
+            run.state.inbound_pairing(now_secs()).is_none(),
+            "nothing to answer before anybody asks"
+        );
+
+        let res = c
+            .post(format!("{base}/api/peer/pair"))
+            .json(&serde_json::json!({ "fingerprint": theirs }))
+            .send()
+            .await
+            .unwrap();
+        let shown = res.json::<serde_json::Value>().await.unwrap()["code"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let (code, from) = run.state.inbound_pairing(now_secs()).unwrap();
+        assert_eq!(
+            code, shown,
+            "both machines must show the same six digits or comparing them proves nothing"
+        );
+        assert!(!from.is_empty(), "and the person is told which machine is asking");
 
         run.stop().await;
     }
