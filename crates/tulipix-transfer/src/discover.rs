@@ -31,7 +31,8 @@ pub(crate) fn keep(found: &Found, own: &[IpAddr]) -> bool {
 /// the same contract `mdns::Advert` has.
 pub struct Browser {
     daemon: mdns_sd::ServiceDaemon,
-    seen: Arc<Mutex<HashMap<String, Found>>>,
+    seen: Arc<Mutex<HashMap<String, Vec<Found>>>>,
+    own: Vec<IpAddr>,
 }
 
 impl Drop for Browser {
@@ -47,7 +48,7 @@ impl Browser {
         let Ok(seen) = self.seen.lock() else {
             return Vec::new();
         };
-        let mut out: Vec<Found> = seen.values().cloned().collect();
+        let mut out: Vec<Found> = seen.values().flat_map(|v| v.iter().cloned().filter(|f| keep(f, &self.own))).collect();
         out.sort_by(|a, b| a.host.cmp(&b.host).then(a.ip.cmp(&b.ip)));
         out
     }
@@ -74,7 +75,7 @@ pub fn browse(secure: bool, own: Vec<IpAddr>) -> Option<Browser> {
         }
     };
 
-    let seen: Arc<Mutex<HashMap<String, Found>>> = Arc::new(Mutex::new(HashMap::new()));
+    let seen: Arc<Mutex<HashMap<String, Vec<Found>>>> = Arc::new(Mutex::new(HashMap::new()));
     let sink = Arc::clone(&seen);
 
     std::thread::spawn(move || {
@@ -88,16 +89,14 @@ pub fn browse(secure: bool, own: Vec<IpAddr>) -> Option<Browser> {
                         continue;
                     }
                     let port = info.get_port();
-                    for ip in info.get_addresses() {
-                        let f = Found { host: host.clone(), ip: *ip, port };
-                        if let Ok(mut map) = sink.lock() {
-                            map.insert(format!("{}:{}", f.ip, f.port), f);
-                        }
+                    let addrs: Vec<Found> = info.get_addresses().iter().map(|ip| Found { host: host.clone(), ip: *ip, port }).collect();
+                    if let Ok(mut map) = sink.lock() {
+                        map.insert(info.get_fullname().to_string(), addrs);
                     }
                 }
                 mdns_sd::ServiceEvent::ServiceRemoved(_, fullname) => {
                     if let Ok(mut map) = sink.lock() {
-                        map.retain(|_, f| !fullname.contains(&f.host));
+                        map.remove(&fullname);
                     }
                 }
                 _ => {}
@@ -105,7 +104,7 @@ pub fn browse(secure: bool, own: Vec<IpAddr>) -> Option<Browser> {
         }
     });
 
-    Some(Browser { daemon, seen })
+    Some(Browser { daemon, seen, own })
 }
 
 #[cfg(test)]
