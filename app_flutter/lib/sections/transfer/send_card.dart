@@ -73,8 +73,18 @@ class _SendCardState extends State<SendCard> {
           // A fan-out and picking files never overlap — nobody chooses a file
           // mid-send — so the lanes take the drop zone's place rather than a
           // block of their own. The card is pinned to one height with its two
-          // neighbours, and progress you have to scroll to is progress nobody
-          // watches.
+          // neighbours, and a result you have to scroll to is a result nobody
+          // reads.
+          //
+          // A result, not a running total: `SendTray` awaits the whole fan-out
+          // before it answers, so every lane arrives with its outcome already
+          // decided. `waiting` and `sending` never reach here and no bar ever
+          // moves — what this shows is which machines got the files. Making it
+          // live needs `fanout::send` to report through a channel while it
+          // runs, which is a backend change and not a widget one.
+          //
+          // The next pick clears them: the bridge empties `lanes` on AddFiles,
+          // AddFolder and Clear, which is what brings the picker back.
           child: state.lanes.isEmpty
               ? _PickZone(
                   onFiles: widget.controller.addFiles,
@@ -427,11 +437,16 @@ class _TrayRow extends StatelessWidget {
   }
 }
 
-/// One destination's progress inside a fan-out.
+/// How one destination of a fan-out ended.
 ///
 /// Indigo, because a lane is giving. A failed lane keeps its row and turns red
 /// rather than vanishing: the useful thing to know about a fan-out is which two
 /// of the three machines actually got the files, and why the third did not.
+///
+/// The bar is an outcome rather than a running total — the bridge answers only
+/// once every lane has finished, so it paints full or empty and never anything
+/// between. `waiting` is drawn indeterminate for the day the backend streams
+/// its lanes and the intermediate states start arriving.
 class LaneRow extends StatelessWidget {
   const LaneRow({super.key, required this.lane});
 
@@ -472,8 +487,9 @@ class LaneRow extends StatelessWidget {
                   ),
                 ),
               ),
-              // Bytes while it moves, the reason when it fails, and nothing at
-              // all once it lands — a finished lane has nothing left to say.
+              // The total that moved, the reason when it failed, and nothing
+              // at all once it landed — a lane that worked has nothing left to
+              // say.
               if (lane.detail.isNotEmpty) ...[
                 const SizedBox(width: 8),
                 Flexible(
@@ -495,7 +511,9 @@ class LaneRow extends StatelessWidget {
           ClipRRect(
             borderRadius: BorderRadius.circular(2),
             child: LinearProgressIndicator(
-              value: lane.pct,
+              // Null is indeterminate: a lane that has not started is not a
+              // send that has moved no bytes, and they should not look alike.
+              value: lane.state == 'waiting' ? null : lane.pct,
               minHeight: 4,
               backgroundColor: t.outline,
               valueColor: AlwaysStoppedAnimation(tint),

@@ -445,6 +445,10 @@ pub async fn transfer_dispatch(cmd: TransferCmd) -> Result<TransferState> {
         TransferCmd::Start => start_service().await,
         TransferCmd::Stop => stop_service().await,
         TransferCmd::AddFiles { paths } => {
+            // Choosing something new is how a person dismisses the last
+            // fan-out: the lanes are what is standing between them and the
+            // picker.
+            sess().lanes.clear();
             let _ = with(|svc| {
                 for p in &paths {
                     svc.add(Path::new(p));
@@ -453,6 +457,10 @@ pub async fn transfer_dispatch(cmd: TransferCmd) -> Result<TransferState> {
         }
         TransferCmd::AddFolder { path } => {
             if !path.is_empty() {
+                // Same as AddFiles: a new pick retires the last result. Inside
+                // the guard, because an empty path is a chooser that was
+                // cancelled and nothing was picked at all.
+                sess().lanes.clear();
                 let _ = with(|svc| svc.add(Path::new(&path)));
             }
         }
@@ -460,6 +468,9 @@ pub async fn transfer_dispatch(cmd: TransferCmd) -> Result<TransferState> {
             let _ = with(|svc| svc.remove(id.max(0) as u64));
         }
         TransferCmd::Clear => {
+            // Emptying the tray retires the fan-out that sent it, or the rows
+            // outlive the files they describe.
+            sess().lanes.clear();
             let _ = with(|svc| svc.clear());
         }
         TransferCmd::SetShareTarget { token } => {
@@ -644,6 +655,10 @@ pub async fn transfer_dispatch(cmd: TransferCmd) -> Result<TransferState> {
             let _ = with(|svc| svc.decline_offer(id.max(0) as u64));
         }
         TransferCmd::SendTray { bases } => {
+            // Last send's lanes are not this send's. Cleared before the new
+            // ones are computed so a failed fan-out cannot leave its rows
+            // standing behind a fresh attempt.
+            sess().lanes.clear();
             let files = with(|svc| svc.tray_paths()).unwrap_or_default();
             let state = last_state().unwrap_or_else(off_state);
             let tokens = sess().peer_tokens.clone();

@@ -377,7 +377,7 @@ void main() {
     ], reason: 'one send, two destinations, in the order they were ticked');
   });
 
-  testWidgets('the destination box does not squeeze the drop zone off the card',
+  testWidgets('the destination box leaves the drop zone its budget',
       (tester) async {
     await pumpClean(
       tester,
@@ -387,26 +387,35 @@ void main() {
           state: _state(files: 6, devices: 3, peers: 4),
           onSendTo: (_) {},
         ),
-        width: 520,
-        // What transfer_page pins the three cards to. The 560 the other tests
-        // use is deliberately crueller than the real thing; this one has to be
-        // the real thing, because what it measures is whether the content fits
+        // The narrowest a card ever really is: the three-column layout at its
+        // 1240px minimum, less 40 of page padding and 40 of gutters, divided
+        // by three. Not the 300-520 sweep above — this measures a budget, and
+        // 387 is where the budget binds. It is also where `FILES TO SEND`
+        // crosses `Outline`'s 340px control-stacking threshold and grows by a
+        // row on its own, which is the whole reason it is the worst case.
+        width: 387,
+        // What transfer_page pins the three cards to. The 560 the sweep above
+        // uses is deliberately crueller than the real thing; this one has to
+        // be the real thing, because it measures whether the content fits
         // rather than whether it throws.
         height: 620,
       ),
     );
 
-    // The drop zone scrolls rather than overflowing, so one that no longer fits
-    // is truncated in silence: nothing throws and pumpClean stays green. The
-    // scroll extent is the only witness.
-    final zone = tester.state<ScrollableState>(
-      find.descendant(
-        of: find.byType(PanelBody),
-        matching: find.byType(Scrollable),
-      ),
-    );
-    expect(zone.position.maxScrollExtent, 0,
-        reason: 'SEND TO has taken height the drop zone needed');
+    // 620 pinned, less 32 of card padding, less the header and its 14px gap,
+    // leaves about 533 for the three blocks. `FILES TO SEND` takes ~195 here
+    // (stacked controls), `SEND TO` ~76, the two gaps 22 — so the drop zone
+    // should land near 240.
+    //
+    // Asserting the space rather than what is in it, deliberately: the drop
+    // zone scrolls rather than overflowing, so a squeezed one throws nothing
+    // and pumpClean stays green, and the test font is far wider than the real
+    // one so measuring the *content* would fail here for reasons a person
+    // never sees. The floor is set so that `SEND TO` growing to two rows —
+    // 38px, the obvious way for this to regress — takes it to ~202 and fails.
+    final zone = tester.getSize(find.byType(PanelBody)).height;
+    expect(zone, greaterThan(220),
+        reason: 'SEND TO has taken height the drop zone was budgeted');
   });
 
   testWidgets('the ledger lays out with every row state in it', (tester) async {
