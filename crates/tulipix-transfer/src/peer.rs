@@ -4,6 +4,11 @@
 //! This is the only module in the crate that makes outbound requests. Every
 //! other module either serves them or plans them.
 
+use std::path::Path;
+
+use anyhow::{anyhow, Result};
+use tokio::io::AsyncWriteExt;
+
 /// Six digits both machines can derive independently from the two leaf
 /// fingerprints, for a person to compare on two screens.
 ///
@@ -17,6 +22,134 @@ pub fn pairing_code(a: &str, b: &str) -> String {
     let bytes = digest.as_ref();
     let n = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) % 1_000_000;
     format!("{n:06}")
+}
+
+/// One file another tulipix is offering, as its `/api/files` reports it.
+#[derive(Clone, Debug)]
+pub struct RemoteFile {
+    pub id: u64,
+    pub name: String,
+    pub bytes: u64,
+}
+
+/// A connection to another tulipix we already hold a token for.
+pub struct Peer {
+    base: String,
+    token: String,
+    http: reqwest::Client,
+}
+
+/// Ask a machine to pair. Returns the digits to show, and their fingerprint.
+pub async fn pair(base: &str, our_fingerprint: &str) -> Result<(String, String)> {
+    let res = reqwest::Client::new()
+        .post(format!("{base}/api/peer/pair"))
+        .json(&serde_json::json!({ "fingerprint": our_fingerprint }))
+        .send()
+        .await?;
+    if !res.status().is_success() {
+        return Err(anyhow!("pairing refused: {}", res.status()));
+    }
+    let body: serde_json::Value = res.json().await?;
+    let code = body["code"]
+        .as_str()
+        .ok_or_else(|| anyhow!("no code in reply"))?
+        .to_string();
+    let theirs = body["fingerprint"]
+        .as_str()
+        .ok_or_else(|| anyhow!("no fingerprint in reply"))?
+        .to_string();
+    Ok((code, theirs))
+}
+
+/// A person confirmed the digits. Collect the token.
+pub async fn confirm(base: &str, their_fingerprint: &str) -> Result<String> {
+    let res = reqwest::Client::new()
+        .post(format!("{base}/api/peer/pair/confirm"))
+        .json(&serde_json::json!({ "fingerprint": their_fingerprint }))
+        .send()
+        .await?;
+    if !res.status().is_success() {
+        return Err(anyhow!("pairing not confirmed: {}", res.status()));
+    }
+    let body: serde_json::Value = res.json().await?;
+    Ok(body["token"]
+        .as_str()
+        .ok_or_else(|| anyhow!("no token in reply"))?
+        .to_string())
+}
+
+/// A client that carries the device token on every request, which is exactly
+/// what the browser's cookie does.
+pub fn connect(base: &str, token: &str) -> Result<Peer> {
+    Ok(Peer {
+        base: base.trim_end_matches('/').to_string(),
+        token: token.to_string(),
+        http: reqwest::Client::builder().build()?,
+    })
+}
+
+impl Peer {
+    /// The cookie is named `tx`, not `t` — see `COOKIE` in `server.rs`.
+    fn cookie(&self) -> String {
+        format!("tx={}", self.token)
+    }
+
+    /// What this peer is offering right now.
+    pub async fn list(&self) -> Result<Vec<RemoteFile>> {
+        let res = self
+            .http
+            .get(format!("{}/api/files", self.base))
+            .header("cookie", self.cookie())
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            return Err(anyhow!("listing refused: {}", res.status()));
+        }
+        let body: serde_json::Value = res.json().await?;
+        let rows = body
+            .as_array()
+            .or_else(|| body["files"].as_array())
+            .ok_or_else(|| anyhow!("unexpected listing shape"))?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                Some(RemoteFile {
+                    id: r["id"].as_u64()?,
+                    name: r["name"].as_str()?.to_string(),
+                    bytes: r["bytes"].as_u64().unwrap_or(0),
+                })
+            })
+            .collect())
+    }
+
+    /// Stream one file to disk. `from_byte` resumes a partial take through the
+    /// same `Range` handling that lets a phone survive a screen lock.
+    pub async fn download(&self, id: u64, to: &Path, from_byte: u64) -> Result<u64> {
+        let mut req = self
+            .http
+            .get(format!("{}/dl/{id}", self.base))
+            .header("cookie", self.cookie());
+        if from_byte > 0 {
+            req = req.header("range", format!("bytes={from_byte}-"));
+        }
+        let mut res = req.send().await?;
+        if !res.status().is_success() {
+            return Err(anyhow!("download refused: {}", res.status()));
+        }
+
+        let mut file = if from_byte > 0 {
+            tokio::fs::OpenOptions::new().append(true).open(to).await?
+        } else {
+            tokio::fs::File::create(to).await?
+        };
+        let mut written = from_byte;
+        while let Some(chunk) = res.chunk().await? {
+            file.write_all(&chunk).await?;
+            written += chunk.len() as u64;
+        }
+        file.flush().await?;
+        Ok(written)
+    }
 }
 
 #[cfg(test)]
@@ -59,5 +192,52 @@ mod tests {
             let a = format!("{i:02x}");
             assert_eq!(pairing_code(&a, FP_B).len(), 6);
         }
+    }
+
+    #[tokio::test]
+    async fn a_peer_lists_and_downloads_what_another_offers() {
+        use std::io::Write;
+
+        // The machine doing the offering.
+        let dir = tempfile::tempdir().unwrap();
+        let offered = dir.path().join("contract.pdf");
+        let mut f = std::fs::File::create(&offered).unwrap();
+        f.write_all(b"hello from the other machine").unwrap();
+        drop(f);
+
+        let inbox = tempfile::tempdir().unwrap();
+        let run = crate::server::start(crate::server::Config {
+            inbox: inbox.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            pool: None,
+            tls: false,
+        })
+        .await
+        .unwrap();
+        let base = format!("http://127.0.0.1:{}", run.port);
+        // `server::lock` is module-private, so this reaches for the same
+        // `Mutex` through the plain std API instead of that helper.
+        run.state.tray.lock().unwrap().add(&offered);
+
+        // The machine doing the taking.
+        let (code, theirs) = pair(&base, "our:own:fingerprint").await.unwrap();
+        assert_eq!(code.len(), 6);
+        assert!(run.approve_pairing(), "the person at the far machine says the digits match");
+        let token = confirm(&base, &theirs).await.unwrap();
+
+        let p = connect(&base, &token).unwrap();
+        let files = p.list().await.unwrap();
+        assert_eq!(files.len(), 1, "one file is on offer");
+        assert_eq!(files[0].name, "contract.pdf");
+
+        let landing = inbox.path().join("taken.pdf");
+        let got = p.download(files[0].id, &landing, 0).await.unwrap();
+        assert_eq!(got, 28, "every byte arrived");
+        assert_eq!(
+            std::fs::read(&landing).unwrap(),
+            b"hello from the other machine"
+        );
+
+        run.stop().await;
     }
 }
