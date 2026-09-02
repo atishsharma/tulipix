@@ -196,19 +196,27 @@ impl AppState {
         });
     }
 
+    /// Whether a proposal made at `at` is still answerable at `now`.
+    ///
+    /// A proposal timestamped in the future is treated as dead rather than
+    /// fresh: the only way `at > now` happens is a clock that stepped
+    /// backwards, and a gate that guards a year-long token fails closed.
+    fn pairing_fresh(at: u64, now: u64) -> bool {
+        now >= at && now - at < PEER_PAIRING_TTL
+    }
+
     /// The pairing awaiting an answer here, if it has not expired.
     pub fn pending_pairing(&self, now: u64) -> Option<(String, String)> {
         let guard = lock(&self.pairing);
         let p = guard.as_ref()?;
-        (now.saturating_sub(p.at) < PEER_PAIRING_TTL)
-            .then(|| (p.fingerprint.clone(), p.code.clone()))
+        Self::pairing_fresh(p.at, now).then(|| (p.fingerprint.clone(), p.code.clone()))
     }
 
     /// A person pressed "They match". The only path that sets `approved`.
     pub fn approve_pairing(&self, now: u64) -> bool {
         let mut guard = lock(&self.pairing);
         let Some(p) = guard.as_mut() else { return false };
-        if now.saturating_sub(p.at) >= PEER_PAIRING_TTL {
+        if !Self::pairing_fresh(p.at, now) {
             *guard = None;
             return false;
         }
@@ -226,9 +234,8 @@ impl AppState {
     fn claim_pairing(&self, fingerprint: &str, now: u64) -> Option<Pairing> {
         let mut guard = lock(&self.pairing);
         let p = guard.as_ref()?;
-        let usable = p.approved
-            && p.fingerprint == fingerprint
-            && now.saturating_sub(p.at) < PEER_PAIRING_TTL;
+        let usable =
+            p.approved && p.fingerprint == fingerprint && Self::pairing_fresh(p.at, now);
         if !usable {
             return None;
         }
@@ -829,7 +836,12 @@ async fn peer_pair_confirm(State(state): State<Shared>, body: String) -> Respons
             .into_response();
     };
     let token = crate::auth::Token::issue_peer(now);
-    let Some(token) = lock(&state.auth).remember(token, "tulipix", "tulipix", &pairing.ip) else {
+    let Some(token) = lock(&state.auth).remember(token, "tulipix", "tulipix", &pairing.ip)
+    else {
+        // The approval was spent by `claim_pairing` a moment ago, and no token
+        // came of it. Put it back rather than making two people compare digits
+        // again for a failure that is about this machine being full.
+        *lock(&state.pairing) = Some(pairing);
         return (
             StatusCode::CONFLICT,
             [(header::CONTENT_TYPE, "application/json")],
@@ -1543,5 +1555,17 @@ mod tests {
         );
 
         run.stop().await;
+    }
+
+    #[test]
+    fn a_pairing_timestamped_in_the_future_is_dead_not_fresh() {
+        // A clock that steps backwards must not revive a stale proposal.
+        assert!(AppState::pairing_fresh(1_000, 1_000), "same second is fresh");
+        assert!(AppState::pairing_fresh(1_000, 1_000 + PEER_PAIRING_TTL - 1), "inside the window");
+        assert!(
+            !AppState::pairing_fresh(1_000, 1_000 + PEER_PAIRING_TTL),
+            "the window is half-open"
+        );
+        assert!(!AppState::pairing_fresh(1_000, 999), "a clock that went backwards expires it");
     }
 }
