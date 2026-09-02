@@ -48,7 +48,10 @@ impl Browser {
         let Ok(seen) = self.seen.lock() else {
             return Vec::new();
         };
-        let mut out: Vec<Found> = seen.values().flat_map(|v| v.iter().cloned().filter(|f| keep(f, &self.own))).collect();
+        let mut out: Vec<Found> = seen
+            .values()
+            .flat_map(|v| v.iter().cloned().filter(|f| keep(f, &self.own)))
+            .collect();
         out.sort_by(|a, b| a.host.cmp(&b.host).then(a.ip.cmp(&b.ip)));
         out
     }
@@ -89,7 +92,11 @@ pub fn browse(secure: bool, own: Vec<IpAddr>) -> Option<Browser> {
                         continue;
                     }
                     let port = info.get_port();
-                    let addrs: Vec<Found> = info.get_addresses().iter().map(|ip| Found { host: host.clone(), ip: *ip, port }).collect();
+                    let addrs: Vec<Found> = info
+                        .get_addresses()
+                        .iter()
+                        .map(|ip| Found { host: host.clone(), ip: *ip, port })
+                        .collect();
                     if let Ok(mut map) = sink.lock() {
                         map.insert(info.get_fullname().to_string(), addrs);
                     }
@@ -126,6 +133,9 @@ mod tests {
     #[test]
     fn loopback_is_never_a_peer() {
         let own = vec![IpAddr::V4(Ipv4Addr::new(192, 168, 1, 24))];
-        assert!(!keep(&found([127, 0, 0, 1], 8420), &own), "loopback would be talking to ourselves");
+        assert!(
+            !keep(&found([127, 0, 0, 1], 8420), &own),
+            "loopback would be talking to ourselves"
+        );
     }
 }
