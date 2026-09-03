@@ -25,12 +25,12 @@ class ReaderPalette {
   const ReaderPalette({required this.page, required this.ink});
 
   factory ReaderPalette.of(String theme) => switch (theme) {
-        'sepia' => const ReaderPalette(
-            page: Color(0xFFF4ECD8), ink: Color(0xFF4A3F2F)),
-        'dark' => const ReaderPalette(
-            page: Color(0xFF1C1C20), ink: Color(0xFFD8D8DC)),
-        _ => const ReaderPalette(
-            page: Color(0xFFFDFCF8), ink: Color(0xFF1B1B22)),
+        'sepia' =>
+          const ReaderPalette(page: Color(0xFFF4ECD8), ink: Color(0xFF4A3F2F)),
+        'dark' =>
+          const ReaderPalette(page: Color(0xFF1C1C20), ink: Color(0xFFD8D8DC)),
+        _ =>
+          const ReaderPalette(page: Color(0xFFFDFCF8), ink: Color(0xFF1B1B22)),
       };
 
   final Color page;
@@ -102,8 +102,7 @@ class _ChromeButtonState extends State<ChromeButton> {
                       fontSize: widget.side < 40 ? 13 : 15,
                       fontWeight: FontWeight.w800,
                       color: a))
-              : Icon(widget.icon,
-                  size: widget.side < 40 ? 16 : 20, color: a),
+              : Icon(widget.icon, size: widget.side < 40 ? 16 : 20, color: a),
         ),
       ),
     );
@@ -144,8 +143,7 @@ class SegItem extends StatelessWidget {
           decoration: BoxDecoration(
             color: active ? BookTheme.accent : b.pillBg,
             borderRadius: BorderRadius.circular(9),
-            border:
-                Border.all(color: active ? BookTheme.accent : b.hairline),
+            border: Border.all(color: active ? BookTheme.accent : b.hairline),
           ),
           child: Text(label,
               maxLines: 1,
@@ -209,8 +207,7 @@ class _EdgeNavState extends State<EdgeNav> {
                     offset: Offset(0, 2)),
               ],
             ),
-            child:
-                Icon(widget.icon, size: 22, color: BookTheme.accent),
+            child: Icon(widget.icon, size: 22, color: BookTheme.accent),
           ),
         ),
       ),
@@ -306,8 +303,7 @@ class PaperPage extends StatelessWidget {
                       fontSize: p.fontPx,
                       height: lineHeight(p.lineIndex.toInt()),
                       fontFamily: family(p.typeface.toInt()),
-                      fontWeight:
-                          p.bold ? FontWeight.w600 : FontWeight.w400,
+                      fontWeight: p.bold ? FontWeight.w600 : FontWeight.w400,
                       color: ink,
                     ),
                   ),
@@ -326,17 +322,13 @@ class PaperPage extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               _FolioStep(
-                  icon: Icons.chevron_left,
-                  ink: palette.faint,
-                  onTap: onPrev),
+                  icon: Icons.chevron_left, ink: palette.faint, onTap: onPrev),
               const SizedBox(width: 12),
               Text('$folio',
                   style: TextStyle(fontSize: 12, color: palette.faint)),
               const SizedBox(width: 12),
               _FolioStep(
-                  icon: Icons.chevron_right,
-                  ink: palette.faint,
-                  onTap: onNext),
+                  icon: Icons.chevron_right, ink: palette.faint, onTap: onNext),
             ],
           ),
         ),
@@ -361,8 +353,7 @@ class _FolioStep extends StatelessWidget {
         onTap: onTap,
         child: MouseRegion(
           cursor: SystemMouseCursors.click,
-          child: SizedBox(
-              width: 16, child: Icon(icon, size: 12, color: ink)),
+          child: SizedBox(width: 16, child: Icon(icon, size: 12, color: ink)),
         ),
       );
 }
@@ -379,8 +370,7 @@ class _Ornament extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Container(
-                width: 54, height: 1, color: ink.withValues(alpha: 0.28)),
+            Container(width: 54, height: 1, color: ink.withValues(alpha: 0.28)),
             const SizedBox(width: 10),
             Container(
               width: 5,
@@ -389,8 +379,7 @@ class _Ornament extends StatelessWidget {
                   color: ink.withValues(alpha: 0.42), shape: BoxShape.circle),
             ),
             const SizedBox(width: 10),
-            Container(
-                width: 54, height: 1, color: ink.withValues(alpha: 0.28)),
+            Container(width: 54, height: 1, color: ink.withValues(alpha: 0.28)),
           ],
         ),
       );
@@ -427,8 +416,7 @@ class _BookSliderState extends State<BookSlider> {
 
   int _at(double dx, double width) {
     final f = width <= 0 ? 0.0 : (dx / width).clamp(0.0, 1.0);
-    return widget.minimum +
-        (f * (widget.maximum - widget.minimum)).round();
+    return widget.minimum + (f * (widget.maximum - widget.minimum)).round();
   }
 
   @override
@@ -443,15 +431,17 @@ class _BookSliderState extends State<BookSlider> {
         onPointerSignal: (e) {
           if (e is! PointerScrollEvent) return;
           final next = e.scrollDelta.dy > 0 || e.scrollDelta.dx > 0
-              ? (widget.value - widget.step).clamp(widget.minimum, widget.maximum)
-              : (widget.value + widget.step).clamp(widget.minimum, widget.maximum);
+              ? (widget.value - widget.step)
+                  .clamp(widget.minimum, widget.maximum)
+              : (widget.value + widget.step)
+                  .clamp(widget.minimum, widget.maximum);
           if (next != widget.value) widget.onChanged(next);
         },
         child: GestureDetector(
           onTapDown: (d) =>
               widget.onChanged(_at(d.localPosition.dx, box.maxWidth)),
-          onHorizontalDragUpdate: (d) => setState(
-              () => _dragging = _at(d.localPosition.dx, box.maxWidth)),
+          onHorizontalDragUpdate: (d) =>
+              setState(() => _dragging = _at(d.localPosition.dx, box.maxWidth)),
           onHorizontalDragEnd: (_) {
             final v = _dragging;
             setState(() => _dragging = null);
@@ -489,8 +479,7 @@ class _BookSliderState extends State<BookSlider> {
                       decoration: BoxDecoration(
                         color: Colors.white,
                         shape: BoxShape.circle,
-                        border:
-                            Border.all(color: BookTheme.accent, width: 2),
+                        border: Border.all(color: BookTheme.accent, width: 2),
                         boxShadow: const [
                           BoxShadow(
                               color: Color(0x26000000),
@@ -542,8 +531,8 @@ class VFloatSlider extends StatelessWidget {
               decoration: BoxDecoration(
                 color: BookTheme.accent.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                    color: BookTheme.accent.withValues(alpha: 0.45)),
+                border:
+                    Border.all(color: BookTheme.accent.withValues(alpha: 0.45)),
               ),
               child: Text(glyph,
                   style: const TextStyle(
@@ -561,8 +550,8 @@ class VFloatSlider extends StatelessWidget {
         Expanded(
           child: LayoutBuilder(
             builder: (context, box) {
-              void pick(double dy) => onChanged(minimum +
-                  (1 - (dy / box.maxHeight).clamp(0.0, 1.0)) * span);
+              void pick(double dy) => onChanged(
+                  minimum + (1 - (dy / box.maxHeight).clamp(0.0, 1.0)) * span);
               return GestureDetector(
                 onTapDown: (d) => pick(d.localPosition.dy),
                 onVerticalDragUpdate: (d) => pick(d.localPosition.dy),
@@ -597,8 +586,8 @@ class VFloatSlider extends StatelessWidget {
                           decoration: BoxDecoration(
                             color: Colors.white,
                             shape: BoxShape.circle,
-                            border: Border.all(
-                                color: BookTheme.accent, width: 2),
+                            border:
+                                Border.all(color: BookTheme.accent, width: 2),
                             boxShadow: const [
                               BoxShadow(
                                   color: Color(0x26000000), blurRadius: 5),
@@ -704,8 +693,8 @@ class ContentsPanel extends StatelessWidget {
                       row: row,
                       live: live,
                       onTap: live
-                          ? () => controller.send(
-                              BooksCmd.readerChapter(index: row.chapter))
+                          ? () => controller
+                              .send(BooksCmd.readerChapter(index: row.chapter))
                           : null,
                     );
                   },
@@ -735,9 +724,7 @@ class _TocRowState extends State<_TocRow> {
     final b = context.book;
     final row = widget.row;
     return MouseRegion(
-      cursor: widget.live
-          ? SystemMouseCursors.click
-          : SystemMouseCursors.basic,
+      cursor: widget.live ? SystemMouseCursors.click : SystemMouseCursors.basic,
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
@@ -760,8 +747,7 @@ class _TocRowState extends State<_TocRow> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                        fontSize: 13,
-                        color: widget.live ? b.ink : b.inkDim)),
+                        fontSize: 13, color: widget.live ? b.ink : b.inkDim)),
               ),
             ],
           ),
@@ -932,8 +918,7 @@ class ThumbsPanel extends StatelessWidget {
                   icon: Icons.refresh,
                   side: 32,
                   tip: 'Render thumbnails',
-                  onTap: () =>
-                      controller.send(const BooksCmd.loadThumbs()),
+                  onTap: () => controller.send(const BooksCmd.loadThumbs()),
                 ),
               ],
             ),
@@ -952,8 +937,7 @@ class ThumbsPanel extends StatelessWidget {
               final t = thumbs[i];
               final here = t.page == reader.page;
               return GestureDetector(
-                onTap: () =>
-                    controller.send(BooksCmd.readerJump(page: t.page)),
+                onTap: () => controller.send(BooksCmd.readerJump(page: t.page)),
                 child: MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: Container(
@@ -1093,8 +1077,8 @@ class BookmarksPanel extends StatelessWidget {
                       icon: Icons.delete_outline,
                       side: 28,
                       accent: BookTheme.danger,
-                      onTap: () => controller
-                          .send(BooksCmd.bookmarkRemove(id: m.id)),
+                      onTap: () =>
+                          controller.send(BooksCmd.bookmarkRemove(id: m.id)),
                     ),
                   ],
                 ),
@@ -1140,8 +1124,9 @@ class NotesPanel extends StatelessWidget {
             if (note == null) return;
             final text = reader.leftText;
             await controller.send(BooksCmd.annotAdd(
-              snippet:
-                  text.isEmpty ? '' : text.substring(0, text.length.clamp(0, 120)),
+              snippet: text.isEmpty
+                  ? ''
+                  : text.substring(0, text.length.clamp(0, 120)),
               note: note,
               color: 'yellow',
             ));
@@ -1222,8 +1207,8 @@ class NotesPanel extends StatelessWidget {
                             icon: Icons.close,
                             side: 26,
                             accent: BookTheme.danger,
-                            onTap: () => controller
-                                .send(BooksCmd.annotRemove(id: n.id)),
+                            onTap: () =>
+                                controller.send(BooksCmd.annotRemove(id: n.id)),
                           ),
                         ],
                       ),
@@ -1239,8 +1224,7 @@ class NotesPanel extends StatelessWidget {
                         Padding(
                           padding: const EdgeInsets.only(top: 4),
                           child: Text(n.note,
-                              style:
-                                  TextStyle(fontSize: 12, color: b.ink)),
+                              style: TextStyle(fontSize: 12, color: b.ink)),
                         ),
                     ],
                   ),

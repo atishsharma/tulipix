@@ -258,8 +258,7 @@ class _MetaPill extends StatelessWidget {
             GestureDetector(
               onTap: () async {
                 await controller.send(const BooksCmd.closeDetail());
-                await controller
-                    .send(BooksCmd.setSeries(series: book.series));
+                await controller.send(BooksCmd.setSeries(series: book.series));
               },
               child: Text('Series: ${book.series}',
                   style: const TextStyle(
@@ -273,8 +272,8 @@ class _MetaPill extends StatelessWidget {
             children: [
               RatingPill(
                 rating: book.rating,
-                onRate: (v) => controller
-                    .send(BooksCmd.setRating(id: book.id, rating: v)),
+                onRate: (v) =>
+                    controller.send(BooksCmd.setRating(id: book.id, rating: v)),
               ),
               const SizedBox(width: 10),
               FavouriteDot(
@@ -300,8 +299,7 @@ class _MetaPill extends StatelessWidget {
                   label: book.rtl ? '✓ RTL' : 'RTL',
                   on: book.rtl,
                   hue: BookTheme.pink,
-                  onTap: () =>
-                      controller.send(BooksCmd.toggleRtl(id: book.id)),
+                  onTap: () => controller.send(BooksCmd.toggleRtl(id: book.id)),
                 ),
               ],
               if (book.netRating > 0) ...[
@@ -554,10 +552,7 @@ class _Actions extends StatelessWidget {
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(11)),
               ),
-              icon: Icon(
-                  book.missing
-                      ? Icons.link
-                      : Icons.menu_book_outlined,
+              icon: Icon(book.missing ? Icons.link : Icons.menu_book_outlined,
                   size: 16),
               label: Text(book.missing ? 'Relink' : 'Open'),
               onPressed: () async {
@@ -568,13 +563,20 @@ class _Actions extends StatelessWidget {
                 final p = await pickFile(
                   label: 'Book',
                   extensions: const [
-                    'epub', 'pdf', 'djvu', 'cbz', 'cbr',
-                    'cb7', 'cbt', 'fb2', 'mobi', 'azw3',
+                    'epub',
+                    'pdf',
+                    'djvu',
+                    'cbz',
+                    'cbr',
+                    'cb7',
+                    'cbt',
+                    'fb2',
+                    'mobi',
+                    'azw3',
                   ],
                 );
                 if (p != null) {
-                  await controller
-                      .send(BooksCmd.relink(id: book.id, path: p));
+                  await controller.send(BooksCmd.relink(id: book.id, path: p));
                 }
               },
             ),
@@ -674,8 +676,8 @@ class _ConfirmDelete extends StatelessWidget {
               child: SizedBox(
                 height: 40,
                 child: FilledButton(
-                  style: FilledButton.styleFrom(
-                      backgroundColor: BookTheme.danger),
+                  style:
+                      FilledButton.styleFrom(backgroundColor: BookTheme.danger),
                   onPressed: onRemove,
                   child: const Text('Remove'),
                 ),

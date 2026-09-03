@@ -102,7 +102,8 @@ class BookTheme {
 
   /// The soft diffuse card shadow every surface on the page carries.
   List<BoxShadow> get cardShadow => [
-        BoxShadow(color: shadowSoft, blurRadius: 16, offset: const Offset(0, 6)),
+        BoxShadow(
+            color: shadowSoft, blurRadius: 16, offset: const Offset(0, 6)),
       ];
 }
 

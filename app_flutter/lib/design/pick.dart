@@ -20,7 +20,8 @@ import 'package:flutter/foundation.dart' show debugPrint;
 /// One folder.
 Future<String?> pickDirectory({String? title, String? initial}) async {
   try {
-    return await getDirectoryPath(confirmButtonText: 'Choose', initialDirectory: initial);
+    return await getDirectoryPath(
+        confirmButtonText: 'Choose', initialDirectory: initial);
   } catch (e) {
     debugPrint('picker: $e');
     return null;
@@ -40,7 +41,8 @@ Future<String?> pickFile({
     final file = await openFile(
       initialDirectory: initial,
       acceptedTypeGroups: [
-        if (extensions.isNotEmpty) XTypeGroup(label: label, extensions: extensions),
+        if (extensions.isNotEmpty)
+          XTypeGroup(label: label, extensions: extensions),
       ],
     );
     return file?.path;
@@ -85,7 +87,8 @@ Future<String?> pickSaveLocation({
     final location = await getSaveLocation(
       suggestedName: suggestedName,
       acceptedTypeGroups: [
-        if (extensions.isNotEmpty) XTypeGroup(label: label, extensions: extensions),
+        if (extensions.isNotEmpty)
+          XTypeGroup(label: label, extensions: extensions),
       ],
     );
     return location?.path;

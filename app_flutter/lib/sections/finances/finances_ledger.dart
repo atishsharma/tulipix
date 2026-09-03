@@ -143,8 +143,7 @@ class _LedgerTabState extends State<LedgerTab> {
               const Spacer(),
               if (!st.runningShown)
                 Tooltip(
-                  message:
-                      'Pick one account and sort by date to see a running '
+                  message: 'Pick one account and sort by date to see a running '
                       'balance. Down a mixed list it would be a running total '
                       'of unrelated rows.',
                   child: Icon(Icons.info_outline, size: 15, color: t.nInk3),

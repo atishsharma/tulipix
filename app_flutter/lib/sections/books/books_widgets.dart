@@ -1157,8 +1157,7 @@ class NetRatingPill extends StatelessWidget {
                 style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
-                    color:
-                        b.dark ? BookTheme.amber : const Color(0xFFCF8A12))),
+                    color: b.dark ? BookTheme.amber : const Color(0xFFCF8A12))),
           ),
         ],
       ),

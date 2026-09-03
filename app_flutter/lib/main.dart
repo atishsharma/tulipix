@@ -19,6 +19,7 @@ import 'sections/books/books_page.dart';
 import 'sections/cloud/cloud_page.dart';
 import 'sections/finances/finances_page.dart';
 import 'sections/home/home_page.dart';
+import 'sections/music/music_controller.dart';
 import 'sections/music/music_overlay.dart';
 import 'sections/music/music_page.dart';
 import 'sections/photos/photos_page.dart';
@@ -29,6 +30,8 @@ import 'sections/videos/videos_page.dart';
 import 'playback/video_layer.dart';
 import 'shell/shell_controller.dart';
 import 'shell/sidebar.dart';
+import 'shell/title_row.dart';
+import 'shell/window.dart';
 import 'src/rust/api/music.dart';
 import 'src/rust/api/transfer.dart';
 import 'src/rust/api/videos.dart';
@@ -40,6 +43,10 @@ Future<void> main() async {
   // the music controller builds one the moment the Music section is touched.
   MediaKit.ensureInitialized();
   await RustLib.init();
+  // Whether the runner dropped the system frame, so the shell knows to draw a
+  // caption row and the resize edges. Asked before the first frame: finding out
+  // afterwards means the row appearing a beat after the window does.
+  await WindowChrome.instance.init();
   runApp(const TulipixApp());
 }
 
@@ -93,6 +100,10 @@ class _TulipixAppState extends State<TulipixApp> {
   }
 
   void _onShell() {
+    // The stored desktop-widget style rides in on the same snapshot as the
+    // theme, and is applied once — see [MusicController.seedWidgetStyle].
+    MusicController.instance
+        .seedWidgetStyle(_shell.state?.miniWidgetStyle ?? '');
     final theme = _shell.state?.theme ?? 'system';
     final dark = theme != 'light';
     final oled = theme == 'extra-dark';
@@ -132,77 +143,104 @@ class _TulipixAppState extends State<TulipixApp> {
         child: MusicOverlay(
           child: Scaffold(
             backgroundColor: tokens.bg,
-            body: AnimatedBuilder(
-              animation: _shell,
-              builder: (context, _) {
-                final at = _shell.section;
-                return Row(
-                  children: [
-                    Sidebar(
-                      controller: _shell,
-                      onCycleTheme: _shell.cycleTheme,
-                      themeIcon: _themeIcon,
-                    ),
-                    // Every section stays alive across a switch: Transfer polls a
-                    // running server, Music holds a playing deck and a queue, and
-                    // rebuilding either every time it is looked at would restart
-                    // the poll and lose the ledger's page and sort, or drop the
-                    // now-playing. The ones that cost something to keep warm are
-                    // told whether they are on screen instead.
-                    //
-                    // `ContentSurface` in ui/main.slint: the page is a card, not
-                    // the window. The shell there is one
-                    // `HorizontalLayout { padding: 14px; spacing: 14px }` around
-                    // the rail and this, which is the gutter the port was
-                    // missing — the page ran flush into the sidebar and off
-                    // three edges of the window.
-                    Expanded(
-                      child: Container(
-                        margin: const EdgeInsets.fromLTRB(14, 14, 14, 14),
-                        decoration: BoxDecoration(
-                          color: tokens.panel,
-                          borderRadius: BorderRadius.circular(Tokens.radiusLg),
-                          border: Border.all(color: tokens.outline),
-                          boxShadow: const [
-                            BoxShadow(color: Color(0x40000000), blurRadius: 32),
-                          ],
-                        ),
-                        clipBehavior: Clip.antiAlias,
-                        child: IndexedStack(
-                          index: at.index,
+            // Outside everything: the grab strip is the window's own edge, and
+            // a handle inside the page would be a handle the sidebar covers.
+            body: WindowResizeEdges(
+              child: AnimatedBuilder(
+                animation: _shell,
+                builder: (context, _) {
+                  final at = _shell.section;
+                  return Stack(children: [
+                    Column(children: [
+                      // Above the rail and the page both, the way the caption row
+                      // is in ui/main.slint — it is the window's row, not the
+                      // shell's, so nothing sits beside it.
+                      //
+                      // Gone in logo-fullscreen, which is what makes that mode
+                      // borderless: `if root.csd && !root.app-fullscreen` on
+                      // the Slint row. The strip at the bottom of this Stack is
+                      // what gives it back on hover.
+                      if (!_shell.appFullscreen) const AppTitleRow(),
+                      Expanded(
+                        child: Row(
                           children: [
-                            // TickerMode is what makes "kept alive" stop short of
-                            // "kept animating". IndexedStack holds all ten pages
-                            // in the tree and skips painting the nine underneath,
-                            // but it does not stop their tickers -- and one
-                            // offstage indeterminate spinner is enough to ask for
-                            // a frame at every vsync, for as long as the app is
-                            // open. Settings is exactly that: it does not load
-                            // until it is first opened, so its page sits on
-                            // FirstLoad's CircularProgressIndicator from launch,
-                            // and the window rebuilt, laid out, painted and
-                            // re-walked its semantics tree 144 times a second
-                            // over a screen where nothing moved.
-                            for (final (i, page) in <Widget>[
-                              HomePage(visible: at == Section.home),
-                              const PhotosPage(),
-                              const VideosPage(),
-                              const MusicPage(),
-                              const BooksPage(),
-                              const CloudPage(),
-                              ToolsPage(visible: at == Section.tools),
-                              TransferPage(visible: at == Section.transfer),
-                              const FinancesPage(),
-                              SettingsPage(visible: at == Section.settings),
-                            ].indexed)
-                              TickerMode(enabled: i == at.index, child: page),
+                            Sidebar(
+                              controller: _shell,
+                              onCycleTheme: _shell.cycleTheme,
+                              themeIcon: _themeIcon,
+                            ),
+                            // Every section stays alive across a switch: Transfer polls a
+                            // running server, Music holds a playing deck and a queue, and
+                            // rebuilding either every time it is looked at would restart
+                            // the poll and lose the ledger's page and sort, or drop the
+                            // now-playing. The ones that cost something to keep warm are
+                            // told whether they are on screen instead.
+                            //
+                            // `ContentSurface` in ui/main.slint: the page is a card, not
+                            // the window. The shell there is one
+                            // `HorizontalLayout { padding: 14px; spacing: 14px }` around
+                            // the rail and this, which is the gutter the port was
+                            // missing — the page ran flush into the sidebar and off
+                            // three edges of the window.
+                            Expanded(
+                              child: Container(
+                                margin:
+                                    const EdgeInsets.fromLTRB(14, 14, 14, 14),
+                                decoration: BoxDecoration(
+                                  color: tokens.panel,
+                                  borderRadius:
+                                      BorderRadius.circular(Tokens.radiusLg),
+                                  border: Border.all(color: tokens.outline),
+                                  boxShadow: const [
+                                    BoxShadow(
+                                        color: Color(0x40000000),
+                                        blurRadius: 32),
+                                  ],
+                                ),
+                                clipBehavior: Clip.antiAlias,
+                                child: IndexedStack(
+                                  index: at.index,
+                                  children: [
+                                    // TickerMode is what makes "kept alive" stop short of
+                                    // "kept animating". IndexedStack holds all ten pages
+                                    // in the tree and skips painting the nine underneath,
+                                    // but it does not stop their tickers -- and one
+                                    // offstage indeterminate spinner is enough to ask for
+                                    // a frame at every vsync, for as long as the app is
+                                    // open. Settings is exactly that: it does not load
+                                    // until it is first opened, so its page sits on
+                                    // FirstLoad's CircularProgressIndicator from launch,
+                                    // and the window rebuilt, laid out, painted and
+                                    // re-walked its semantics tree 144 times a second
+                                    // over a screen where nothing moved.
+                                    for (final (i, page) in <Widget>[
+                                      HomePage(visible: at == Section.home),
+                                      const PhotosPage(),
+                                      const VideosPage(),
+                                      const MusicPage(),
+                                      const BooksPage(),
+                                      const CloudPage(),
+                                      ToolsPage(visible: at == Section.tools),
+                                      TransferPage(
+                                          visible: at == Section.transfer),
+                                      const FinancesPage(),
+                                      SettingsPage(
+                                          visible: at == Section.settings),
+                                    ].indexed)
+                                      TickerMode(
+                                          enabled: i == at.index, child: page),
+                                  ],
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       ),
-                    ),
-                  ],
-                );
-              },
+                    ]),
+                    if (_shell.appFullscreen) const FullscreenPeek(),
+                  ]);
+                },
+              ),
             ),
           ),
         ),

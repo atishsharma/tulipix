@@ -21,6 +21,8 @@ import '../../playback/video_layer.dart';
 import '../../src/rust/api/music.dart';
 import '../../shell/shell_controller.dart';
 import '../../shell/window.dart';
+import 'mini_player.dart' show kMiniSize;
+import 'mini_widget.dart' show MiniStyle, kPillCluster, kPillLyrics;
 import 'music_accent.dart';
 import 'music_viz.dart' show visStyleNames;
 
@@ -159,6 +161,57 @@ class MusicController extends ChangeNotifier {
   /// yet"; the host centres it on first open, as main.slint does.
   Offset? miniPos;
   double miniScale = 1.0;
+
+  // --- the desktop widget, which is NOT the mini player --------------------
+  //
+  // Two separate things that a shared `miniOpen` used to blur together. The
+  // mini player is the 300x470 card floating inside the app (`MusicMini` in
+  // ui/main.slint) and the player bar is the only way to it. The widget is the
+  // three size classes that TAKE THE WINDOW (`MiniStyle` in
+  // crates/tulipix-music/src/mini_player.rs) and the caption row is the only
+  // way to it. Neither control reaches the other's object.
+
+  /// The window is the widget. See [miniIsWidget] for the gates on it.
+  bool widgetOpen = false;
+
+  /// Which size class. Never a card — the card is not in `MiniStyle` there
+  /// either, because Slint draws it in the main window rather than the widget.
+  MiniStyle widgetStyle = MiniStyle.bar;
+
+  /// Whether the stored choice has been applied yet. The shell snapshot is
+  /// re-fetched every 30 seconds, and a seed that ran on each of those would
+  /// undo the picker every half minute.
+  bool _styleSeeded = false;
+
+  /// Apply the style Settings last wrote, once, at startup.
+  ///
+  /// `ui.mini-widget.style` was written by the picker and read by nothing here,
+  /// so the widget opened as a bar however many times it had been set to
+  /// something else. `miniwin::wire` does this from the same key on the Slint
+  /// side. An unknown or empty name leaves the default alone.
+  void seedWidgetStyle(String name) {
+    if (_styleSeeded) return;
+    _styleSeeded = true;
+    for (final s in MiniStyle.values) {
+      if (s.name == name) {
+        widgetStyle = s;
+        notifyListeners();
+        return;
+      }
+    }
+  }
+
+  /// The widget's own scale, separate from the card's: `MIN_SCALE`/`MAX_SCALE`
+  /// are 0.7-3.0 and the card's clamp is 1.0-3.0, so one number could not carry
+  /// both without one of them being wrong at the bottom.
+  double widgetScale = 1.0;
+
+  /// Pill only: the chevron has slid the window buttons out of the right edge,
+  /// and the mic has pulled a lyrics row out under the track. Both grow the
+  /// window rather than reflowing it, which is why they live here and not in
+  /// the widget — the box has to be sized before the widget is built.
+  bool pillOpen = false;
+  bool pillLyrics = false;
 
   /// How far down the right wall the minimised bubble sits. Null is
   /// main.slint's `music-bubble-y < 0px`: uninitialised, so the host centres
@@ -310,8 +363,14 @@ class MusicController extends ChangeNotifier {
       case 'raise':
         presentWindow();
       case 'mini':
+        // The tray's item is the WIDGET, not the card. `tray.mini` is
+        // `miniwin::open_mini(&w)` in crates/tulipix-app/src/main.rs -- the app
+        // becomes the widget -- and this had it opening the in-app mini player
+        // instead, which is the one thing the tray cannot reach in the Slint
+        // build. (The menu's label still says "Mini Player"; it lives in
+        // crates/tulipix-platform, which this branch does not touch.)
         presentWindow();
-        if (!miniOpen) toggleMini();
+        if (!widgetOpen) toggleWidget();
       case 'quit':
         closeWindow();
     }
@@ -368,7 +427,10 @@ class MusicController extends ChangeNotifier {
 
   void openZen() {
     zenOpen = true;
+    // Both floating players stand down: zen is the whole window, and the widget
+    // has to give the window back before anything can be fullscreen in it.
     miniOpen = false;
+    widgetOpen = false;
     zenThemed = false;
     // Spectrum on the way in. Zen gives the bars the middle of a fullscreen
     // window, and the shape that earns that much room is the one with the most
@@ -385,8 +447,58 @@ class MusicController extends ChangeNotifier {
   void closeZen() {
     zenOpen = false;
     zenPanel = '';
-    setWindowFullscreen(false);
+    // Back to whatever the app was, not flat to windowed: logo-fullscreen is
+    // the shell's own fullscreen and zen is a second claim on the same window
+    // state. Dropping it unconditionally left the app un-fullscreened with its
+    // caption row still hidden, which is a window with no way out of anything.
+    setWindowFullscreen(ShellController.instance.appFullscreen);
     notifyListeners();
+  }
+
+  /// Whether the window IS the widget right now.
+  ///
+  /// In the Slint build opening the widget hides the main window — "the app
+  /// becomes the widget", `open_mini`. There is one window here, so it becomes
+  /// the widget instead; see [setWindowWidgetMode]. The zen player is the app
+  /// again, and so is having nothing loaded.
+  bool get miniIsWidget {
+    final now = state?.now;
+    // Nothing loaded, nothing to be. Otherwise stopping the deck while the
+    // widget is up would leave the window shrunk around an empty card.
+    if (now == null || !(now.loaded || now.title.isNotEmpty)) return false;
+    return widgetOpen && !zenOpen;
+  }
+
+  bool _inWidgetWindow = false;
+  Size? _widgetSize;
+
+  /// Kept in step from [notifyListeners] rather than from each of the nine
+  /// mutators that can reach it — a style set directly, a scale drag, a bubble,
+  /// zen opening underneath it. Every one of them notifies, and none of them
+  /// can be the one that forgot.
+  void _syncWidgetWindow() {
+    final want = miniIsWidget;
+    if (want != _inWidgetWindow) {
+      _inWidgetWindow = want;
+      _widgetSize = want ? widgetWindow : null;
+      setWindowWidgetMode(want, _widgetSize ?? Size.zero);
+      return;
+    }
+    if (!want) return;
+    // The scale grip and the pill's two toggles change the box while the window
+    // is already the widget. Only when it actually moved: this runs on every
+    // tick, which is once a second while something plays.
+    final box = widgetWindow;
+    if (box != _widgetSize) {
+      _widgetSize = box;
+      setWindowSize(box);
+    }
+  }
+
+  @override
+  void notifyListeners() {
+    _syncWidgetWindow();
+    super.notifyListeners();
   }
 
   void toggleMini() {
@@ -412,12 +524,84 @@ class MusicController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 1.0-3.0, the clamp on `music-mini-scale` in ui/main.slint. Not the
-  /// 0.7-3.0 of `tulipix_music::mini_player` — that is the separate
-  /// always-on-top widget window, a different thing entirely.
+  /// The CARD's scale: 1.0-3.0, the clamp on `music-mini-scale` in
+  /// ui/main.slint. The card is not designed to go below its reference size.
   void scaleMini(double to) {
     miniScale = to.clamp(1.0, 3.0);
     notifyListeners();
+  }
+
+  /// The WIDGET's scale: 0.7-3.0, `MIN_SCALE`/`MAX_SCALE` in
+  /// crates/tulipix-music/src/mini_player.rs. The three classes are designed to
+  /// go smaller than their reference size, which is why this clamp is not the
+  /// card's.
+  void scaleWidget(double to) {
+    widgetScale = to.clamp(0.7, 3.0);
+    notifyListeners();
+  }
+
+  /// Open the widget, or give the window back. The caption row's button, and
+  /// the only door in — nothing on a player reaches this.
+  void toggleWidget() {
+    widgetOpen = !widgetOpen;
+    notifyListeners();
+  }
+
+  void closeWidget() {
+    widgetOpen = false;
+    notifyListeners();
+  }
+
+  /// bar -> square -> pill -> bar, the `cycle-style` callback on the Slint
+  /// widget. The card is not a stop on it: the card is a different object.
+  ///
+  /// The pill's two extras are dropped on the way out, the way `plain_pill` in
+  /// crates/tulipix-app/src/miniwin.rs drops them whenever the widget leaves
+  /// the pill: they are window WIDTH and HEIGHT rather than anything the layout
+  /// can absorb, so a bar carrying them would just be a bar 148px too wide.
+  void cycleWidgetStyle() => setWidgetStyle(widgetStyle.next);
+
+  void setWidgetStyle(MiniStyle style) {
+    widgetStyle = style;
+    pillOpen = false;
+    pillLyrics = false;
+    notifyListeners();
+  }
+
+  void togglePillOpen() {
+    pillOpen = !pillOpen;
+    notifyListeners();
+  }
+
+  void togglePillLyrics() {
+    pillLyrics = !pillLyrics;
+    notifyListeners();
+  }
+
+  /// Whether the track has words to show. The flip affordance on the bar and
+  /// the square, and the mic on the pill, are only offered when it does — a
+  /// button that reveals an empty box is worse than no button.
+  bool get hasLyrics => (state?.lyrics ?? const <LyricLine>[]).isNotEmpty;
+
+  /// The box the overlay gives the in-app mini player card. `music-mini-w` /
+  /// `music-mini-h` in ui/main.slint, times the card's own scale.
+  Size get miniWindow =>
+      Size(kMiniSize.width * miniScale, kMiniSize.height * miniScale);
+
+  /// The box the WINDOW is resized to: the style's reference size times the
+  /// widget's scale, plus whatever the pill's two toggles have added.
+  ///
+  /// The extras are added at the current scale but are NOT part of the ratio,
+  /// which is what `resize_locked_with_extra` does on the Rust side — dragging
+  /// the corner while the cluster is out keeps the designed shape instead of
+  /// snapping back to the collapsed width.
+  Size get widgetWindow {
+    final base = widgetStyle.base;
+    final pill = widgetStyle == MiniStyle.pill;
+    final extraW = pill && pillOpen ? kPillCluster : 0.0;
+    final extraH = pill && pillLyrics && hasLyrics ? kPillLyrics : 0.0;
+    return Size((base.width + extraW) * widgetScale,
+        (base.height + extraH) * widgetScale);
   }
 
   void setMiniFace(String face) {

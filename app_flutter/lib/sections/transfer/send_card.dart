@@ -47,7 +47,10 @@ class _SendCardState extends State<SendCard> {
     // Only a paired machine can be a destination — an unpaired one has no
     // token to present, so sending to it could only ever produce a failed
     // lane. Its chip belongs in the Connection card, where tapping it pairs.
-    final dests = [for (final p in state.peers) if (p.paired) p];
+    final dests = [
+      for (final p in state.peers)
+        if (p.paired) p
+    ];
     // A machine that left the network between the tick and the click is not a
     // destination any more, and must not be counted as one on the button.
     final picked = [

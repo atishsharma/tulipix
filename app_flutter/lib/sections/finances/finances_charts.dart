@@ -58,8 +58,7 @@ class SpendRing extends StatelessWidget {
                       fontWeight: FontWeight.w800,
                       color: t.nInk)),
               if (caption.isNotEmpty)
-                Text(caption,
-                    style: TextStyle(fontSize: 10.5, color: t.nInk2)),
+                Text(caption, style: TextStyle(fontSize: 10.5, color: t.nInk2)),
             ],
           ),
         ],
@@ -237,9 +236,8 @@ class MonthBars extends StatelessWidget {
                         Text(months[i].label,
                             style: TextStyle(
                                 fontSize: 9.5,
-                                fontWeight: i == on
-                                    ? FontWeight.w700
-                                    : FontWeight.w400,
+                                fontWeight:
+                                    i == on ? FontWeight.w700 : FontWeight.w400,
                                 color: i == on ? t.nInk : t.nInk3)),
                       ],
                     ),
@@ -346,7 +344,8 @@ class CalendarGrid extends StatelessWidget {
                         spacing: 2,
                         runSpacing: 2,
                         children: [
-                          for (final p in d.pips.take(6)) CatDot(argb: p, size: 5),
+                          for (final p in d.pips.take(6))
+                            CatDot(argb: p, size: 5),
                         ],
                       ),
                     if (d.amount.isNotEmpty)
@@ -477,8 +476,9 @@ class SavingsStrip extends StatelessWidget {
           for (final m in months)
             Expanded(
               child: Tooltip(
-                message: m.known ? '${m.label}: ${m.pct}%  ${m.amount}'
-                                 : '${m.label}: no income recorded',
+                message: m.known
+                    ? '${m.label}: ${m.pct}%  ${m.amount}'
+                    : '${m.label}: no income recorded',
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 3),
                   child: Column(
@@ -487,9 +487,8 @@ class SavingsStrip extends StatelessWidget {
                       Expanded(
                         child: FractionallySizedBox(
                           alignment: Alignment.bottomCenter,
-                          heightFactor: m.known
-                              ? (m.pct.clamp(2, 100)) / 100
-                              : 1.0,
+                          heightFactor:
+                              m.known ? (m.pct.clamp(2, 100)) / 100 : 1.0,
                           child: Container(
                             decoration: BoxDecoration(
                               color: !m.known
@@ -500,8 +499,7 @@ class SavingsStrip extends StatelessWidget {
                               border: m.known
                                   ? null
                                   : Border.all(
-                                      color: t.nHair,
-                                      style: BorderStyle.solid),
+                                      color: t.nHair, style: BorderStyle.solid),
                               borderRadius: const BorderRadius.vertical(
                                   top: Radius.circular(4)),
                             ),

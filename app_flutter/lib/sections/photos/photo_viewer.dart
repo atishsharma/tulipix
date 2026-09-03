@@ -153,8 +153,8 @@ class _ViewerState extends State<_Viewer> {
     _dwellSeconds = seconds;
     if (_slideshow != null) {
       _slideshow?.cancel();
-      _slideshow = Timer.periodic(
-          Duration(seconds: _dwellSeconds), (_) => _advance());
+      _slideshow =
+          Timer.periodic(Duration(seconds: _dwellSeconds), (_) => _advance());
     }
     setState(() {});
   }
@@ -257,8 +257,7 @@ class _ViewerState extends State<_Viewer> {
                 ],
               ),
             ),
-            if (_info)
-              _InfoPanel(detail: _detail, tokens: t),
+            if (_info) _InfoPanel(detail: _detail, tokens: t),
           ],
         ),
       ),
@@ -374,7 +373,8 @@ class _TopBar extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(8, 8, 8, 26),
           child: Row(
             children: [
-              _Action(icon: Icons.arrow_back, tip: 'Close  (Esc)', onTap: onClose),
+              _Action(
+                  icon: Icons.arrow_back, tip: 'Close  (Esc)', onTap: onClose),
               const SizedBox(width: 6),
               Expanded(
                 child: Column(
@@ -434,7 +434,9 @@ class _TopBar extends StatelessWidget {
                 onTap: onStar,
               ),
               _Action(
-                icon: archived ? Icons.unarchive_outlined : Icons.archive_outlined,
+                icon: archived
+                    ? Icons.unarchive_outlined
+                    : Icons.archive_outlined,
                 tip: archived ? 'Unarchive' : 'Archive',
                 onTap: onArchive,
               ),

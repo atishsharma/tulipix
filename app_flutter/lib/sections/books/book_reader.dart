@@ -93,10 +93,8 @@ class _BookReaderState extends State<BookReader> {
 
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
-        const SingleActivator(LogicalKeyboardKey.arrowRight): () =>
-            _step(true),
-        const SingleActivator(LogicalKeyboardKey.arrowLeft): () =>
-            _step(false),
+        const SingleActivator(LogicalKeyboardKey.arrowRight): () => _step(true),
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): () => _step(false),
         const SingleActivator(LogicalKeyboardKey.arrowDown): () => _step(true),
         const SingleActivator(LogicalKeyboardKey.arrowUp): () => _step(false),
         const SingleActivator(LogicalKeyboardKey.pageDown): () => _step(true),
@@ -134,8 +132,8 @@ class _BookReaderState extends State<BookReader> {
                                 typography: _typography,
                                 more: _more,
                                 onPanel: _panelTo,
-                                onTypography: () => setState(
-                                    () => _typography = !_typography),
+                                onTypography: () =>
+                                    setState(() => _typography = !_typography),
                                 onMore: () => setState(() => _more = !_more),
                               ),
                             ),
@@ -172,8 +170,7 @@ class _BookReaderState extends State<BookReader> {
                         ),
                         // The panels dock on the right, beside the page —
                         // never between the page and the way out.
-                        if (_panel != _Panel.none)
-                          _dockedPanel(r),
+                        if (_panel != _Panel.none) _dockedPanel(r),
                       ],
                     ),
                   ),
@@ -188,8 +185,7 @@ class _BookReaderState extends State<BookReader> {
                               minHeight: 72,
                               maxHeight: 72,
                               alignment: Alignment.bottomCenter,
-                              child:
-                                  _BottomBar(controller: _c, reader: r),
+                              child: _BottomBar(controller: _c, reader: r),
                             ),
                           ),
                   ),
@@ -297,8 +293,7 @@ class _Broken extends StatelessWidget {
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(20)),
                 ),
-                onPressed: () =>
-                    controller.send(const BooksCmd.closeReader()),
+                onPressed: () => controller.send(const BooksCmd.closeReader()),
                 child: const Text('Back to library'),
               ),
             ),
@@ -357,8 +352,7 @@ class _TopBar extends StatelessWidget {
             Flexible(
               child: _NextInSeries(
                 title: r.nextTitle,
-                onTap: () =>
-                    controller.send(const BooksCmd.readerOpenNext()),
+                onTap: () => controller.send(const BooksCmd.readerOpenNext()),
               ),
             ),
           ],
@@ -484,11 +478,10 @@ class _RoundBackState extends State<_RoundBack> {
             height: 44,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color:
-                  BookTheme.accent.withValues(alpha: _hover ? 0.2 : 0.10),
+              color: BookTheme.accent.withValues(alpha: _hover ? 0.2 : 0.10),
               shape: BoxShape.circle,
-              border: Border.all(
-                  color: BookTheme.accent.withValues(alpha: 0.4)),
+              border:
+                  Border.all(color: BookTheme.accent.withValues(alpha: 0.4)),
             ),
             child: const Icon(Icons.chevron_left,
                 size: 20, color: BookTheme.accent),
@@ -509,8 +502,7 @@ class _TitlePill extends StatelessWidget {
         decoration: BoxDecoration(
           color: BookTheme.accent.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(14),
-          border:
-              Border.all(color: BookTheme.accent.withValues(alpha: 0.4)),
+          border: Border.all(color: BookTheme.accent.withValues(alpha: 0.4)),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -570,11 +562,9 @@ class _NextInSeriesState extends State<_NextInSeries> {
           height: 48,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
-            color: BookTheme.accent
-                .withValues(alpha: _hover ? 0.18 : 0.08),
+            color: BookTheme.accent.withValues(alpha: _hover ? 0.18 : 0.08),
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-                color: BookTheme.accent.withValues(alpha: 0.35)),
+            border: Border.all(color: BookTheme.accent.withValues(alpha: 0.35)),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -654,8 +644,7 @@ class _InlineSearchState extends State<_InlineSearch> {
           color: BookTheme.blue.withValues(alpha: 0.10),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-              color: BookTheme.blue
-                  .withValues(alpha: widget.open ? 0.8 : 0.4)),
+              color: BookTheme.blue.withValues(alpha: widget.open ? 0.8 : 0.4)),
         ),
         child: Row(
           children: [
@@ -752,8 +741,7 @@ class _Stage extends StatelessWidget {
                   child: EdgeNav(
                     icon: Icons.chevron_left,
                     tip: r.single ? 'Previous page' : 'Previous spread',
-                    onTap: () =>
-                        controller.send(const BooksCmd.readerPrev()),
+                    onTap: () => controller.send(const BooksCmd.readerPrev()),
                   ),
                 ),
               ),
@@ -765,8 +753,7 @@ class _Stage extends StatelessWidget {
                   child: EdgeNav(
                     icon: Icons.chevron_right,
                     tip: r.single ? 'Next page' : 'Next spread',
-                    onTap: () =>
-                        controller.send(const BooksCmd.readerNext()),
+                    onTap: () => controller.send(const BooksCmd.readerNext()),
                   ),
                 ),
               ),
@@ -815,8 +802,7 @@ class _Stage extends StatelessWidget {
       );
     }
     return r.single
-        ? _SingleSheet(
-            controller: controller, reader: r, palette: palette)
+        ? _SingleSheet(controller: controller, reader: r, palette: palette)
         : _Spread(controller: controller, reader: r, palette: palette);
   }
 }
@@ -846,10 +832,10 @@ class _Spread extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, box) {
         final w = [
-          1360.0,
-          box.maxWidth - 140,
-          box.maxHeight * _ar,
-        ].reduce((a, c) => a < c ? a : c) *
+              1360.0,
+              box.maxWidth - 140,
+              box.maxHeight * _ar,
+            ].reduce((a, c) => a < c ? a : c) *
             0.95;
         final bgW = w.clamp(1.0, double.infinity);
         final bgH = bgW / _ar;
@@ -868,10 +854,8 @@ class _Spread extends StatelessWidget {
                 folio: folio,
                 palette: palette,
                 prefs: r.prefs,
-                onPrev: () =>
-                    controller.send(const BooksCmd.readerPrev()),
-                onNext: () =>
-                    controller.send(const BooksCmd.readerNext()),
+                onPrev: () => controller.send(const BooksCmd.readerPrev()),
+                onNext: () => controller.send(const BooksCmd.readerNext()),
               ),
             );
 
@@ -936,8 +920,7 @@ class _Spread extends StatelessWidget {
                   ),
                 ),
                 page(r.leftText, r.leftHeading, r.leftFolio.toInt(), 0.286),
-                page(r.rightText, r.rightHeading, r.rightFolio.toInt(),
-                    0.714),
+                page(r.rightText, r.rightHeading, r.rightFolio.toInt(), 0.714),
               ],
             ),
           ),
@@ -1275,7 +1258,10 @@ class _ZoomColumn extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 8),
-        Text(image ? '${(zoom * 100).round()}%' : '${reader.prefs.fontPx.round()} px',
+        Text(
+            image
+                ? '${(zoom * 100).round()}%'
+                : '${reader.prefs.fontPx.round()} px',
             style: TextStyle(
                 fontSize: 11, fontWeight: FontWeight.w700, color: b.inkDim)),
         const SizedBox(height: 8),
@@ -1294,8 +1280,8 @@ class _ZoomColumn extends StatelessWidget {
               if (image) {
                 onZoom(zoom == 1.0 ? 0.7 : (zoom == 0.7 ? 0.5 : 1.0));
               } else {
-                controller.send(BooksCmd.setFontPx(
-                    px: reader.prefs.fontPx > 15 ? 13 : 17));
+                controller.send(
+                    BooksCmd.setFontPx(px: reader.prefs.fontPx > 15 ? 13 : 17));
               }
             },
           ),
@@ -1347,8 +1333,7 @@ class _BottomBar extends StatelessWidget {
               filled: false,
               width: 108,
               tip: 'Previous chapter',
-              onTap: () =>
-                  controller.send(const BooksCmd.readerPrevChapter()),
+              onTap: () => controller.send(const BooksCmd.readerPrevChapter()),
             ),
             const SizedBox(width: 16),
           ],
@@ -1356,8 +1341,7 @@ class _BottomBar extends StatelessWidget {
             child: Padding(
               // Without chapters the pills are gone; inset the bar so it still
               // reads as centred.
-              padding: EdgeInsets.symmetric(
-                  horizontal: chapters ? 0 : 80),
+              padding: EdgeInsets.symmetric(horizontal: chapters ? 0 : 80),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -1431,8 +1415,7 @@ class _BottomBar extends StatelessWidget {
               filled: true,
               width: 92,
               tip: 'Next chapter',
-              onTap: () =>
-                  controller.send(const BooksCmd.readerNextChapter()),
+              onTap: () => controller.send(const BooksCmd.readerNextChapter()),
             ),
           ],
         ],
@@ -1501,8 +1484,7 @@ class _ChapterPillState extends State<_ChapterPill> {
                 Text(widget.label,
                     style: TextStyle(
                         fontSize: 13,
-                        fontWeight:
-                            filled ? FontWeight.w700 : FontWeight.w600,
+                        fontWeight: filled ? FontWeight.w700 : FontWeight.w600,
                         color: filled ? Colors.white : hue)),
                 if (filled) ...[
                   const SizedBox(width: 4),
@@ -1581,9 +1563,7 @@ class _TypographySheet extends StatelessWidget {
         border: Border.all(color: b.hairline),
         boxShadow: const [
           BoxShadow(
-              color: Color(0x26000000),
-              blurRadius: 28,
-              offset: Offset(0, 6)),
+              color: Color(0x26000000), blurRadius: 28, offset: Offset(0, 6)),
         ],
       ),
       child: ListView(
@@ -1664,9 +1644,7 @@ class _TypographySheet extends StatelessWidget {
             ),
             const SizedBox(height: 14),
             head('Line spacing'),
-            seg(
-                const ['Compact', 'Normal', 'Relaxed'],
-                p.lineIndex.toInt(),
+            seg(const ['Compact', 'Normal', 'Relaxed'], p.lineIndex.toInt(),
                 (i) => controller.send(BooksCmd.setLineSpacing(index: i))),
             const SizedBox(height: 14),
             head('Margins'),
@@ -1756,7 +1734,8 @@ class _MorePopover extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final b = context.book;
-    final rows = <({String label, IconData icon, bool danger, VoidCallback go})>[
+    final rows =
+        <({String label, IconData icon, bool danger, VoidCallback go})>[
       (
         label: 'Mark as finished',
         icon: Icons.check,
@@ -1790,9 +1769,7 @@ class _MorePopover extends StatelessWidget {
         border: Border.all(color: b.hairline),
         boxShadow: const [
           BoxShadow(
-              color: Color(0x22000000),
-              blurRadius: 24,
-              offset: Offset(0, 4)),
+              color: Color(0x22000000), blurRadius: 24, offset: Offset(0, 4)),
         ],
       ),
       child: Column(
@@ -1854,17 +1831,14 @@ class _MoreRowState extends State<_MoreRow> {
           child: Row(
             children: [
               Icon(widget.icon,
-                  size: 16,
-                  color: widget.danger ? BookTheme.danger : b.inkDim),
+                  size: 16, color: widget.danger ? BookTheme.danger : b.inkDim),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(widget.label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: ink)),
+                        fontSize: 13, fontWeight: FontWeight.w600, color: ink)),
               ),
             ],
           ),

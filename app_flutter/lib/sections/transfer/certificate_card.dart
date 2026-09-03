@@ -28,7 +28,8 @@ import 'transfer_controller.dart';
 import 'transfer_widgets.dart';
 
 class CertificateCard extends StatefulWidget {
-  const CertificateCard({super.key, required this.controller, required this.state});
+  const CertificateCard(
+      {super.key, required this.controller, required this.state});
 
   final TransferController controller;
   final TransferState state;
@@ -198,8 +199,8 @@ class _Record extends StatelessWidget {
       children: [
         SizedBox(
           width: 46,
-          child: Text(label,
-              style: TextStyle(fontSize: 10.5, color: t.textDim)),
+          child:
+              Text(label, style: TextStyle(fontSize: 10.5, color: t.textDim)),
         ),
         Expanded(
           child: SelectableText(

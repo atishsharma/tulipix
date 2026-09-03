@@ -326,8 +326,8 @@ class _CountPill extends StatelessWidget {
     return Container(
       height: 30,
       padding: const EdgeInsets.all(1.5),
-      decoration:
-          BoxDecoration(gradient: gradient, borderRadius: BorderRadius.circular(15)),
+      decoration: BoxDecoration(
+          gradient: gradient, borderRadius: BorderRadius.circular(15)),
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: t.dark ? t.nCard : Colors.transparent,

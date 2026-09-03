@@ -221,8 +221,7 @@ class AccountCard extends StatelessWidget {
                   ),
                 if (row.inMonth.isNotEmpty)
                   Text('↓${row.inMonth}',
-                      style:
-                          const TextStyle(fontSize: 10.5, color: Tokens.ok)),
+                      style: const TextStyle(fontSize: 10.5, color: Tokens.ok)),
                 if (row.outMonth.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(left: 6),
@@ -481,7 +480,8 @@ class LendingTab extends StatelessWidget {
           const SizedBox(height: 14),
           FinCard(
             title: 'Settled or written off',
-            sub: 'The last six months. Its own card rather than only behind the '
+            sub:
+                'The last six months. Its own card rather than only behind the '
                 'Closed filter: the useful question is whether this gets paid '
                 'back, and that needs the history next to the open rows.',
             child: Column(

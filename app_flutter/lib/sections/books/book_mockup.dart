@@ -48,7 +48,12 @@ class Mockup {
   static const tile = Mockup(
     asset: 'assets/bookhero/bookframe.png',
     frame: Size(600, 830),
-    quad: [Offset(12.8, 26.5), Offset(511.4, 0), Offset(512.7, 829), Offset(12.2, 791)],
+    quad: [
+      Offset(12.8, 26.5),
+      Offset(511.4, 0),
+      Offset(512.7, 829),
+      Offset(12.2, 791)
+    ],
     darken: 1,
   );
 
@@ -56,7 +61,12 @@ class Mockup {
   static const hero = Mockup(
     asset: 'assets/bookhero/herocover-frame.png',
     frame: Size(600, 600),
-    quad: [Offset(81, 149.3), Offset(327.8, 74.3), Offset(578.3, 378), Offset(273, 480.8)],
+    quad: [
+      Offset(81, 149.3),
+      Offset(327.8, 74.3),
+      Offset(578.3, 378),
+      Offset(273, 480.8)
+    ],
     darken: 0.52,
   );
 }

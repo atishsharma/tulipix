@@ -965,30 +965,6 @@ class KindTag extends StatelessWidget {
 /// `logo-choice` is a Settings value the Home bridge does not carry, so the
 /// port draws the default mark. Kept as one widget so plumbing the choice
 /// later is one edit rather than four.
-class AppMark extends StatelessWidget {
-  const AppMark({super.key, this.size = 22, this.radius = 7});
-
-  final double size;
-  final double radius;
-
-  @override
-  Widget build(BuildContext context) => ClipRRect(
-        borderRadius: BorderRadius.circular(radius),
-        child: Image.asset(
-          'assets/appicons/sidebar-default.png',
-          width: size,
-          height: size,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => Container(
-            width: size,
-            height: size,
-            color: Tokens.brand,
-            child: Icon(Icons.hexagon, size: size * 0.6, color: Colors.white),
-          ),
-        ),
-      );
-}
-
 /// The header avatar, with the online dot on its edge.
 class HomeAvatar extends StatelessWidget {
   const HomeAvatar({super.key, this.size = 40, this.dot = false});

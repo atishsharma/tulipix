@@ -167,7 +167,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('the online average sits beside the five stars', (tester) async {
+    testWidgets('the online average sits beside the five stars',
+        (tester) async {
       final area = _gridArea(const Size(1920, 1080));
       await _at(
         tester,
@@ -396,8 +397,8 @@ void main() {
             child: SizedBox(
               width: 195,
               height: 178,
-              child: BookMockup(
-                  controller: _NoBridge(), book: _book(), mockup: m),
+              child:
+                  BookMockup(controller: _NoBridge(), book: _book(), mockup: m),
             ),
           ),
         );

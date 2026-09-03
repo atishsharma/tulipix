@@ -151,6 +151,7 @@ class TransferController extends ChangeNotifier {
     if (path == null) return;
     await send(TransferCmd.addFolder(path: path));
   }
+
   Future<void> removeFile(int id) => send(TransferCmd.remove(id: id));
   Future<void> clearTray() => send(const TransferCmd.clear());
   Future<void> setShareTarget(String token) =>
@@ -165,6 +166,7 @@ class TransferController extends ChangeNotifier {
     if (path == null) return;
     await send(TransferCmd.setInbox(path: path));
   }
+
   Future<void> openInbox() => send(const TransferCmd.openInbox());
   Future<void> openRow(int rowId) => send(TransferCmd.openRow(rowId: rowId));
   Future<void> retryRow(int rowId) => send(TransferCmd.retryRow(rowId: rowId));

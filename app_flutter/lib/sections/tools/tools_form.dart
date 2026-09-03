@@ -112,8 +112,8 @@ class ToolForm extends StatelessWidget {
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(state.error,
-                        style: const TextStyle(
-                            fontSize: 12, color: Tokens.error)),
+                        style:
+                            const TextStyle(fontSize: 12, color: Tokens.error)),
                   ),
                 ],
                 const SizedBox(height: 20),
@@ -201,8 +201,7 @@ class _FieldRow extends StatelessWidget {
       if (f.key == 'target_ext' || f.key == 'format') {
         target = v;
       } else if (f.key == 'input' || f.key == 'inputs' || f.key == 'files') {
-        final base =
-            v.split('\n').first.split(Platform.pathSeparator).last;
+        final base = v.split('\n').first.split(Platform.pathSeparator).last;
         final dot = base.lastIndexOf('.');
         stem = dot > 0 ? base.substring(0, dot) : base;
         sourceExt = dot > 0 ? base.substring(dot + 1) : '';
@@ -285,9 +284,8 @@ class _FieldRow extends StatelessWidget {
         return _PathRow(
           value: field.value,
           icon: Icons.save_outlined,
-          placeholder: field.required_
-              ? 'Choose where to save…'
-              : 'Beside the source',
+          placeholder:
+              field.required_ ? 'Choose where to save…' : 'Beside the source',
           wantsDirectory: false,
           onPicked: _set,
           onChoose: () => pickSaveLocation(
@@ -381,9 +379,7 @@ class _PathRowState extends State<_PathRow> {
             color: _over ? Tokens.secTools.withValues(alpha: 0.10) : t.nCard,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: _over
-                  ? Tokens.secTools
-                  : (filled ? t.nHair : t.nInk3),
+              color: _over ? Tokens.secTools : (filled ? t.nHair : t.nInk3),
             ),
           ),
           child: Row(
@@ -395,20 +391,16 @@ class _PathRowState extends State<_PathRow> {
                 child: Text(
                   _over
                       ? 'Drop it here'
-                      : (filled
-                          ? _baseName(widget.value)
-                          : widget.placeholder),
+                      : (filled ? _baseName(widget.value) : widget.placeholder),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontFamily: filled && !_over ? 'monospace' : null,
                     fontSize: filled && !_over ? 11.5 : 12,
-                    fontStyle: filled && !_over
-                        ? FontStyle.normal
-                        : FontStyle.italic,
-                    color: _over
-                        ? Tokens.secTools
-                        : (filled ? t.nInk : t.nInk3),
+                    fontStyle:
+                        filled && !_over ? FontStyle.normal : FontStyle.italic,
+                    color:
+                        _over ? Tokens.secTools : (filled ? t.nInk : t.nInk3),
                   ),
                 ),
               ),
@@ -472,7 +464,10 @@ class _FileListState extends State<_FileList> {
   /// Adds rather than replaces: picking a second time in a different folder is
   /// how a list of forty gets built.
   void _add(Iterable<String> more) {
-    final add = [for (final p in more) if (!FileSystemEntity.isDirectorySync(p)) p];
+    final add = [
+      for (final p in more)
+        if (!FileSystemEntity.isDirectorySync(p)) p
+    ];
     if (add.isEmpty) return;
     widget.onChanged([..._paths, ...add].join('\n'));
   }
@@ -505,8 +500,7 @@ class _FileListState extends State<_FileList> {
             child: Row(
               children: [
                 Icon(Icons.file_copy_outlined,
-                    size: 16,
-                    color: paths.isEmpty ? t.nInk3 : Tokens.secTools),
+                    size: 16, color: paths.isEmpty ? t.nInk3 : Tokens.secTools),
                 const SizedBox(width: 9),
                 Expanded(
                   child: Text(

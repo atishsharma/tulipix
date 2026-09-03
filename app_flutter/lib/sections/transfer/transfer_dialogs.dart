@@ -7,8 +7,6 @@
 // is the firewall hint, which Rust builds with this machine's real port and
 // link in it — a rule naming the wrong port is worse than no rule.
 
-import 'dart:ui' show FontFeature;
-
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';

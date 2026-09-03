@@ -102,15 +102,13 @@ class _YoutubeTabState extends State<YoutubeTab> {
                 TextButton.icon(
                   icon: const Icon(Icons.smart_display_outlined, size: 16),
                   label: const Text('Watch this'),
-                  onPressed: () =>
-                      c.send(const MusicCmd.ytWatchCurrent()),
+                  onPressed: () => c.send(const MusicCmd.ytWatchCurrent()),
                 ),
               if (st.ytWatching)
                 TextButton.icon(
                   icon: const Icon(Icons.close, size: 16),
                   label: const Text('Close the picture'),
-                  onPressed: () =>
-                      c.send(const MusicCmd.ytStopWatching()),
+                  onPressed: () => c.send(const MusicCmd.ytStopWatching()),
                 ),
               // Which backend does the listing. Piped is faster and rate-limits
               // less; yt-dlp always works. "auto" tries Piped and falls back.
@@ -133,8 +131,7 @@ class _YoutubeTabState extends State<YoutubeTab> {
                 icon: Icon(st.ytHomeConnect
                     ? Icons.gradient
                     : Icons.gradient_outlined),
-                onPressed: () =>
-                    c.send(const MusicCmd.ytToggleHomeConnect()),
+                onPressed: () => c.send(const MusicCmd.ytToggleHomeConnect()),
               ),
               const SizedBox(width: 8),
             ],
@@ -196,8 +193,7 @@ class _YoutubeTabState extends State<YoutubeTab> {
                       child: SortChip(
                         label: m.$2,
                         active: st.ytDlSort == m.$1,
-                        onTap: () =>
-                            c.send(MusicCmd.ytSetDlSort(mode: m.$1)),
+                        onTap: () => c.send(MusicCmd.ytSetDlSort(mode: m.$1)),
                       ),
                     ),
                 ],
@@ -452,7 +448,8 @@ Future<void> downloadWithQuality(
     await pickQuality(context, c, v);
     return;
   }
-  await c.send(MusicCmd.ytDownload(videoId: v.videoId, quality: qualityArg(res)));
+  await c
+      .send(MusicCmd.ytDownload(videoId: v.videoId, quality: qualityArg(res)));
 }
 
 /// The quality sheet: the same five the Slint picker offers, plus the tick
@@ -484,8 +481,7 @@ Future<void> pickQuality(
               child: Row(
                 children: [
                   Expanded(child: Text(o.$2)),
-                  if (saved == o.$1)
-                    const Icon(Icons.check, size: 16),
+                  if (saved == o.$1) const Icon(Icons.check, size: 16),
                 ],
               ),
             ),
@@ -916,8 +912,7 @@ class _Subscriptions extends StatelessWidget {
               active: st.ytSubsFilter == 'unsub',
               tint: const Color(0xFFF43F5E),
               tint2: const Color(0xFFF97316),
-              onTap: () =>
-                  controller.send(const MusicCmd.ytToggleSubsFilter()),
+              onTap: () => controller.send(const MusicCmd.ytToggleSubsFilter()),
             ),
             const Spacer(),
             TextButton.icon(
@@ -961,33 +956,33 @@ class _Subscriptions extends StatelessWidget {
           Expanded(
             child: CardGrid(
               min: 160,
-            children: [
-              for (final s in st.ytSubs)
-                MusicCard(
-                  controller: controller,
-                  title: s.title,
-                  subtitle: [
-                    if (s.subs > 0) '${s.subs} subs',
-                    if (s.videos > 0) '${s.videos} videos',
-                  ].join(' · '),
-                  artKind: 'yt',
-                  artKey: s.avatar,
-                  direct: s.avatar,
-                  round: true,
-                  fallback: Icons.person,
-                  badge: s.subscribed ? null : 'unsubbed',
-                  onTap: () => controller
-                      .send(MusicCmd.ytOpenChannel(channelId: s.channelId)),
-                  onMenu: () => controller.send(
-                    s.subscribed
-                        ? MusicCmd.ytUnsub(channelId: s.channelId)
-                        : MusicCmd.ytSubscribe(
-                            channelId: s.channelId, title: s.title),
+              children: [
+                for (final s in st.ytSubs)
+                  MusicCard(
+                    controller: controller,
+                    title: s.title,
+                    subtitle: [
+                      if (s.subs > 0) '${s.subs} subs',
+                      if (s.videos > 0) '${s.videos} videos',
+                    ].join(' · '),
+                    artKind: 'yt',
+                    artKey: s.avatar,
+                    direct: s.avatar,
+                    round: true,
+                    fallback: Icons.person,
+                    badge: s.subscribed ? null : 'unsubbed',
+                    onTap: () => controller
+                        .send(MusicCmd.ytOpenChannel(channelId: s.channelId)),
+                    onMenu: () => controller.send(
+                      s.subscribed
+                          ? MusicCmd.ytUnsub(channelId: s.channelId)
+                          : MusicCmd.ytSubscribe(
+                              channelId: s.channelId, title: s.title),
+                    ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
-        ),
         Pager(
           page: st.ytSubsPage,
           pages: st.ytSubsPages,
@@ -1056,8 +1051,8 @@ class _Playlists extends StatelessWidget {
                             .send(MusicCmd.ytOpenPlaylist(playlistId: p.id)),
                         // Play-all straight off the card, as Slint's
                         // `yt-playlist-play-all-id` does.
-                        onPlay: () => controller.send(
-                            MusicCmd.ytPlaylistPlayAll(playlistId: p.id)),
+                        onPlay: () => controller
+                            .send(MusicCmd.ytPlaylistPlayAll(playlistId: p.id)),
                         onMenu: () => controller
                             .send(MusicCmd.ytDeletePlaylist(playlistId: p.id)),
                       ),
@@ -1380,8 +1375,8 @@ class _PlaylistPage extends StatelessWidget {
                   child: SortChip(
                     label: m.$2,
                     active: st.ytPlaylistSort == m.$1,
-                    onTap: () => controller
-                        .send(MusicCmd.ytSetPlaylistSort(mode: m.$1)),
+                    onTap: () =>
+                        controller.send(MusicCmd.ytSetPlaylistSort(mode: m.$1)),
                   ),
                 ),
               const Spacer(),

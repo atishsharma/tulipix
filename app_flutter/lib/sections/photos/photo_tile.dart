@@ -24,6 +24,7 @@ class PhotoTileView extends StatefulWidget {
   final PhotosController controller;
   final bool selected;
   final VoidCallback onTap;
+
   /// Null when the tile is not a stack cover. Takes the tap position, so the
   /// menu opens on the badge and not in the corner of the window.
   final void Function(TapDownDetails)? onStackMenu;
@@ -118,8 +119,7 @@ class _PhotoTileViewState extends State<PhotoTileView> {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.layers,
-                            size: 11, color: Colors.white),
+                        const Icon(Icons.layers, size: 11, color: Colors.white),
                         const SizedBox(width: 3),
                         Text(
                           '${widget.tile.stackSize}',

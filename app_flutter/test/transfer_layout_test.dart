@@ -316,8 +316,18 @@ void main() {
 
     expect(find.byType(PeerChip), findsNWidgets(3));
     expect(find.text('Pair'), findsOneWidget,
-        reason: 'one of the three is unpaired, and only that one offers to pair');
+        reason:
+            'one of the three is unpaired, and only that one offers to pair');
     // Pairing is what an unpaired chip is for; a paired one sends.
+    //
+    // Scrolled to first, because the box is deliberately one row tall — the QR
+    // plate above it has first claim on the panel's height — and at this width
+    // a chip is as wide as the box, so three peers are three rows with two of
+    // them below the fold. That is the truncation the `rows: 1` comment on
+    // `Outline` describes, not a layout fault, and a tap that assumes
+    // otherwise is testing the window rather than the chip.
+    await tester.ensureVisible(find.text('192.168.1.32'));
+    await tester.pump();
     await tester.tap(find.text('192.168.1.32'));
     await tester.pump();
     expect(tapped, ['https://192.168.1.32:8420'],
@@ -398,10 +408,13 @@ void main() {
     await tester.tap(find.text('Send to 2'));
     await tester.pump();
 
-    expect(sent, [
-      'https://192.168.1.33:8420',
-      'https://192.168.1.31:8420',
-    ], reason: 'one send, two destinations, in the order they were ticked');
+    expect(
+        sent,
+        [
+          'https://192.168.1.33:8420',
+          'https://192.168.1.31:8420',
+        ],
+        reason: 'one send, two destinations, in the order they were ticked');
   });
 
   testWidgets('the destination box leaves the drop zone its budget',

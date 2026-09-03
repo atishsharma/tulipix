@@ -180,8 +180,8 @@ class _Foot extends StatelessWidget {
     final t = context.tokens;
     // "Save & add another" only where entering several in a row is the actual
     // task. Nobody reconciles two accounts back to back.
-    final canRepeat = const {'txn', 'one-off', 'due', 'sub', 'bill'}
-        .contains(st.sheet);
+    final canRepeat =
+        const {'txn', 'one-off', 'due', 'sub', 'bill'}.contains(st.sheet);
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
       decoration: BoxDecoration(
@@ -310,8 +310,8 @@ class _SheetFieldState extends State<SheetField> {
       return Row(
         children: [
           Expanded(
-            child: Text(f.label,
-                style: TextStyle(fontSize: 12, color: t.nInk2)),
+            child:
+                Text(f.label, style: TextStyle(fontSize: 12, color: t.nInk2)),
           ),
           Text(f.value,
               style: TextStyle(
@@ -363,7 +363,8 @@ class _SheetFieldState extends State<SheetField> {
         TextField(
           controller: _text,
           keyboardType: f.kind == 'number' || f.kind == 'money'
-              ? const TextInputType.numberWithOptions(decimal: true, signed: true)
+              ? const TextInputType.numberWithOptions(
+                  decimal: true, signed: true)
               : TextInputType.text,
           style: TextStyle(fontSize: 13, color: t.nInk),
           decoration: InputDecoration(
@@ -607,8 +608,8 @@ class SchedulePanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    TextStyle head() => TextStyle(
-        fontSize: 10.5, fontWeight: FontWeight.w700, color: t.nInk2);
+    TextStyle head() =>
+        TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700, color: t.nInk2);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
@@ -617,13 +618,14 @@ class SchedulePanel extends StatelessWidget {
           children: [
             SizedBox(width: 36, child: Text('#', style: head())),
             SizedBox(width: 96, child: Text('Due', style: head())),
-            Expanded(child: Text('EMI', textAlign: TextAlign.right, style: head())),
+            Expanded(
+                child: Text('EMI', textAlign: TextAlign.right, style: head())),
             Expanded(
                 child: Text('Principal',
                     textAlign: TextAlign.right, style: head())),
             Expanded(
-                child:
-                    Text('Interest', textAlign: TextAlign.right, style: head())),
+                child: Text('Interest',
+                    textAlign: TextAlign.right, style: head())),
             Expanded(
                 child:
                     Text('Balance', textAlign: TextAlign.right, style: head())),
@@ -650,16 +652,15 @@ class SchedulePanel extends StatelessWidget {
                 Expanded(
                     child: Text(r.principal,
                         textAlign: TextAlign.right,
-                        style: const TextStyle(
-                            fontSize: 11.5, color: Tokens.ok))),
+                        style:
+                            const TextStyle(fontSize: 11.5, color: Tokens.ok))),
                 Expanded(
                     child: Text(r.interest,
                         textAlign: TextAlign.right,
                         style: TextStyle(
                             fontSize: 11.5,
-                            color: r.interestPct > 60
-                                ? Tokens.error
-                                : t.nInk2))),
+                            color:
+                                r.interestPct > 60 ? Tokens.error : t.nInk2))),
                 Expanded(
                     child: Text(r.balance,
                         textAlign: TextAlign.right,
@@ -780,8 +781,7 @@ class ImportPanel extends StatelessWidget {
                       SizedBox(
                         width: 90,
                         child: Text(r.date,
-                            style:
-                                TextStyle(fontSize: 11, color: t.nInk2)),
+                            style: TextStyle(fontSize: 11, color: t.nInk2)),
                       ),
                       Expanded(
                         child: Text(r.description,

@@ -13,6 +13,7 @@ import '../design/tokens.dart';
 
 import '../src/rust/api/shell.dart';
 import '../src/rust/api/status.dart';
+import 'window.dart';
 
 /// How often the badge and the health lamp are re-counted. The Slint build runs
 /// the same slow tick for exactly these two figures.
@@ -136,6 +137,24 @@ class ShellController extends ChangeNotifier {
 
   void toggleCollapsed() {
     collapsed = !collapsed;
+    notifyListeners();
+  }
+
+  // --- logo-fullscreen -------------------------------------------------------
+  //
+  // `app-fullscreen` in ui/main.slint: the sidebar's mark takes the app
+  // borderless-fullscreen, the caption row goes away with the frame, and a 3px
+  // strip at the top peeks a minimal bar back with the way out on it. One
+  // control opens it; the strip's bar and the same mark both close it.
+
+  bool appFullscreen = false;
+
+  void toggleAppFullscreen() => setAppFullscreen(!appFullscreen);
+
+  void setAppFullscreen(bool on) {
+    if (appFullscreen == on) return;
+    appFullscreen = on;
+    setWindowFullscreen(on);
     notifyListeners();
   }
 }

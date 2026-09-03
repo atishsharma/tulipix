@@ -13,6 +13,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../design/app_mark.dart';
 import '../design/tokens.dart';
 import '../src/rust/api/shell.dart';
 import 'shell_controller.dart';
@@ -87,7 +88,12 @@ class Sidebar extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _Brand(collapsed: collapsed),
+            _Brand(
+              collapsed: collapsed,
+              logoChoice: st?.logoChoice ?? 0,
+              onTap: c.toggleAppFullscreen,
+              fullscreen: c.appFullscreen,
+            ),
             const SizedBox(height: 14),
             _NavRow(
               section: Section.home,
@@ -288,43 +294,59 @@ class _Badge extends StatelessWidget {
 
 // ── brand, group header, user ───────────────────────────────────────────────
 
-/// The mark is drawn rather than an asset: the five logo SVGs the Slint build
-/// picks between live in `resources/` and are not in the Flutter bundle yet, so
-/// `profile.logo` round-trips through Settings without changing this yet.
+/// `BrandHeader` in ui/sidebar.slint: the chosen mark, then the wordmark.
+///
+/// The mark used to be a drawn gradient "T" here, on a note saying the logo
+/// assets were not in the Flutter bundle — they were, all five of them, and the
+/// `profile.logo` the Settings picker saved was read by nothing. It is the
+/// snapshot's `logoChoice` now, which is the same setting the Slint build
+/// reads, so the two windows open wearing the same mark.
 class _Brand extends StatelessWidget {
-  const _Brand({required this.collapsed});
+  const _Brand({
+    required this.collapsed,
+    required this.logoChoice,
+    required this.onTap,
+    required this.fullscreen,
+  });
 
   final bool collapsed;
+  final int logoChoice;
+
+  /// The mark is the door to logo-fullscreen -- `logo-clicked` in
+  /// ui/main.slint, which flips `app-fullscreen` and asks the window manager
+  /// for it. The way back out is the same mark, or the bar the top edge peeks.
+  final VoidCallback onTap;
+  final bool fullscreen;
 
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final mark = Container(
-      width: 34,
-      height: 34,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Tokens.brand, Tokens.brand2],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
+    // 36px on a 9px corner — `Surface.glyph-radius`, and the same size the
+    // Slint header gives it.
+    final Widget mark = Tooltip(
+      message: fullscreen ? 'Leave fullscreen' : 'Fullscreen',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: onTap,
+          child: AppMark(size: 36, radius: 9, choice: logoChoice),
         ),
-        borderRadius: BorderRadius.circular(10),
       ),
-      child: const Text('T',
-          style: TextStyle(
-              fontSize: 18, fontWeight: FontWeight.w900, color: Colors.white)),
     );
     if (collapsed) return Center(child: mark);
     return Row(
       children: [
         mark,
-        const SizedBox(width: 10),
+        const SizedBox(width: 12),
         Expanded(
           child: Text('Tulipix',
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                  fontSize: 16, fontWeight: FontWeight.w800, color: t.text)),
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.1,
+                color: t.text,
+              )),
         ),
       ],
     );

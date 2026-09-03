@@ -33,8 +33,8 @@ class BillsTab extends StatelessWidget {
             spacing: 8,
             children: [
               OutlinedButton.icon(
-                onPressed: () => c.send(
-                    const FinancesCmd.openSheet(kind: 'one-off', id: 0)),
+                onPressed: () =>
+                    c.send(const FinancesCmd.openSheet(kind: 'one-off', id: 0)),
                 icon: const Icon(Icons.event_outlined, size: 16),
                 label: const Text('One-off'),
               ),
@@ -93,12 +93,12 @@ class BillsTab extends StatelessWidget {
         const SizedBox(height: 14),
         FinCard(
           title: 'What repeats',
-          sub: 'The templates the dated rows above are posted from. Editing one '
+          sub:
+              'The templates the dated rows above are posted from. Editing one '
               'changes what happens next month, not what already happened.',
           child: st.billTemplates.isEmpty
               ? const EmptyNote(
-                  icon: Icons.repeat,
-                  title: 'No repeating bills set up yet.')
+                  icon: Icons.repeat, title: 'No repeating bills set up yet.')
               : Column(
                   children: [
                     for (final r in st.billTemplates)
@@ -160,16 +160,14 @@ class SubsTab extends StatelessWidget {
                     value: st.subsCategory,
                     options: st.subsCategories,
                     icon: Icons.label_outline,
-                    onChanged: (v) =>
-                        c.send(FinancesCmd.subsCategory(name: v)),
+                    onChanged: (v) => c.send(FinancesCmd.subsCategory(name: v)),
                   ),
                   LabelPicker(
                     value: st.subsCurrency,
                     options: st.subsCurrencies,
                     width: 145,
                     icon: Icons.currency_exchange,
-                    onChanged: (v) =>
-                        c.send(FinancesCmd.subsCurrency(code: v)),
+                    onChanged: (v) => c.send(FinancesCmd.subsCurrency(code: v)),
                   ),
                   OutlinedButton.icon(
                     onPressed: () => c.send(
@@ -359,8 +357,7 @@ class RecurRowTile extends StatelessWidget {
                             '${row.plan.isEmpty ? '' : ' · ${row.plan}'}',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style:
-                                TextStyle(fontSize: 10.5, color: t.nInk3)),
+                            style: TextStyle(fontSize: 10.5, color: t.nInk3)),
                       ),
                     ],
                   ),

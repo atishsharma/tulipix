@@ -662,12 +662,8 @@ class _CropOverlayState extends State<_CropOverlay> {
       case 3:
         return _norm(Rect.fromLTRB(at.dx, s.top, s.right, at.dy));
       case 4:
-        final dx = (at.dx - _from.dx)
-            .clamp(-s.left, 1.0 - s.right)
-            .toDouble();
-        final dy = (at.dy - _from.dy)
-            .clamp(-s.top, 1.0 - s.bottom)
-            .toDouble();
+        final dx = (at.dx - _from.dx).clamp(-s.left, 1.0 - s.right).toDouble();
+        final dy = (at.dy - _from.dy).clamp(-s.top, 1.0 - s.bottom).toDouble();
         return s.shift(Offset(dx, dy));
       default:
         return _norm(Rect.fromPoints(_from, at));
@@ -1012,7 +1008,8 @@ class _CurvePainter extends CustomPainter {
                 'g' => h.g,
                 _ => h.b,
               },
-              (_tint[channel] ?? const Color(0xFFFFFFFF)).withValues(alpha: 0.28)
+              (_tint[channel] ?? const Color(0xFFFFFFFF))
+                  .withValues(alpha: 0.28)
             ),
           ];
     for (final (buckets, colour) in channels) {
@@ -1295,8 +1292,7 @@ class _Panel extends StatelessWidget {
                         : Icons.remove_red_eye_outlined,
                     size: 17,
                   ),
-                  label: Text(
-                      tool == _Tool.redEye ? 'Placing' : 'Fix red-eye'),
+                  label: Text(tool == _Tool.redEye ? 'Placing' : 'Fix red-eye'),
                 ),
               ),
               if ((s?.redEye ?? const []).isNotEmpty) ...[

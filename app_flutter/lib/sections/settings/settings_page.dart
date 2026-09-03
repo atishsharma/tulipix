@@ -98,7 +98,16 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _stage(SettingsState st) => switch (_tab) {
-        'profile' => ProfileTab(controller: _c, state: st),
+        // The status pill on the identity row goes to the Status tab, so the
+        // page that owns the tab has to hand it the way back.
+        'profile' => ProfileTab(
+            controller: _c,
+            state: st,
+            onTab: (v) {
+              setState(() => _tab = v);
+              _c.send(SettingsCmd.setTab(tab: v));
+            },
+          ),
         'libraries' => LibrariesTab(controller: _c, state: st),
         // The dashboard, as its own tab — the same page the sidebar's lamp
         // reports on, not a second rendering of it.

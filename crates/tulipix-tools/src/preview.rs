@@ -2028,7 +2028,11 @@ fn collage_render(spec: &Value, b: &Budget) -> PreviewPlan {
     let cols = (number(spec, "cols").unwrap_or(3.0).max(1.0) as usize).min(shown);
     let rows = shown.div_ceil(cols);
     // The whole sheet inside the budget, rather than one cell at full size.
-    let cell = (b.max_px as usize / cols).clamp(48, 480) as u32;
+    // The budget is the longest edge, so it is divided by whichever way the
+    // grid runs deeper: 24 tiles at 3 columns is 8 rows, and dividing by the
+    // columns alone plans a sheet 2.7x over budget in the direction nobody
+    // measured.
+    let cell = (b.max_px as usize / cols.max(rows)).clamp(48, 480) as u32;
     let gap = (number(spec, "gap").unwrap_or(8.0).max(0.0) as u32).min(cell / 8);
 
     let mut small = spec.clone();
@@ -2099,7 +2103,8 @@ fn sheet_render(spec: &Value, b: &Budget, probe: Option<&Probe>) -> PreviewPlan 
             p.duration_s,
             cols,
             rows,
-            (b.max_px / cols.max(1)).max(64),
+            // Longest edge again: a 2x8 sheet is bounded by its rows.
+            (b.max_px / cols.max(rows).max(1)).max(64),
         );
         vec![ffmpeg(vec![
             "-i".into(),

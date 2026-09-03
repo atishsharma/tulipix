@@ -133,7 +133,11 @@ class MiniPlayer extends StatelessWidget {
             padding: EdgeInsets.all(14 * s),
             child: Column(
               children: [
-                _Header(controller: controller, now: now, scale: s),
+                _Header(
+                    controller: controller,
+                    now: now,
+                    scale: s,
+                    embedded: embedded),
                 SizedBox(height: 6 * s),
                 _SecondLine(
                     controller: controller, now: now, live: live, scale: s),
@@ -482,12 +486,21 @@ class _MiniBar extends StatelessWidget {
 }
 
 class _Header extends StatelessWidget {
-  const _Header(
-      {required this.controller, required this.now, required this.scale});
+  const _Header({
+    required this.controller,
+    required this.now,
+    required this.scale,
+    required this.embedded,
+  });
 
   final MusicController controller;
   final NowPlaying now;
   final double scale;
+
+  /// Dropped into Home's Classic rail rather than floating. The rail sizes the
+  /// player itself, so a control that changes the player's size has nothing to
+  /// change — the layout button is for the floating copy only.
+  final bool embedded;
 
   @override
   Widget build(BuildContext context) {

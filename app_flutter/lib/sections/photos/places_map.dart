@@ -80,7 +80,8 @@ class _PlacesMapState extends State<PlacesMap> {
     final spanLon = (b.maxLon - b.minLon).abs().clamp(0.01, 360.0);
     // 360 degrees fits one tile at z0, so the zoom that fits the span is
     // log2(360 / span), minus a tile's worth of margin.
-    final z = (math.log(360.0 / spanLon) / math.ln2).floor().clamp(_minZoom, 10);
+    final z =
+        (math.log(360.0 / spanLon) / math.ln2).floor().clamp(_minZoom, 10);
     _z = z;
     _cx = _lonToTileX(lon, z);
     _cy = _latToTileY(lat, z);
@@ -163,7 +164,10 @@ class _PlacesMapState extends State<PlacesMap> {
         for (final pin in widget.state.pins) {
           final px = (_lonToTileX(pin.lon, _z) - left) * _tileSize;
           final py = (_latToTileY(pin.lat, _z) - top) * _tileSize;
-          if (px < -60 || py < -60 || px > size.width + 60 || py > size.height + 60) {
+          if (px < -60 ||
+              py < -60 ||
+              px > size.width + 60 ||
+              py > size.height + 60) {
             continue;
           }
           children.add(Positioned(

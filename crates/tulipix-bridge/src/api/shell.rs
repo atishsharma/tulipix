@@ -34,6 +34,12 @@ pub struct ShellState {
     pub theme: String,
     pub reduce_motion: bool,
     pub app_version: String,
+    /// "bar" | "square" | "pill" -- which desktop widget the caption row's
+    /// button opens. Settings writes `ui.mini-widget.style` and the Slint build
+    /// reads it in `miniwin::wire`; nothing on the Flutter side read it back,
+    /// so the picker's choice lasted exactly as long as the session that made
+    /// it. Empty means "never chosen", and the default stands.
+    pub mini_widget_style: String,
 }
 
 pub enum ShellCmd {
@@ -89,6 +95,7 @@ async fn snapshot() -> Result<ShellState> {
         theme: s.theme.clone(),
         reduce_motion: s.reduce_motion,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
+        mini_widget_style: s.text("ui.mini-widget.style"),
     })
 }
 

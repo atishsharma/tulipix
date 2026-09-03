@@ -86,7 +86,8 @@ class PlanningTab extends StatelessWidget {
                   ],
                 );
                 if (narrow) {
-                  return Column(children: [left, const SizedBox(height: 14), right]);
+                  return Column(
+                      children: [left, const SizedBox(height: 14), right]);
                 }
                 return Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -128,8 +129,7 @@ class _CashFlowBar extends StatelessWidget {
           ? ''
           : '${st.budgetIncome} came in. ${st.fixedShare}',
       trailing: TextButton(
-        onPressed: () =>
-            c.send(const FinancesCmd.setPlanModal(which: 'flow')),
+        onPressed: () => c.send(const FinancesCmd.setPlanModal(which: 'flow')),
         child: const Text('The whole walk'),
       ),
       child: Column(
@@ -172,7 +172,10 @@ class _CashFlowBar extends StatelessWidget {
           const SizedBox(height: 10),
           Row(
             children: [
-              _Leg(colour: const Color(0xFFF472B6), label: 'Fixed', value: st.fixedTotal),
+              _Leg(
+                  colour: const Color(0xFFF472B6),
+                  label: 'Fixed',
+                  value: st.fixedTotal),
               _Leg(
                   colour: const Color(0xFFFACC15),
                   label: 'Envelopes',
@@ -192,8 +195,8 @@ class _CashFlowBar extends StatelessWidget {
                 const SizedBox(width: 7),
                 Expanded(
                   child: Text(st.calWarning,
-                      style: const TextStyle(
-                          fontSize: 11.5, color: Tokens.warn)),
+                      style:
+                          const TextStyle(fontSize: 11.5, color: Tokens.warn)),
                 ),
               ],
             ),
@@ -487,8 +490,8 @@ class _HabitsCard extends StatelessWidget {
                             visualDensity: VisualDensity.compact,
                             padding: const EdgeInsets.symmetric(horizontal: 6),
                           ),
-                          onPressed: () => c.send(
-                              FinancesCmd.setPlanModal(which: h.action)),
+                          onPressed: () =>
+                              c.send(FinancesCmd.setPlanModal(which: h.action)),
                           child: Text(h.actionLabel,
                               style: const TextStyle(fontSize: 11)),
                         ),
@@ -603,9 +606,17 @@ class _DrillRow extends StatelessWidget {
       children: [
         for (final d in const [
           (id: 'budgets', label: 'Every envelope', icon: Icons.mail_outline),
-          (id: 'calendar', label: 'Calendar', icon: Icons.calendar_month_outlined),
+          (
+            id: 'calendar',
+            label: 'Calendar',
+            icon: Icons.calendar_month_outlined
+          ),
           (id: 'flow', label: 'The cash-flow walk', icon: Icons.timeline),
-          (id: 'review', label: 'This month, reviewed', icon: Icons.fact_check_outlined),
+          (
+            id: 'review',
+            label: 'This month, reviewed',
+            icon: Icons.fact_check_outlined
+          ),
           (id: 'trends', label: 'Trends & savings', icon: Icons.show_chart),
         ])
           OutlinedButton.icon(
@@ -672,12 +683,14 @@ class PlanModal extends StatelessWidget {
                               style: const ButtonStyle(
                                   visualDensity: VisualDensity.compact),
                               segments: const [
-                                ButtonSegment(value: 'month', label: Text('Month')),
-                                ButtonSegment(value: 'year', label: Text('Year')),
+                                ButtonSegment(
+                                    value: 'month', label: Text('Month')),
+                                ButtonSegment(
+                                    value: 'year', label: Text('Year')),
                               ],
                               selected: {st.calView},
-                              onSelectionChanged: (s) => c.send(
-                                  FinancesCmd.setCalView(view: s.first)),
+                              onSelectionChanged: (s) =>
+                                  c.send(FinancesCmd.setCalView(view: s.first)),
                             ),
                           IconButton(
                             iconSize: 20,
@@ -745,8 +758,7 @@ class _AllEnvelopes extends StatelessWidget {
         Row(
           children: [
             OutlinedButton.icon(
-              onPressed: () =>
-                  c.send(const FinancesCmd.budgetCopyForward()),
+              onPressed: () => c.send(const FinancesCmd.budgetCopyForward()),
               icon: const Icon(Icons.content_copy_outlined, size: 15),
               label: const Text('Copy last month\'s'),
             ),
@@ -764,8 +776,8 @@ class _AllEnvelopes extends StatelessWidget {
                 IconButton(
                   iconSize: 16,
                   tooltip: 'Remove the envelope',
-                  onPressed: () => c.send(
-                      FinancesCmd.budgetRemove(categoryId: b.categoryId)),
+                  onPressed: () => c
+                      .send(FinancesCmd.budgetRemove(categoryId: b.categoryId)),
                   icon: const Icon(Icons.close),
                 ),
             ],
@@ -900,9 +912,7 @@ class _CalendarBody extends StatelessWidget {
             sub: st.calHeaviestSub,
             trailing: Text(st.calHeaviest,
                 style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: t.nInk)),
+                    fontSize: 15, fontWeight: FontWeight.w800, color: t.nInk)),
             child: Column(
               children: [
                 for (final o in st.calHeaviestItems)
@@ -920,8 +930,7 @@ class _CalendarBody extends StatelessWidget {
                 const Icon(Icons.south_east, size: 15, color: Tokens.warn),
                 const SizedBox(width: 8),
                 Text(st.calLowPoint,
-                    style: const TextStyle(
-                        fontSize: 11.5, color: Tokens.warn)),
+                    style: const TextStyle(fontSize: 11.5, color: Tokens.warn)),
               ],
             ),
           ),
@@ -1059,9 +1068,7 @@ class _TrendsBody extends StatelessWidget {
           for (final s in st.trends) ...[
             Text(s.name,
                 style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: t.nInk2)),
+                    fontSize: 12, fontWeight: FontWeight.w700, color: t.nInk2)),
             const SizedBox(height: 6),
             SavingsStrip(months: s.months, height: 60),
             const SizedBox(height: 14),
@@ -1090,8 +1097,7 @@ class _TrendsBody extends StatelessWidget {
                         ),
                         const SizedBox(height: 5),
                         Text(p.label,
-                            style:
-                                TextStyle(fontSize: 11, color: t.nInk2)),
+                            style: TextStyle(fontSize: 11, color: t.nInk2)),
                       ],
                     ),
                   ),

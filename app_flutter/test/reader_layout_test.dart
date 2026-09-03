@@ -34,9 +34,10 @@ const _prefs = ReaderPrefs(
 /// A page of real prose, long enough that a short column has to clip it.
 final _body =
     'The morning was cold and the sky had the colour of an old coin. He walked '
-    'the length of the platform twice before the train came, counting the '
-    'sleepers between the boards and thinking about nothing in particular, '
-    'which was the only kind of thinking he had left. ' * 6;
+            'the length of the platform twice before the train came, counting the '
+            'sleepers between the boards and thinking about nothing in particular, '
+            'which was the only kind of thinking he had left. ' *
+        6;
 
 Reader _reader({
   bool imageMode = false,
@@ -84,7 +85,11 @@ Reader _reader({
       bookmarks: [
         for (var i = 0; i < bookmarks; i++)
           BookmarkRow(
-              id: i, page: i * 30, note: 'a note', color: 'yellow', createdAt: 0),
+              id: i,
+              page: i * 30,
+              note: 'a note',
+              color: 'yellow',
+              createdAt: 0),
       ],
       notes: [
         for (var i = 0; i < notes; i++)
@@ -302,8 +307,7 @@ void main() {
   });
 
   group('the sliders', () {
-    testWidgets('the scrub bar reports the page under the tap',
-        (tester) async {
+    testWidgets('the scrub bar reports the page under the tap', (tester) async {
       int? got;
       await _at(
         tester,
@@ -311,8 +315,8 @@ void main() {
         Center(
           child: SizedBox(
             width: 400,
-            child: BookSlider(
-                value: 1, maximum: 101, onChanged: (v) => got = v),
+            child:
+                BookSlider(value: 1, maximum: 101, onChanged: (v) => got = v),
           ),
         ),
       );
@@ -360,7 +364,8 @@ void main() {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              ChromeButton(caption: 'Aa', tip: 'Reading settings', onTap: () {}),
+              ChromeButton(
+                  caption: 'Aa', tip: 'Reading settings', onTap: () {}),
               ChromeButton(
                   icon: Icons.menu, accent: BookTheme.pink, onTap: () {}),
             ],

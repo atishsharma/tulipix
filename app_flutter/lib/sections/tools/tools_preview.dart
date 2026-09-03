@@ -221,7 +221,8 @@ class _Head extends StatelessWidget {
             SizedBox(
               width: 11,
               height: 11,
-              child: CircularProgressIndicator(strokeWidth: 1.6, color: t.nInk3),
+              child:
+                  CircularProgressIndicator(strokeWidth: 1.6, color: t.nInk3),
             ),
             const SizedBox(width: 10),
           ],
@@ -647,8 +648,10 @@ class _RenderedState extends State<_Rendered> {
     final r = widget.result;
     // A path is content-keyed, so a new setting is a new file and Flutter's
     // image cache cannot hand back the last one.
-    final after = Image.file(File(r.image), fit: BoxFit.contain,
-        key: ValueKey(r.image), gaplessPlayback: true,
+    final after = Image.file(File(r.image),
+        fit: BoxFit.contain,
+        key: ValueKey(r.image),
+        gaplessPlayback: true,
         errorBuilder: (context, error, stack) => const SizedBox.shrink());
 
     return Column(
@@ -736,7 +739,8 @@ class _LeftOf extends CustomClipper<Rect> {
   final double fraction;
 
   @override
-  Rect getClip(Size size) => Rect.fromLTWH(0, 0, size.width * fraction, size.height);
+  Rect getClip(Size size) =>
+      Rect.fromLTWH(0, 0, size.width * fraction, size.height);
 
   @override
   bool shouldReclip(_LeftOf old) => old.fraction != fraction;
@@ -818,8 +822,12 @@ class _WavePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final mid = size.height / 2;
-    canvas.drawLine(Offset(0, mid), Offset(size.width, mid),
-        Paint()..color = axis..strokeWidth = 1);
+    canvas.drawLine(
+        Offset(0, mid),
+        Offset(size.width, mid),
+        Paint()
+          ..color = axis
+          ..strokeWidth = 1);
 
     // One bar per pixel column, taking the loudest peak that falls in it, so
     // the shape does not change with the width of the pane.
@@ -831,7 +839,9 @@ class _WavePainter extends CustomPainter {
       ..strokeCap = StrokeCap.round;
     for (var x = 0; x < columns; x++) {
       var peak = 0.0;
-      for (var i = (x * per).floor(); i < ((x + 1) * per).ceil() && i < peaks.length; i++) {
+      for (var i = (x * per).floor();
+          i < ((x + 1) * per).ceil() && i < peaks.length;
+          i++) {
         if (peaks[i] > peak) peak = peaks[i];
       }
       final half = (peak * mid).clamp(0.5, mid);

@@ -1040,7 +1040,9 @@ List<Widget> activeFilters(
   // then forgotten, and a forgotten format filter is indistinguishable from a
   // library that has only one format in it.
   if (state.activeFormat.isNotEmpty) {
-    pill(Icons.description_outlined, BookTheme.blue,
+    pill(
+        Icons.description_outlined,
+        BookTheme.blue,
         state.activeFormat.toUpperCase(),
         () => controller.send(BooksCmd.setFormat(format: state.activeFormat)));
   }

@@ -258,7 +258,11 @@ class _TabSort extends StatelessWidget {
     final void Function(String) send;
     switch (st.podTab) {
       case 'home':
-        modes = const {'name': 'Name', 'category': 'Category', 'latest': 'Newest'};
+        modes = const {
+          'name': 'Name',
+          'category': 'Category',
+          'latest': 'Newest'
+        };
         active = st.podHomeSort;
         send = (m) => controller.send(MusicCmd.podSetHomeSort(mode: m));
       case 'trends':
@@ -266,7 +270,11 @@ class _TabSort extends StatelessWidget {
         active = st.podTrendsSort;
         send = (m) => controller.send(MusicCmd.podSetTrendsSort(mode: m));
       case 'downloads':
-        modes = const {'dl': 'Recently saved', 'new': 'Newest', 'old': 'Oldest'};
+        modes = const {
+          'dl': 'Recently saved',
+          'new': 'Newest',
+          'old': 'Oldest'
+        };
         active = st.podDlSort;
         send = (m) => controller.send(MusicCmd.podSetDlSort(mode: m));
       default:
@@ -774,8 +782,7 @@ class _InfoCard extends StatelessWidget {
                                     '${info.episodes} episodes',
                                   if (info.latest > 0) fmtDate(info.latest),
                                 ].where((s) => s.isNotEmpty).join('  ·  '),
-                                style:
-                                    TextStyle(fontSize: 12, color: t.nInk2),
+                                style: TextStyle(fontSize: 12, color: t.nInk2),
                               ),
                             ],
                           ),
@@ -807,7 +814,8 @@ class _InfoCard extends StatelessWidget {
                           TextButton.icon(
                             icon: const Icon(Icons.label_outline, size: 16),
                             label: const Text('Category…'),
-                            onPressed: () => _editCategory(context, controller, info),
+                            onPressed: () =>
+                                _editCategory(context, controller, info),
                           ),
                         const Spacer(),
                         if (info.subscribed)
@@ -815,8 +823,7 @@ class _InfoCard extends StatelessWidget {
                             icon: const Icon(Icons.open_in_new, size: 16),
                             label: const Text('Open show'),
                             onPressed: () {
-                              controller
-                                  .send(const MusicCmd.podInfoClose());
+                              controller.send(const MusicCmd.podInfoClose());
                               controller.send(
                                   MusicCmd.podOpen(podcastId: info.podcastId));
                             },
@@ -828,8 +835,7 @@ class _InfoCard extends StatelessWidget {
                             onPressed: () {
                               controller.send(MusicCmd.podTrendSubscribe(
                                   feedUrl: info.feedUrl));
-                              controller
-                                  .send(const MusicCmd.podInfoClose());
+                              controller.send(const MusicCmd.podInfoClose());
                             },
                           ),
                       ],
@@ -926,8 +932,7 @@ class _TranscriptPanel extends StatelessWidget {
               child: SingleChildScrollView(
                 child: SelectableText(
                   st.podTranscriptText,
-                  style:
-                      TextStyle(fontSize: 12, height: 1.6, color: t.nInk2),
+                  style: TextStyle(fontSize: 12, height: 1.6, color: t.nInk2),
                 ),
               ),
             ),
@@ -1195,8 +1200,7 @@ class EpisodeRow extends StatelessWidget {
                           ),
                           const SizedBox(width: 8),
                           Text('${(st.podDlFrac * 100).round()}%',
-                              style:
-                                  TextStyle(fontSize: 10, color: t.nInk2)),
+                              style: TextStyle(fontSize: 10, color: t.nInk2)),
                         ],
                       ),
                     )

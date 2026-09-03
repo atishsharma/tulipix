@@ -195,8 +195,8 @@ Future<void> _bookMenu(
         extensions: const ['png', 'jpg', 'jpeg', 'webp', 'bmp'],
       );
       if (path == null) return;
-      await c.send(MusicCmd.setCardArt(
-          kind: 'book', key: book.folder, path: path));
+      await c.send(
+          MusicCmd.setCardArt(kind: 'book', key: book.folder, path: path));
     case 'unbook':
       await c.send(MusicCmd.bookFlagFolder(folder: book.folder, on_: false));
   }

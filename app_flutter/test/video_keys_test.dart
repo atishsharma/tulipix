@@ -57,12 +57,16 @@ void main() {
 
   test('the defaults resolve to the actions they name', () {
     final keymap = VideoKeymap.instance;
-    expect(keymap.resolve(_down(LogicalKeyboardKey.space)), VideoAction.playPause);
-    expect(keymap.resolve(_down(LogicalKeyboardKey.arrowRight)), VideoAction.seekFwd5);
-    expect(keymap.resolve(_down(LogicalKeyboardKey.keyL)), VideoAction.seekFwd10);
+    expect(
+        keymap.resolve(_down(LogicalKeyboardKey.space)), VideoAction.playPause);
+    expect(keymap.resolve(_down(LogicalKeyboardKey.arrowRight)),
+        VideoAction.seekFwd5);
+    expect(
+        keymap.resolve(_down(LogicalKeyboardKey.keyL)), VideoAction.seekFwd10);
     // The one the user asked for by name: Escape puts it in the corner, it
     // does not end playback.
-    expect(keymap.resolve(_down(LogicalKeyboardKey.escape)), VideoAction.minimise);
+    expect(
+        keymap.resolve(_down(LogicalKeyboardKey.escape)), VideoAction.minimise);
   });
 
   test('a held key resolves, so seeking can run while it is down', () {
@@ -105,7 +109,8 @@ void main() {
 
     expect(keymap.bind(VideoAction.screenshot), space);
     expect(keymap.bind(VideoAction.playPause), isNull);
-    expect(keymap.resolve(_down(LogicalKeyboardKey.space)), VideoAction.screenshot);
+    expect(keymap.resolve(_down(LogicalKeyboardKey.space)),
+        VideoAction.screenshot);
   });
 
   test('unbinding leaves the key meaning nothing', () {
@@ -121,7 +126,8 @@ void main() {
     final keymap = VideoKeymap.instance;
     keymap.assign(VideoAction.playPause, null);
     keymap.resetAll();
-    expect(keymap.bind(VideoAction.playPause), kDefaultBinds[VideoAction.playPause]);
+    expect(keymap.bind(VideoAction.playPause),
+        kDefaultBinds[VideoAction.playPause]);
   });
 
   group('clock', () {
@@ -131,7 +137,8 @@ void main() {
     });
 
     test('keeps it when there is', () {
-      expect(fmtDuration(const Duration(hours: 1, minutes: 2, seconds: 3)), '1:02:03');
+      expect(fmtDuration(const Duration(hours: 1, minutes: 2, seconds: 3)),
+          '1:02:03');
       expect(fmtDuration(const Duration(hours: 12)), '12:00:00');
     });
 

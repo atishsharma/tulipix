@@ -130,8 +130,7 @@ class _SettingsState extends State<_Settings> {
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                     fontSize: 12.5,
-                                    color:
-                                        st.dest.isEmpty ? t.nInk2 : t.nInk),
+                                    color: st.dest.isEmpty ? t.nInk2 : t.nInk),
                               ),
                             ),
                           ),

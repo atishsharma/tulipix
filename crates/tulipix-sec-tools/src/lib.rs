@@ -727,6 +727,12 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
             // "97% · … · MB/s" reads wrong on a finished job.
             if !title.is_empty() { let _ = tulipix_tools::queue::set_message(pool, id, &title).await; }
         }
+        // This crate's catalogue is a subset of `tulipix-tools`': nothing it
+        // offers plans a `Tool` step, and the four binaries behind one are not
+        // bundled. The jobs table is shared, though, so a row enqueued
+        // elsewhere can still be claimed here — fail it by name rather than
+        // panic the worker loop.
+        Step::Tool { bin, .. } => anyhow::bail!("{bin} is not bundled with this build"),
         Step::Native(n) => tools_run_native(pool, id, n, base, span).await?,
     }
     let _ = tulipix_tools::queue::set_progress(pool, id, base + span, None).await;
@@ -932,6 +938,11 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
             let _ = tulipix_tools::queue::set_progress(pool, id, base + span,
                 Some(format!("cleared {count} cached files · {mb:.1} MB freed").as_str())).await;
         }
+        // Same subset rule as `tools_run_step`: the archive, crypt, PDF and
+        // folder-chore ops are not in this crate's catalogue, so no job started
+        // here reaches them. Deliberately no `{:?}` on the variant — `Crypt`
+        // carries the passphrase, and this message is stored on the job row.
+        _ => anyhow::bail!("this operation is not available in this build"),
     }
     Ok(())
 }

@@ -122,8 +122,7 @@ class StatCard extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(stat.sub,
-                  maxLines: 2,
-                  style: TextStyle(fontSize: 11, color: t.nInk2)),
+                  maxLines: 2, style: TextStyle(fontSize: 11, color: t.nInk2)),
             ),
           if (stat.delta.isNotEmpty)
             Padding(
@@ -132,8 +131,7 @@ class StatCard extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(stat.deltaUp ? Icons.arrow_upward : Icons.arrow_downward,
-                      size: 12,
-                      color: stat.deltaUp ? Tokens.error : Tokens.ok),
+                      size: 12, color: stat.deltaUp ? Tokens.error : Tokens.ok),
                   const SizedBox(width: 3),
                   Text(stat.delta,
                       style: TextStyle(
@@ -481,8 +479,8 @@ class FlagCard extends StatelessWidget {
             const SizedBox(width: 8),
             TextButton(
               onPressed: () => onAction!(flag.action),
-              child: Text(flag.actionLabel,
-                  style: const TextStyle(fontSize: 12)),
+              child:
+                  Text(flag.actionLabel, style: const TextStyle(fontSize: 12)),
             ),
           ],
         ],
@@ -588,7 +586,8 @@ class LabelPicker extends StatelessWidget {
         isExpanded: true,
         decoration: InputDecoration(
           isDense: true,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           prefixIcon: icon == null ? null : Icon(icon, size: 16),
           prefixIconConstraints:
               const BoxConstraints(minWidth: 30, minHeight: 20),

@@ -63,14 +63,16 @@ void main() {
 
     testWidgets('the buffer bar starts at the left edge too', (tester) async {
       await pump(tester, 0.5, 0.75);
-      final buffer = tester.getRect(find.byKey(const ValueKey('seek-buffered')));
+      final buffer =
+          tester.getRect(find.byKey(const ValueKey('seek-buffered')));
       expect(buffer.left, 0);
       expect(buffer.width, closeTo(150, 0.01));
     });
 
     testWidgets('nothing played paints nothing', (tester) async {
       await pump(tester, 0, 0);
-      expect(tester.getRect(find.byKey(const ValueKey('seek-played'))).width, 0);
+      expect(
+          tester.getRect(find.byKey(const ValueKey('seek-played'))).width, 0);
     });
 
     testWidgets('fully played fills the lane', (tester) async {
@@ -91,13 +93,17 @@ void main() {
           const Duration(minutes: 9, seconds: 50));
     });
 
-    test('never goes negative — mpv errors on that rather than seeking to 0', () {
-      expect(seekTargetFor(const Duration(seconds: 3), -10, film), Duration.zero);
+    test('never goes negative — mpv errors on that rather than seeking to 0',
+        () {
+      expect(
+          seekTargetFor(const Duration(seconds: 3), -10, film), Duration.zero);
       expect(seekTargetFor(Duration.zero, -5, film), Duration.zero);
     });
 
-    test('stops a second short of the end, so holding the key cannot end it', () {
-      final at = seekTargetFor(const Duration(hours: 1, minutes: 59, seconds: 58), 10, film);
+    test('stops a second short of the end, so holding the key cannot end it',
+        () {
+      final at = seekTargetFor(
+          const Duration(hours: 1, minutes: 59, seconds: 58), 10, film);
       expect(at, film - const Duration(seconds: 1));
       expect(at, lessThan(film));
     });

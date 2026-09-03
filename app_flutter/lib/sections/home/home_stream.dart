@@ -9,6 +9,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../design/app_mark.dart';
 import '../../design/tokens.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/home.dart';

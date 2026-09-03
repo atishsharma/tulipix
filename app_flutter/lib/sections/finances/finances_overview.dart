@@ -337,20 +337,17 @@ class _Door extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: primary
-                ? Tokens.secFinances.withValues(alpha: 0.1)
-                : t.nCard,
+            color:
+                primary ? Tokens.secFinances.withValues(alpha: 0.1) : t.nCard,
             borderRadius: BorderRadius.circular(Tokens.radiusMd),
-            border: Border.all(
-                color: primary ? Tokens.secFinances : t.nHair),
+            border: Border.all(color: primary ? Tokens.secFinances : t.nHair),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(icon,
-                  size: 22,
-                  color: primary ? Tokens.secFinances : t.nInk2),
+                  size: 22, color: primary ? Tokens.secFinances : t.nInk2),
               const SizedBox(height: 10),
               Text(title,
                   style: TextStyle(
@@ -524,23 +521,20 @@ class ObligationRow extends StatelessWidget {
             IconButton(
               iconSize: 17,
               tooltip: 'Record the payment',
-              onPressed: () =>
-                  c.send(FinancesCmd.payObligation(id: row.id)),
+              onPressed: () => c.send(FinancesCmd.payObligation(id: row.id)),
               icon: const Icon(Icons.check_circle_outline),
             ),
             IconButton(
               iconSize: 17,
               tooltip: 'Skip this one',
-              onPressed: () =>
-                  c.send(FinancesCmd.skipObligation(id: row.id)),
+              onPressed: () => c.send(FinancesCmd.skipObligation(id: row.id)),
               icon: const Icon(Icons.skip_next_outlined),
             ),
           ] else
             IconButton(
               iconSize: 17,
               tooltip: 'Undo — put it back to due',
-              onPressed: () =>
-                  c.send(FinancesCmd.unpayObligation(id: row.id)),
+              onPressed: () => c.send(FinancesCmd.unpayObligation(id: row.id)),
               icon: const Icon(Icons.undo),
             ),
         ],

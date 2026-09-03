@@ -32,16 +32,13 @@ class ReadingStatsPanel extends StatelessWidget {
             children: [
               Text('Reading stats',
                   style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                      color: b.ink)),
+                      fontSize: 20, fontWeight: FontWeight.w800, color: b.ink)),
               const Spacer(),
               IconButton(
                 iconSize: 15,
                 visualDensity: VisualDensity.compact,
                 icon: Icon(Icons.close, color: b.inkDim),
-                onPressed: () =>
-                    controller.send(const BooksCmd.closeStats()),
+                onPressed: () => controller.send(const BooksCmd.closeStats()),
               ),
             ],
           ),
@@ -93,8 +90,7 @@ class ReadingStatsPanel extends StatelessWidget {
                             child: Text(row.title,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style:
-                                    TextStyle(fontSize: 13, color: b.ink)),
+                                style: TextStyle(fontSize: 13, color: b.ink)),
                           ),
                           const SizedBox(width: 10),
                           Text(row.time,
@@ -142,9 +138,7 @@ class _Big extends StatelessWidget {
           const SizedBox(height: 2),
           Text(label,
               style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: b.inkDim)),
+                  fontSize: 11, fontWeight: FontWeight.w600, color: b.inkDim)),
         ],
       ),
     );

@@ -167,9 +167,7 @@ class _Header extends StatelessWidget {
               // the page, it says what it is.
               Text('Genesis — Book Finder',
                   style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      color: t.ink)),
+                      fontSize: 16, fontWeight: FontWeight.w800, color: t.ink)),
             ],
           ),
         ),
@@ -588,9 +586,7 @@ class _Picker extends StatelessWidget {
             Text('$label: ', style: TextStyle(fontSize: 11.5, color: t.inkDim)),
             Text(value,
                 style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w700,
-                    color: t.ink)),
+                    fontSize: 12.5, fontWeight: FontWeight.w700, color: t.ink)),
             const SizedBox(width: 4),
             Icon(Icons.expand_more, size: 15, color: t.inkDim),
           ],
@@ -612,9 +608,7 @@ class _LoadMore extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Material(
-        color: state.moreBusy
-            ? _loadMore.withValues(alpha: 0.55)
-            : _loadMore,
+        color: state.moreBusy ? _loadMore.withValues(alpha: 0.55) : _loadMore,
         borderRadius: BorderRadius.circular(16),
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
@@ -1041,8 +1035,7 @@ class _Plate extends StatelessWidget {
             // A spine, so the plate reads as a book rather than a swatch.
             Align(
               alignment: Alignment.centerLeft,
-              child: Container(
-                  width: 7, color: kGen.withValues(alpha: 0.28)),
+              child: Container(width: 7, color: kGen.withValues(alpha: 0.28)),
             ),
             Center(
               child: Opacity(
@@ -1087,8 +1080,8 @@ class _Plate extends StatelessWidget {
                 width: 24,
                 height: 24,
                 alignment: Alignment.center,
-                decoration: const BoxDecoration(
-                    color: _have, shape: BoxShape.circle),
+                decoration:
+                    const BoxDecoration(color: _have, shape: BoxShape.circle),
                 child: const Icon(Icons.check, size: 13, color: Colors.white),
               ),
             ),

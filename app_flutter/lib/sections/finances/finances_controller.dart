@@ -119,7 +119,8 @@ class FinancesController extends ChangeNotifier {
   Future<void> demo({required bool add}) {
     demoBusy = add ? 'Adding sample data…' : 'Clearing the section…';
     notifyListeners();
-    return send(add ? const FinancesCmd.demoAdd() : const FinancesCmd.demoRemove());
+    return send(
+        add ? const FinancesCmd.demoAdd() : const FinancesCmd.demoRemove());
   }
 
   void clearError() {
@@ -160,7 +161,8 @@ Color toneColour(BuildContext context, String tone) {
 }
 
 /// Severity as the insight cards wear it.
-({Color colour, IconData icon}) severityLook(String severity) => switch (severity) {
+({Color colour, IconData icon}) severityLook(String severity) =>
+    switch (severity) {
       'bad' => (colour: Tokens.error, icon: Icons.error_outline),
       'warn' => (colour: Tokens.warn, icon: Icons.warning_amber_outlined),
       'good' => (colour: Tokens.ok, icon: Icons.check_circle_outline),
