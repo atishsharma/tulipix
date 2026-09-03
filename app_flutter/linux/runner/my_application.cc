@@ -384,6 +384,37 @@ static void my_application_activate(GApplication* application) {
   gboolean alpha = rgba != nullptr && gdk_screen_is_composited(visual_screen);
   if (alpha) {
     gtk_widget_set_visual(GTK_WIDGET(window), rgba);
+
+    // An RGBA visual is only half of it: GTK still paints the toplevel with the
+    // theme's window colour, and the `decoration` node it gains once the window
+    // owns its titlebar (below) paints a themed frame and a shadow around the
+    // content. Neither is Flutter's, and neither is visible while the app fills
+    // its window -- but the desktop widget deliberately does not. It leaves the
+    // `kMiniPad` ring clear for its own shadow, and that ring showed the GTK
+    // theme's window colour instead of the desktop: a Breeze-coloured box
+    // around a rounded widget, white on a light theme and #232627 on a dark
+    // one.
+    //
+    // Only under a compositor. Without alpha there is nothing behind the window
+    // to show and a transparent background just reads as black, which is the
+    // same reason `MiniWidget` in ui/mini_widget.slint keeps its panel colour
+    // there.
+    GtkCssProvider* css = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(css,
+                                    "window, window.background, window.csd,"
+                                    "decoration {"
+                                    "  background-color: transparent;"
+                                    "  background-image: none;"
+                                    "  box-shadow: none;"
+                                    "  border: none;"
+                                    "  border-radius: 0;"
+                                    "  margin: 0;"
+                                    "}",
+                                    -1, nullptr);
+    gtk_style_context_add_provider_for_screen(
+        visual_screen, GTK_STYLE_PROVIDER(css),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(css);
   }
 
   // No frame at all: the app draws the caption row, and the eight resize
