@@ -47,6 +47,14 @@ tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "fs
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# `cast_serve` needs an unguessable path segment for the file it publishes to
+# the network. Already in the tree under rustls; used rather than adding a
+# second RNG, and the same call tulipix-transfer makes.
+#
+# Pinned rather than inherited: this crate is its own workspace -- see the note
+# at the top of the file -- so there is no `workspace.dependencies` to take it
+# from. Version tracks the root workspace's.
+getrandom = "0.4"
 tracing = "0.1"
 # The Slint binary installs this in main(); a cdylib has no main, so without it
 # every `tracing::warn!` the domain crates emit -- "inbox unwritable", "upload
@@ -116,10 +124,6 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 # slint and nothing the bridge links may. It no longer does (see above), so it
 # is an ordinary dependency: `pool_for` -- which tulipix-status needs too -- and
 # `quotes::shuffled`, the Home page's quote shelf.
-# `cast_serve` needs an unguessable path segment for the file it publishes to
-# the network. getrandom is already in the tree under rustls; used here rather
-# than adding a second RNG, which is the same call tulipix-transfer makes.
-getrandom = { workspace = true }
 tulipix-common = { path = "../tulipix-common" }
 tulipix-core = { path = "../tulipix-core" }
 tulipix-photos = { path = "../tulipix-photos" }
