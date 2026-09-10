@@ -1003,6 +1003,17 @@ pub enum MusicCmd {
     SetEqPreset { name: String },
     SetEqBand { index: i64, gain_db: f64 },
     ToggleEq,
+    /// Load an AutoEq `ParametricEQ.txt` and flatten it onto the ten bands.
+    ///
+    /// The catalogue AutoEq's device auto-detection wants is thousands of files
+    /// and is not bundled, so the file is chosen rather than found. A ten-band
+    /// graphic EQ cannot hold a twelve-filter correction exactly; this keeps
+    /// the broad tilt, which is most of what a headphone correction is.
+    ApplyAutoEq { path: String },
+    /// Bring play counts and star ratings over from an iTunes / Apple Music
+    /// `Library.xml`. Matched by absolute path, so nothing this library already
+    /// knows — analysis especially — is overwritten by the import.
+    ImportItunes { path: String },
     /// One command for the six audio settings rather than six: they all land
     /// in the same `advanced` map and all mean "respawn mpv with new flags".
     SetAudio { key: String, value: String },
@@ -4472,6 +4483,68 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             save_eq(&eq);
             apply_eq_live(&eq);
         }
+        MusicCmd::ApplyAutoEq { path } => {
+            use tulipix_music::eq::BANDS_HZ;
+            use tulipix_music::headphone_eq as aeq;
+
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("could not read {path}: {e}"))?;
+            let parsed = aeq::parse_autoeq(&text);
+            if parsed.filters.is_empty() {
+                anyhow::bail!(
+                    "no filters in that file — AutoEq's ParametricEQ.txt is the \
+                     one to pick, not the graphic-EQ or convolution export"
+                );
+            }
+            let bands = aeq::to_bands(&parsed, &BANDS_HZ);
+
+            let mut eq = load_eq();
+            for (slot, gain) in eq.gains_db.iter_mut().zip(bands.iter()) {
+                *slot = *gain;
+            }
+            eq.enabled = true;
+            // `clamp` is doing real work here rather than guarding a typo: a
+            // correction with an 8 dB boost and a -7 dB preamp lands inside
+            // ±12, but an aggressive one will not, and a band pinned at the
+            // limit is the honest version of "this is as far as ten bands go".
+            eq.clamp();
+            save_eq(&eq);
+            set_setting("music.eq.preset", "custom");
+            apply_eq_live(&eq);
+
+            let name = Path::new(&path)
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("that curve")
+                .to_string();
+            let n = parsed.filters.len();
+            lock().status = format!(
+                "Applied {name} — {n} filters onto 10 bands, preamp {:+.1} dB",
+                parsed.preamp_db
+            );
+        }
+        MusicCmd::ImportItunes { path } => {
+            let pool = music_pool().await?;
+            let xml = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("could not read {path}: {e}"))?;
+            let tracks = tulipix_music::import::parse_itunes(&xml);
+            if tracks.is_empty() {
+                anyhow::bail!(
+                    "no tracks in that file — iTunes calls it Library.xml, and \
+                     File → Library → Export Library is what writes it"
+                );
+            }
+            let found = tracks.len();
+            let merged = tulipix_music::import::merge(pool, &tracks).await?;
+            // Say both numbers. A library that moved between machines matches
+            // on very little, and "42 of 3,100" is the sentence that explains
+            // why rather than looking like a failure.
+            lock().status = format!(
+                "Imported play counts and ratings for {merged} of {found} tracks \
+                 — the rest are not in this library under the same path"
+            );
+        }
         MusicCmd::SetAudio { key, value } => {
             if !key.starts_with("music.") {
                 anyhow::bail!("not an audio setting: {key}");
@@ -6148,6 +6221,57 @@ async fn create_smart_playlist(pool: &sqlx::SqlitePool, kind: &str) -> Result<()
 
 /// LRCLIB lookup for one track, stored through the domain crate so both builds
 /// read the same `lyrics` rows.
+/// One line of a lyric being hand-timed. `at_ms` is -1 until the line has been
+/// stamped — `Option<i64>` crosses the bridge as a nullable box on the Dart
+/// side, and a sentinel reads better in a list this long.
+#[derive(Debug, Clone)]
+pub struct StampedLine {
+    pub at_ms: i64,
+    pub text: String,
+}
+
+/// Write hand-stamped lyrics to the library as LRC.
+///
+/// The tap-along editor's other half. Dart owns the tapping — it has the
+/// playhead — and `tulipix_music::lyrics_sync` owns the two things worth
+/// getting right: the constant-offset shift, and the `[mm:ss.xx]` that has to
+/// be exactly what every other reader expects.
+///
+/// `shift_ms` nudges every stamped line before writing. It is the same
+/// correction `LyricsOffset` makes at playback time, except this one is
+/// written into the words rather than remembered beside them, so it holds in
+/// any other player too.
+///
+/// Returns how many lines carry a timestamp. Zero of them is still worth
+/// storing — plain words are better than none — but it stores as unsynced.
+pub async fn music_save_lrc(
+    item_id: i64,
+    lines: Vec<StampedLine>,
+    shift_ms: i64,
+) -> Result<i64> {
+    use tulipix_music::lyrics_sync as sync;
+
+    let mut timed: Vec<sync::TimedLine> = lines
+        .into_iter()
+        .map(|l| sync::TimedLine {
+            ms: (l.at_ms >= 0).then_some(l.at_ms),
+            text: l.text,
+        })
+        .collect();
+    if timed.iter().all(|l| l.text.trim().is_empty()) {
+        anyhow::bail!("nothing to save");
+    }
+    if shift_ms != 0 {
+        sync::shift_all(&mut timed, shift_ms);
+    }
+    let stamped = timed.iter().filter(|l| l.ms.is_some()).count() as i64;
+    let lrc = sync::to_lrc(&timed);
+
+    let pool = music_pool().await?;
+    tulipix_music::lyrics::store(pool, item_id, &lrc, stamped > 0, "manual").await?;
+    Ok(stamped)
+}
+
 async fn fetch_lyrics(item_id: i64) -> Result<()> {
     let pool = music_pool().await?;
     let row: Option<(String, String, String, f64)> = sqlx::query_as(

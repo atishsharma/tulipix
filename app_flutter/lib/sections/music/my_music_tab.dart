@@ -11,6 +11,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'detail_page.dart';
@@ -227,15 +228,24 @@ class _SubTabs extends StatelessWidget {
     ];
   }
 
-  /// Folders: one job and a pager.
+  /// Folders: two jobs and a pager.
   ///
   /// Add folder was the same control as the header's `+ Add`, and Read tags is
   /// what the rescan does on its way past — two buttons that each duplicated
-  /// something, on the one tab with no room for them.
+  /// something, on the one tab with no room for them. Import is here because
+  /// this is the tab about where the library comes from, and it is the one
+  /// thing on it that does not come from a folder.
   List<Widget> _folderControls(BuildContext context, MusicController c) {
     final st = c.state;
     return [
       _RescanBtn(controller: c, label: 'Rescan all'),
+      const SizedBox(width: 8),
+      DetailActionBtn(
+        icon: Icons.move_to_inbox_outlined,
+        label: 'Import from iTunes',
+        tint: const Color(0xFF8B5CF6),
+        onTap: () => _importItunes(context, c),
+      ),
       if ((st?.browsePages ?? 1) > 1) ...[
         const SizedBox(width: 12),
         Pager(
@@ -1261,6 +1271,31 @@ class _Songs extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Bring play counts and star ratings across from iTunes / Apple Music.
+///
+/// Matched by absolute path, so a library that moved between machines matches
+/// on very little — which is why the result says how many of how many rather
+/// than just "done". Nothing already known here is overwritten: the analysis
+/// this app did is not something an export from 2014 should be allowed to
+/// clear.
+Future<void> _importItunes(BuildContext context, MusicController c) async {
+  final ok = await confirm(
+    context,
+    title: 'Import from iTunes?',
+    body: 'Pick the Library.xml that iTunes or Apple Music writes from '
+        'File \u2192 Library \u2192 Export Library. Play counts and star '
+        'ratings are copied onto tracks already in this library, matched by '
+        'file path. Nothing is added, moved or overwritten beyond those two '
+        'fields.',
+    action: 'Choose a file',
+    danger: false,
+  );
+  if (!ok || !context.mounted) return;
+  final path = await pickFile(label: 'iTunes library', extensions: const ['xml']);
+  if (path == null) return;
+  await c.send(MusicCmd.importItunes(path: path));
 }
 
 Widget _emptySongs(MusicController controller, MusicState st) => MusicEmpty(

@@ -178,6 +178,52 @@ impl Deezer {
     }
 }
 
+/// Search Deezer's catalogue by name.
+///
+/// The third searchable provider, and the cheapest one to add: `api.deezer.com`
+/// needs no key, no token dance and no scraping, and every hit comes back in
+/// the same `DzTrack` shape a pasted album URL already returns — so a search
+/// result and a resolved link produce identical rows, which is what lets the
+/// queue treat them the same.
+///
+/// The other six providers stay URL-only for reasons that are theirs rather
+/// than ours: Apple, Amazon, Tidal and Qobuz want a token or a signed request
+/// for search, and SoundCloud and Bandcamp want their pages scraped. Each is
+/// its own piece of work with its own way of breaking.
+pub async fn search(client: &reqwest::Client, query: &str, limit: usize) -> Result<Playlist> {
+    let q = query.trim();
+    if q.is_empty() {
+        bail!("Type something to search.");
+    }
+    // Built through `Url` rather than `format!`: a query with an ampersand or
+    // a hash in it is a normal thing to search for, and this tree already
+    // depends on the crate that escapes them properly.
+    let url = Url::parse_with_params(
+        "https://api.deezer.com/search",
+        &[("q", q), ("limit", &limit.clamp(1, 100).to_string())],
+    )?
+    .to_string();
+    let page: DzTrackPage = Deezer::json(client, &url).await?;
+    let tracks: Vec<Track> = page
+        .data
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|t| Deezer::normalize(t, None))
+        .collect();
+    if tracks.is_empty() {
+        bail!("Deezer found nothing for “{q}”.");
+    }
+    Ok(Playlist {
+        id: format!("search:{q}"),
+        title: format!("Search: {q}"),
+        owner: None,
+        artwork_url: tracks.iter().find_map(|t| t.artwork_url.clone()),
+        provider: ProviderId::Deezer,
+        source_url: url,
+        tracks,
+    })
+}
+
 #[async_trait::async_trait]
 impl Provider for Deezer {
     fn id(&self) -> ProviderId {

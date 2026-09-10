@@ -21,6 +21,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
@@ -754,6 +755,29 @@ class _EqPanelState extends State<_EqPanel> {
   void _send(int index, double gain) =>
       widget.controller.send(MusicCmd.setEqBand(index: index, gainDb: gain));
 
+  /// A curve from AutoEq, onto the bands we have.
+  ///
+  /// Said plainly rather than sold: ten bands cannot hold a dozen filters with
+  /// a Q of four on them. What survives is the broad tilt, which is most of
+  /// what a headphone correction is, and the preamp that keeps the boosted
+  /// bands from clipping.
+  Future<void> _loadAutoEq(BuildContext context) async {
+    final ok = await confirm(
+      context,
+      title: 'Load an AutoEq curve?',
+      body: 'Pick the ParametricEQ.txt for your headphones from AutoEq. Its '
+          'filters are sampled onto these ten bands, which keeps the overall '
+          'shape and loses the narrow corrections — a graphic equalizer cannot '
+          'hold those. Your current bands are replaced.',
+      action: 'Choose a file',
+      danger: false,
+    );
+    if (!ok || !context.mounted) return;
+    final path = await pickFile(label: 'AutoEq preset', extensions: const ['txt']);
+    if (path == null) return;
+    await widget.controller.send(MusicCmd.applyAutoEq(path: path));
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
@@ -793,6 +817,17 @@ class _EqPanelState extends State<_EqPanel> {
                     onTap: () => controller.send(MusicCmd.setEqPreset(name: p)),
                   ),
                 ),
+              const Spacer(),
+              // Headphone correction, without a catalogue. AutoEq publishes a
+              // ParametricEQ.txt per model; this reads one and flattens its
+              // filters onto the ten bands. Auto-detecting the connected
+              // headphones would need those thousands of files shipped with the
+              // app, which is a decision about the installer.
+              TextButton.icon(
+                icon: const Icon(Icons.headphones_outlined, size: 16),
+                label: const Text('Load AutoEq…'),
+                onPressed: () => _loadAutoEq(context),
+              ),
             ],
           ),
           Expanded(

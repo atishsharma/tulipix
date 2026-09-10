@@ -16,6 +16,7 @@ import 'package:flutter/services.dart';
 
 import '../../design/pick.dart';
 import '../../design/tokens.dart';
+import '../../shell/shell_controller.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
 import 'music_dialogs.dart';
@@ -106,6 +107,10 @@ Future<void> showSongMenu(
               'like this'),
       _row('video', Icons.movie_outlined, 'Play music video'),
       _row('link', Icons.link, 'Link music video…'),
+      // Stem separation already ships — it is a Tools operation over demucs.
+      // What it did not have was a way in from a song, which is the only place
+      // anyone thinks of it. Tools opens with the file already filled.
+      _row('stems', Icons.graphic_eq, 'Separate stems (karaoke)…'),
       if (host.onRemove != null) ...[
         const PopupMenuDivider(),
         _row('remove', Icons.playlist_remove, host.removeLabel),
@@ -144,6 +149,13 @@ Future<void> showSongMenu(
       await editTags(context, c, tr);
     case 'sonic':
       await c.send(MusicCmd.songSonic(itemId: tr.itemId));
+    case 'stems':
+      // Not run from here: demucs takes minutes on the processor and belongs
+      // in the queue that already knows how to wait for it. This is the door,
+      // not the deed — the form opens with the track in it and the person
+      // presses Run.
+      ShellController.instance
+          .goTab(Section.tools, 'stems\u0000${tr.path}');
     case 'video':
       await c.send(MusicCmd.songPlayVideo(itemId: tr.itemId));
     case 'link':

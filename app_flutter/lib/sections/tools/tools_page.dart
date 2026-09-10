@@ -10,6 +10,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../design/first_load.dart';
+import '../../shell/shell_controller.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/tools.dart';
 import 'tools_controller.dart';
@@ -45,6 +46,23 @@ class _ToolsPageState extends State<ToolsPage> {
   void initState() {
     super.initState();
     if (widget.visible) _c.refresh();
+    // A deep link into one tool, with its input already filled: "Separate
+    // stems" on a song in Music sends `stems` and the track's path here rather
+    // than making someone find the operation and then find the file again.
+    //
+    // The argument is `kind` or `kind\u0000path` — one nul, because a path may
+    // contain anything else.
+    ShellController.instance.onOpen(Section.tools, (arg) async {
+      final cut = arg.indexOf('\u0000');
+      final kind = cut < 0 ? arg : arg.substring(0, cut);
+      final input = cut < 0 ? '' : arg.substring(cut + 1);
+      if (kind.isEmpty) return;
+      if (_c.state == null) await _c.refresh();
+      await _c.send(ToolsCmd.openTool(kind: kind));
+      if (input.isNotEmpty) {
+        await _c.send(ToolsCmd.setField(key: 'input', value: input));
+      }
+    });
   }
 
   @override

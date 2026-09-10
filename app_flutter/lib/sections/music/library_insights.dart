@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
+import '../../src/rust/api/scrobble.dart';
 import 'music_controller.dart';
 import 'music_dialogs.dart';
 
@@ -110,6 +111,8 @@ Future<void> listeningSummary(BuildContext context, MusicController c) async {
           ),
         ),
         actions: [
+          // Where the listening went, and where it is being sent.
+          const ScrobbleRow(),
           TextButton(
             onPressed: () {
               Navigator.of(ctx).pop();
@@ -345,19 +348,11 @@ Future<void> duplicateFinder(BuildContext context, MusicController c) async {
             }
             final groups = snap.data ?? const <DupeGroup>[];
             if (groups.isEmpty) {
-              return Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text(
-                    'No duplicates found.\n\n'
-                    'Recordings are matched on length and on what they '
-                    'actually sound like, not on their tags — so this needs '
-                    'the library analysis in Settings to have run.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 13, color: ctx.tokens.nInk3),
-                  ),
-                ),
-              );
+              // "This needs analysis to have run" is only useful with the
+              // number attached. An empty result means one of two very
+              // different things — a clean library, or one this has never
+              // looked at — and the count is what tells them apart.
+              return const _NoDuplicates();
             }
             return ListView.separated(
               padding: EdgeInsets.zero,
@@ -490,5 +485,135 @@ class _DupeCard extends StatelessWidget {
     );
     if (!ok) return;
     controller.send(MusicCmd.deleteTrack(itemId: copy.track.itemId));
+  }
+}
+
+
+/// The duplicates empty state, with the reason it might be empty.
+class _NoDuplicates extends StatelessWidget {
+  const _NoDuplicates();
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: FutureBuilder<int>(
+          future: musicAnalysePending().then((v) => v.toInt()),
+          builder: (context, snap) {
+            final pending = snap.data;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'No duplicates found.',
+                  style: TextStyle(
+                    fontFamily: Tokens.fontFamily,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: t.nInk,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  pending == null
+                      ? 'Recordings are matched on what they actually sound '
+                          'like, not on their tags.'
+                      : pending == 0
+                          ? 'Every track has been analysed, so this is the '
+                              'whole answer: recordings are matched on what '
+                              'they actually sound like, not on their tags.'
+                          : '$pending tracks have never been analysed, and '
+                              'this compares what tracks sound like rather '
+                              'than what they are called — so it has only '
+                              'looked at part of the library. Settings → '
+                              'Library Analysis is the pass that fills the '
+                              'rest in.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 13, color: t.nInk3, height: 1.5),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+/// Listens queued for ListenBrainz, and a way to push them.
+///
+/// Scrobbling has worked since it was written — a finished play is queued on
+/// the track-change path and posted straight away — and nothing in the section
+/// has ever said so. Offline, the queue is the point: it fills up and drains
+/// when the network comes back, and until now there was no way to know either
+/// had happened.
+class ScrobbleRow extends StatefulWidget {
+  const ScrobbleRow({super.key});
+
+  @override
+  State<ScrobbleRow> createState() => _ScrobbleRowState();
+}
+
+class _ScrobbleRowState extends State<ScrobbleRow> {
+  int? _pending;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _count();
+  }
+
+  Future<void> _count() async {
+    try {
+      final n = await scrobblePendingCount();
+      if (mounted) setState(() => _pending = n.toInt());
+    } catch (_) {
+      // The service is off, or unconfigured. Nothing to report and nothing
+      // worth an error: this is a footnote on a dialog about something else.
+      if (mounted) setState(() => _pending = null);
+    }
+  }
+
+  Future<void> _flush() async {
+    setState(() => _busy = true);
+    try {
+      await scrobbleFlush();
+    } catch (_) {
+      // Same reasoning. A scrobble is a nicety; a listener should not be shown
+      // an error because a website was down.
+    }
+    if (mounted) setState(() => _busy = false);
+    await _count();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final n = _pending;
+    // Nothing queued and nothing configured look the same from here, and both
+    // are the state where this has nothing to say.
+    if (n == null || n == 0) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.cloud_upload_outlined, size: 15, color: t.nInk3),
+          const SizedBox(width: 6),
+          Text(
+            '$n ${n == 1 ? "listen" : "listens"} waiting',
+            style: TextStyle(fontSize: 12, color: t.nInk3),
+          ),
+          const SizedBox(width: 6),
+          TextButton(
+            onPressed: _busy ? null : _flush,
+            child: Text(_busy ? 'Sending…' : 'Send now'),
+          ),
+        ],
+      ),
+    );
   }
 }

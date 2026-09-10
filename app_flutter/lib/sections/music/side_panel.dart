@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'meta_manager.dart';
+import 'lyrics_timer.dart';
 import 'music_controller.dart';
 import 'music_dialogs.dart';
 import 'music_widgets.dart';
@@ -404,13 +405,32 @@ class _Lyrics extends StatelessWidget {
                   ),
                 ),
               // Unsynced words are a page, not a teleprompter: there is no line
-              // to centre on, so it scrolls.
-              (true, false) => SingleChildScrollView(
-                  child: Text(
-                    plain,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 15, color: t.nInk2),
-                  ),
+              // to centre on, so it scrolls. It is also the one state where
+              // timing them by hand is worth offering — there are words, and
+              // nothing has put times on them.
+              (true, false) => Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: MusicChip(
+                        icon: Icons.timer_outlined,
+                        label: 'Time these words',
+                        active: false,
+                        tint: const Color(0xFFEC4899),
+                        tint2: const Color(0xFF8B5CF6),
+                        onTap: () => timeLyrics(context, controller),
+                      ),
+                    ),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        child: Text(
+                          plain,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 15, color: t.nInk2),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               _ => Column(
                   mainAxisAlignment: MainAxisAlignment.center,

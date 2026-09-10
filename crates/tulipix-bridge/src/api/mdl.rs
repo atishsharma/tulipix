@@ -454,6 +454,18 @@ pub fn mdl_formats() -> Vec<String> {
         .collect()
 }
 
+/// The providers that can be searched by name, as opposed to the nine a URL
+/// can name. Exported for the same reason the format list is: the picker had
+/// this hard-coded, and a hard-coded list is one that goes stale the first time
+/// a provider grows a search.
+#[frb(sync)]
+pub fn mdl_search_providers() -> Vec<String> {
+    ["YT Music", "Spotify", "Deezer"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 #[frb(sync)]
 pub fn mdl_name_methods() -> Vec<String> {
     [
@@ -546,23 +558,34 @@ fn start_search() {
     with(|s| s.ui.yt_warn = false);
 
     let task = tokio::spawn(async move {
-        let result = if provider == "Spotify" {
-            cli(format!("▸ searching Spotify: {query}"));
-            let client = tulipix_core::net::http().clone();
-            match tulipix_mdl::search_spotify(&client, &query, SEARCH_HITS).await {
-                Ok(pl) => Ok(pl),
-                Err(e) => {
-                    // The anonymous web-player token is not always given out.
-                    // Falling back beats telling someone their search failed.
-                    cli(format!(
-                        "  Spotify search failed ({e}) — falling back to YouTube Music"
-                    ));
-                    tulipix_mdl::search_ytmusic(&query, SEARCH_HITS).await
+        let client = tulipix_core::net::http().clone();
+        let result = match provider.as_str() {
+            "Spotify" => {
+                cli(format!("▸ searching Spotify: {query}"));
+                match tulipix_mdl::search_spotify(&client, &query, SEARCH_HITS).await {
+                    Ok(pl) => Ok(pl),
+                    Err(e) => {
+                        // The anonymous web-player token is not always given
+                        // out. Falling back beats telling someone their search
+                        // failed.
+                        cli(format!(
+                            "  Spotify search failed ({e}) — falling back to YouTube Music"
+                        ));
+                        tulipix_mdl::search_ytmusic(&query, SEARCH_HITS).await
+                    }
                 }
             }
-        } else {
-            cli(format!("▸ searching YouTube Music: {query}"));
-            tulipix_mdl::search_ytmusic(&query, SEARCH_HITS).await
+            // Keyless and unauthenticated, so there is nothing to fall back
+            // from: a Deezer failure is a Deezer failure, and saying so is
+            // more use than quietly answering with somebody else's catalogue.
+            "Deezer" => {
+                cli(format!("▸ searching Deezer: {query}"));
+                tulipix_mdl::search_deezer(&client, &query, SEARCH_HITS).await
+            }
+            _ => {
+                cli(format!("▸ searching YouTube Music: {query}"));
+                tulipix_mdl::search_ytmusic(&query, SEARCH_HITS).await
+            }
         };
         match result {
             Ok(pl) => {

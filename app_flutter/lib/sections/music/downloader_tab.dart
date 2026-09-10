@@ -548,9 +548,12 @@ class _SourceState extends State<_Source> {
               ),
               const SizedBox(width: 10),
               if (searching)
+                // From the bridge, not from here. The list used to be typed
+                // out on both sides, which is how it stayed at two after a
+                // third provider learned to search.
                 _Segmented(
-                  options: const ['YT Music', 'Spotify'],
-                  labels: const ['YT Music', 'Spotify'],
+                  options: mdlSearchProviders(),
+                  labels: mdlSearchProviders(),
                   active: st.searchProvider,
                   onPick: (v) => c.send(MdlCmd.setSearchProvider(name: v)),
                 ),
@@ -575,7 +578,8 @@ class _SourceState extends State<_Source> {
           Text(
             searching
                 ? 'Searches ${st.searchProvider}. Results land in the same '
-                    'queue a link does, so tagging and naming are identical.'
+                    'queue a link does, so tagging and naming are identical. '
+                    'The other providers are reachable by pasting a link.'
                 : 'Understands ${mdlProviders().join(" · ")}. Short links '
                     'resolve first.',
             style: TextStyle(fontSize: 11.5, color: t.textDim),
