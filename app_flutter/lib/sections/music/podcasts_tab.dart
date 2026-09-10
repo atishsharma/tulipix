@@ -211,7 +211,15 @@ class _HeaderState extends State<_Header> {
     );
     // Refreshing forty feeds, or storing a six-hundred-episode back catalogue,
     // takes long enough that a button which only greys out reads as broken.
-    if (!st.podBusy) return row;
+    //
+    // A save in flight counts as busy too: the row it belongs to names the
+    // episode, but that row is on one tab and one page, and the download runs
+    // wherever you go. `pod_dl_title` is what makes this strip say *what* is
+    // downloading rather than only how far in it is.
+    final saving = st.podDlId >= 0 && st.podDlTitle.isNotEmpty;
+    if (!st.podBusy && !saving) return row;
+    final frac = st.podBusy ? st.podFrac : st.podDlFrac;
+    final label = st.podBusy ? st.podStatus : 'Saving · ${st.podDlTitle}';
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -224,7 +232,7 @@ class _HeaderState extends State<_Header> {
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(2),
                   child: LinearProgressIndicator(
-                    value: st.podFrac <= 0 ? null : st.podFrac.clamp(0.0, 1.0),
+                    value: frac <= 0 ? null : frac.clamp(0.0, 1.0),
                     minHeight: 3,
                     backgroundColor: t.nHair,
                     valueColor: const AlwaysStoppedAnimation(Color(0xFFF97316)),
@@ -232,8 +240,14 @@ class _HeaderState extends State<_Header> {
                 ),
               ),
               const SizedBox(width: 10),
-              Text(st.podStatus,
-                  style: TextStyle(fontSize: 11, color: t.nInk2)),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: t.nInk2),
+                ),
+              ),
             ],
           ),
         ),
@@ -405,6 +419,7 @@ Future<void> addFeed(BuildContext context, MusicController c) async {
       ],
     ),
   );
+  text.dispose();
   final trimmed = url?.trim() ?? '';
   if (trimmed.isNotEmpty) await c.send(MusicCmd.podSubscribe(url: trimmed));
 }
@@ -878,6 +893,7 @@ Future<void> _editCategory(
       ],
     ),
   );
+  text.dispose();
   if (next != null) {
     await c.send(MusicCmd.podInfoSetCategory(name: next.trim()));
   }

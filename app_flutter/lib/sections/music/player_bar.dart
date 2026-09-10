@@ -17,6 +17,8 @@
 // drawing nobody watches while they are browsing. The zen player is where the
 // bars belong — it is the page you open to look at them.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
@@ -691,19 +693,70 @@ class _Panel extends StatelessWidget {
   }
 }
 
-class _EqPanel extends StatelessWidget {
+class _EqPanel extends StatefulWidget {
   const _EqPanel({required this.controller});
 
   final MusicController controller;
 
+  @override
+  State<_EqPanel> createState() => _EqPanelState();
+}
+
+class _EqPanelState extends State<_EqPanel> {
   /// The ISO centre frequencies `tulipix_music::eq::BANDS_HZ` declares. Labels
   /// only — the gains themselves come from the snapshot.
   static const List<String> _labels = [
     '31', '62', '125', '250', '500', '1k', '2k', '4k', '8k', '16k', //
   ];
 
+  /// A band being dragged right now, and the gain the pointer is at.
+  ///
+  /// `Slider.onChanged` fires on every pointer move, and `SetEqBand` is not a
+  /// cheap command: it reloads the stored curve, writes settings.json, writes
+  /// it a second time to record that the preset is now "custom", and pushes a
+  /// new filter chain at mpv. Sending one per frame was several hundred file
+  /// rewrites per drag. The slider now follows the finger from here and the
+  /// bridge hears from us on a timer.
+  int? _band;
+  double _gain = 0;
+  Timer? _throttle;
+
+  /// Often enough that the ear hears the sweep, rarely enough that the disk
+  /// does not.
+  static const Duration _rate = Duration(milliseconds: 110);
+
+  @override
+  void dispose() {
+    _throttle?.cancel();
+    super.dispose();
+  }
+
+  void _drag(int index, double gain) {
+    setState(() {
+      _band = index;
+      _gain = gain;
+    });
+    if (_throttle?.isActive ?? false) return;
+    _send(index, gain);
+    _throttle = Timer(_rate, () {
+      // Whatever the finger reached while we were quiet.
+      if (_band == index) _send(index, _gain);
+    });
+  }
+
+  /// The pointer is up: the value is final, so nothing may be dropped.
+  void _commit(int index, double gain) {
+    _throttle?.cancel();
+    _send(index, gain);
+    setState(() => _band = null);
+  }
+
+  void _send(int index, double gain) =>
+      widget.controller.send(MusicCmd.setEqBand(index: index, gainDb: gain));
+
   @override
   Widget build(BuildContext context) {
+    final controller = widget.controller;
     final t = context.tokens;
     final st = controller.state;
     final bands = st?.eqBands ?? List<double>.filled(10, 0);
@@ -756,12 +809,18 @@ class _EqPanel extends StatelessWidget {
                               // ±12 dB is `eq::MAX_GAIN_DB`; the bridge
                               // clamps to it as well, so a drag past the end
                               // cannot store an out-of-range gain.
-                              value: bands[i].clamp(-12, 12),
+                              //
+                              // The band under the finger reads from the drag,
+                              // not the snapshot — the snapshot arrives on the
+                              // throttle and would otherwise pull the handle
+                              // backwards mid-sweep.
+                              value: (_band == i ? _gain : bands[i])
+                                  .clamp(-12, 12),
                               min: -12,
                               max: 12,
                               activeColor: Tokens.secMusic,
-                              onChanged: (v) => controller.send(
-                                  MusicCmd.setEqBand(index: i, gainDb: v)),
+                              onChanged: (v) => _drag(i, v),
+                              onChangeEnd: (v) => _commit(i, v),
                             ),
                           ),
                         ),

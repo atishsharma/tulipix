@@ -522,6 +522,7 @@ Future<void> _renameBookmark(
       ],
     ),
   );
+  text.dispose();
   if (label != null) {
     await c.send(MusicCmd.bookmarkRename(index: index, label: label.trim()));
   }
@@ -552,5 +553,6 @@ Future<void> _addBookmark(BuildContext context, MusicController c) async {
       ],
     ),
   );
+  text.dispose();
   if (label != null) await c.send(MusicCmd.bookmarkAdd(label: label.trim()));
 }

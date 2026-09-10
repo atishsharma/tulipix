@@ -294,10 +294,24 @@ class MusicController extends ChangeNotifier {
   String zenPanel = '';
 
   /// Visualizer style (0..5, matching the style list) and whether it is drawn
-  /// at all. Session-scoped: the Slint build persists these, the port does not
-  /// yet.
-  int visStyle = 0;
-  bool visOn = true;
+  /// at all.
+  ///
+  /// Stored in settings under `music.viz.*` and read back off the snapshot, so
+  /// a style chosen once is still there next launch — the Slint build has
+  /// always persisted these. The local fields are the optimistic half: a menu
+  /// pick redraws on the next frame rather than waiting for the round trip,
+  /// and null means "whatever the snapshot says".
+  int? _visStyle;
+  bool? _visOn;
+
+  int get visStyle => _visStyle ?? state?.vizStyle.toInt() ?? _kSpectrum;
+  bool get visOn => _visOn ?? state?.vizOn ?? true;
+
+  /// The default: the shape with the most in it, which is what zen used to
+  /// force on the way in. It is a default now rather than an override, so
+  /// picking something else actually sticks. `music.viz.style` in the bridge
+  /// defaults to the same index.
+  static final int _kSpectrum = visStyleNames.length - 1;
 
   /// Dominant colour of the current artwork. Everything tinted by the track —
   /// the bar's wash, the seek fill, the mini's ring — reads this.
@@ -521,11 +535,11 @@ class MusicController extends ChangeNotifier {
     miniOpen = false;
     widgetOpen = false;
     zenThemed = false;
-    // Spectrum on the way in. Zen gives the bars the middle of a fullscreen
-    // window, and the shape that earns that much room is the one with the most
-    // in it — Bars is what the 290px strip in the player used to draw.
-    visStyle = visStyleNames.length - 1;
-    visOn = true;
+    // Spectrum used to be forced on the way in, on the grounds that zen gives
+    // the bars the middle of a fullscreen window and that is the shape with
+    // the most in it. It is the stored default instead now — forcing it meant
+    // a style picked inside zen was thrown away the next time zen opened,
+    // which is most of what "the port does not persist these" amounted to.
     // Real fullscreen, not a page that happens to fill the window. Slint's
     // `music_enter_zen` calls `set_fullscreen(true)` on the toplevel; the
     // title bar going away is most of what makes zen feel like stopping.
@@ -709,14 +723,17 @@ class MusicController extends ChangeNotifier {
   }
 
   void setVisStyle(int style) {
-    visStyle = style;
-    visOn = true;
+    _visStyle = style;
+    _visOn = true;
     notifyListeners();
+    send(MusicCmd.setAudio(key: 'music.viz.style', value: '$style'));
+    send(const MusicCmd.setAudio(key: 'music.viz.on', value: '1'));
   }
 
   void setVisOn(bool on) {
-    visOn = on;
+    _visOn = on;
     notifyListeners();
+    send(MusicCmd.setAudio(key: 'music.viz.on', value: on ? '1' : '0'));
   }
 
   /// Index of the lyric line that should be lit, or -1. Derived from the live

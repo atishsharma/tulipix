@@ -671,6 +671,22 @@ class _Output extends StatelessWidget {
                 options: mdlFormats(),
                 onPick: (v) => controller.send(MdlCmd.setFormat(name: v)),
               ),
+              // Say what a lossless container does and does not buy here. The
+              // audio is always yt-dlp's bestaudio — Opus or AAC — so FLAC
+              // wraps a lossy master in a lossless box: five to ten times the
+              // bytes, not one bit more music. Worth having for a library that
+              // must be one format throughout, worth knowing about either way.
+              if (!lossy)
+                SizedBox(
+                  width: 260,
+                  child: Text(
+                    '${st.format.toUpperCase()} is lossless, but the source is '
+                    'not — YouTube audio is Opus or AAC, so this re-wraps it '
+                    'rather than recovering anything.',
+                    style: TextStyle(
+                        fontSize: 11, color: context.tokens.nInk2, height: 1.35),
+                  ),
+                ),
               if (lossy)
                 _Pick(
                   label: 'Bitrate',

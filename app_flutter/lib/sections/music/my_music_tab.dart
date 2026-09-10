@@ -1186,13 +1186,18 @@ class _StatsStrip extends StatelessWidget {
   }
 }
 
-/// Songs — the edge-to-edge card grid, eight across and four deep.
+/// Songs — the edge-to-edge card grid.
 ///
-/// Pinned to eight columns rather than driven off a target cell width: the page
-/// is `SONGS_PAGE` = 32, and a grid whose column count moves with the window
-/// would put a ragged last row under a page that is exactly four full ones.
-/// Slint drives the cell off a live 100–300px density slider instead; that
-/// control is not ported, and with it the column count would have to move too.
+/// The column count follows the window, but only among the divisors of
+/// `SONGS_PAGE` = 32: four, eight or sixteen. That is the whole reason it used
+/// to be pinned at eight — a count that does not divide the page leaves a
+/// ragged last row, which reads as the library running out rather than the page
+/// ending. Snapping to a divisor keeps every page whole and still lets a narrow
+/// window have big tiles and a wide one have many.
+///
+/// Slint drives the cell off a live 100–300px density slider instead. That
+/// control is still not ported; this is the half of it the window can decide
+/// on its own.
 ///
 /// Nothing above the grid. Play all, Shuffle, the sort chips, the manager and
 /// the pager all live in row 2 — see [_SubTabs] — because a third bar of
@@ -1216,8 +1221,13 @@ class _Songs extends StatelessWidget {
         ],
         MusicGrid(
           count: songs.length,
-          minCols: 8,
-          maxCols: 8,
+          // Eight was pinned so a page of SONGS_PAGE = 32 filled four whole
+          // rows. It still does — 4, 8 and 16 all divide 32 — but the window
+          // now gets a say, so a narrow one is not eight unreadable columns
+          // and an ultrawide is not four wasted ones.
+          minCols: 4,
+          maxCols: 16,
+          colChoices: const [4, 8, 16],
           builder: (context, i) => SongContextMenu(
             controller: controller,
             track: songs[i],

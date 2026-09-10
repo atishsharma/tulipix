@@ -537,6 +537,11 @@ pub struct MusicState {
     pub crossfade: f64,
     pub replaygain: String,
     pub preamp_db: f64,
+    /// Visualizer style (0..5) and whether it is drawn. Kept here rather than
+    /// in the Dart controller because the Slint build persists both, and a
+    /// choice that resets on every launch is not a choice.
+    pub viz_style: i64,
+    pub viz_on: bool,
 
     // --- My Music ---
     /// home | songs | albums | artists | genres | playlists | folders |
@@ -1585,6 +1590,11 @@ pub struct SongProps {
     pub title: String,
     pub artist: String,
     pub album: String,
+    /// What the album is filed under, which is not always the track's artist.
+    /// Not on `Track` — it is one string per album and would ride on every row
+    /// of every list for the sake of one dialog — so the tag editor reads it
+    /// from here when it opens.
+    pub album_artist: String,
     pub genre: String,
     pub release: String,
     pub credits: String,
@@ -1635,9 +1645,9 @@ pub async fn music_song_props(item_id: i64) -> Result<SongProps> {
     ] {
         let _ = sqlx::query(sql).execute(pool).await;
     }
-    let extra: Option<(String, String, Option<f64>, String, Option<f64>)> = sqlx::query_as(
+    let extra: Option<(String, String, Option<f64>, String, Option<f64>, String)> = sqlx::query_as(
         "SELECT COALESCE(release_date, ''), COALESCE(credits, ''), bpm, \
-                COALESCE(music_key, ''), dr_score \
+                COALESCE(music_key, ''), dr_score, COALESCE(album_artist, '') \
          FROM track_meta WHERE item_id = ?",
     )
     .bind(item_id)
@@ -1645,7 +1655,7 @@ pub async fn music_song_props(item_id: i64) -> Result<SongProps> {
     .await
     .ok()
     .flatten();
-    let (release, credits, bpm, key, dr) = extra.unwrap_or_default();
+    let (release, credits, bpm, key, dr, album_artist) = extra.unwrap_or_default();
 
     let mut parts: Vec<String> = Vec::new();
     if let Some(b) = bpm {
@@ -1680,6 +1690,7 @@ pub async fn music_song_props(item_id: i64) -> Result<SongProps> {
         title,
         artist,
         album,
+        album_artist,
         genre,
         release,
         credits,
@@ -4225,16 +4236,29 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             mpv::set_property("loop-file", if next == "one" { "\"inf\"" } else { "\"no\"" });
         }
         MusicCmd::SetSleep { minutes } => {
-            let mut s = lock();
-            s.sleep_min = minutes.max(0);
-            s.sleep_deadline = if minutes > 0 {
-                Some(
-                    std::time::Instant::now()
-                        + std::time::Duration::from_secs(minutes as u64 * 60),
-                )
-            } else {
-                None
+            let had_deadline = {
+                let mut s = lock();
+                let had = s.sleep_deadline.is_some();
+                s.sleep_min = minutes.max(0);
+                s.sleep_deadline = if minutes > 0 {
+                    Some(
+                        std::time::Instant::now()
+                            + std::time::Duration::from_secs(minutes as u64 * 60),
+                    )
+                } else {
+                    None
+                };
+                had
             };
+            // `check_sleep` ramps mpv's volume down over the final thirty
+            // seconds and nothing else ever puts it back. Cancelling or
+            // pushing out a timer that was already fading therefore used to
+            // leave playback quiet, with the volume slider still showing the
+            // number it no longer had. Undo the ramp whenever the deadline
+            // moves; harmless when the fade had not started.
+            if had_deadline {
+                restore_volume();
+            }
         }
         MusicCmd::Love { item_id } => {
             let pool = music_pool().await?;
@@ -5658,6 +5682,14 @@ fn apply_eq_live(eq: &tulipix_music::eq::Equalizer) {
     mpv::set_property("af", &value);
 }
 
+/// Put mpv's volume back where the settings say it belongs. The only thing
+/// that ever moves it out from under the user is the sleep fade, so this is
+/// the undo for that.
+fn restore_volume() {
+    let base = setting("music.volume", "80");
+    mpv::set_property("volume", &base);
+}
+
 /// Stop (or fade) when the sleep timer is up. Called from every snapshot.
 fn check_sleep() {
     let deadline = lock().sleep_deadline;
@@ -5665,9 +5697,13 @@ fn check_sleep() {
     let now = std::time::Instant::now();
     if now >= deadline {
         mpv::stop();
-        let mut s = lock();
-        s.sleep_deadline = None;
-        s.sleep_min = 0;
+        {
+            let mut s = lock();
+            s.sleep_deadline = None;
+            s.sleep_min = 0;
+        }
+        // The next track must not start at whatever the ramp reached.
+        restore_volume();
         emit(MusicEvent::TrackChanged);
         return;
     }
@@ -8366,6 +8402,8 @@ async fn snapshot() -> Result<MusicState> {
         crossfade: setting("music.crossfade", "0").parse().unwrap_or(0.0),
         replaygain: setting("music.replaygain", "off"),
         preamp_db: setting("music.preamp", "0").parse().unwrap_or(0.0),
+        viz_style: setting("music.viz.style", "5").parse().unwrap_or(5).clamp(0, 5),
+        viz_on: setting("music.viz.on", "1") != "0",
 
         mgr_open: s.mgr_open,
         mgr_tab: s.mgr_tab.clone(),

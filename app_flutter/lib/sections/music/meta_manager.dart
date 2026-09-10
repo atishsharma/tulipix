@@ -59,26 +59,37 @@ class _Manager extends StatelessWidget {
             borderRadius: BorderRadius.circular(18),
             side: BorderSide(color: t.outline),
           ),
-          child: SizedBox(
-            // 640 x 680 in Slint.
-            width: 640,
-            height: 680,
-            child: Padding(
-              padding: const EdgeInsets.all(22),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _Head(controller: controller, st: st),
-                  const SizedBox(height: 14),
-                  Expanded(
-                    child: switch (st.mgrMode) {
-                      'search' => _Search(controller: controller, st: st),
-                      'preview' => _Preview(controller: controller, st: st),
-                      'view' => _Lines(st: st),
-                      _ => _List(controller: controller, st: st),
-                    },
-                  ),
-                ],
+          child: PopScope(
+            // `mgr_dirty` means a lyric candidate has been previewed and not
+            // written. Escape and the system back gesture used to throw it
+            // away without a word.
+            canPop: !st.mgrDirty,
+            onPopInvokedWithResult: (didPop, _) async {
+              if (didPop) return;
+              if (!await confirmDiscardLyrics(context)) return;
+              if (context.mounted) Navigator.of(context).pop();
+            },
+            child: SizedBox(
+              // 640 x 680 in Slint.
+              width: 640,
+              height: 680,
+              child: Padding(
+                padding: const EdgeInsets.all(22),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _Head(controller: controller, st: st),
+                    const SizedBox(height: 14),
+                    Expanded(
+                      child: switch (st.mgrMode) {
+                        'search' => _Search(controller: controller, st: st),
+                        'preview' => _Preview(controller: controller, st: st),
+                        'view' => _Lines(st: st),
+                        _ => _List(controller: controller, st: st),
+                      },
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -87,6 +98,16 @@ class _Manager extends StatelessWidget {
     );
   }
 }
+
+/// The one thing in this dialog that can be lost by leaving it.
+Future<bool> confirmDiscardLyrics(BuildContext context) => confirm(
+      context,
+      title: 'Discard these words?',
+      body: 'The lyrics you previewed have not been written to the track yet. '
+          'Leaving now loses them; the search that found them does not have to '
+          'be run again.',
+      action: 'Discard',
+    );
 
 class _Head extends StatelessWidget {
   const _Head({required this.controller, required this.st});
@@ -145,16 +166,40 @@ class _Head extends StatelessWidget {
                   )
                 // Away from the list the song being worked on is the only thing
                 // worth naming, and it is not a heading — it is the subject.
-                : Text(
-                    st.mgrTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontFamily: Tokens.fontFamily,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: t.nInk,
-                    ),
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          st.mgrTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontFamily: Tokens.fontFamily,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: t.nInk,
+                          ),
+                        ),
+                      ),
+                      // Unsaved. A dot rather than a word: the subject is the
+                      // song, and "• unsaved" beside it would be a second
+                      // title competing with the first.
+                      if (st.mgrDirty) ...[
+                        const SizedBox(width: 8),
+                        Tooltip(
+                          message: 'Previewed, not yet written to the track',
+                          child: Container(
+                            width: 7,
+                            height: 7,
+                            decoration: const BoxDecoration(
+                              color: Tokens.secMusic,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
           ),
         ),
@@ -164,7 +209,14 @@ class _Head extends StatelessWidget {
             alignment: Alignment.centerRight,
             child: IconButton(
               icon: const Icon(Icons.close, size: 18),
-              onPressed: () => Navigator.of(context).pop(),
+              // `Navigator.pop` goes straight past the `PopScope` guarding the
+              // dialog, so the button asks for itself.
+              onPressed: () async {
+                if (st.mgrDirty && !await confirmDiscardLyrics(context)) {
+                  return;
+                }
+                if (context.mounted) Navigator.of(context).pop();
+              },
             ),
           ),
         ),

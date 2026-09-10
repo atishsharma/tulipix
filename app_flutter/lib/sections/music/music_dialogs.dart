@@ -101,16 +101,33 @@ Future<void> editTags(
   MusicController c,
   Track track,
 ) async {
+  // Album artist is not on `Track` — one string per album has no business
+  // riding on every row of every list — so it comes from the properties
+  // fetch, which the dialog is already slow enough to afford. Without it the
+  // field opened blank on every track, and since `write_file_tags` skips empty
+  // values, a wrong album artist could be read by the library and corrected by
+  // nobody.
+  String existingAlbumArtist = '';
+  try {
+    existingAlbumArtist = (await musicSongProps(itemId: track.itemId)).albumArtist;
+  } catch (_) {
+    // A track whose row has gone is about to fail the save anyway; opening the
+    // editor with one blank field is the better of the two ways to say so.
+  }
+  if (!context.mounted) return;
+
   final title = TextEditingController(text: track.title);
   final artist = TextEditingController(text: track.artist);
   final album = TextEditingController(text: track.album);
-  final albumArtist = TextEditingController();
+  final albumArtist = TextEditingController(text: existingAlbumArtist);
   final genre = TextEditingController(text: track.genre);
   final date =
       TextEditingController(text: track.year > 0 ? '${track.year}' : '');
   final trackNo =
       TextEditingController(text: track.trackNo > 0 ? '${track.trackNo}' : '');
-  final discNo = TextEditingController();
+  // `track.discNo` was right here all along.
+  final discNo =
+      TextEditingController(text: track.discNo > 0 ? '${track.discNo}' : '');
 
   Widget field(String label, TextEditingController ctrl) => Padding(
         padding: const EdgeInsets.only(bottom: 10),
@@ -180,6 +197,18 @@ Future<void> editTags(
       discNo: int.tryParse(discNo.text.trim()) ?? 0,
     ));
   }
+  for (final ctrl in [
+    title,
+    artist,
+    album,
+    albumArtist,
+    genre,
+    date,
+    trackNo,
+    discNo,
+  ]) {
+    ctrl.dispose();
+  }
 }
 
 /// Every playlist the library has.
@@ -236,6 +265,7 @@ Future<int?> createPlaylist(BuildContext context, MusicController c) async {
       ],
     ),
   );
+  name.dispose();
   if (chosen == null) return null;
   if (chosen.startsWith(_kSmart)) {
     if (!context.mounted) return null;
@@ -440,12 +470,12 @@ Future<void> audioSettings(BuildContext context, MusicController c) async {
                       key: 'music.gapless', value: v ? '1' : '0')),
                 ),
                 const SizedBox(height: 8),
-                Text('Crossfade · ${st.crossfade.toStringAsFixed(1)}s'),
-                Slider(
+                _FlagSlider(
+                  label: (v) => 'Crossfade · ${v.toStringAsFixed(1)}s',
                   value: st.crossfade.clamp(0, 12),
                   max: 12,
                   divisions: 24,
-                  onChanged: (v) => c.send(MusicCmd.setAudio(
+                  onCommit: (v) => c.send(MusicCmd.setAudio(
                       key: 'music.crossfade', value: v.toStringAsFixed(1))),
                 ),
                 const SizedBox(height: 4),
@@ -465,13 +495,13 @@ Future<void> audioSettings(BuildContext context, MusicController c) async {
                   ],
                 ),
                 const SizedBox(height: 12),
-                Text('Pre-amp · ${st.preampDb.toStringAsFixed(1)} dB'),
-                Slider(
+                _FlagSlider(
+                  label: (v) => 'Pre-amp · ${v.toStringAsFixed(1)} dB',
                   value: st.preampDb.clamp(-12, 12),
                   min: -12,
                   max: 12,
                   divisions: 48,
-                  onChanged: (v) => c.send(MusicCmd.setAudio(
+                  onCommit: (v) => c.send(MusicCmd.setAudio(
                       key: 'music.preamp', value: v.toStringAsFixed(1))),
                 ),
                 Text(
@@ -493,4 +523,68 @@ Future<void> audioSettings(BuildContext context, MusicController c) async {
       },
     ),
   );
+}
+
+/// A slider for a setting that only takes effect on the next track.
+///
+/// `Slider.onChanged` fires on every pointer move, and each of these settings
+/// costs a settings.json write and a rebuild of mpv's launch flags. There is
+/// nothing to preview live — the dialog says so itself — so nothing is sent
+/// until the pointer comes up. The label follows the finger from here.
+class _FlagSlider extends StatefulWidget {
+  const _FlagSlider({
+    required this.label,
+    required this.value,
+    required this.onCommit,
+    this.min = 0,
+    this.max = 1,
+    this.divisions,
+  });
+
+  final String Function(double) label;
+  final double value;
+  final ValueChanged<double> onCommit;
+  final double min;
+  final double max;
+  final int? divisions;
+
+  @override
+  State<_FlagSlider> createState() => _FlagSliderState();
+}
+
+class _FlagSliderState extends State<_FlagSlider> {
+  /// Non-null only while a drag is in flight.
+  double? _dragging;
+
+  @override
+  void didUpdateWidget(_FlagSlider old) {
+    super.didUpdateWidget(old);
+    // The snapshot caught up with the value we committed; stop overriding it.
+    if (_dragging != null && widget.value != old.value) {
+      _dragging = null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final v = (_dragging ?? widget.value).clamp(widget.min, widget.max);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(widget.label(v)),
+        Slider(
+          value: v,
+          min: widget.min,
+          max: widget.max,
+          divisions: widget.divisions,
+          onChanged: (n) => setState(() => _dragging = n),
+          onChangeEnd: (n) {
+            setState(() => _dragging = n);
+            widget.onCommit(n);
+          },
+        ),
+      ],
+    );
+  }
 }

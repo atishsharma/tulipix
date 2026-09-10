@@ -88,6 +88,24 @@ class _YoutubeTabState extends State<YoutubeTab> {
                 ),
               ),
               const Spacer(),
+              // `yt_busy` covers the requests that have no progress to report —
+              // a search, a channel listing, a subscription refresh. Without
+              // it a slow one is indistinguishable from a dead one: the old
+              // results stay on screen and nothing anywhere says a new set is
+              // coming. `yt_fetch_busy` below is the other kind, the one that
+              // knows how far along it is.
+              if (st.ytBusy)
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation(context.tokens.nInk2),
+                    ),
+                  ),
+                ),
               if (st.ytStatus.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(right: 16),
@@ -352,6 +370,7 @@ Future<void> _addChannel(BuildContext context, MusicController c) async {
       ],
     ),
   );
+  text.dispose();
   final trimmed = url?.trim() ?? '';
   if (trimmed.isNotEmpty) {
     await c.send(MusicCmd.ytAddChannelUrl(url: trimmed));
@@ -386,6 +405,7 @@ Future<void> _importPlaylist(BuildContext context, MusicController c) async {
       ],
     ),
   );
+  text.dispose();
   final trimmed = url?.trim() ?? '';
   if (trimmed.isNotEmpty) {
     await c.send(MusicCmd.ytImportPlaylistUrl(url: trimmed));
@@ -1146,6 +1166,7 @@ Future<void> _newPlaylist(BuildContext context, MusicController c) async {
       ],
     ),
   );
+  text.dispose();
   final trimmed = name?.trim() ?? '';
   if (trimmed.isNotEmpty) {
     await c.send(MusicCmd.ytCreatePlaylist(name: trimmed));
@@ -1326,7 +1347,11 @@ class _ChannelPageState extends State<_ChannelPage> {
               alignment: Alignment.centerLeft,
               child: TextButton.icon(
                 icon: const Icon(Icons.expand_more, size: 18),
-                label: Text('Load more  ·  ${videos.length} so far'),
+                // How deep you already are, not just how much you have. On a
+                // channel with two thousand uploads the count alone says
+                // nothing about how far the button has taken you.
+                label: Text('Load more  ·  ${videos.length} so far'
+                    '${st.ytChannelPage > 1 ? ', page ${st.ytChannelPage}' : ''}'),
                 onPressed: () =>
                     controller.send(const MusicCmd.ytChannelLoadMore()),
               ),

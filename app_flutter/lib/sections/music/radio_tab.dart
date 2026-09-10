@@ -563,6 +563,8 @@ Future<void> addStation(BuildContext context, MusicController c) async {
       ],
     ),
   );
+  name.dispose();
+  url.dispose();
   if (ok ?? false) {
     await c
         .send(MusicCmd.radioAdd(name: name.text.trim(), url: url.text.trim()));

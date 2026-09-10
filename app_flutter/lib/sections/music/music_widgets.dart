@@ -1448,6 +1448,7 @@ class MusicGrid extends StatelessWidget {
     this.minCols = 1,
     this.inset = 8,
     this.labelHeight = kCardLabelTwo,
+    this.colChoices,
   });
 
   final int count;
@@ -1465,12 +1466,27 @@ class MusicGrid extends StatelessWidget {
   /// [kCardLabelOne] for the ones that do not.
   final double labelHeight;
 
+  /// The only column counts this grid is allowed to use, ascending.
+  ///
+  /// For a server-paged grid the count is not free: a page of 32 laid out
+  /// seven across ends in a row of four, which reads as the list running out
+  /// rather than the page ending. Pass the divisors of the page size and the
+  /// width picks the nearest of those instead of any number that fits. Null —
+  /// every other grid in the section — means whatever the width says.
+  final List<int>? colChoices;
+
   @override
   Widget build(BuildContext context) {
     if (count == 0) return const SizedBox.shrink();
     return LayoutBuilder(
       builder: (context, box) {
-        final cols = (box.maxWidth / target).floor().clamp(minCols, maxCols);
+        final fits = (box.maxWidth / target).floor().clamp(minCols, maxCols);
+        final choices = colChoices;
+        // Ties go to the smaller count, which is the bigger tile.
+        final cols = choices == null || choices.isEmpty
+            ? fits
+            : choices.reduce(
+                (a, b) => (a - fits).abs() <= (b - fits).abs() ? a : b);
         final cell = box.maxWidth / cols;
         final rows = (count / cols).ceil();
         return Column(
