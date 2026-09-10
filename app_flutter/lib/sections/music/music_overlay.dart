@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
+import '../../shell/shell_controller.dart';
 import '../../shell/window.dart';
 import 'mini_player.dart';
 import 'mini_widget.dart';
@@ -61,19 +62,73 @@ class _MusicOverlayState extends State<MusicOverlay> {
       c.send(const MusicCmd.playPause());
       return true;
     }
-    if (event.logicalKey == LogicalKeyboardKey.escape && !c.zenOpen) {
-      // Escape gives the window back, which is `restore` — the widget has
-      // taken the whole window and there is no shell left to press anything in.
-      if (c.miniIsWidget) {
-        c.closeWidget();
+    if (event.logicalKey == LogicalKeyboardKey.escape) return _escape(c);
+    return false;
+  }
+
+  /// Escape, as one back button for the whole app.
+  ///
+  /// It used to be four unrelated bindings and a gap: zen bound it through
+  /// `CallbackShortcuts`, which is dispatched up the focus chain and therefore
+  /// never fired — the same reason the space bar did nothing before it moved
+  /// here. The rule now is a ladder, innermost first, and the first rung that
+  /// applies wins.
+  ///
+  /// Deliberately *not* here: fullscreen video and the photo viewer. Both hold
+  /// focus and answer Escape from their own `Focus.onKeyEvent`, and a handler
+  /// registered on `HardwareKeyboard` runs before the focus chain is walked at
+  /// all — so consuming Escape here would take it away from them. Their rung
+  /// is "something has focus", which is checked first.
+  bool _escape(MusicController c) {
+    // A focused text field owns Escape: it means "stop editing", not "leave
+    // the page". Dropping focus rather than navigating is what every desktop
+    // search box does, and it is also what keeps a fullscreen player or the
+    // photo viewer -- which hold focus -- answering Escape themselves.
+    final focus = FocusManager.instance.primaryFocus;
+    if (focus != null && focus != FocusManager.instance.rootScope) {
+      if (_typing()) {
+        focus.unfocus();
         return true;
       }
-      // Escape docks the open mini, the way main.slint's window-level handler
-      // does. Zen has its own, one layer in, and wins where it applies.
-      if (c.miniOpen && !c.miniBubble) {
-        c.setMiniBubble(true);
-        return true;
-      }
+      return false;
+    }
+
+    // The two surfaces that take the whole window.
+    if (c.miniIsWidget) {
+      c.closeWidget();
+      return true;
+    }
+    if (c.zenOpen) {
+      c.closeZen();
+      return true;
+    }
+    // Escape docks the open mini, the way main.slint's window-level handler
+    // does.
+    if (c.miniOpen && !c.miniBubble) {
+      c.setMiniBubble(true);
+      return true;
+    }
+    // A dialog is the next thing in, and nothing binds Escape to closing one.
+    final nav = Navigator.maybeOf(context, rootNavigator: true);
+    if (nav != null && nav.canPop()) {
+      nav.pop();
+      return true;
+    }
+    // Everything below belongs to Music, so only while Music is the section on
+    // screen -- Escape on the Photos page should not quietly close a queue
+    // panel three sections away.
+    if (ShellController.instance.section != Section.music) return false;
+    if (c.panel.isNotEmpty) {
+      c.setPanel(c.panel);
+      return true;
+    }
+    if (c.canGoBack) {
+      c.goBack();
+      return true;
+    }
+    if (c.state?.detailOpen ?? false) {
+      c.closeDetail();
+      return true;
     }
     return false;
   }

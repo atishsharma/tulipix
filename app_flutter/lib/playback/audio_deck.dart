@@ -26,6 +26,16 @@ import '../src/rust/api/music.dart';
 /// visualizer's ticker reads it directly.
 double audioLoudness = 0.0;
 
+/// Where the deck is, in seconds, updated on every position event.
+///
+/// A plain variable for the same reason [audioLoudness] is one: the position
+/// stream fires many times a second, and the visualiser's timer reads this
+/// directly to index the current track's precomputed spectrum. The tick sent
+/// over the bridge is throttled to whole seconds because the clock and the
+/// scrubber only move that often; a spectrum column is a tenth of a second, so
+/// it needs the unthrottled value.
+double audioPositionS = 0.0;
+
 /// mpv's `ebur128` momentary loudness in LUFS, mapped to 0..1.
 ///
 /// −45 LUFS is about the floor of anything audible and −6 is about as loud as
@@ -221,6 +231,8 @@ class AudioDeck {
   void _report() {
     if (_token < 0) return;
     final pos = _player.state.position.inMilliseconds / 1000.0;
+    // Before the throttle: the visualiser wants every one of these.
+    audioPositionS = pos;
     final dur = _player.state.duration.inMilliseconds / 1000.0;
     final paused = !_player.state.playing;
     final second = pos.floor();

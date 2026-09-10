@@ -80,3 +80,20 @@ Future<Color?> dominantColour(String path) async {
     small?.dispose();
   }
 }
+
+/// The second colour of the wash: the same average, rotated around the wheel
+/// and darkened.
+///
+/// Not a second pass over the pixels. A true two-colour extraction wants
+/// k-means, and on most covers the second cluster is the black border — which
+/// is how a "palette" ends up as one colour and a shadow. A deliberate hue
+/// shift off the colour already found gives a gradient that always reads as
+/// lighting rather than as a stripe, and costs nothing.
+Color companion(Color base) {
+  final c = HSLColor.fromColor(base);
+  return c
+      .withHue((c.hue + 38) % 360)
+      .withSaturation((c.saturation * 0.9).clamp(0.25, 0.9))
+      .withLightness((c.lightness * 0.72).clamp(0.18, 0.5))
+      .toColor();
+}

@@ -34,7 +34,9 @@ pub fn cover_front_url(release_mbid: &str) -> String {
     format!("{CAA_BASE}/release/{release_mbid}/front")
 }
 
-fn urlencode(s: &str) -> String {
+/// Percent-encode for a URL query. Public because the bridge builds a
+/// Wikipedia search URL out of an artist name and needs the same rule.
+pub fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
     for b in s.bytes() {
         match b {
@@ -161,6 +163,9 @@ pub struct ArtistSearch {
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct Artist {
+    /// The MBID, which is what a link back to musicbrainz.org needs.
+    #[serde(default)]
+    pub id: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -197,6 +202,35 @@ pub fn artist_blurb(a: &Artist) -> String {
     blurb
 }
 
+/// The facts behind the blurb, as separate labelled values.
+///
+/// [`artist_blurb`] folds these into one string, which is right for a one-line
+/// credit and wrong for a page: a page wants them as chips beside the prose,
+/// where "Formed 1985" reads as a fact rather than as the tail of a sentence.
+/// Same source, same lookup — this just does not throw the structure away.
+pub fn artist_facts(a: &Artist) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(k) = &a.kind { if !k.is_empty() { out.push(k.clone()); } }
+    if let Some(c) = &a.country { if !c.is_empty() { out.push(c.clone()); } }
+    if let Some(ls) = &a.life_span {
+        if let Some(b) = &ls.begin {
+            if !b.is_empty() {
+                // "Formed" for a group, "Born" for a person. MusicBrainz says
+                // which, and a band that was born reads as a mistake.
+                let verb = match a.kind.as_deref() {
+                    Some("Person") => "Born",
+                    _ => "Formed",
+                };
+                out.push(format!("{verb} {b}"));
+                if ls.ended == Some(true) {
+                    out.push("Disbanded".into());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Live artist lookup for bio/credits.
 pub async fn lookup_artist(client: &reqwest::Client, artist: &str) -> Result<ArtistSearch> {
     let url = artist_search_url(artist);
@@ -218,13 +252,40 @@ mod tests {
 
     #[test]
     fn artist_blurb_composes() {
-        let a = Artist { name: "Radiohead".into(), score: 100, kind: Some("Group".into()),
+        let a = Artist { id: "a74b1b7f".into(), name: "Radiohead".into(), score: 100,
+            kind: Some("Group".into()),
             country: Some("GB".into()), disambiguation: Some("English band".into()),
             life_span: Some(LifeSpan { begin: Some("1991".into()), ended: Some(false) }) };
         let b = artist_blurb(&a);
         assert!(b.contains("Radiohead — English band"));
         assert!(b.contains("Group · GB · since 1991"));
         assert!(artist_search_url("AC/DC").contains("artist%3AAC%5C%2FDC"));
+    }
+
+    #[test]
+    fn facts_come_out_as_separate_values() {
+        let band = Artist {
+            id: "abc".into(),
+            name: "Radiohead".into(),
+            score: 100,
+            kind: Some("Group".into()),
+            country: Some("GB".into()),
+            disambiguation: None,
+            life_span: Some(LifeSpan { begin: Some("1985".into()), ended: Some(false) }),
+        };
+        assert_eq!(artist_facts(&band), vec!["Group", "GB", "Formed 1985"]);
+
+        let person = Artist { kind: Some("Person".into()), ..band.clone() };
+        assert!(artist_facts(&person).contains(&"Born 1985".to_string()));
+
+        let gone = Artist {
+            life_span: Some(LifeSpan { begin: Some("1985".into()), ended: Some(true) }),
+            ..band.clone()
+        };
+        assert!(artist_facts(&gone).contains(&"Disbanded".to_string()));
+
+        // Nothing known is an empty list, not a list of empty strings.
+        assert!(artist_facts(&Artist::default()).is_empty());
     }
 
     #[test]

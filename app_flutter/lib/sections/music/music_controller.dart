@@ -10,6 +10,7 @@
 // that as properties because Slint has no store.
 
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
@@ -24,6 +25,7 @@ import '../../shell/window.dart';
 import 'mini_player.dart' show kMiniSize;
 import 'mini_widget.dart' show MiniStyle, kPillCluster, kPillLyrics;
 import 'music_accent.dart';
+import 'spectrum.dart';
 import 'music_viz.dart' show visStyleNames;
 
 /// One of the five top-level categories. `view` on the Slint page.
@@ -125,6 +127,67 @@ class MusicController extends ChangeNotifier {
 
   /// "" | queue | lyrics | eq — which side panel the player bar has open.
   String panel = '';
+
+  // ── detail navigation ─────────────────────────────────────────────────────
+  //
+  // The bridge holds ONE open detail — a `detail_open` bool and a `detail_kind`,
+  // a slot rather than a stack — so album → artist → album had nowhere to go
+  // back to. The history is kept here instead: every command that opens a
+  // detail page is pushed on the way through `send`, which is the one funnel
+  // all twelve call sites already go through. Going back re-issues the previous
+  // entry's own command, so the bridge never has to learn what a stack is.
+  final List<MusicCmd> _trail = [];
+
+  /// Human labels for the pushed entries, so a page can be named before it has
+  /// been fetched. Same length as [_trail]. Kept now that the breadcrumb strip
+  /// is gone because the labels are what a future "back to X" tooltip would
+  /// read; nothing else reads them today.
+  final List<String> _trailLabels = [];
+
+  /// True while `goBack` is re-issuing an entry, so the push in [send] does not
+  /// re-add the page we are returning to.
+  bool _restoring = false;
+
+  bool get canGoBack => _trail.isNotEmpty;
+
+  /// One step back: drop the current page and re-open the one beneath it, or
+  /// close the detail entirely when that was the last of them.
+  Future<void> goBack() async {
+    if (_trail.isEmpty) return;
+    _trail.removeLast();
+    _trailLabels.removeLast();
+    _restoring = true;
+    try {
+      await send(_trail.isEmpty ? const MusicCmd.closeDetail() : _trail.last);
+    } finally {
+      _restoring = false;
+    }
+  }
+
+  /// Back to the library, discarding the whole trail.
+  Future<void> closeDetail() async {
+    _trail.clear();
+    _trailLabels.clear();
+    await send(const MusicCmd.closeDetail());
+  }
+
+  /// The label to show for a command that opens a detail page, or null when the
+  /// command does not open one. Ids are all this knows before the fetch; the
+  /// real title replaces it in [send] once the state comes back.
+  static String? _detailLabel(MusicCmd cmd) => switch (cmd) {
+        MusicCmd_OpenAlbum() => 'Album',
+        MusicCmd_OpenArtist() => 'Artist',
+        MusicCmd_OpenNowAlbum() => 'Album',
+        MusicCmd_OpenNowArtist() => 'Artist',
+        MusicCmd_OpenGenre(:final name) => name,
+        MusicCmd_OpenPlaylist() => 'Playlist',
+        MusicCmd_OpenFolder(:final path) => path
+                .split(Platform.pathSeparator)
+                .where((s) => s.isNotEmpty)
+                .lastOrNull ??
+            'Folder',
+        _ => null,
+      };
 
   /// Live scan / refresh progress, from the event stream. Null when nothing is
   /// running. Kept in Dart because it is a notification, not state: a snapshot
@@ -239,6 +302,12 @@ class MusicController extends ChangeNotifier {
   /// Dominant colour of the current artwork. Everything tinted by the track —
   /// the bar's wash, the seek fill, the mini's ring — reads this.
   Color accent = const Color(0xFFEC4899);
+
+  /// The wash's second colour. Together with [accent] this is the light the
+  /// room is lit by rather than a tint on one control: the player bar, the
+  /// queue panel and the seekbar all take their gradient from the pair, and
+  /// both animate to the next record's colours on a track change.
+  Color accentAlt = const Color(0xFF8B5CF6);
   String _accentFor = '';
 
   void _onEvent(MusicEvent event) {
@@ -252,7 +321,7 @@ class MusicController extends ChangeNotifier {
         // The track changed under us — the loved state, the artwork and the
         // queue position are all now wrong in the held snapshot.
         refresh();
-        _refreshAccent();
+        unawaited(_followTrack());
       case MusicEvent_Ended():
         // Rust does not advance the queue itself: one place decides what plays
         // next, and it is the one holding the repeat and shuffle switches.
@@ -383,14 +452,34 @@ class MusicController extends ChangeNotifier {
   Future<void> send(MusicCmd cmd) async {
     busy = true;
     error = null;
+    // Pushed before the await, so a breadcrumb drawn while the fetch is in
+    // flight already shows where it is going.
+    final label = _restoring ? null : _detailLabel(cmd);
+    if (label != null) {
+      _trail.add(cmd);
+      _trailLabels.add(label);
+    }
     notifyListeners();
     try {
       state = await musicDispatch(cmd: cmd);
+      // The page knows its own name once it has loaded; an id-derived
+      // placeholder never has to be shown twice.
+      if (state!.detailOpen && _trailLabels.isNotEmpty) {
+        final title = state!.detailTitle;
+        if (title.isNotEmpty) _trailLabels[_trailLabels.length - 1] = title;
+      }
+      // Anything that closes the detail from the bridge's side (a tab switch,
+      // a refresh that lands with it shut) invalidates the trail: keeping it
+      // would offer a back button to a page that is no longer open.
+      if (!state!.detailOpen && !_restoring) {
+        _trail.clear();
+        _trailLabels.clear();
+      }
       final n = state!.now;
       tickPos = n.pos;
       tickDur = n.dur;
       tickPlaying = n.playing;
-      unawaited(_refreshAccent());
+      unawaited(_followTrack());
     } catch (e) {
       error = e;
     } finally {
@@ -647,6 +736,18 @@ class MusicController extends ChangeNotifier {
     return hit;
   }
 
+  /// Everything that has to follow the track rather than the frame: the colour
+  /// the room takes, and the spectrum the visualiser draws.
+  ///
+  /// Both are per-track reads that must not sit in the tick path — one decodes
+  /// an image, the other reads a file off disk — and both are safe to lose: a
+  /// failure leaves the previous accent and no spectrum, which is what an
+  /// unanalysed library shows anyway.
+  Future<void> _followTrack() async {
+    unawaited(loadSpectrum(state?.now.itemId ?? 0));
+    await _refreshAccent();
+  }
+
   /// Pull the dominant colour out of the current cover. Cheap because it
   /// decodes to 16x16 first — the answer is one colour, not an image.
   Future<void> _refreshAccent() async {
@@ -656,9 +757,11 @@ class MusicController extends ChangeNotifier {
     final next = await dominantColour(path);
     if (next != null && _accentFor == path) {
       accent = next;
+      accentAlt = companion(next);
       notifyListeners();
     } else if (next == null) {
       accent = const Color(0xFFEC4899);
+      accentAlt = const Color(0xFF8B5CF6);
       notifyListeners();
     }
   }
@@ -746,6 +849,33 @@ class MusicController extends ChangeNotifier {
     return null;
   }
 
+  // --- waveform ---------------------------------------------------------------
+
+  final Map<int, List<int>> _wave = {};
+  final Set<int> _waveInFlight = {};
+
+  /// The loudness envelope for one track, resolved once and remembered.
+  ///
+  /// Same shape as [artFor]: null on the first call, a notify when it lands,
+  /// and a remembered miss so a track ffmpeg cannot read is not re-decoded
+  /// every time the seekbar rebuilds.
+  List<int>? waveFor(int itemId) {
+    if (itemId == 0) return null;
+    final hit = _wave[itemId];
+    if (hit != null) return hit.isEmpty ? null : hit;
+    if (_waveInFlight.add(itemId)) {
+      musicWaveform(itemId: itemId).then((bytes) {
+        _wave[itemId] = bytes;
+        _waveInFlight.remove(itemId);
+        if (bytes.isNotEmpty) notifyListeners();
+      }).catchError((Object _) {
+        _wave[itemId] = const [];
+        _waveInFlight.remove(itemId);
+      });
+    }
+    return null;
+  }
+
   /// Set (or clear) the picture for one album, artist, genre or playlist.
   ///
   /// The eviction is the whole point of routing this through the controller:
@@ -756,6 +886,48 @@ class MusicController extends ChangeNotifier {
     _art.remove('$kind:$key');
     await send(MusicCmd.setCardArt(kind: kind, key: key, path: path));
   }
+
+  // --- keyboard ---------------------------------------------------------------
+  //
+  // Named rather than inlined at the binding, because a shortcut has to decide
+  // whether it applies: pressing space with nothing loaded should do nothing,
+  // not start whatever happens to be first in the library.
+
+  bool get _hasTrack => (state?.now.itemId ?? 0) != 0 || tickDur > 0;
+
+  void keyPlayPause() {
+    if (!_hasTrack) return;
+    send(const MusicCmd.playPause());
+  }
+
+  void keyNext() {
+    if (!_hasTrack) return;
+    send(const MusicCmd.next());
+  }
+
+  void keyPrev() {
+    if (!_hasTrack) return;
+    send(const MusicCmd.prev());
+  }
+
+  /// Seek by [delta] seconds from where the tick says we are, clamped inside
+  /// the track -- seeking past the end is how a keypress skips a song by
+  /// accident.
+  void nudge(double delta) {
+    if (!_hasTrack || tickDur <= 0) return;
+    final to = (tickPos + delta).clamp(0.0, tickDur);
+    send(MusicCmd.seek(secs: to));
+  }
+
+  void keyLove() {
+    final id = state?.now.itemId ?? 0;
+    if (id == 0) return;
+    send(MusicCmd.love(itemId: id));
+  }
+
+  void keyShuffle() => send(const MusicCmd.toggleShuffle());
+
+  void keyRepeat() => send(const MusicCmd.cycleRepeat());
 
   // --- shorthands the widgets use constantly --------------------------------
 

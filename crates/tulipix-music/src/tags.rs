@@ -24,6 +24,26 @@ pub struct TrackTags {
     pub channels: Option<i64>,
     pub codec: Option<String>,
     pub container: Option<String>,
+
+    // --- credits and release details -------------------------------------
+    //
+    // All of these are already in the files of anyone who tags properly, and
+    // none of them were read. They are free text: a composer field holds
+    // "Yorke, Greenwood" or "Yorke/Greenwood" or one name, and nothing
+    // normalises that, so they are stored as written and shown as written.
+    pub composer: Option<String>,
+    /// The featured or session players, as `performer` / `PERFORMER` holds it.
+    pub performer: Option<String>,
+    pub producer: Option<String>,
+    pub remixer: Option<String>,
+    /// The issuing label, from `label` or `publisher`.
+    pub label: Option<String>,
+    /// Catalogue number, from `catalognumber` or `catalog_number`.
+    pub catalog_no: Option<String>,
+    /// The full release date as tagged -- "2007-12-28", where `year` keeps
+    /// only 2007. Stored verbatim because tags disagree about the format and
+    /// re-formatting a date nobody can parse loses information.
+    pub release_date: Option<String>,
 }
 
 /// Trim, then treat empty as absent.

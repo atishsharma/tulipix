@@ -7,15 +7,19 @@
 
 import 'dart:math' as math;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'detail_page.dart';
 import 'downloader_tab.dart';
+import 'library_insights.dart';
 import 'music_controller.dart';
 import 'meta_manager.dart';
 import 'music_dialogs.dart';
+import 'music_motion.dart';
 import 'music_widgets.dart';
 import 'song_menu.dart';
 
@@ -39,9 +43,20 @@ class MyMusicTab extends StatelessWidget {
       children: [
         _SubTabs(controller: controller),
         Expanded(
-          child: st.detailOpen
-              ? DetailPage(controller: controller)
-              : _body(context, st),
+          // Keyed on the tab AND on whether a detail is open, so switching
+          // tabs and opening a page both dissolve rather than snap. The key
+          // has to carry the detail identity too: album → artist is the same
+          // tab and the same widget type, and without it the switcher sees no
+          // change at all.
+          child: CrossFade(
+            slotKey: st.detailOpen
+                ? 'detail:${st.detailKind}:${st.detailId}:${st.detailKey}'
+                : 'tab:${st.libTab}',
+            alignment: Alignment.topCenter,
+            child: st.detailOpen
+                ? DetailPage(controller: controller)
+                : _body(context, st),
+          ),
         ),
       ],
     );
@@ -93,10 +108,12 @@ class _SubTabs extends StatelessWidget {
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 20),
               children: [
-                // Collapsible, which is the only reason ten of them fit: icon
-                // alone at rest, the name revealed on hover or when open. Each
-                // carries its own hue, so the row reads as ten places rather
-                // than as one selected thing and nine greys.
+                // Collapsed only on Songs. That tab spends the right-hand end
+                // of this row on play, shuffle, tags, sort, rescan and a pager,
+                // so ten labelled chips beside it leave nothing readable; every
+                // other tab has room and reads better named than guessed at
+                // from an icon. Each carries its own hue, so the row is ten
+                // places rather than one selected thing and nine greys.
                 for (final tab in libTabs)
                   Padding(
                     padding:
@@ -107,10 +124,11 @@ class _SubTabs extends StatelessWidget {
                       active: active == tab.id,
                       tint: tab.tint,
                       tint2: tab.tint2,
-                      collapsible: true,
+                      collapsible: active == 'songs',
                       // 110, not 92: ten collapsed chips at 20% more each is
                       // the row Slint draws, and at 92 the icon had barely a
-                      // disc of its own to sit in.
+                      // disc of its own to sit in. Expanded, it is a floor --
+                      // the label takes what it needs above it.
                       minWidth: 110,
                       onTap: () =>
                           controller.send(MusicCmd.setLibTab(name: tab.id)),
@@ -453,7 +471,7 @@ class _HomeState extends State<_Home> {
             // page's summary — how much you have played this week, all time,
             // what you play most — and a summary belongs above the thing it
             // summarises, not buried between two shelves of covers.
-            _StatsStrip(stats: st.stats),
+            _StatsStrip(stats: st.stats, controller: c),
             const SizedBox(height: 22),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 36),
@@ -476,6 +494,10 @@ class _HomeState extends State<_Home> {
                     ),
             ),
             const SizedBox(height: 28),
+            // Records you started and walked away from, directly above the
+            // shelf of things you have not started at all — which is the row
+            // it is answering.
+            _ResumeRail(controller: c, revision: st.stats.total),
             _CardRow(
               title: 'Top albums',
               cards: st.railAlbums,
@@ -870,13 +892,199 @@ class _TrackRow2 extends StatelessWidget {
       );
 }
 
+
+/// Albums left part-way through.
+///
+/// Its own bridge call rather than a field on the snapshot: the snapshot is
+/// rebuilt on every tick, and walking every recently-played album's tracklist
+/// eleven times a second to answer a question that changes when a record ends
+/// would be the most expensive thing on the page.
+/// How many abandoned records the shelf offers. Five across the page, which is
+/// what fits at a readable card width.
+const int _kResumeMax = 5;
+
+class _ResumeRail extends StatefulWidget {
+  const _ResumeRail({required this.controller, required this.revision});
+
+  final MusicController controller;
+
+  /// Something that changes when listening does. Cheap re-ask trigger: total
+  /// listening time only moves when a track has actually played, which is also
+  /// the only time a resume point can have moved.
+  final String revision;
+
+  @override
+  State<_ResumeRail> createState() => _ResumeRailState();
+}
+
+class _ResumeRailState extends State<_ResumeRail> {
+  late Future<List<ResumeCard>> _future = _load();
+
+  Future<List<ResumeCard>> _load() async {
+    try {
+      return await musicResumeAlbums();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _ResumeRail old) {
+    super.didUpdateWidget(old);
+    if (old.revision != widget.revision) _future = _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return FutureBuilder<List<ResumeCard>>(
+      future: _future,
+      builder: (context, snap) {
+        final cards = snap.data ?? const <ResumeCard>[];
+        // Nothing abandoned is the good case, and an empty "Pick up where you
+        // stopped" heading is a reproach.
+        if (cards.isEmpty) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(36, 22, 36, 0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'PICK UP WHERE YOU STOPPED',
+                style: TextStyle(
+                  fontFamily: Tokens.fontFamily,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.7,
+                  color: t.nInk3,
+                ),
+              ),
+              const SizedBox(height: 10),
+              // Five, sharing the width equally, rather than a scroller of
+              // whatever was abandoned. A shelf you have to drag sideways to
+              // read is a shelf nobody reads, and past the fifth these stop
+              // being "where you stopped" and become a list of everything you
+              // ever put down.
+              SizedBox(
+                height: 78,
+                child: Row(
+                  children: [
+                    for (var i = 0; i < cards.length && i < _kResumeMax; i++) ...[
+                      if (i > 0) const SizedBox(width: 12),
+                      Expanded(
+                        child: _ResumeCardTile(
+                          card: cards[i],
+                          controller: widget.controller,
+                        ),
+                      ),
+                    ],
+                    // Fewer than five keep the same card width rather than
+                    // stretching to fill the row: two enormous cards beside
+                    // three tracks' worth of empty canvas reads as a bug.
+                    for (var i = cards.length; i < _kResumeMax; i++) ...[
+                      if (i > 0) const SizedBox(width: 12),
+                      const Expanded(child: SizedBox.shrink()),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ResumeCardTile extends StatelessWidget {
+  const _ResumeCardTile({required this.card, required this.controller});
+
+  final ResumeCard card;
+  final MusicController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Material(
+        color: t.nCard,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          // Tapping resumes rather than opening the page: the card is an
+          // offer to continue, and the album is one tap away from its title.
+          onTap: () =>
+              controller.send(MusicCmd.resumeAlbum(albumId: card.albumId)),
+          child: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: t.nHair),
+            ),
+            child: Row(
+              children: [
+                MusicArt(
+                  controller: controller,
+                  kind: 'album',
+                  artKey: card.albumId.toString(),
+                  direct: card.art.isEmpty ? null : card.art,
+                  size: 46,
+                  radius: 8,
+                  fallback: Icons.album_outlined,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        card.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: Tokens.fontFamily,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: t.nInk,
+                        ),
+                      ),
+                      Text(
+                        card.note,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 11, color: t.nInk3),
+                      ),
+                      const SizedBox(height: 5),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(2),
+                        child: LinearProgressIndicator(
+                          value: card.progress.clamp(0.0, 1.0),
+                          minHeight: 3,
+                          backgroundColor: t.nHair,
+                          valueColor: const AlwaysStoppedAnimation<Color>(
+                              Tokens.secMusic),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(Icons.play_arrow_rounded, size: 22, color: t.nInk2),
+              ],
+            ),
+          ),
+        ),
+    );
+  }
+}
+
 /// The listening strip: four separate 76px cards, not one panel of five
 /// columns. The track count is not among them — that lives in the header's
 /// count pill, and repeating it here cost the strip a quarter of its width.
 class _StatsStrip extends StatelessWidget {
-  const _StatsStrip({required this.stats});
+  const _StatsStrip({required this.stats, required this.controller});
 
   final Stats stats;
+  final MusicController controller;
 
   @override
   Widget build(BuildContext context) {
@@ -886,16 +1094,25 @@ class _StatsStrip extends StatelessWidget {
     // left 48 — so all four cards overflowed by five pixels on every visit to
     // Home. Measured from the type rather than eyeballed: two line boxes plus
     // the four-pixel gap, plus ten of breathing room top and bottom.
+    // Four figures are a teaser for the summary behind them: the same play
+    // history answers "when do you listen", "who to", and "what did you start
+    // eleven times and never finish". Tapping any card opens all of it.
     Widget card(String label, String value) => Expanded(
-          child: Container(
-            height: 84,
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: t.nCard,
+          child: Material(
+            color: t.nCard,
+            borderRadius: BorderRadius.circular(14),
+            child: InkWell(
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: t.nHair),
-            ),
-            child: Column(
+              onTap: () => listeningSummary(context, controller),
+              child: Container(
+                height: 84,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: t.nHair),
+                ),
+                child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -920,8 +1137,10 @@ class _StatsStrip extends StatelessWidget {
                     fontWeight: FontWeight.w800,
                     color: t.nInk,
                   ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
         );
@@ -936,6 +1155,31 @@ class _StatsStrip extends StatelessWidget {
           card('TOP GENRE', stats.genre),
           const SizedBox(width: 14),
           card('DAY STREAK', stats.streak),
+          const SizedBox(width: 14),
+          // Library maintenance, next to the library's own figures. Its own
+          // button because it is the one thing on this row that changes files
+          // rather than reporting on them.
+          Tooltip(
+            message: 'Find duplicate recordings',
+            child: Material(
+              color: t.nCard,
+              borderRadius: BorderRadius.circular(14),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: () => duplicateFinder(context, controller),
+                child: Container(
+                  width: 56,
+                  height: 84,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: t.nHair),
+                  ),
+                  child: Icon(Icons.content_copy_outlined,
+                      size: 20, color: t.nInk3),
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -1201,35 +1445,47 @@ class _Browse extends StatelessWidget {
           count: st.cards.length,
           minCols: 7,
           maxCols: 7,
-          builder: (context, i) => _card(st.cards[i]),
+          builder: (context, i) =>
+              StaggerIn(index: i, child: _card(st.cards[i])),
         ),
       ],
     );
   }
 
-  Widget _card(BrowseCard c) => switch (st.libTab) {
-        'artists' => MusicCard(
-            controller: controller,
-            title: c.title,
-            subtitle: c.subtitle,
-            artKind: 'artist',
-            artKey: c.key,
-            direct: c.art,
-            fallback: Icons.person,
-            count: c.count,
-            loved: c.loved,
-            stars: c.stars,
-            onFav: () => controller.send(MusicCmd.artistFav(artistId: c.id)),
-            onRate: (n) =>
-                controller.send(MusicCmd.artistRate(artistId: c.id, stars: n)),
-            onTap: () => controller.send(MusicCmd.openArtist(artistId: c.id)),
-          ),
-        'genres' => CardContextMenu(
-            controller: controller,
-            kind: 'genre',
-            cardKey: c.key,
-            hasArt: c.art.isNotEmpty,
-            child: MusicCard(
+  /// Every card, whatever the tab, carries the same right-click menu.
+  ///
+  /// It used to wrap the genre case only, so the same gesture set a cover on
+  /// one tab and did nothing on the next -- which reads as broken rather than
+  /// as unimplemented. `set_card_art` already accepts album and artist (it
+  /// writes `albums.cover_path` and `artists.image_path`), so the menu works on
+  /// all three without any bridge change.
+  Widget _card(BrowseCard c) => CardContextMenu(
+        controller: controller,
+        kind: switch (st.libTab) {
+          'artists' => 'artist',
+          'genres' => 'genre',
+          _ => 'album',
+        },
+        cardKey: c.key,
+        hasArt: c.art.isNotEmpty,
+        child: switch (st.libTab) {
+          'artists' => MusicCard(
+              controller: controller,
+              title: c.title,
+              subtitle: c.subtitle,
+              artKind: 'artist',
+              artKey: c.key,
+              direct: c.art,
+              fallback: Icons.person,
+              count: c.count,
+              loved: c.loved,
+              stars: c.stars,
+              onFav: () => controller.send(MusicCmd.artistFav(artistId: c.id)),
+              onRate: (n) => controller
+                  .send(MusicCmd.artistRate(artistId: c.id, stars: n)),
+              onTap: () => controller.send(MusicCmd.openArtist(artistId: c.id)),
+            ),
+          'genres' => MusicCard(
               controller: controller,
               title: c.title,
               subtitle: c.subtitle,
@@ -1240,23 +1496,23 @@ class _Browse extends StatelessWidget {
               count: c.count,
               onTap: () => controller.send(MusicCmd.openGenre(name: c.key)),
             ),
-          ),
-        _ => MusicCard(
-            controller: controller,
-            title: c.title,
-            subtitle: c.subtitle,
-            artKind: 'album',
-            artKey: c.key,
-            direct: c.art,
-            count: c.count,
-            loved: c.loved,
-            stars: c.stars,
-            onFav: () => controller.send(MusicCmd.albumFav(albumId: c.id)),
-            onRate: (n) =>
-                controller.send(MusicCmd.albumRate(albumId: c.id, stars: n)),
-            onTap: () => controller.send(MusicCmd.openAlbum(albumId: c.id)),
-          ),
-      };
+          _ => MusicCard(
+              controller: controller,
+              title: c.title,
+              subtitle: c.subtitle,
+              artKind: 'album',
+              artKey: c.key,
+              direct: c.art,
+              count: c.count,
+              loved: c.loved,
+              stars: c.stars,
+              onFav: () => controller.send(MusicCmd.albumFav(albumId: c.id)),
+              onRate: (n) =>
+                  controller.send(MusicCmd.albumRate(albumId: c.id, stars: n)),
+              onTap: () => controller.send(MusicCmd.openAlbum(albumId: c.id)),
+            ),
+        },
+      );
 }
 
 /// Playlists — the action row Slint puts above the grid, then gradient tiles.
@@ -1348,6 +1604,27 @@ class _Folders extends StatelessWidget {
         action: ('Add a folder', controller.addFolder),
       );
     }
+    // A tree beside the grid. The grid is every folder that holds tracks, flat
+    // and searchable; the tree is the shape of the disk, which is the one thing
+    // a flat list of folders cannot show. Under 1100px there is no room for
+    // both and the grid keeps the page.
+    return LayoutBuilder(
+      builder: (context, box) => box.maxWidth < 1100
+          ? _folderGrid(context)
+          : Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 320,
+                  child: _FolderTree(controller: controller),
+                ),
+                Expanded(child: _folderGrid(context)),
+              ],
+            ),
+    );
+  }
+
+  Widget _folderGrid(BuildContext context) {
     // Just the grid, seven across and three down — a folder tile carries a
     // path under its name and is taller than an album's, so 7x4 put the last
     // row under the fold. There was a row of four chips and, under it, a list
@@ -1378,6 +1655,204 @@ class _Folders extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+
+/// The disk, as a tree you can walk into.
+///
+/// One level per fetch: a library on a slow disk should not pay for branches
+/// nobody opened. Expanded paths are held here rather than on the snapshot,
+/// because which folders you have open is a property of looking at the page,
+/// not of the library.
+class _FolderTree extends StatefulWidget {
+  const _FolderTree({required this.controller});
+
+  final MusicController controller;
+
+  @override
+  State<_FolderTree> createState() => _FolderTreeState();
+}
+
+class _FolderTreeState extends State<_FolderTree> {
+  /// Children by parent path; "" is the root. A key present with an empty list
+  /// is a folder that was opened and had nothing under it.
+  final Map<String, List<FolderNode>> _kids = {};
+  final Set<String> _open = {};
+  final Set<String> _loading = {};
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load(''));
+  }
+
+  Future<void> _load(String under) async {
+    if (_kids.containsKey(under) || _loading.contains(under)) return;
+    _loading.add(under);
+    List<FolderNode> got;
+    try {
+      got = await musicFolderChildren(under: under);
+    } catch (_) {
+      got = const [];
+    }
+    if (!mounted) return;
+    setState(() {
+      _kids[under] = got;
+      _loading.remove(under);
+    });
+  }
+
+  void _toggle(FolderNode node) {
+    setState(() {
+      if (!_open.remove(node.path)) _open.add(node.path);
+    });
+    if (_open.contains(node.path)) unawaited(_load(node.path));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final roots = _kids[''];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 12, 6, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'ON DISK',
+            style: TextStyle(
+              fontFamily: Tokens.fontFamily,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.7,
+              color: t.nInk3,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: roots == null
+                ? const Center(child: CircularProgressIndicator())
+                : ListView(
+                    padding: EdgeInsets.zero,
+                    children: _rows(roots, 0),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Flattened, because a ListView of nested Columns loses its scrolling and a
+  /// deep tree is exactly where that starts to matter.
+  List<Widget> _rows(List<FolderNode> nodes, int depth) {
+    final out = <Widget>[];
+    for (final node in nodes) {
+      out.add(_FolderRow(
+        controller: widget.controller,
+        node: node,
+        depth: depth,
+        open: _open.contains(node.path),
+        onToggle: () => _toggle(node),
+      ));
+      if (_open.contains(node.path)) {
+        final kids = _kids[node.path];
+        if (kids == null) {
+          out.add(Padding(
+            padding: EdgeInsets.only(left: 18.0 * (depth + 1) + 8, top: 2),
+            child: const SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 1.5),
+            ),
+          ));
+        } else {
+          out.addAll(_rows(kids, depth + 1));
+        }
+      }
+    }
+    return out;
+  }
+}
+
+class _FolderRow extends StatelessWidget {
+  const _FolderRow({
+    required this.controller,
+    required this.node,
+    required this.depth,
+    required this.open,
+    required this.onToggle,
+  });
+
+  final MusicController controller;
+  final FolderNode node;
+  final int depth;
+  final bool open;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      // Tapping the row opens the folder's page; the arrow expands it. Two
+      // targets because they are two questions — what is in here, and what is
+      // under here.
+      onTap: node.direct > 0
+          ? () => controller.send(MusicCmd.openFolder(path: node.path))
+          : onToggle,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(18.0 * depth, 3, 4, 3),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 18,
+              child: node.hasChildren
+                  ? InkWell(
+                      onTap: onToggle,
+                      child: Icon(
+                        open
+                            ? Icons.keyboard_arrow_down
+                            : Icons.keyboard_arrow_right,
+                        size: 16,
+                        color: t.nInk3,
+                      ),
+                    )
+                  : null,
+            ),
+            Icon(open ? Icons.folder_open : Icons.folder,
+                size: 15, color: t.nInk3),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                node.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12.5, color: t.nInk),
+              ),
+            ),
+            Text(
+              '${node.total}',
+              style: TextStyle(
+                fontFamily: Tokens.fontFamily,
+                fontSize: 11,
+                color: t.nInk3,
+              ),
+            ),
+            // The whole discography directory to the queue in one action,
+            // rather than one album at a time.
+            IconButton(
+              iconSize: 15,
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Play this folder and everything below it',
+              icon: const Icon(Icons.playlist_play),
+              onPressed: () =>
+                  controller.send(MusicCmd.playFolderTree(path: node.path)),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

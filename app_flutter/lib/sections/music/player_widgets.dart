@@ -8,7 +8,10 @@
 
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+
+import '../../playback/audio_deck.dart' show audioPositionS;
 import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../design/tokens.dart';
@@ -143,22 +146,93 @@ class SeekPill extends StatefulWidget {
     required this.pos,
     required this.dur,
     required this.onSeek,
+    this.wave,
     this.accent = Tokens.secMusic,
     this.scale = 1.0,
+    this.smooth = false,
   });
 
   final double pos;
   final double dur;
   final ValueChanged<double> onSeek;
+
+  /// The track's loudness envelope, 0..255 per column, or null while it is
+  /// still being computed or on a file ffmpeg could not read. The bar falls
+  /// back to a plain line, because scrubbing must not wait on a decode.
+  final List<int>? wave;
   final Color accent;
   final double scale;
+
+  /// Whether [pos] is the live deck's position.
+  ///
+  /// The tick that reaches the snapshot is throttled to whole seconds -- the
+  /// clock, the scrubber and the lyric line all move once a second, and that
+  /// throttle is deliberate. A progress edge is the one thing on the bar that
+  /// should not: at 1 Hz it lurches. When this is set the bar reads the deck's
+  /// unthrottled position every frame instead, and only the bar does.
+  final bool smooth;
 
   @override
   State<SeekPill> createState() => _SeekPillState();
 }
 
-class _SeekPillState extends State<SeekPill> {
+class _SeekPillState extends State<SeekPill>
+    with SingleTickerProviderStateMixin {
   double? _dragging;
+
+  /// The playhead, 0..1, sampled per frame. A notifier rather than state: the
+  /// painter subscribes to it, so a moving edge repaints one
+  /// `RenderCustomPaint` and leaves the pill, its clock and the row around it
+  /// alone. Rebuilding all of that sixty times a second to move a line two
+  /// pixels is the cost this avoids.
+  final ValueNotifier<double> _frac = ValueNotifier<double>(0);
+  Ticker? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    _retime();
+  }
+
+  @override
+  void didUpdateWidget(covariant SeekPill old) {
+    super.didUpdateWidget(old);
+    _frac.value = _fromSnapshot();
+    if (old.smooth != widget.smooth) _retime();
+  }
+
+  @override
+  void dispose() {
+    _ticker?.dispose();
+    _frac.dispose();
+    super.dispose();
+  }
+
+  /// `createTicker`, so `TickerMode` silences it when Music is behind another
+  /// section -- an off-screen scrubber should not be asking for frames.
+  void _retime() {
+    _ticker?.dispose();
+    _ticker = null;
+    if (!widget.smooth) {
+      _frac.value = _fromSnapshot();
+      return;
+    }
+    _ticker = createTicker((_) {
+      final next = _dragging != null
+          ? _fromSnapshot()
+          : (audioPositionS / (widget.dur <= 0 ? 1.0 : widget.dur))
+              .clamp(0.0, 1.0);
+      // Paused, or between two identical samples: assigning the same value
+      // notifies nobody, so a still deck costs one comparison a frame.
+      if ((next - _frac.value).abs() > 1e-5) _frac.value = next;
+    })
+      ..start();
+  }
+
+  double _fromSnapshot() {
+    final dur = widget.dur <= 0 ? 1.0 : widget.dur;
+    return ((_dragging ?? widget.pos) / dur).clamp(0.0, 1.0);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -194,6 +268,8 @@ class _SeekPillState extends State<SeekPill> {
                 void to(double dx) {
                   final v = (dx / box.maxWidth).clamp(0.0, 1.0) * dur;
                   setState(() => _dragging = v);
+                  // The finger wins over the deck for as long as it is down.
+                  _frac.value = (v / dur).clamp(0.0, 1.0);
                 }
 
                 return GestureDetector(
@@ -214,11 +290,19 @@ class _SeekPillState extends State<SeekPill> {
                   child: SizedBox(
                     height: 30 * s,
                     child: Center(
-                      child: TrackBar(
-                        frac: (shown / dur).clamp(0.0, 1.0),
-                        accent: widget.accent,
-                        scale: s,
-                      ),
+                      child: widget.wave == null || widget.wave!.isEmpty
+                          ? TrackBar(
+                              frac: (shown / dur).clamp(0.0, 1.0),
+                              accent: widget.accent,
+                              scale: s,
+                            )
+                          : WaveBar(
+                              wave: widget.wave!,
+                              frac: (shown / dur).clamp(0.0, 1.0),
+                              live: widget.smooth ? _frac : null,
+                              accent: widget.accent,
+                              scale: s,
+                            ),
                     ),
                   ),
                 );
@@ -240,6 +324,126 @@ class _SeekPillState extends State<SeekPill> {
 /// flat theme colour, which on a coloured pill reads as a block rather than a
 /// level. It runs the record's own accent into the section's violet, so it is
 /// visibly a gradient at any width and still changes with the record.
+/// The track's own loudness, played part in the accent and the rest behind it.
+///
+/// One `CustomPaint` rather than 400 widgets: this repaints on every position
+/// tick, and a Row of Containers would rebuild the lot each time.
+class WaveBar extends StatelessWidget {
+  const WaveBar({
+    super.key,
+    required this.wave,
+    required this.frac,
+    required this.accent,
+    this.live,
+    this.scale = 1.0,
+    this.height = 22,
+  });
+
+  final List<int> wave;
+
+  /// Where the playhead is, 0..1. A plain value repaints when the widget
+  /// rebuilds; pass [live] instead to have the bar follow the deck every frame.
+  final double frac;
+
+  /// Frame-rate position, when the caller has one. The painter subscribes to
+  /// it directly, so a moving playhead repaints one `RenderCustomPaint` rather
+  /// than rebuilding the pill around it sixty times a second.
+  final ValueListenable<double>? live;
+  final Color accent;
+  final double scale;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height * scale,
+        width: double.infinity,
+        child: RepaintBoundary(
+          child: CustomPaint(
+            painter: _WavePainter(
+              wave: wave,
+              frac: frac.clamp(0.0, 1.0),
+              live: live,
+              accent: accent,
+            ),
+          ),
+        ),
+      );
+}
+
+class _WavePainter extends CustomPainter {
+  _WavePainter({
+    required this.wave,
+    required this.frac,
+    required this.accent,
+    this.live,
+  }) : super(repaint: live);
+
+  final List<int> wave;
+  final double frac;
+  final ValueListenable<double>? live;
+  final Color accent;
+
+  double get _at => (live?.value ?? frac).clamp(0.0, 1.0);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (wave.isEmpty || size.width <= 0) return;
+    // One column per ~2.5 device pixels: denser than that is a solid block, and
+    // the envelope stops reading as a shape.
+    final cols = (size.width / 2.5).floor().clamp(24, wave.length);
+    final w = size.width / cols;
+    final mid = size.height / 2;
+    final played = Paint()..color = accent;
+    final rest = Paint()..color = accent.withValues(alpha: 0.26);
+    // The playhead in column units, so the column it is inside can be filled
+    // part-way. Colouring each column all-or-nothing put the edge on a
+    // ~200-step ladder -- one step every second or so on an album track -- and
+    // that stepping is what reads as a low frame rate, whatever the frame rate
+    // actually is.
+    final edge = _at * cols;
+
+    for (var i = 0; i < cols; i++) {
+      // Take the loudest sample in this column's slice, so downsampling to the
+      // widget's width keeps the transients rather than averaging them away.
+      final lo = wave.length * i ~/ cols;
+      final hi = (wave.length * (i + 1) ~/ cols).clamp(lo + 1, wave.length);
+      var peak = 0;
+      for (var j = lo; j < hi; j++) {
+        if (wave[j] > peak) peak = wave[j];
+      }
+      // A floor, so silence is still a visible line you can aim at.
+      final h = (peak / 255 * size.height).clamp(1.5, size.height);
+      final x = i * w;
+      final bar = RRect.fromRectAndRadius(
+        Rect.fromLTWH(x, mid - h / 2, (w - 1).clamp(0.5, w), h),
+        const Radius.circular(1),
+      );
+
+      final fill = (edge - i).clamp(0.0, 1.0);
+      if (fill >= 1.0) {
+        canvas.drawRRect(bar, played);
+        continue;
+      }
+      canvas.drawRRect(bar, rest);
+      if (fill <= 0.0) continue;
+      // The one column the playhead is inside: draw it again in the played
+      // colour, clipped to how far in the playhead has got. This is the whole
+      // difference between a bar flicking over and an edge sliding across it.
+      canvas.save();
+      canvas.clipRect(Rect.fromLTWH(x, 0, w * fill, size.height));
+      canvas.drawRRect(bar, played);
+      canvas.restore();
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WavePainter old) =>
+      old.frac != frac ||
+      old.accent != accent ||
+      old.live != live ||
+      !identical(old.wave, wave);
+}
+
 class TrackBar extends StatelessWidget {
   const TrackBar({
     super.key,
@@ -689,19 +893,42 @@ class _MarqueeState extends State<Marquee> with SingleTickerProviderStateMixin {
 }
 
 /// The wash the current cover throws across a player surface.
-BoxDecoration artWash(Color accent, {Alignment from = Alignment.centerLeft}) =>
+/// The record's colour, bled across a surface.
+///
+/// Two colours rather than one, when a companion is given: a single hue fading
+/// to nothing reads as a stripe down one edge, and the pair reads as the room
+/// being lit by the cover. Both stay low-alpha — this is lighting, and the
+/// things on top of it have to stay readable in either theme.
+///
+/// [Motion.wash] is the duration to animate a change over; the caller wraps
+/// this in an [AnimatedContainer] so the palette crossfades on a track change
+/// rather than cutting.
+BoxDecoration artWash(
+  Color accent, {
+  Color? alt,
+  Alignment from = Alignment.centerLeft,
+}) =>
     BoxDecoration(
       gradient: LinearGradient(
         begin: from,
         end: from == Alignment.centerLeft
             ? Alignment.centerRight
             : Alignment.bottomCenter,
-        colors: [
-          accent.withValues(alpha: 0.30),
-          accent.withValues(alpha: 0.06),
-          Colors.transparent,
-        ],
-        stops: const [0.0, 0.45, 0.75],
+        colors: alt == null
+            ? [
+                accent.withValues(alpha: 0.30),
+                accent.withValues(alpha: 0.06),
+                Colors.transparent,
+              ]
+            : [
+                accent.withValues(alpha: 0.32),
+                accent.withValues(alpha: 0.12),
+                alt.withValues(alpha: 0.14),
+                alt.withValues(alpha: 0.0),
+              ],
+        stops: alt == null
+            ? const [0.0, 0.45, 0.75]
+            : const [0.0, 0.34, 0.68, 1.0],
       ),
     );
 

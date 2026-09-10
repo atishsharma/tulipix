@@ -18,6 +18,9 @@ import 'meta_manager.dart';
 import 'music_controller.dart';
 import 'music_dialogs.dart';
 import 'music_widgets.dart';
+import 'player_widgets.dart';
+import 'music_motion.dart';
+import 'word_search.dart';
 
 /// The docked width. 432 in ui/page_music.slint.
 const double kSidePanelWidth = 432;
@@ -75,7 +78,19 @@ class SidePanel extends StatelessWidget {
                 // No cast shadow: it bled onto the player bar in Slint too.
                 border: Border(left: BorderSide(color: t.outline)),
               ),
-              child: Padding(
+              // The record's light reaches the queue too, falling from the top
+              // so it does not fight the left border. Over the panel colour
+              // rather than replacing it: a gradient in the BoxDecoration above
+              // would take the place of `t.panel2` outright.
+              child: AnimatedContainer(
+                duration: Motion.wash,
+                curve: Motion.ease,
+                decoration: artWash(
+                  controller.accent,
+                  alt: controller.accentAlt,
+                  from: Alignment.topCenter,
+                ),
+                child: Padding(
                 padding: const EdgeInsets.all(18),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -88,6 +103,7 @@ class SidePanel extends StatelessWidget {
                           : _Queue(controller: controller),
                     ),
                   ],
+                ),
                 ),
               ),
             ),
@@ -164,12 +180,29 @@ class _Queue extends StatelessWidget {
     final t = context.tokens;
     final queue = controller.state?.queue ?? const <Track>[];
     if (queue.isEmpty) {
-      return const MusicEmpty(
-        icon: Icons.queue_music_outlined,
-        title: 'The queue is empty',
-        body: 'Play an album, a playlist or a folder and it lands here.',
+      return Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const MusicEmpty(
+            icon: Icons.queue_music_outlined,
+            title: 'The queue is empty',
+            body: 'Play an album, a playlist or a folder and it lands here.',
+          ),
+          const SizedBox(height: 12),
+          // An empty queue is exactly where "keep going" is worth offering. It
+          // builds a run from the last few things played, so it needs something
+          // to have been played -- the command says so itself when nothing has.
+          OutlinedButton.icon(
+            onPressed: () => controller.send(const MusicCmd.stationStart()),
+            icon: const Icon(Icons.auto_awesome, size: 16),
+            label: const Text('Keep playing something like this'),
+          ),
+        ],
       );
     }
+    // Tracks nobody chose. The station marks its own in `play_queue.source`,
+    // so they can be taken back out without touching anything queued by hand.
+    final suggested = controller.state?.queueSuggested ?? 0;
     return Column(
       children: [
         Row(
@@ -183,6 +216,45 @@ class _Queue extends StatelessWidget {
                 color: t.nInk2,
               ),
             ),
+            if (suggested > 0) ...[
+              const SizedBox(width: 8),
+              Tooltip(
+                message: '$suggested suggested — tap to remove them',
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(20),
+                  onTap: () =>
+                      controller.send(const MusicCmd.stationStop()),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 9, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Tokens.secMusic.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.auto_awesome,
+                            size: 12, color: Tokens.secMusic),
+                        const SizedBox(width: 5),
+                        Text(
+                          '$suggested suggested',
+                          style: const TextStyle(
+                            fontFamily: Tokens.fontFamily,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: Tokens.secMusic,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.close,
+                            size: 12, color: Tokens.secMusic),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
             const Spacer(),
             TextButton(
               onPressed: () => confirmThen(
@@ -285,6 +357,16 @@ class _Lyrics extends StatelessWidget {
                       ? controller.send(const MusicCmd.mgrBack())
                       : controller.send(MusicCmd.mgrSearchOpen(itemId: itemId)),
             ),
+            const SizedBox(width: 8),
+            // The other direction: not "find the words for this song" but
+            // "find the song with these words". Every stored lyric sheet is
+            // searchable and nothing has ever searched them.
+            MusicChip(
+              icon: Icons.travel_explore,
+              label: 'Search words',
+              active: false,
+              onTap: () => searchLyrics(context, controller),
+            ),
             const Spacer(),
             if (!finding && lines.isNotEmpty) ...[
               _Nudge(
@@ -339,6 +421,11 @@ class _Lyrics extends StatelessWidget {
                         child: _Line(
                           text: _at(lines, active + off),
                           off: off,
+                          // Only the live line needs it, and only when the
+                          // sheet is timed at all.
+                          progress: off == 0
+                              ? _through(controller, lines, active)
+                              : 0.0,
                         ),
                       ),
                   ],
@@ -351,18 +438,93 @@ class _Lyrics extends StatelessWidget {
 
   static String _at(List<LyricLine> lines, int i) =>
       i >= 0 && i < lines.length ? lines[i].text : '';
+
+  /// How far through the live line the playhead is, 0..1.
+  ///
+  /// The line's own span, so a held note does not race and a quick line does
+  /// not crawl. Returns 0 when there is no next line to measure against — the
+  /// last line of a song has no end but the end of the track, and lighting it
+  /// up over four minutes of outro would be worse than not lighting it at all.
+  static double _through(
+    MusicController controller,
+    List<LyricLine> lines,
+    int active,
+  ) {
+    if (active < 0 || active + 1 >= lines.length) return 0.0;
+    final start = lines[active].atMs;
+    final end = lines[active + 1].atMs;
+    if (end <= start) return 0.0;
+    final st = controller.state;
+    // The same offset the nudge buttons set: the highlight has to move with
+    // the line, not against it.
+    final at = controller.tickPos * 1000 - (st?.lyricsOffsetMs ?? 0);
+    return ((at - start) / (end - start)).clamp(0.0, 1.0);
+  }
 }
 
 class _Line extends StatelessWidget {
-  const _Line({required this.text, required this.off});
+  const _Line({
+    required this.text,
+    required this.off,
+    this.progress = 0.0,
+  });
 
   final String text;
   final int off;
+
+  /// How far through this line the playhead is, 0..1. Only meaningful on the
+  /// live line; every other slot passes 0.
+  final double progress;
+
+  /// The live line, with the words already sung lit and the rest waiting.
+  ///
+  /// Spread evenly across the line's span, which is a guess: words are not
+  /// evenly spaced and only enhanced LRC carries per-word stamps, which almost
+  /// nothing in the wild does. Weighted by word length so a long word holds the
+  /// beam longer than "a", which is as close as an even split can get. It reads
+  /// as following the singer; it is not a transcript-grade alignment, and a
+  /// line that lands half a word out is what the offset nudge is for.
+  Widget _sung(BuildContext context, TextStyle style) {
+    final t = context.tokens;
+    final words = text.split(' ');
+    final weights =
+        words.map((w) => w.trim().isEmpty ? 1 : w.characters.length).toList();
+    final total = weights.fold<int>(0, (a, b) => a + b);
+    if (total == 0) return Text(text, textAlign: TextAlign.center);
+
+    final lit = progress * total;
+    var walked = 0;
+    final spans = <TextSpan>[];
+    for (var i = 0; i < words.length; i++) {
+      walked += weights[i];
+      // A word counts as sung once the beam has passed its middle, so it
+      // lights while it is being said rather than after.
+      final done = lit >= walked - weights[i] / 2;
+      spans.add(TextSpan(
+        text: i == words.length - 1 ? words[i] : '${words[i]} ',
+        style: TextStyle(
+          color: done ? Tokens.secMusic : t.nInk2.withValues(alpha: 0.55),
+        ),
+      ));
+    }
+    return Text.rich(TextSpan(style: style, children: spans),
+        textAlign: TextAlign.center);
+  }
 
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
     final d = off.abs();
+    if (off == 0 && progress > 0 && !t.reduceMotion && text.isNotEmpty) {
+      return _sung(
+        context,
+        const TextStyle(
+          fontFamily: Tokens.fontFamily,
+          fontSize: 24,
+          fontWeight: FontWeight.w800,
+        ),
+      );
+    }
     return AnimatedDefaultTextStyle(
       duration:
           t.reduceMotion ? Duration.zero : const Duration(milliseconds: 220),

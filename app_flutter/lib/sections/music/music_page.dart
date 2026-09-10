@@ -26,6 +26,21 @@ import 'radio_tab.dart';
 import 'side_panel.dart';
 import 'youtube_tab.dart';
 
+
+/// Whether the keyboard is currently going into a text field.
+///
+/// `CallbackShortcuts` sits above the whole section, and a shortcut bound there
+/// fires before a focused `TextField` ever sees the key -- so without this,
+/// typing "search" into the search box paused the deck on the space, toggled
+/// shuffle on the s, and loved the track on the l. The focus node a TextField
+/// installs lives inside `EditableText`, which is what this looks for.
+bool _typing() {
+  final ctx = FocusManager.instance.primaryFocus?.context;
+  if (ctx == null) return false;
+  return ctx.widget is EditableText ||
+      ctx.findAncestorWidgetOfExactType<EditableText>() != null;
+}
+
 class MusicPage extends StatefulWidget {
   const MusicPage({super.key});
 
@@ -72,6 +87,27 @@ class _MusicPageState extends State<MusicPage> {
       animation: _c,
       builder: (context, _) {
         final st = _c.state;
+        // Two gates on every transport key.
+        //
+        // The player has to be up. These keys move a deck; with nothing loaded
+        // there is no deck, and Space silently doing nothing on a library page
+        // is worse than Space doing what the platform would have done with it.
+        // The condition is exactly the one `PlayerBar` renders itself under, so
+        // "the keys work" and "the bar is on screen" are the same fact.
+        final now = st?.now;
+        final deckUp =
+            now != null && (now.loaded || now.title.isNotEmpty);
+
+        // And nothing may be being typed into. The old comment here claimed a
+        // focused text field consumes these itself; it does not -- a
+        // CallbackShortcuts above the field sees the key first, so Space paused
+        // the music instead of typing a space, and L, S, R and Q never reached
+        // the search box at all.
+        VoidCallback guard(VoidCallback run) => () {
+              if (!deckUp || _typing()) return;
+              run();
+            };
+
         return CallbackShortcuts(
           // Escape closes whatever the player has open — the docked panel or
           // the equalizer — before anything outside the section sees the key.
@@ -81,6 +117,35 @@ class _MusicPageState extends State<MusicPage> {
             if (_c.panel.isNotEmpty)
               const SingleActivator(LogicalKeyboardKey.escape): () =>
                   _c.setPanel(_c.panel),
+            // Transport.
+            const SingleActivator(LogicalKeyboardKey.space):
+                guard(_c.keyPlayPause),
+            const SingleActivator(LogicalKeyboardKey.arrowLeft):
+                guard(() => _c.nudge(-10)),
+            const SingleActivator(LogicalKeyboardKey.arrowRight):
+                guard(() => _c.nudge(10)),
+            // Whole tracks, because holding the arrow to cross a nine-minute
+            // side is not seeking, it is waiting.
+            const SingleActivator(LogicalKeyboardKey.arrowLeft, shift: true):
+                guard(_c.keyPrev),
+            const SingleActivator(LogicalKeyboardKey.arrowRight, shift: true):
+                guard(_c.keyNext),
+            // Marks and modes.
+            const SingleActivator(LogicalKeyboardKey.keyL): guard(_c.keyLove),
+            const SingleActivator(LogicalKeyboardKey.keyS): guard(_c.keyShuffle),
+            const SingleActivator(LogicalKeyboardKey.keyR): guard(_c.keyRepeat),
+            const SingleActivator(LogicalKeyboardKey.keyQ):
+                guard(() => _c.setPanel('queue')),
+            // Back out of a detail page the way the browser key does, since
+            // the trail is a history now. Not gated on the deck -- this is
+            // navigation, not transport -- but still not while typing, or
+            // Alt+Left in the search box leaves the page.
+            if (_c.canGoBack)
+              const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true):
+                  () {
+                if (_typing()) return;
+                _c.goBack();
+              },
           },
           child: ColoredBox(
             color: t.nCanvas,

@@ -39,6 +39,36 @@ pub fn key_label(pitch_class: u8, major: bool) -> Option<String> {
     Some(format!("{}{}", KEYS[pitch_class as usize], if major { "" } else { "m" }))
 }
 
+/// Split a Camelot code into its wheel position and mode, e.g. "8A" -> (8, false).
+pub fn parse_camelot(code: &str) -> Option<(u8, bool)> {
+    let code = code.trim();
+    let (num, letter) = code.split_at(code.len().checked_sub(1)?);
+    let major = match letter {
+        "B" | "b" => true,
+        "A" | "a" => false,
+        _ => return None,
+    };
+    let n: u8 = num.parse().ok()?;
+    (1..=12).contains(&n).then_some((n, major))
+}
+
+/// Whether two Camelot codes mix without clashing.
+///
+/// The DJ rule, unchanged since the wheel was drawn: stay where you are, step
+/// one position around the ring, or switch mode in place (8A <-> 8B, the
+/// relative minor/major). Position 12 is adjacent to 1 — it is a wheel, so the
+/// arithmetic wraps; comparing the numbers directly would call 12A and 1A a
+/// clash when they are neighbours.
+pub fn harmonic(a: &str, b: &str) -> bool {
+    let (Some((na, ma)), Some((nb, mb))) = (parse_camelot(a), parse_camelot(b)) else {
+        return false;
+    };
+    if na == nb {
+        return true; // same position, either mode
+    }
+    ma == mb && (na % 12 + 1 == nb || nb % 12 + 1 == na)
+}
+
 pub async fn store(pool: &SqlitePool, item_id: i64, bpm: Option<f64>, key: Option<&str>) -> Result<()> {
     sqlx::query("UPDATE track_meta SET bpm = ?, music_key = ? WHERE item_id = ?")
         .bind(bpm).bind(key).bind(item_id).execute(pool).await?;
@@ -64,6 +94,22 @@ mod tests {
         assert_eq!(camelot(0, true).unwrap(), "8B"); // C major
         assert!(camelot(12, true).is_none());
         assert_eq!(key_label(9, false).unwrap(), "Am");
+    }
+
+    #[test]
+    fn the_wheel_wraps_at_twelve() {
+        assert!(harmonic("8A", "8A"));
+        assert!(harmonic("8A", "8B"), "relative major mixes in place");
+        assert!(harmonic("8A", "9A"));
+        assert!(harmonic("12A", "1A"), "12 and 1 are neighbours on a wheel");
+        assert!(harmonic("1A", "12A"));
+        assert!(!harmonic("8A", "10A"), "two steps is a clash");
+        assert!(!harmonic("8A", "9B"), "step and switch mode at once is a clash");
+        assert!(!harmonic("", "8A"));
+        assert!(!harmonic("13A", "1A"), "13 is off the wheel");
+        assert_eq!(parse_camelot("8A"), Some((8, false)));
+        assert_eq!(parse_camelot("12B"), Some((12, true)));
+        assert_eq!(parse_camelot("8C"), None);
     }
 
     #[tokio::test]

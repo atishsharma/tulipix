@@ -80,9 +80,13 @@ class ZenPlayer extends StatelessWidget {
         bindings: <ShortcutActivator, VoidCallback>{
           // One Escape always exits, closing any open panel with it — Slint's
           // zen focus scope does exactly that. Two presses to get out of a
-          // fullscreen page is one too many. Space is not here: it is handled
-          // for the whole app in music_overlay.dart, off the keyboard rather
-          // than off the focus chain.
+          // fullscreen page is one too many.
+          //
+          // This only fires when something inside zen holds focus, because
+          // `CallbackShortcuts` is dispatched up the focus chain — which is
+          // why it appeared not to work at all. The case where nothing is
+          // focused, which is most of the time, is the Escape ladder in
+          // music_overlay.dart. Same for Space, which lives only there.
           const SingleActivator(LogicalKeyboardKey.escape): controller.closeZen,
           const SingleActivator(LogicalKeyboardKey.keyL):
               controller.toggleZenLyrics,

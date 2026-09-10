@@ -74,9 +74,15 @@ pub async fn enqueue(pool: &SqlitePool, item_id: i64, played_at: i64) -> Result<
 
 /// Item ids + timestamps awaiting submission, oldest first.
 pub async fn pending(pool: &SqlitePool, limit: i64) -> Result<Vec<(i64, i64, i64)>> {
+    pending_for(pool, SERVICE, limit).await
+}
+
+/// The same, for any service sharing this queue -- ListenBrainz writes rows
+/// here too, under its own `service` tag, so both can run at once.
+pub async fn pending_for(pool: &SqlitePool, service: &str, limit: i64) -> Result<Vec<(i64, i64, i64)>> {
     Ok(sqlx::query_as(
         "SELECT id, item_id, played_at FROM scrobble_queue WHERE service = ? AND submitted = 0 ORDER BY played_at ASC LIMIT ?",
-    ).bind(SERVICE).bind(limit).fetch_all(pool).await?)
+    ).bind(service).bind(limit).fetch_all(pool).await?)
 }
 
 /// Mark queue rows submitted after a successful batch.

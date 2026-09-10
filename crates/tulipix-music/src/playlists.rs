@@ -14,20 +14,90 @@ fn now() -> i64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum Field { Genre, Year, Rating, Loved, PlayCount, Bpm }
+pub enum Field { Genre, Year, Rating, Loved, PlayCount, Bpm, Artist, MusicKey, DrScore, Added }
 
 impl Field {
+    /// The id this field serialises as, which is also what an editor sends back.
+    pub fn id(&self) -> &'static str {
+        Field::all().iter().find(|(f, _, _)| f == self).map(|(_, i, _)| *i).unwrap_or("genre")
+    }
+
+    /// The SQL the condition compares against. Unqualified names resolve to
+    /// `track_meta`; `Added` and `Artist` reach past it, so they say where.
     fn column(&self) -> &'static str {
         match self {
             Field::Genre => "genre", Field::Year => "year", Field::Rating => "rating",
             Field::Loved => "loved", Field::PlayCount => "play_count", Field::Bpm => "bpm",
+            Field::MusicKey => "music_key", Field::DrScore => "dr_score",
+            Field::Artist => "(SELECT name FROM artists WHERE artists.id = track_meta.artist_id)",
+            // Days since it was added, so "added less than 90" reads as
+            // "added within the last 90 days" and needs no special operator.
+            // Evaluated per row against the clock, so a saved rule keeps
+            // meaning the same thing tomorrow.
+            Field::Added => "((CAST(strftime('%s','now') AS INTEGER) - items.added) / 86400)",
         }
+    }
+
+    /// What kind of input the value is, so an editor can offer the right one
+    /// rather than a text box for everything.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Field::Genre | Field::Artist | Field::MusicKey => "text",
+            Field::Loved => "bool",
+            Field::Added => "days",
+            _ => "number",
+        }
+    }
+
+    /// The field an editor's dropdown named, or `None` for an id from a build
+    /// that had a field this one does not.
+    pub fn from_id(id: &str) -> Option<Field> {
+        Field::all().iter().find(|(_, i, _)| *i == id).map(|(f, _, _)| f.clone())
+    }
+
+    /// Every field an editor can offer, with the id its serde form uses.
+    pub fn all() -> &'static [(Field, &'static str, &'static str)] {
+        &[
+            (Field::Genre, "genre", "Genre"),
+            (Field::Artist, "artist", "Artist"),
+            (Field::Year, "year", "Year"),
+            (Field::Rating, "rating", "Rating"),
+            (Field::Loved, "loved", "Loved"),
+            (Field::PlayCount, "play_count", "Plays"),
+            (Field::Bpm, "bpm", "Tempo (BPM)"),
+            (Field::MusicKey, "music_key", "Key"),
+            (Field::DrScore, "dr_score", "Dynamic range"),
+            (Field::Added, "added", "Added (days ago)"),
+        ]
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Op { Eq, Ne, Gt, Lt, Gte, Lte, Contains }
+
+impl Op {
+    pub fn id(&self) -> &'static str {
+        Op::all().iter().find(|(o, _, _)| o == self).map(|(_, i, _)| *i).unwrap_or("eq")
+    }
+
+    pub fn from_id(id: &str) -> Option<Op> {
+        Op::all().iter().find(|(_, i, _)| *i == id).map(|(o, _, _)| o.clone())
+    }
+
+    /// Every operator an editor can offer, with the id its serde form uses.
+    pub fn all() -> &'static [(Op, &'static str, &'static str)] {
+        &[
+            (Op::Eq, "eq", "is"),
+            (Op::Ne, "ne", "is not"),
+            (Op::Contains, "contains", "contains"),
+            (Op::Gt, "gt", "is more than"),
+            (Op::Lt, "lt", "is less than"),
+            (Op::Gte, "gte", "is at least"),
+            (Op::Lte, "lte", "is at most"),
+        ]
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Condition { pub field: Field, pub op: Op, pub value: String }
@@ -84,6 +154,29 @@ pub async fn create(pool: &SqlitePool, name: &str, rule: Option<&SmartRule>) -> 
     Ok(sqlx::query_scalar(
         "INSERT INTO playlists (name, is_smart, rule_json, created, updated) VALUES (?,?,?,?,?) RETURNING id",
     ).bind(name).bind(is_smart).bind(rule_json).bind(t).bind(t).fetch_one(pool).await?)
+}
+
+/// Rewrite a smart playlist's name and rule in place.
+///
+/// In place rather than delete-and-recreate: the id is what
+/// `playlists.detail_id` and any open page are holding, and recreating would
+/// close the page the user is editing from.
+pub async fn update_smart(pool: &SqlitePool, playlist_id: i64, name: &str, rule: &SmartRule) -> Result<()> {
+    sqlx::query("UPDATE playlists SET name = ?, is_smart = 1, rule_json = ?, updated = ? WHERE id = ?")
+        .bind(name).bind(serde_json::to_string(rule)?).bind(now()).bind(playlist_id)
+        .execute(pool).await?;
+    Ok(())
+}
+
+/// The rule behind a smart playlist, or `None` when it is a manual one.
+pub async fn rule_of(pool: &SqlitePool, playlist_id: i64) -> Result<Option<SmartRule>> {
+    let row: Option<(i64, Option<String>)> =
+        sqlx::query_as("SELECT is_smart, rule_json FROM playlists WHERE id = ?")
+            .bind(playlist_id).fetch_optional(pool).await?;
+    let Some((1, Some(json))) = row else { return Ok(None) };
+    // A rule saved by an older build may not parse against today's Field set.
+    // That is a rule to re-author, not an error to fail the page over.
+    Ok(serde_json::from_str(&json).ok())
 }
 
 /// Playlist id by exact name — lets one-click smart playlists dedupe instead
@@ -183,6 +276,84 @@ pub async fn reorder(pool: &SqlitePool, playlist_id: i64, from: usize, to: usize
 mod tests {
     use super::*;
     use crate::schema::tests::{open_pool, add_track};
+
+    #[tokio::test]
+    async fn added_within_days_and_the_artist_reach_past_track_meta() {
+        let (_t, pool) = open_pool().await;
+        sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Aphex Twin')")
+            .execute(&pool).await.unwrap();
+        let fresh = add_track(&pool, "/m/fresh.flac").await;
+        let old = add_track(&pool, "/m/old.flac").await;
+        let n = now();
+        sqlx::query("UPDATE items SET added = ? WHERE id = ?")
+            .bind(n - 10 * 86_400).bind(fresh).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE items SET added = ? WHERE id = ?")
+            .bind(n - 400 * 86_400).bind(old).execute(&pool).await.unwrap();
+        for id in [fresh, old] {
+            sqlx::query("UPDATE track_meta SET artist_id = 1 WHERE item_id = ?")
+                .bind(id).execute(&pool).await.unwrap();
+        }
+
+        let within_90 = SmartRule {
+            combine: Combine::All,
+            conditions: vec![Condition { field: Field::Added, op: Op::Lt, value: "90".into() }],
+            limit: None,
+        };
+        assert_eq!(evaluate(&pool, &within_90).await.unwrap(), vec![fresh]);
+
+        let by_artist = SmartRule {
+            combine: Combine::All,
+            conditions: vec![Condition { field: Field::Artist, op: Op::Contains, value: "aphex".into() }],
+            limit: None,
+        };
+        assert_eq!(evaluate(&pool, &by_artist).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_smart_rule_round_trips_through_the_row() {
+        let (_t, pool) = open_pool().await;
+        let rule = SmartRule {
+            combine: Combine::Any,
+            conditions: vec![Condition { field: Field::Loved, op: Op::Eq, value: "1".into() }],
+            limit: Some(50),
+        };
+        let id = create(&pool, "Faves", Some(&rule)).await.unwrap();
+        assert_eq!(rule_of(&pool, id).await.unwrap().as_ref(), Some(&rule));
+
+        let edited = SmartRule { limit: Some(10), ..rule.clone() };
+        update_smart(&pool, id, "Faves, fewer", &edited).await.unwrap();
+        assert_eq!(rule_of(&pool, id).await.unwrap(), Some(edited));
+        let name: String = sqlx::query_scalar("SELECT name FROM playlists WHERE id = ?")
+            .bind(id).fetch_one(&pool).await.unwrap();
+        assert_eq!(name, "Faves, fewer");
+
+        // A manual playlist has no rule, and that is not an error.
+        let manual = create(&pool, "By hand", None).await.unwrap();
+        assert!(rule_of(&pool, manual).await.unwrap().is_none());
+    }
+
+    #[test]
+    fn every_field_and_op_is_offerable() {
+        // The editor builds its dropdowns from these, so a field missing from
+        // `all()` is a field nobody can ever author a condition on.
+        assert_eq!(Field::all().len(), 10);
+        assert_eq!(Op::all().len(), 7);
+        // Every id round-trips, or an editor's dropdown saves a rule that
+        // reloads as something else.
+        for (f, id, _) in Field::all() {
+            assert_eq!(Field::from_id(id).as_ref(), Some(f));
+            assert_eq!(f.id(), *id);
+        }
+        for (o, id, _) in Op::all() {
+            assert_eq!(Op::from_id(id).as_ref(), Some(o));
+            assert_eq!(o.id(), *id);
+        }
+        assert!(Field::from_id("nonsense").is_none());
+        for (f, id, label) in Field::all() {
+            assert!(!id.is_empty() && !label.is_empty());
+            assert!(matches!(f.kind(), "text" | "number" | "bool" | "days"));
+        }
+    }
 
     #[tokio::test]
     async fn manual_append_orders() {

@@ -60,7 +60,15 @@ CREATE TABLE IF NOT EXISTS track_meta (
     is_stream      INTEGER NOT NULL DEFAULT 0,
     stream_url     TEXT,
     cache_path     TEXT,
-    cache_bytes    INTEGER
+    cache_bytes    INTEGER,
+    composer       TEXT,
+    performer      TEXT,
+    producer       TEXT,
+    remixer        TEXT,
+    label          TEXT,
+    catalog_no     TEXT,
+    release_date   TEXT,
+    tags_version   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS track_meta_artist_idx ON track_meta(artist_id);
 CREATE INDEX IF NOT EXISTS track_meta_album_idx  ON track_meta(album_id);
@@ -78,6 +86,7 @@ CREATE TABLE IF NOT EXISTS playlists (
     name      TEXT    NOT NULL,
     is_smart  INTEGER NOT NULL DEFAULT 0,
     rule_json TEXT,
+    description TEXT,
     created   INTEGER NOT NULL,
     updated   INTEGER NOT NULL
 );
@@ -185,8 +194,37 @@ CREATE TABLE IF NOT EXISTS dl_searches (
 CREATE INDEX IF NOT EXISTS dl_searches_at_idx ON dl_searches(searched_at DESC);
 "#;
 
+/// Columns added after a library was first created.
+///
+/// `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so
+/// a column added to [`MUSIC_SCHEMA`] only ever reaches new libraries. These
+/// reach the ones already on disk. A duplicate-column error is the expected
+/// result on every run after the one that added it, which is why each is run
+/// and ignored separately rather than in one batch — one failure must not skip
+/// the rest.
+///
+/// Add here *and* to `MUSIC_SCHEMA`: the first is for existing libraries, the
+/// second for new ones, and a column in only one of them is a bug that shows up
+/// on exactly half of installs.
+const ADDED_COLUMNS: &[&str] = &[
+    "ALTER TABLE artists ADD COLUMN bio TEXT",
+    "ALTER TABLE artists ADD COLUMN facts TEXT",
+    "ALTER TABLE track_meta ADD COLUMN composer TEXT",
+    "ALTER TABLE track_meta ADD COLUMN performer TEXT",
+    "ALTER TABLE track_meta ADD COLUMN producer TEXT",
+    "ALTER TABLE track_meta ADD COLUMN remixer TEXT",
+    "ALTER TABLE track_meta ADD COLUMN label TEXT",
+    "ALTER TABLE track_meta ADD COLUMN catalog_no TEXT",
+    "ALTER TABLE track_meta ADD COLUMN release_date TEXT",
+    "ALTER TABLE playlists ADD COLUMN description TEXT",
+    "ALTER TABLE track_meta ADD COLUMN tags_version INTEGER NOT NULL DEFAULT 0",
+];
+
 pub async fn apply(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(MUSIC_SCHEMA).execute(pool).await?;
+    for stmt in ADDED_COLUMNS {
+        let _ = sqlx::query(stmt).execute(pool).await;
+    }
     Ok(())
 }
 

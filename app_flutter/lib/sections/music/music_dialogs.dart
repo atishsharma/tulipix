@@ -12,6 +12,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
+import 'smart_editor.dart';
 
 /// The section's confirm button. Left to itself a `FilledButton` takes the
 /// app's own primary, which is the shell's violet -- so every "Delete
@@ -191,6 +192,10 @@ List<BrowseCard> _playlists(MusicController c) =>
     c.state?.playlists ?? const <BrowseCard>[];
 
 /// Name a new playlist. Returns its id once the bridge has made it, or null.
+/// Marks the "Smart playlist…" answer apart from a name. A control character
+/// rather than a word, because a playlist may legitimately be called "smart:".
+const String _kSmart = '\u0001';
+
 Future<int?> createPlaylist(BuildContext context, MusicController c) async {
   final name = TextEditingController();
   final chosen = await showDialog<String>(
@@ -215,6 +220,14 @@ Future<int?> createPlaylist(BuildContext context, MusicController c) async {
           onPressed: () => Navigator.pop(ctx),
           child: const Text('Cancel'),
         ),
+        // The other kind. A smart playlist is a rule rather than a list, so it
+        // needs the editor rather than this box -- the name typed here carries
+        // across so nothing is retyped.
+        TextButton(
+          style: musicQuietStyle(ctx),
+          onPressed: () => Navigator.pop(ctx, '$_kSmart${name.text.trim()}'),
+          child: const Text('Smart playlist…'),
+        ),
         FilledButton(
           style: musicFilledStyle(),
           onPressed: () => Navigator.pop(ctx, name.text.trim()),
@@ -223,7 +236,13 @@ Future<int?> createPlaylist(BuildContext context, MusicController c) async {
       ],
     ),
   );
-  if (chosen == null || chosen.isEmpty) return null;
+  if (chosen == null) return null;
+  if (chosen.startsWith(_kSmart)) {
+    if (!context.mounted) return null;
+    return editSmartPlaylist(context, c,
+        name: chosen.substring(_kSmart.length));
+  }
+  if (chosen.isEmpty) return null;
   await c.send(MusicCmd.playlistCreate(name: chosen));
   // The snapshot that came back already has it; matching by name is how the
   // id gets back here, since the command answers with the whole section.

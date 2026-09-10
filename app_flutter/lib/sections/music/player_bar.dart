@@ -22,6 +22,7 @@ import 'package:flutter/material.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
+import 'music_motion.dart';
 import 'music_dialogs.dart';
 import 'music_widgets.dart';
 import 'player_widgets.dart';
@@ -63,8 +64,12 @@ class PlayerBar extends StatelessWidget {
             SizedBox(height: 260, child: _Panel(controller: controller)),
           SizedBox(
             height: 124,
-            child: DecoratedBox(
-              decoration: artWash(accent),
+            // Animated, not decorated: the palette should arrive with the next
+            // record rather than snap to it, and a DecoratedBox cannot tween.
+            child: AnimatedContainer(
+              duration: Motion.wash,
+              curve: Motion.ease,
+              decoration: artWash(accent, alt: controller.accentAlt),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(22, 6, 22, 9),
                 child: Column(
@@ -195,6 +200,15 @@ class _SeekRow extends StatelessWidget {
                     pos: controller.tickPos,
                     dur: controller.tickDur,
                     accent: controller.accent,
+                    // This one is the live deck, so the bar follows the
+                    // unthrottled position rather than the once-a-second tick.
+                    smooth: true,
+                    // Only a library track gets one -- the same rule the bar
+                    // uses for the heart. A stream has no file to decode and no
+                    // end to draw a shape against.
+                    wave: now.itemId != 0 && now.mode == 'music'
+                        ? controller.waveFor(now.itemId)
+                        : null,
                     onSeek: (v) => controller.send(MusicCmd.seek(secs: v)),
                   ),
           ),
@@ -296,13 +310,21 @@ class _ControlsState extends State<_Controls> {
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        MusicArt(
-                          controller: c,
-                          kind: 'track',
-                          artKey: '${now.itemId}',
-                          direct: now.art,
-                          size: 56,
-                          radius: 0,
+                        // Keyed on the track, so a song change dissolves the
+                        // old cover into the new one instead of swapping it
+                        // between two frames.
+                        CrossFade(
+                          key: playerArtKey,
+                          slotKey: 'art:${now.itemId}:${now.art}',
+                          alignment: Alignment.center,
+                          child: MusicArt(
+                            controller: c,
+                            kind: 'track',
+                            artKey: '${now.itemId}',
+                            direct: now.art,
+                            size: 56,
+                            radius: 0,
+                          ),
                         ),
                         if (_artHover)
                           const ColoredBox(
@@ -317,12 +339,17 @@ class _ControlsState extends State<_Controls> {
               ),
               const SizedBox(width: 12),
               Flexible(
-                child: NowPlayingLines(
-                  controller: c,
-                  now: now,
-                  live: widget.live,
-                  titleSize: 15,
-                  subSize: 12,
+                // The words change with the picture: same key, same duration,
+                // so the title and the cover cannot land a frame apart.
+                child: CrossFade(
+                  slotKey: 'lines:${now.itemId}:${now.title}',
+                  child: NowPlayingLines(
+                    controller: c,
+                    now: now,
+                    live: widget.live,
+                    titleSize: 15,
+                    subSize: 12,
+                  ),
                 ),
               ),
             ],

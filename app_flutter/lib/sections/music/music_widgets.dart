@@ -8,11 +8,13 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
 import 'music_dialogs.dart';
+import 'music_motion.dart';
 import 'song_menu.dart';
 
 /// Artwork with a fallback glyph. `kind`/`key` are what `music_ensure_art`
@@ -691,6 +693,98 @@ class _PlayFab extends StatelessWidget {
 /// One row of any track list. The star, the heart and the lyrics glyph are the
 /// three per-row controls the Slint `SongCard` carries; the rest of its
 /// seventeen properties were hover states Flutter derives.
+
+/// Who made a track, under the row it belongs to.
+///
+/// Every name is a link that searches the library for it, which is how you find
+/// out the same producer is on four of your records. Splitting a credit into
+/// names is a guess: a composer tag holds "Yorke, Greenwood" or
+/// "Yorke/Greenwood" or one name with a comma in it, and nothing normalises
+/// that -- so the whole value stays readable as written and the split only
+/// decides where the tap targets are.
+class _CreditsPanel extends StatelessWidget {
+  const _CreditsPanel({
+    required this.controller,
+    required this.credits,
+    required this.indent,
+  });
+
+  final MusicController controller;
+  final List<MetaRow>? credits;
+  final double indent;
+
+  static final RegExp _split = RegExp(r'\s*[,;/]\s*|\s+&\s+|\s+feat\.?\s+',
+      caseSensitive: false);
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final rows = credits;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(indent, 2, 12, 8),
+      child: rows == null
+          ? SizedBox(
+              height: 14,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 1.6, color: t.nInk3),
+                ),
+              ),
+            )
+          : rows.isEmpty
+              ? Text('No credits in this file.',
+                  style: TextStyle(fontSize: 11.5, color: t.nInk3))
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final row in rows)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 3),
+                        child: Wrap(
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 6,
+                          children: [
+                            Text(
+                              row.label,
+                              style: TextStyle(
+                                fontFamily: Tokens.fontFamily,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.3,
+                                color: t.nInk3,
+                              ),
+                            ),
+                            for (final name in row.value
+                                .split(_split)
+                                .map((n) => n.trim())
+                                .where((n) => n.isNotEmpty))
+                              InkWell(
+                                borderRadius: BorderRadius.circular(4),
+                                onTap: () => controller
+                                    .send(MusicCmd.search(query: name)),
+                                child: Text(
+                                  name,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: t.nInk,
+                                    decoration: TextDecoration.underline,
+                                    decorationColor: t.nHair,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+    );
+  }
+}
+
 class TrackRow extends StatefulWidget {
   const TrackRow({
     super.key,
@@ -704,6 +798,8 @@ class TrackRow extends StatefulWidget {
     this.dense = false,
     this.compact = false,
     this.draggable = false,
+    this.selected = false,
+    this.onSelect,
   });
 
   final MusicController controller;
@@ -727,12 +823,80 @@ class TrackRow extends StatefulWidget {
   /// is the one you cannot grab.
   final bool draggable;
 
+  /// Drawn as part of a selection.
+  final bool selected;
+
+  /// Ctrl/Cmd-click adds this row to a selection; shift-click extends to it.
+  /// Null in every list that has no bulk actions, which is most of them, and
+  /// then a modifier-click is just a click.
+  final void Function({required bool range})? onSelect;
+
   @override
   State<TrackRow> createState() => _TrackRowState();
 }
 
 class _TrackRowState extends State<TrackRow> {
   bool _hovered = false;
+
+  /// Who made this track, fetched the first time the row is expanded and kept
+  /// after that. `Track.hasCredits` already says whether there is anything to
+  /// fetch, so a row without credits never asks.
+  List<MetaRow>? _credits;
+  bool _showCredits = false;
+
+  Future<void> _toggleCredits() async {
+    final open = !_showCredits;
+    setState(() => _showCredits = open);
+    if (!open || _credits != null) return;
+    List<MetaRow> got;
+    try {
+      got = await musicTrackCredits(itemId: widget.track.itemId);
+    } catch (_) {
+      got = const [];
+    }
+    if (mounted) setState(() => _credits = got);
+  }
+
+  /// This row's artwork, so a copy of it can be measured and flown to the
+  /// player bar when the row is played.
+  final GlobalKey _artKey = GlobalKey();
+
+  /// Play this row, and send its cover to the player on the way.
+  ///
+  /// Wrapped here rather than at each of the call sites that pass `onPlay`,
+  /// because every list in the section funnels through this one row -- the
+  /// queue, the album page, Favourites, History and the rails all get the
+  /// flight from this single edit.
+  void _play() {
+    // A modifier turns the click into a selection rather than a play. Checked
+    // here, in the one place every list's row click funnels through.
+    final keys = HardwareKeyboard.instance;
+    if (widget.onSelect != null) {
+      if (keys.isShiftPressed) {
+        widget.onSelect!(range: true);
+        return;
+      }
+      if (keys.isControlPressed || keys.isMetaPressed) {
+        widget.onSelect!(range: false);
+        return;
+      }
+    }
+    if (widget.showArt) {
+      ArtFlight.toPlayer(
+        context,
+        fromKey: _artKey,
+        art: MusicArt(
+          controller: widget.controller,
+          kind: 'track',
+          artKey: '${widget.track.itemId}',
+          direct: widget.track.art,
+          size: 56,
+          radius: 0,
+        ),
+      );
+    }
+    widget.onPlay();
+  }
 
   /// The now-playing green, from `#22c55e1f` / `#22c55e66` / `#22c55e` in
   /// ui/page_music.slint. Deliberately not the section pink: the row you are
@@ -749,7 +913,7 @@ class _TrackRowState extends State<TrackRow> {
     // The same menu the Songs grid has. Slint puts it on both — a row and a
     // tile are two drawings of one song, and the things you can do to it do
     // not change with the drawing.
-    return SongContextMenu(
+    final row = SongContextMenu(
       controller: widget.controller,
       track: tr,
       onPlay: widget.onPlay,
@@ -759,7 +923,7 @@ class _TrackRowState extends State<TrackRow> {
         onEnter: (_) => setState(() => _hovered = true),
         onExit: (_) => setState(() => _hovered = false),
         child: GestureDetector(
-          onTap: widget.onPlay,
+          onTap: _play,
           child: Container(
             // 52 dense, not 44. The queue is a list you drag rows around in,
             // and a 44px row with a 32px thumbnail in it leaves six pixels of
@@ -771,12 +935,18 @@ class _TrackRowState extends State<TrackRow> {
             ),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(8),
-              color: playing
-                  ? _np.withValues(alpha: 0.12)
-                  : (_hovered ? t.nHover : Colors.transparent),
-              border: playing
-                  ? Border.all(color: _np.withValues(alpha: 0.4))
-                  : null,
+              // Selection reads over now-playing: a row can be both, and while
+              // you are picking rows the selection is what you are looking at.
+              color: widget.selected
+                  ? Tokens.secMusic.withValues(alpha: 0.18)
+                  : playing
+                      ? _np.withValues(alpha: 0.12)
+                      : (_hovered ? t.nHover : Colors.transparent),
+              border: widget.selected
+                  ? Border.all(color: Tokens.secMusic.withValues(alpha: 0.55))
+                  : playing
+                      ? Border.all(color: _np.withValues(alpha: 0.4))
+                      : null,
             ),
             child: Row(
               children: [
@@ -796,13 +966,16 @@ class _TrackRowState extends State<TrackRow> {
                   // over the row you are already hearing, so it never flickers.
                   Stack(
                     children: [
-                      MusicArt(
-                        controller: widget.controller,
-                        kind: 'track',
-                        artKey: '${tr.itemId}',
-                        direct: tr.art,
-                        size: art,
-                        radius: 5,
+                      KeyedSubtree(
+                        key: _artKey,
+                        child: MusicArt(
+                          controller: widget.controller,
+                          kind: 'track',
+                          artKey: '${tr.itemId}',
+                          direct: tr.art,
+                          size: art,
+                          radius: 5,
+                        ),
                       ),
                       if (playing || _hovered)
                         Positioned.fill(
@@ -869,6 +1042,21 @@ class _TrackRowState extends State<TrackRow> {
                             tr.lyrics == 'synced' ? Tokens.secMusic : t.nInk2,
                       ),
                     ),
+                  // Only when the file actually carries credit tags, so the
+                  // chevron is a promise rather than a coin toss.
+                  if (tr.hasCredits)
+                    IconButton(
+                      iconSize: 16,
+                      visualDensity: VisualDensity.compact,
+                      tooltip: _showCredits ? 'Hide credits' : 'Credits',
+                      icon: Icon(
+                        _showCredits
+                            ? Icons.expand_less
+                            : Icons.expand_more,
+                        color: _showCredits ? Tokens.secMusic : t.nInk2,
+                      ),
+                      onPressed: _toggleCredits,
+                    ),
                   const SizedBox(width: 8),
                   IconButton(
                     iconSize: 17,
@@ -927,6 +1115,24 @@ class _TrackRowState extends State<TrackRow> {
           ),
         ),
       ),
+    );
+
+    // A sibling under the row rather than anything inside it: every list in
+    // the section draws this row, and none of them fixes its height -- the
+    // separators between rows are SizedBoxes, not extents -- so growing
+    // downward is free. Changing the row's own layout would not have been.
+    if (!_showCredits) return row;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        row,
+        _CreditsPanel(
+          controller: widget.controller,
+          credits: _credits,
+          indent: widget.showArt ? 68.0 : 12.0,
+        ),
+      ],
     );
   }
 

@@ -97,13 +97,20 @@ pub struct Stats {
 /// The streak counts back from today OR yesterday: at 00:30 you have usually
 /// not played anything yet, and zeroing a real streak because the clock rolled
 /// over would be wrong. It breaks at the first day with no play.
+/// Every listening figure here is MUSIC listening: these sit on My Music, and
+/// books keep their own reading stats. `play_history` is shared by every
+/// long-form player, so each query joins `track_meta` to filter chapters out —
+/// and the join being inner also drops rows with no music metadata at all.
+const MUSIC: &str = "JOIN track_meta tm ON tm.item_id = ph.item_id \
+     WHERE COALESCE(tm.is_audiobook, 0) = 0";
+
+/// The same filter in two halves, for queries that need another JOIN of their
+/// own: SQL wants every join before the WHERE, so those cannot append to a
+/// clause that already has one.
+const MUSIC_JOIN: &str = "JOIN track_meta tm ON tm.item_id = ph.item_id";
+const MUSIC_WHERE: &str = "COALESCE(tm.is_audiobook, 0) = 0";
+
 pub async fn stats(pool: &SqlitePool) -> Result<Stats> {
-    // Every figure here is MUSIC listening: the strip sits on My Music's home,
-    // and books keep their own reading stats. `play_history` is shared by every
-    // long-form player, so each query joins `track_meta` to filter chapters —
-    // and the join being inner also drops rows with no music metadata at all.
-    const MUSIC: &str = "JOIN track_meta tm ON tm.item_id = ph.item_id \
-         WHERE COALESCE(tm.is_audiobook, 0) = 0";
     let n = now();
     let (total_ms,): (i64,) = sqlx::query_as(&format!(
         "SELECT COALESCE(SUM(ph.ms_played), 0) FROM play_history ph {MUSIC}"))
@@ -133,6 +140,238 @@ pub async fn stats(pool: &SqlitePool) -> Result<Stats> {
         }
     }
     Ok(Stats { week_ms, total_ms, top_genre: top_genre.map(|(g,)| g), streak_days: streak })
+}
+
+
+/// One row of a listening breakdown.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tally {
+    /// What it is: an artist's name, a genre, a track title.
+    pub label: String,
+    /// The row's own id, for a UI that wants to open it. 0 when the row is not
+    /// a thing you can navigate to, as with an hour of the day.
+    pub key: i64,
+    pub ms: i64,
+    pub plays: i64,
+}
+
+/// `AND ph.played_at >= ?` when a window was asked for, nothing when it was not.
+///
+/// The bind is applied by the caller in the same branch, so the two cannot
+/// drift apart into a query with a placeholder and no value.
+fn window(since: Option<i64>) -> &'static str {
+    if since.is_some() { " AND ph.played_at >= ?" } else { "" }
+}
+
+async fn tally(pool: &SqlitePool, sql: String, since: Option<i64>, limit: i64) -> Result<Vec<Tally>> {
+    let mut q = sqlx::query_as::<_, (String, i64, i64, i64)>(&sql);
+    if let Some(s) = since {
+        q = q.bind(s);
+    }
+    let rows = q.bind(limit).fetch_all(pool).await.unwrap_or_default();
+    Ok(rows
+        .into_iter()
+        .map(|(label, key, ms, plays)| Tally { label, key, ms, plays })
+        .collect())
+}
+
+/// Listening time by artist, most first. `since` is a unix timestamp, or `None`
+/// for all time.
+pub async fn by_artist(pool: &SqlitePool, since: Option<i64>, limit: i64) -> Result<Vec<Tally>> {
+    tally(pool, format!(
+        "SELECT ar.name, ar.id, COALESCE(SUM(ph.ms_played), 0), COUNT(*) \
+         FROM play_history ph {MUSIC_JOIN} \
+         JOIN artists ar ON ar.id = tm.artist_id \
+         WHERE {MUSIC_WHERE}{} \
+         GROUP BY ar.id ORDER BY 3 DESC LIMIT ?", window(since)), since, limit).await
+}
+
+/// Listening time by genre, most first.
+///
+/// Grouped case-insensitively — "Trip-Hop" and "trip-hop" are one genre — and
+/// the label shown is whichever spelling the library uses most.
+pub async fn by_genre(pool: &SqlitePool, since: Option<i64>, limit: i64) -> Result<Vec<Tally>> {
+    tally(pool, format!(
+        "SELECT tm.genre, 0, COALESCE(SUM(ph.ms_played), 0), COUNT(*) \
+         FROM play_history ph {MUSIC} \
+           AND tm.genre IS NOT NULL AND TRIM(tm.genre) != ''{} \
+         GROUP BY LOWER(TRIM(tm.genre)) ORDER BY 3 DESC LIMIT ?", window(since)), since, limit).await
+}
+
+/// Listening time by track, most first — the songs actually on repeat.
+pub async fn by_track(pool: &SqlitePool, since: Option<i64>, limit: i64) -> Result<Vec<Tally>> {
+    tally(pool, format!(
+        "SELECT COALESCE(NULLIF(TRIM(tm.title), ''), i.abs_path), tm.item_id, \
+                COALESCE(SUM(ph.ms_played), 0), COUNT(*) \
+         FROM play_history ph {MUSIC_JOIN} \
+         JOIN items i ON i.id = tm.item_id AND i.missing_since IS NULL \
+         WHERE {MUSIC_WHERE}{} \
+         GROUP BY tm.item_id ORDER BY 3 DESC LIMIT ?", window(since)), since, limit).await
+}
+
+/// Listening time per hour of the day, midnight first.
+///
+/// Local hours, not UTC: "when do you listen" is a question about the user's
+/// day, and a summary that puts their evening at 3am is wrong in the only way
+/// that matters. SQLite reads the offset from the process timezone.
+pub async fn by_hour(pool: &SqlitePool, since: Option<i64>) -> Result<[i64; 24]> {
+    let sql = format!(
+        "SELECT CAST(strftime('%H', ph.played_at, 'unixepoch', 'localtime') AS INTEGER), \
+                COALESCE(SUM(ph.ms_played), 0) \
+         FROM play_history ph {MUSIC}{} GROUP BY 1", window(since));
+    let mut q = sqlx::query_as::<_, (i64, i64)>(&sql);
+    if let Some(s) = since {
+        q = q.bind(s);
+    }
+    let mut out = [0i64; 24];
+    for (h, ms) in q.fetch_all(pool).await.unwrap_or_default() {
+        if (0..24).contains(&h) {
+            out[h as usize] += ms;
+        }
+    }
+    Ok(out)
+}
+
+/// A play that got less than this far in was abandoned, not listened to.
+const ABANDON_FRACTION: f64 = 0.6;
+
+/// The records started over and over and never finished — ranked by how many
+/// times, which is the figure that makes the point.
+///
+/// Needs a known duration to judge against, so a track with none never appears
+/// here. `plays` counts the abandonments, not the plays.
+pub async fn abandoned(pool: &SqlitePool, limit: i64) -> Result<Vec<Tally>> {
+    let rows: Vec<(String, i64, i64, i64)> = sqlx::query_as(&format!(
+        "SELECT COALESCE(NULLIF(TRIM(tm.title), ''), i.abs_path), tm.item_id, \
+                COALESCE(SUM(ph.ms_played), 0), COUNT(*) \
+         FROM play_history ph {MUSIC_JOIN} \
+         JOIN items i ON i.id = tm.item_id AND i.missing_since IS NULL \
+         WHERE {MUSIC_WHERE} \
+           AND tm.duration_s > 0 \
+           AND ph.ms_played > 0 \
+           AND ph.ms_played < tm.duration_s * 1000 * ? \
+         GROUP BY tm.item_id HAVING COUNT(*) > 1 ORDER BY 4 DESC LIMIT ?"))
+        .bind(ABANDON_FRACTION)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    Ok(rows
+        .into_iter()
+        .map(|(label, key, ms, plays)| Tally { label, key, ms, plays })
+        .collect())
+}
+
+
+/// An album that was started and never finished.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlbumResume {
+    pub album_id: i64,
+    /// The track to start from: the one after the last you played.
+    pub item_id: i64,
+    /// How many tracks were already played, and how many there are. Position
+    /// in the album order, not the tagged track number — an album missing its
+    /// first two files still resumes in the right place.
+    pub done: i64,
+    pub total: i64,
+    /// When the last of them was played.
+    pub played_at: i64,
+}
+
+/// Albums left part-way through, most recently abandoned first.
+///
+/// The Books reader has offered this since it shipped; music records exactly
+/// the same thing in `play_history` and never offered a way back in. An album
+/// is resumable when the last track played from it was not its last track.
+///
+/// Single tracks filed under an album of one are skipped: a single you played
+/// once is not an album you abandoned.
+pub async fn resume_albums(pool: &SqlitePool, limit: i64) -> Result<Vec<AlbumResume>> {
+    // The bare `ph.item_id` beside MAX() is SQLite's documented min/max bare
+    // column rule: it comes from the same row the maximum did, which is exactly
+    // the track that was played last. Any other engine would reject this.
+    let recent: Vec<(i64, i64, i64)> = sqlx::query_as(&format!(
+        "SELECT tm.album_id, ph.item_id, MAX(ph.played_at) \
+         FROM play_history ph {MUSIC_JOIN} \
+         JOIN items i ON i.id = tm.item_id AND i.missing_since IS NULL \
+         WHERE {MUSIC_WHERE} AND tm.album_id IS NOT NULL \
+         GROUP BY tm.album_id ORDER BY 3 DESC LIMIT ?"))
+        .bind(limit * 4) // room to drop the finished ones and still fill the rail
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+    let mut out = Vec::new();
+    for (album_id, last_played, played_at) in recent {
+        // Album order, not tag order: COALESCE so untagged files sort first
+        // rather than vanishing, and the id breaks ties so the sequence is
+        // stable between calls.
+        let order: Vec<(i64,)> = sqlx::query_as(
+            "SELECT tm.item_id FROM track_meta tm \
+             JOIN items i ON i.id = tm.item_id AND i.missing_since IS NULL \
+             WHERE tm.album_id = ? AND COALESCE(tm.is_audiobook, 0) = 0 \
+             ORDER BY COALESCE(tm.disc_no, 0), COALESCE(tm.track_no, 0), tm.item_id",
+        )
+        .bind(album_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        let ids: Vec<i64> = order.into_iter().map(|(id,)| id).collect();
+        if ids.len() < 2 {
+            continue;
+        }
+        let Some(at) = ids.iter().position(|id| *id == last_played) else { continue };
+        let Some(next) = ids.get(at + 1).copied() else { continue }; // finished
+        out.push(AlbumResume {
+            album_id,
+            item_id: next,
+            done: at as i64 + 1,
+            total: ids.len() as i64,
+            played_at,
+        });
+        if out.len() >= limit.max(0) as usize {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// "2 days ago" / "just now". Coarse on purpose: the exact minute an album was
+/// abandoned is not what anyone is asking.
+pub fn fmt_ago(then: i64) -> String {
+    let gap = now() - then;
+    match gap {
+        g if g < 90 => "just now".into(),
+        g if g < 3_600 => format!("{} min ago", g / 60),
+        g if g < 7_200 => "an hour ago".into(),
+        g if g < 86_400 => format!("{} hours ago", g / 3_600),
+        g if g < 172_800 => "yesterday".into(),
+        g if g < 2_592_000 => format!("{} days ago", g / 86_400),
+        g if g < 5_184_000 => "last month".into(),
+        g => format!("{} months ago", g / 2_592_000),
+    }
+}
+
+/// A unix timestamp as "2024-11-02".
+///
+/// Civil-from-days, Howard Hinnant's algorithm. No date dependency in this
+/// crate for one date on one panel, and the arithmetic is shorter than the
+/// line in Cargo.toml would be. UTC, not local: this labels when a file
+/// entered the library, and a row that changes its date when you fly to
+/// Tokyo is worse than one that is a few hours out.
+pub fn fmt_date(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// "12h 30m" / "45m" / "—". Hours only once there is an hour to show.
@@ -168,6 +407,113 @@ mod tests {
         assert_eq!(s.top_genre.as_deref(), Some("Ghazal"));
         // The gap ends it at three, not four.
         assert_eq!(s.streak_days, 3);
+    }
+
+    #[tokio::test]
+    async fn breakdowns_rank_and_respect_their_window() {
+        let (_t, pool) = open_pool().await;
+        sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Burial'), (2, 'Tycho')")
+            .execute(&pool).await.unwrap();
+        let a = add_track(&pool, "/m/a.flac").await;
+        let b = add_track(&pool, "/m/b.flac").await;
+        sqlx::query("UPDATE track_meta SET artist_id=1, genre='Dubstep', title='Archangel', duration_s=240 WHERE item_id=?")
+            .bind(a).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE track_meta SET artist_id=2, genre='dubstep', title='Awake', duration_s=300 WHERE item_id=?")
+            .bind(b).execute(&pool).await.unwrap();
+        let n = now();
+        // Every play here is under 60% of its track, which is what makes them
+        // abandonments: 240s * 0.6 = 144s, 300s * 0.6 = 180s.
+        for (id, at, ms) in [
+            (a, n - 100, 100_000i64),
+            (a, n - 200, 90_000),
+            (b, n - 30 * 86_400, 90_000), // outside a one-week window
+        ] {
+            sqlx::query("INSERT INTO play_history (item_id, played_at, ms_played) VALUES (?,?,?)")
+                .bind(id).bind(at).bind(ms).execute(&pool).await.unwrap();
+        }
+
+        let artists = by_artist(&pool, None, 10).await.unwrap();
+        assert_eq!(artists[0].label, "Burial");
+        assert_eq!(artists[0].ms, 190_000);
+        assert_eq!(artists[0].plays, 2);
+        assert_eq!(artists[0].key, 1, "the row carries the id it can be opened by");
+
+        // Two spellings of one genre collapse into a single row.
+        let genres = by_genre(&pool, None, 10).await.unwrap();
+        assert_eq!(genres.len(), 1, "Dubstep and dubstep are one genre");
+        assert_eq!(genres[0].ms, 280_000);
+
+        let week = by_artist(&pool, Some(n - 7 * 86_400), 10).await.unwrap();
+        assert_eq!(week.len(), 1, "the month-old play is outside the window");
+
+        // Both of a's plays fell short of 60% of its 240s, and it has two of
+        // them. b was abandoned once, and once is not a habit.
+        let quit = abandoned(&pool, 10).await.unwrap();
+        assert_eq!(quit.len(), 1);
+        assert_eq!(quit[0].label, "Archangel");
+        assert_eq!(quit[0].plays, 2);
+
+        let hours = by_hour(&pool, None).await.unwrap();
+        assert_eq!(hours.iter().sum::<i64>(), 280_000, "every play lands in some hour");
+    }
+
+    #[tokio::test]
+    async fn an_album_resumes_after_the_last_track_played() {
+        let (_t, pool) = open_pool().await;
+        sqlx::query("INSERT INTO albums (id, title) VALUES (1, 'Kid A'), (2, 'Single')")
+            .execute(&pool).await.unwrap();
+        let mut ids = Vec::new();
+        for n in 1..=4 {
+            let id = add_track(&pool, &format!("/m/kid{n}.flac")).await;
+            sqlx::query("UPDATE track_meta SET album_id = 1, track_no = ? WHERE item_id = ?")
+                .bind(n).bind(id).execute(&pool).await.unwrap();
+            ids.push(id);
+        }
+        // A one-track album is not an album you abandoned.
+        let solo = add_track(&pool, "/m/solo.flac").await;
+        sqlx::query("UPDATE track_meta SET album_id = 2, track_no = 1 WHERE item_id = ?")
+            .bind(solo).execute(&pool).await.unwrap();
+
+        let n = now();
+        for (id, at) in [(ids[0], n - 400), (ids[1], n - 300), (solo, n - 100)] {
+            sqlx::query("INSERT INTO play_history (item_id, played_at, ms_played) VALUES (?,?,1000)")
+                .bind(id).bind(at).execute(&pool).await.unwrap();
+        }
+
+        let r = resume_albums(&pool, 10).await.unwrap();
+        assert_eq!(r.len(), 1, "only the four-track album is resumable");
+        assert_eq!(r[0].album_id, 1);
+        assert_eq!(r[0].item_id, ids[2], "resumes at track three");
+        assert_eq!((r[0].done, r[0].total), (2, 4));
+
+        // Play the last track and the album is finished, not resumable.
+        sqlx::query("INSERT INTO play_history (item_id, played_at, ms_played) VALUES (?,?,1000)")
+            .bind(ids[3]).bind(n - 50).execute(&pool).await.unwrap();
+        assert!(resume_albums(&pool, 10).await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn dates_come_out_as_dates() {
+        assert_eq!(fmt_date(0), "1970-01-01");
+        assert_eq!(fmt_date(1_730_505_600), "2024-11-02");
+        // Leap day, and the day after it, on a leap year that is also a
+        // century divisible by 400 -- the case the /100 and /400 terms exist
+        // for and the one a naive implementation gets wrong.
+        assert_eq!(fmt_date(951_782_400), "2000-02-29");
+        assert_eq!(fmt_date(951_868_800), "2000-03-01");
+        // Before the epoch: div_euclid, not /, or this rounds towards zero and
+        // lands a day late.
+        assert_eq!(fmt_date(-1), "1969-12-31");
+    }
+
+    #[test]
+    fn ago_reads_as_a_person_would_say_it() {
+        let n = now();
+        assert_eq!(fmt_ago(n), "just now");
+        assert_eq!(fmt_ago(n - 600), "10 min ago");
+        assert_eq!(fmt_ago(n - 5 * 3_600), "5 hours ago");
+        assert_eq!(fmt_ago(n - 100_000), "yesterday");
+        assert_eq!(fmt_ago(n - 3 * 86_400), "3 days ago");
     }
 
     #[tokio::test]

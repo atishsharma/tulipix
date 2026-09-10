@@ -18,7 +18,8 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
-import '../../playback/audio_deck.dart' show audioLoudness;
+import '../../playback/audio_deck.dart' show audioLoudness, audioPositionS;
+import 'spectrum.dart';
 import 'music_controller.dart';
 import 'music_dialogs.dart';
 import 'player_widgets.dart';
@@ -222,13 +223,19 @@ class _VizViewState extends State<VizView> {
       if (!identical(_bars.value, _idle)) _bars.value = _idle;
       return;
     }
+    // The real thing when the analysis pass has seen this track, and the shape
+    // derived from the clock when it has not. Both are scaled by the live
+    // loudness meter: the spectrum is a decode of the file and knows nothing
+    // about the volume slider or a quiet passage being faded.
+    //
     // 0.18 floor: at true silence the bars should still breathe, or a quiet
     // passage looks like playback stopped.
     final env = 0.18 + 0.82 * audioLoudness;
-    final shaped = syntheticBars(_kBars, _clock.elapsedMicroseconds / 1e6)
-        .map((b) => (b * env).clamp(0.0, 1.0))
-        .toList();
-    _bars.value = shaped;
+    final real = nowSpectrum?.at(audioPositionS, _kBars);
+    final source =
+        real ?? syntheticBars(_kBars, _clock.elapsedMicroseconds / 1e6);
+    _bars.value =
+        source.map((b) => (b * env).clamp(0.0, 1.0)).toList(growable: false);
   }
 
   @override

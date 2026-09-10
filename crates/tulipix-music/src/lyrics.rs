@@ -74,6 +74,83 @@ pub fn active_line(lines: &[(i64, String)], t_ms: i64) -> Option<usize> {
     lines.iter().rposition(|(ms, _)| *ms <= t_ms)
 }
 
+
+/// One track whose words contain the search, and where in it they are sung.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WordHit {
+    pub item_id: i64,
+    /// The matching line, with any LRC timestamp stripped off the front.
+    pub line: String,
+    /// Where the line is sung, in milliseconds. -1 when the stored lyrics are
+    /// plain text with no timings — the hit is still worth showing, it just
+    /// cannot be seeked to.
+    pub ms: i64,
+}
+
+/// Escape a user's text for a `LIKE` pattern.
+///
+/// Without this a search for `50%` matches every song in the library, and one
+/// for `_` matches every song with any character at that position.
+fn like_escape(q: &str) -> String {
+    let mut out = String::with_capacity(q.len() + 8);
+    for c in q.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Tracks whose lyrics contain `query`, with the line and its timestamp.
+///
+/// A `LIKE` scan rather than an FTS index. A personal library has thousands of
+/// lyric rows, not millions, and SQLite reads all of them faster than the
+/// keystroke that asked; an FTS5 table would be a second copy of the text, a
+/// migration, and a trigger to keep it in step — for a search that already
+/// returns instantly. If someone ever has a library where this is slow, the
+/// index is the fix and this is the thing to replace.
+///
+/// One hit per track: the first line that matches. A chorus repeating the
+/// phrase eight times should be one result, not eight.
+pub async fn search(pool: &SqlitePool, query: &str, limit: i64) -> Result<Vec<WordHit>> {
+    let needle = query.trim();
+    // Two characters would match most of the library and be no use as a search.
+    if needle.chars().count() < 3 {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT item_id, content FROM lyrics \
+         WHERE content LIKE ? ESCAPE '\\' LIMIT ?",
+    )
+    .bind(format!("%{}%", like_escape(needle)))
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    let lower = needle.to_lowercase();
+    Ok(rows
+        .into_iter()
+        .filter_map(|(item_id, content)| {
+            // Timed lines first, so a synced sheet reports where to seek to.
+            // `parse_lrc` returns nothing for plain text, and the raw scan below
+            // still finds the line.
+            let timed = parse_lrc(&content);
+            if let Some((ms, line)) = timed
+                .iter()
+                .find(|(_, l)| l.to_lowercase().contains(&lower))
+            {
+                return Some(WordHit { item_id, line: line.clone(), ms: *ms });
+            }
+            let line = content
+                .lines()
+                .map(str::trim)
+                .find(|l| l.to_lowercase().contains(&lower))?;
+            Some(WordHit { item_id, line: line.to_string(), ms: -1 })
+        })
+        .collect())
+}
+
 pub async fn store(pool: &SqlitePool, item_id: i64, content: &str, synced: bool, source: &str) -> Result<()> {
     sqlx::query(
         "INSERT INTO lyrics (item_id, synced, content, source, updated) VALUES (?,?,?,?,?)
@@ -86,6 +163,45 @@ pub async fn store(pool: &SqlitePool, item_id: i64, content: &str, synced: bool,
 mod tests {
     use super::*;
     use crate::schema::tests::{open_pool, add_track};
+
+    #[tokio::test]
+    async fn searching_the_words_finds_the_line_and_the_second() {
+        let (_t, pool) = open_pool().await;
+        let synced = add_track(&pool, "/m/take-on-me.flac").await;
+        let plain = add_track(&pool, "/m/other.flac").await;
+        let quiet = add_track(&pool, "/m/instrumental.flac").await;
+        store(&pool, synced, "[00:10.00]Talking away\n[01:14.50]So we put our hands together\n[01:20.00]So we put our hands together", true, "lrclib").await.unwrap();
+        store(&pool, plain, "Hands together in the dark", false, "manual").await.unwrap();
+        store(&pool, quiet, "[00:05.00]La la la", true, "lrclib").await.unwrap();
+
+        let hits = search(&pool, "hands together", 20).await.unwrap();
+        assert_eq!(hits.len(), 2, "the instrumental does not match");
+
+        let timed = hits.iter().find(|h| h.item_id == synced).unwrap();
+        assert_eq!(timed.line, "So we put our hands together");
+        assert_eq!(timed.ms, 74_500, "seeks to 1:14.5, not to the repeat");
+
+        // Plain lyrics still hit; they just have nowhere to seek to.
+        let flat = hits.iter().find(|h| h.item_id == plain).unwrap();
+        assert_eq!(flat.ms, -1);
+
+        // Case does not matter, and two characters is not a search.
+        assert_eq!(search(&pool, "HANDS TOGETHER", 20).await.unwrap().len(), 2);
+        assert!(search(&pool, "ha", 20).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_wildcard_is_text_not_a_pattern() {
+        let (_t, pool) = open_pool().await;
+        let a = add_track(&pool, "/m/a.flac").await;
+        let b = add_track(&pool, "/m/b.flac").await;
+        store(&pool, a, "Nothing to see here", false, "manual").await.unwrap();
+        store(&pool, b, "Give me 100% of it", false, "manual").await.unwrap();
+        // Unescaped, "100%" as a LIKE pattern would also match the first row.
+        let hits = search(&pool, "100%", 20).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].item_id, b);
+    }
 
     #[test]
     fn ts_parse() {
