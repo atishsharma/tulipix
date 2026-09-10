@@ -28,6 +28,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tulipix/design/tokens.dart';
 import 'package:tulipix/sections/music/lyrics_timer.dart' show fmtStamp;
 import 'package:tulipix/sections/music/music_controller.dart';
+import 'package:tulipix/sections/music/music_viz.dart' show visStyleNames;
 import 'package:tulipix/sections/music/music_widgets.dart';
 import 'package:tulipix/sections/music/my_music_tab.dart';
 import 'package:tulipix/src/rust/api/music.dart';
@@ -59,29 +60,33 @@ const NowPlaying _nothingPlaying = NowPlaying(
 /// 191 fields, so it is generated rather than typed: every future music test
 /// wants one of these, and the alternative is each of them building its own
 /// two-hundred-line literal and getting a different set of empties.
-/// Six fields this session added to `MusicState` and `gen` has not regenerated
-/// into `music.dart` yet: `viz_style`, `viz_on` and the four cast fields. Named
-/// here so the fixture is complete the moment the bindings catch up.
+///
+/// The last six parameters are fields this session added to `MusicState`; they
+/// are named here so the fixture is complete the moment `gen` catches up.
+///
+/// `int` rather than `PlatformInt64` throughout: the alias is `int` on every
+/// target this runs on, and a fixture nobody can call without an import of
+/// frb's internals is a fixture nobody calls.
 MusicState _state({
   String view = '',
   String query = '',
   String status = '',
   NowPlaying now = _nothingPlaying,
-  PlatformInt64 sleepMin = 0,
+  int sleepMin = 0,
   List<Track> queue = const [],
   List<LyricLine> lyrics = const [],
   String lyricsPlain = '',
   String eqPreset = '',
-  Float64List eqBands = _noBands,
+  Float64List? eqBands,
   bool eqOn = false,
   String libTab = '',
-  PlatformInt64 trackCount = 0,
+  int trackCount = 0,
   List<Track> songs = const [],
-  PlatformInt64 songTotal = 0,
-  PlatformInt64 songPage = 0,
-  PlatformInt64 songPages = 0,
+  int songTotal = 0,
+  int songPage = 0,
+  int songPages = 0,
   List<BrowseCard> cards = const [],
-  PlatformInt64 browsePages = 0,
+  int browsePages = 0,
   List<BrowseCard> roots = const [],
   List<BrowseCard> playlists = const [],
   bool mgrOpen = false,
@@ -93,13 +98,13 @@ MusicState _state({
   bool podBusy = false,
   double podFrac = 0.0,
   String podStatus = '',
-  PlatformInt64 podDlId = 0,
+  int podDlId = 0,
   double podDlFrac = 0.0,
   String podDlTitle = '',
   String ytTab = '',
   List<YtVideo> ytChannelVideos = const [],
   bool ytBusy = false,
-  PlatformInt64 ytChannelPage = 0,
+  int ytChannelPage = 0,
   bool ytChannelHasNext = false,
   int vizStyle = 5,
   bool vizOn = true,
@@ -128,7 +133,7 @@ MusicState _state({
       lyricsPlain: lyricsPlain,
       lyricsOffsetMs: 0,
       eqPreset: eqPreset,
-      eqBands: eqBands,
+      eqBands: eqBands ?? _noBands,
       eqOn: eqOn,
       devices: const [],
       device: '',
@@ -438,6 +443,7 @@ void main() {
               artKey: '1',
               direct: '',
               fallback: Icons.music_note,
+              onTap: () {},
             ),
           ),
         ),
@@ -517,6 +523,7 @@ void main() {
               fallback: Icons.music_note,
               loved: true,
               onFav: () {},
+              onTap: () {},
             ),
           ),
         ),
@@ -548,7 +555,7 @@ void main() {
       // state, and saying "No music yet" there is wrong twice over.
       c.state = _state(
         trackCount: 0,
-        roots: [
+        roots: const [
           BrowseCard(id: 1, key: '/m', title: 'Music', subtitle: '', art: '',
               count: 0, loved: false, stars: 0),
         ],
