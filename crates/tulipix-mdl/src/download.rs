@@ -167,7 +167,13 @@ async fn write_tags(path: &Path, track: &Track, client: &reqwest::Client) -> Res
                 }
                 _ => MimeType::Jpeg,
             };
-            let pic = Picture::new_unchecked(PictureType::CoverFront, Some(mime), None, bytes);
+            // lofty 0.25 turned `new_unchecked` into a builder. Same four
+            // fields, no description, and `unchecked` still means the mime we
+            // sniffed above is taken at its word rather than re-derived.
+            let pic = Picture::unchecked(bytes)
+                .pic_type(PictureType::CoverFront)
+                .mime_type(mime)
+                .build();
             tag.push_picture(pic);
         }
         tag.save_to_path(&path, WriteOptions::default())?;
