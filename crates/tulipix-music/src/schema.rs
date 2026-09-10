@@ -222,7 +222,9 @@ const ADDED_COLUMNS: &[&str] = &[
 
 pub async fn apply(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(MUSIC_SCHEMA).execute(pool).await?;
-    for stmt in ADDED_COLUMNS {
+    // `&[&str]` iterates by reference, so bind through the & — sqlx 0.9 wants
+    // `&'static str` itself, and `&&str` is not it.
+    for &stmt in ADDED_COLUMNS {
         let _ = sqlx::query(stmt).execute(pool).await;
     }
     Ok(())
