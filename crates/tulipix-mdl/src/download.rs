@@ -59,11 +59,17 @@ fn tolerance_s(target_s: f64) -> f64 {
 /// still the best guess available. Otherwise a hit outside [`tolerance_s`] is
 /// not returned at all: failing the track is recoverable, and silently
 /// downloading the wrong audio under the right name is not.
+///
+/// The other way to know nothing is for yt-dlp to answer `NA` to every
+/// duration, which some versions do for a flat search. That is not evidence
+/// of a mismatch, so it falls back to the first hit rather than refusing the
+/// track — no worse than the behaviour this replaced, and it keeps a yt-dlp
+/// upgrade from silently stopping every download.
 fn pick_by_duration(candidates: &[(String, f64)], target_s: f64) -> Option<String> {
     if candidates.is_empty() {
         return None;
     }
-    if target_s <= 0.0 {
+    if target_s <= 0.0 || candidates.iter().all(|(_, d)| *d <= 0.0) {
         return Some(candidates[0].0.clone());
     }
     let tol = tolerance_s(target_s);
@@ -536,6 +542,14 @@ mod tests {
         let hits = vec![("first".to_string(), 0.0), ("second".to_string(), 210.0)];
         assert_eq!(pick_by_duration(&hits, 0.0).as_deref(), Some("first"));
         assert_eq!(pick_by_duration(&[], 210.0), None);
+    }
+
+    #[test]
+    fn durations_we_were_never_told_are_not_a_mismatch() {
+        // Every hit came back NA. Knowing nothing is not the same as knowing
+        // the lengths are wrong, and refusing here would stop every download.
+        let hits = vec![("first".to_string(), 0.0), ("second".to_string(), 0.0)];
+        assert_eq!(pick_by_duration(&hits, 210.0).as_deref(), Some("first"));
     }
 
     #[test]
