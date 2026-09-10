@@ -1904,8 +1904,8 @@ pub async fn build_episode_data(eps: Vec<EpQueryRow>) -> Vec<EpRowData> {
     } else {
         let ids = eps.iter().map(|e| e.0.to_string()).collect::<Vec<_>>().join(",");
         match pool_for("podcasts").await {
-            Ok(pool) => sqlx::query_as::<_, (i64, f64, Option<f64>)>(&format!(
-                "SELECT id, COALESCE(position_s, 0), duration_s FROM podcast_episodes WHERE id IN ({ids})"))
+            Ok(pool) => sqlx::query_as::<_, (i64, f64, Option<f64>)>(sqlx::AssertSqlSafe(format!(
+                "SELECT id, COALESCE(position_s, 0), duration_s FROM podcast_episodes WHERE id IN ({ids})")))
                 .fetch_all(&pool).await.unwrap_or_default()
                 .into_iter()
                 .filter_map(|(id, pos, dur)| match dur {

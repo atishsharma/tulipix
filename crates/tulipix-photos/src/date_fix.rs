@@ -92,7 +92,7 @@ async fn fetch_rows(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<(i64, String, 
          FROM items LEFT JOIN photo_meta ON photo_meta.item_id = items.id
          WHERE items.id IN ({placeholders}) AND items.section = 'photos'",
     );
-    let mut q = sqlx::query_as::<_, (i64, String, Option<i64>)>(&sql);
+    let mut q = sqlx::query_as::<_, (i64, String, Option<i64>)>(sqlx::AssertSqlSafe(&*sql));
     for id in ids { q = q.bind(*id); }
     Ok(q.fetch_all(pool).await?)
 }

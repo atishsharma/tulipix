@@ -92,7 +92,7 @@ pub async fn query(
     if date_to.is_some()   { sql.push_str(" AND photo_meta.taken_at <  ?"); }
     sql.push_str(" ORDER BY rk LIMIT ?");
 
-    let mut q = sqlx::query_as::<sqlx::Sqlite, (i64, f64, String, Option<i64>)>(&sql).bind(needle);
+    let mut q = sqlx::query_as::<sqlx::Sqlite, (i64, f64, String, Option<i64>)>(sqlx::AssertSqlSafe(&*sql)).bind(needle);
     if let Some(s) = date_from { q = q.bind(s); }
     if let Some(e) = date_to   { q = q.bind(e); }
     q = q.bind(limit);

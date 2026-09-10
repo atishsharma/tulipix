@@ -2043,7 +2043,7 @@ async fn quality_labels(
     let sql = format!(
         "SELECT item_id, codec, bitrate, sample_rate FROM track_meta WHERE item_id IN ({holes})"
     );
-    let mut q = sqlx::query_as::<_, (i64, Option<String>, Option<i64>, Option<i64>)>(&sql);
+    let mut q = sqlx::query_as::<_, (i64, Option<String>, Option<i64>, Option<i64>)>(sqlx::AssertSqlSafe(&*sql));
     for id in ids {
         q = q.bind(id);
     }
@@ -2358,7 +2358,7 @@ async fn album_cards(pool: &sqlx::SqlitePool, ids: &[i64]) -> Vec<BrowseCard> {
          WHERE al.id IN ({holes})"
     );
     let mut q =
-        sqlx::query_as::<_, (i64, String, Option<String>, i64, i64, Option<String>)>(&sql);
+        sqlx::query_as::<_, (i64, String, Option<String>, i64, i64, Option<String>)>(sqlx::AssertSqlSafe(&*sql));
     for id in ids {
         q = q.bind(id);
     }
@@ -3149,7 +3149,7 @@ async fn shuffle_next(pool: &sqlx::SqlitePool, ids: &[i64], avoid: usize) -> usi
         "SELECT item_id, artist_id, album_id, COALESCE(loved, 0), last_played \
          FROM track_meta WHERE item_id IN ({holes})"
     );
-    let mut q = sqlx::query_as::<_, (i64, Option<i64>, Option<i64>, i64, Option<i64>)>(&sql);
+    let mut q = sqlx::query_as::<_, (i64, Option<i64>, Option<i64>, i64, Option<i64>)>(sqlx::AssertSqlSafe(&*sql));
     for id in ids {
         q = q.bind(id);
     }

@@ -315,10 +315,10 @@ pub async fn recent(
     let dir = if desc { "DESC" } else { "ASC" };
     let rows =
         sqlx::query_as::<_, (i64, String, Option<String>, String, i64, String, String, i64)>(
-            &format!(
+            sqlx::AssertSqlSafe(format!(
                 "SELECT id, direction, abs_path, name, bytes, peer, status, at
                  FROM transfers ORDER BY {column} {dir}, id DESC LIMIT ? OFFSET ?"
-            ),
+            )),
         )
         .bind(PAGE_SIZE as i64)
         .bind((page * PAGE_SIZE) as i64)

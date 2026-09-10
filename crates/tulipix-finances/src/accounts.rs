@@ -154,7 +154,7 @@ pub async fn list(pool: &SqlitePool, include_closed: bool) -> Result<Vec<Account
             i64,
             i64,
         ),
-    >(&sql)
+    >(sqlx::AssertSqlSafe(&*sql))
     .bind(i64::from(include_closed))
     .fetch_all(pool)
     .await?;
