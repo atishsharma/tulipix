@@ -112,6 +112,9 @@ class _SettingsPageState extends State<SettingsPage> {
         // The dashboard, as its own tab — the same page the sidebar's lamp
         // reports on, not a second rendering of it.
         'status' => const StatusPage(visible: true),
+        // Same row list as the other data-driven tabs, plus the one thing
+        // that is not a setting: what each model wants from this machine.
+        'ai' => _AiTab(controller: _c, state: st),
         _ => _Panel(controller: _c, rows: _c.rowsFor(_tab)),
       };
 }
@@ -225,6 +228,138 @@ class _Bar extends StatelessWidget {
 }
 
 // ── the data-driven panel ───────────────────────────────────────────────────
+
+/// The AI Features tab: the settings rows, with a "Requirements" button that
+/// opens the per-model demands as a sheet.
+///
+/// The requirements are a sheet rather than more rows because they answer a
+/// different question -- "can this machine run it" as against "do I want it
+/// on" -- and inlining them pushed the actual switches below the fold.
+class _AiTab extends StatelessWidget {
+  const _AiTab({required this.controller, required this.state});
+
+  final SettingsController controller;
+  final SettingsState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Models run on this computer. Nothing is sent anywhere '
+                  'unless you switch on cloud help below.',
+                  style: TextStyle(fontSize: 12, color: t.textDim),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: () => showModalBottomSheet<void>(
+                  context: context,
+                  isScrollControlled: true,
+                  builder: (_) =>
+                      _RequirementsSheet(rows: state.aiRequirements),
+                ),
+                icon: const Icon(Icons.speed_outlined, size: 18),
+                label: const Text('Requirements'),
+              ),
+            ],
+          ),
+        ),
+        Expanded(child: _Panel(controller: controller, rows: state.ai)),
+      ],
+    );
+  }
+}
+
+class _RequirementsSheet extends StatelessWidget {
+  const _RequirementsSheet({required this.rows});
+
+  final List<SettingItem> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.8,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 18, 12, 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text('Requirements',
+                        style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            color: t.text)),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                shrinkWrap: true,
+                itemCount: rows.length,
+                // Every row here is a header or a reading -- none of them has
+                // a key, so none of them can be clicked into a command.
+                itemBuilder: (context, i) => _ReadOnlyRow(row: rows[i]),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReadOnlyRow extends StatelessWidget {
+  const _ReadOnlyRow({required this.row});
+
+  final SettingItem row;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    if (row.kind == 'header') {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(0, 20, 0, 6),
+        child: Text(row.label,
+            style: TextStyle(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.0,
+                color: t.textDim)),
+      );
+    }
+    return _Frame(
+      label: row.label,
+      desc: row.desc,
+      trailing: Text(row.value,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: _stateColor(row.state, t),
+          )),
+    );
+  }
+}
 
 class _Panel extends StatelessWidget {
   const _Panel({required this.controller, required this.rows});
@@ -346,9 +481,53 @@ class _SettingRowState extends State<SettingRow> {
           label: r.label,
           desc: r.desc,
           trailing: OutlinedButton(
-            onPressed: () =>
-                widget.controller.send(SettingsCmd.action(key: r.key)),
-            child: Text(r.value, style: const TextStyle(fontSize: 12)),
+            onPressed: r.state == 'busy'
+                ? null
+                : () => widget.controller.sendAction(r.key),
+            child: r.state == 'busy'
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : Text(r.value, style: const TextStyle(fontSize: 12)),
+          ),
+        ),
+      // A status reading and its button are one row: the model's install state
+      // and the thing you do about it describe the same object, and two rows
+      // let them drift.
+      'status-action' => _Frame(
+          label: r.label,
+          desc: r.desc,
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (r.frac >= 0) ...[
+                SizedBox(
+                  width: 92,
+                  child: LinearProgressIndicator(
+                    value: r.frac.clamp(0.0, 1.0),
+                    minHeight: 5,
+                    backgroundColor: t.nInk2.withValues(alpha: 0.18),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text('${(r.frac * 100).round()}%',
+                    style: TextStyle(fontSize: 11.5, color: t.textDim)),
+              ] else
+                Text(r.value,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: _stateColor(r.state, t),
+                    )),
+              const SizedBox(width: 12),
+              OutlinedButton(
+                onPressed: r.state == 'busy'
+                    ? null
+                    : () => widget.controller.sendAction(r.key),
+                child: Text(r.btn, style: const TextStyle(fontSize: 12)),
+              ),
+            ],
           ),
         ),
       // status
@@ -359,18 +538,20 @@ class _SettingRowState extends State<SettingRow> {
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: switch (r.state) {
-                  'ok' => Tokens.ok,
-                  'warn' => Tokens.warn,
-                  'error' => Tokens.error,
-                  'busy' => Tokens.brand,
-                  _ => t.textDim,
-                },
+                color: _stateColor(r.state, t),
               )),
         ),
     };
   }
 }
+
+Color _stateColor(String state, Tokens t) => switch (state) {
+      'ok' => Tokens.ok,
+      'warn' => Tokens.warn,
+      'error' => Tokens.error,
+      'busy' => Tokens.brand,
+      _ => t.textDim,
+    };
 
 class _Frame extends StatelessWidget {
   const _Frame({

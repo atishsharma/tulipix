@@ -224,12 +224,28 @@ cap = "music.ai.stems"
 # Extract the per-voice style vectors from the Kokoro voices pack into voices/.
 # Without them the reader falls back to the timer-paced highlight. Requires the
 # `books-tts` build feature (ORT). See tulipix_books::kokoro.
+#
+# fp16, not fp32: the same weights at half the download, and unlike the int8
+# builds there is no quantisation step to hear. Measured content-lengths in that
+# repo, if the trade is ever worth revisiting:
+#
+#   model.onnx           325,532,232   fp32, what this row used to pull
+#   model_fp16.onnx      163,234,740   this row
+#   model_quantized.onnx  92,361,116   dynamic int8 — smaller and faster on CPU,
+#   model_q8f16.onnx      86,033,585   but this is a voice somebody listens to
+#                                      for hours, and the download happens once
+#
+# The version is deliberately NOT bumped. Blobs live under
+# <data_dir>/models/<name>-<version>/, so a bump would make every existing
+# install re-download a model it already has working; leaving it means new
+# installs take the smaller file and old ones keep the one on disk. `sha256 =
+# "tofu"` re-pins on any fetch, so the two cannot collide.
 [[models]]
 name = "kokoro-82m"
 version = "1.0.0"
 sha256 = "tofu"
-url = "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model.onnx"
-size_bytes = 330000000
-quant = "fp32"
+url = "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model_fp16.onnx"
+size_bytes = 163234740
+quant = "fp16"
 min_vram_mb = 1024
 cap = "books.ai.tts"

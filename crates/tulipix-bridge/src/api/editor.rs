@@ -15,7 +15,7 @@
 use crate::db::photos_pool;
 use anyhow::{Context, Result};
 use flutter_rust_bridge::frb;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tulipix_photos::editor::{crop, curves, filters, ops, redeye};
 
@@ -141,6 +141,10 @@ pub struct EditorState {
     pub carried_ops: i64,
     /// Absolute path of the last export, for the confirmation line.
     pub last_export: String,
+    /// What the last AI op said -- a result, a "model not installed" prompt,
+    /// or a failure. Sticky until the next one: an op that takes a minute
+    /// must not have its only feedback vanish on the next slider drag.
+    pub notice: String,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +175,14 @@ pub enum EditCmd {
     Save,
     /// Drop the saved stack entirely and forget the photo was ever edited.
     Revert,
+    /// One of the four AI tools: upscale | colorize | heal | sky.
+    ///
+    /// `upscale` and `colorize` render the stack at full resolution, run the
+    /// model, write the result next to the source and rebase the session onto
+    /// it -- so further edits and the export operate on the new pixels.
+    /// `heal` and `sky` have no brush surface yet and answer with what is
+    /// missing (the model, the build feature, or the mask UI).
+    AiOp { op: String },
     /// Render at full resolution and write a copy. Not `Export`: that becomes
     /// `EditCmd.export` in Dart, and `export` is a reserved word there.
     SaveCopy {
@@ -222,6 +234,7 @@ struct EditSession {
     preview: Option<PathBuf>,
     seq: u64,
     last_export: String,
+    notice: String,
 }
 
 impl EditSession {
@@ -523,6 +536,7 @@ pub async fn photos_edit(cmd: EditCmd) -> Result<EditorState> {
             }
             return render().await;
         }
+        EditCmd::AiOp { op } => return ai_op(&op).await,
         EditCmd::SaveCopy { format, quality, keep_exif, out_dir, stem } => {
             return export(format, quality, keep_exif, out_dir, stem).await;
         }
@@ -656,6 +670,7 @@ async fn open(pool: &sqlx::SqlitePool, item_id: i64) -> Result<EditorState> {
         preview: None,
         seq: 0,
         last_export: String::new(),
+        notice: String::new(),
     });
 
     render().await
@@ -745,6 +760,7 @@ async fn render() -> Result<EditorState> {
         dirty: s.saved != s.cursor,
         carried_ops: s.carried.len() as i64,
         last_export: s.last_export.clone(),
+        notice: s.notice.clone(),
     })
 }
 
@@ -801,6 +817,211 @@ async fn export(
     render().await
 }
 
+// ------------------------------------------------------------------- ai ----
+
+/// RealESRGAN / Swin2SR weights: `TULIPIX_SR_MODEL` override, else the
+/// registry's `swin2sr-x4.onnx`.
+#[allow(dead_code)] // read only by the ai-onnx arm of `make_upscaler`
+fn sr_model_path() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("TULIPIX_SR_MODEL") {
+        let p = PathBuf::from(p);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let p = tulipix_photos::ai::models::models_root()?.join("swin2sr-x4.onnx");
+    p.exists().then_some(p)
+}
+
+/// DeOldify weights: `TULIPIX_COLORIZE_MODEL` override, else the registry's
+/// `deoldify.onnx`.
+#[allow(dead_code)] // read only by the ai-onnx arm of `make_coloriser`
+fn colorize_model_path() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("TULIPIX_COLORIZE_MODEL") {
+        let p = PathBuf::from(p);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let p = tulipix_photos::ai::models::models_root()?.join("deoldify.onnx");
+    p.exists().then_some(p)
+}
+
+/// The real ORT model when `ai-onnx` is on and the blob is installed, else the
+/// Lanczos fallback. The bool is which one you got, because "upscaled" and
+/// "resampled" are different claims and the status line makes both.
+fn make_upscaler() -> (Box<dyn tulipix_photos::editor::upscale::Upscaler>, bool) {
+    #[cfg(feature = "ai-onnx")]
+    {
+        if let Some(p) = sr_model_path() {
+            match tulipix_photos::ai::onnx::OrtUpscaler::load(&p) {
+                Ok(u) => return (Box::new(u), true),
+                Err(e) => tracing::error!(error = %e, "OrtUpscaler load failed; using Lanczos"),
+            }
+        }
+    }
+    (Box::new(tulipix_photos::editor::upscale::NullUpscaler), false)
+}
+
+/// Colourisation has no non-AI fallback -- `None` means the row has to say so.
+#[cfg(feature = "ai-onnx")]
+fn make_coloriser() -> Option<Box<dyn tulipix_photos::editor::colorize::Coloriser>> {
+    let p = colorize_model_path()?;
+    match tulipix_photos::ai::onnx::OrtColoriser::load(&p) {
+        Ok(c) => Some(Box::new(c)),
+        Err(e) => {
+            tracing::error!(error = %e, "OrtColoriser load failed");
+            None
+        }
+    }
+}
+#[cfg(not(feature = "ai-onnx"))]
+fn make_coloriser() -> Option<Box<dyn tulipix_photos::editor::colorize::Coloriser>> {
+    None
+}
+
+/// `<stem>-<nn>` that does not collide with a file already in `dir`. Counts
+/// from 1 and stops at 999: a folder with a thousand upscales of one photo is
+/// a bug somewhere else, and an unbounded loop here would hide it.
+fn incremented_stem(dir: &Path, base: &str, ext: &str) -> String {
+    if !dir.join(format!("{base}.{ext}")).exists() {
+        return base.to_string();
+    }
+    for n in 1..1000 {
+        let s = format!("{base}-{n}");
+        if !dir.join(format!("{s}.{ext}")).exists() {
+            return s;
+        }
+    }
+    format!("{base}-{}", crate::api::home::now_secs())
+}
+
+/// Run one AI tool over the current edit.
+///
+/// upscale and colorize are the two that produce pixels: both render the stack
+/// at FULL resolution (not the 1400px preview -- upscaling a preview would
+/// quietly throw the photo away), write a PNG next to the source, and rebase
+/// the session onto that file with a cleared stack, because the ops are baked
+/// into the new pixels and re-applying them would double every adjustment.
+async fn ai_op(op: &str) -> Result<EditorState> {
+    // heal and sky need a mask the editor cannot draw yet. Say which of the
+    // three things is missing rather than failing silently on a click.
+    if op == "heal" || op == "sky" {
+        let model = if op == "heal" { "lama-inpaint" } else { "mobile-sam" };
+        let installed = ai_model_installed(model);
+        let msg = match (op, installed, cfg!(feature = "ai-onnx")) {
+            ("heal", false, _) => "Magic Eraser: download the lama-inpaint model in Settings → AI Models first.",
+            ("sky", false, _) => "Sky replace: download the mobile-sam model in Settings → AI Models first.",
+            (_, true, false) => "Model installed — rebuild with --features ai-onnx to enable on-device inference.",
+            ("heal", true, true) => "LaMa ready — brush a mask over the object to erase (coming next).",
+            ("sky", true, true) => "SAM ready — brush the sky region to replace (coming next).",
+            _ => "This AI tool needs a model installed in Settings → AI Models.",
+        };
+        set_notice(msg.to_string());
+        return render().await;
+    }
+
+    let (source, stack) = {
+        let g = lock(session());
+        let s = g.as_ref().context("no photo is open in the editor")?;
+        (s.source.clone(), s.stack(1.0))
+    };
+    let owned = op.to_string();
+    let src = source.clone();
+
+    let done = tokio::task::spawn_blocking(move || -> Result<(PathBuf, image::DynamicImage, String)> {
+        let full = image::open(&src).with_context(|| format!("decode {}", src.display()))?;
+        let base = ops::apply(full, &stack)?;
+        let (out, tag) = match owned.as_str() {
+            "upscale" => {
+                let (up, is_ai) = make_upscaler();
+                let img = tulipix_photos::editor::upscale::apply(base, 4, up.as_ref())?;
+                let tag = if is_ai {
+                    format!("AI upscaled → {}×{}", img.width(), img.height())
+                } else {
+                    format!("Lanczos upscaled → {}×{} (install the model for AI)", img.width(), img.height())
+                };
+                (img, tag)
+            }
+            "colorize" => {
+                let c = make_coloriser().ok_or_else(|| {
+                    anyhow::anyhow!("DeOldify model not installed — Settings → AI Models")
+                })?;
+                (tulipix_photos::editor::colorize::apply(base, c.as_ref())?, "Colorized".to_string())
+            }
+            other => anyhow::bail!("unknown AI op “{other}”"),
+        };
+        // PNG, always: these ops exist to add detail or colour, and a JPEG
+        // round-trip would spend some of it on the way to disk.
+        let dir = src.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+        let base_stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("photo");
+        let suffix = if owned == "upscale" { "upscaled" } else { "colorized" };
+        let stem = incremented_stem(&dir, &format!("{base_stem}-{suffix}"), "png");
+        let dest = dir.join(format!("{stem}.png"));
+        out.save(&dest)?;
+        Ok((dest, out, tag))
+    })
+    .await?;
+
+    let (dest, img, tag) = match done {
+        Ok(v) => v,
+        Err(e) => {
+            // A missing model is the common case and reads as an instruction,
+            // not a crash: report it on the row and leave the edit untouched.
+            tracing::error!(op = %op, error = %e, "ai op");
+            set_notice(format!("{e}"));
+            return render().await;
+        }
+    };
+
+    // Rebase: the new file is the source, its pixels are the cache, and the
+    // history restarts -- every op is already baked into what was written.
+    let preview = {
+        let mut g = lock(session());
+        let s = g.as_mut().context("no photo is open in the editor")?;
+        s.source = dest;
+        s.width = img.width() as i64;
+        s.height = img.height() as i64;
+        s.carried.clear();
+        s.history = vec![Params::default()];
+        s.cursor = 0;
+        s.saved = 0;
+        s.notice = tag;
+        s.preview.take()
+    };
+    if let Some(p) = preview {
+        let _ = std::fs::remove_file(p);
+    }
+    let item_id = lock(session()).as_ref().map(|s| s.item_id).unwrap_or_default();
+    let small = tokio::task::spawn_blocking(move || {
+        img.resize(PREVIEW_DIM, PREVIEW_DIM, image::imageops::FilterType::Triangle)
+    })
+    .await?;
+    *lock(source_cache()) = Some((item_id, small));
+    render().await
+}
+
+/// Is a manifest model's blob on disk? Named rather than matched on a path so
+/// the two callers cannot disagree about where models live.
+fn ai_model_installed(name: &str) -> bool {
+    let root = match tulipix_photos::ai::models::models_root() {
+        Some(r) => r,
+        None => return false,
+    };
+    std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().starts_with(&format!("{name}-")))
+}
+
+fn set_notice(msg: String) {
+    let mut g = lock(session());
+    if let Some(s) = g.as_mut() {
+        s.notice = msg;
+    }
+}
+
 /// Drop the open photo and its decoded source. Called when the editor closes;
 /// without it a 1400px RGBA buffer stays resident for the rest of the session.
 #[frb(sync)]
@@ -830,6 +1051,7 @@ mod tests {
             preview: None,
             seq: 0,
             last_export: String::new(),
+            notice: String::new(),
         }
     }
 

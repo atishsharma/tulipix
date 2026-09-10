@@ -5,6 +5,8 @@
 // does not know what any of them mean — the row carries its key, and the key
 // is what the bridge writes.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../src/rust/api/settings.dart';
@@ -67,6 +69,49 @@ class SettingsController extends ChangeNotifier {
   }
 
   Future<void> refresh() => send(const SettingsCmd.refresh());
+
+  // ── model downloads ───────────────────────────────────────────────────────
+  //
+  // A download runs detached in Rust and reports into a progress map; there is
+  // no stream back. Polling a refresh while any row reads "busy" is the whole
+  // mechanism -- one timer, stopped the moment nothing is downloading, which
+  // is cheaper than a stream nobody else needs.
+
+  Timer? _poll;
+
+  /// True while a model download or an update check is in flight.
+  bool get aiBusy =>
+      (state?.ai ?? const <SettingItem>[]).any((r) => r.state == 'busy');
+
+  /// Send an action, then watch it if it started something long-running.
+  Future<void> sendAction(String key) async {
+    await send(SettingsCmd.action(key: key));
+    _syncPoll();
+  }
+
+  void _syncPoll() {
+    if (aiBusy) {
+      _poll ??= Timer.periodic(const Duration(milliseconds: 600), (_) async {
+        await refresh();
+        // The last tick after the download ends is the one that clears the
+        // row; stopping before it would leave the bar frozen at 98%.
+        if (!aiBusy) _stopPoll();
+      });
+    } else {
+      _stopPoll();
+    }
+  }
+
+  void _stopPoll() {
+    _poll?.cancel();
+    _poll = null;
+  }
+
+  @override
+  void dispose() {
+    _stopPoll();
+    super.dispose();
+  }
 
   /// The rows for the tab currently open, or an empty list for the two tabs
   /// that are not row lists.

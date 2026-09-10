@@ -32,6 +32,13 @@ pub struct SettingItem {
     pub state: String,
     /// Choice rows only: what `value` may be set to.
     pub options: Vec<String>,
+    /// "status-action" rows only: the trailing button's label. A status row
+    /// and its Download button are one row, not two, because they describe
+    /// one thing and drifted apart the moment they were separate.
+    pub btn: String,
+    /// 0..1 while a download is running, so the row can draw a determinate
+    /// bar. Negative means "no progress to show".
+    pub frac: f64,
 }
 
 /// One watched folder.
@@ -71,6 +78,10 @@ pub struct SettingsState {
     pub playback: Vec<SettingItem>,
     pub services: Vec<SettingItem>,
     pub ai: Vec<SettingItem>,
+    /// The "Requirements" sheet behind the AI panel: what each model asks of
+    /// this machine. Built off the same manifest as `ai`, so the two lists
+    /// can never disagree about which models exist.
+    pub ai_requirements: Vec<SettingItem>,
     pub security: Vec<SettingItem>,
     pub data: Vec<SettingItem>,
     pub advanced: Vec<SettingItem>,
@@ -237,6 +248,7 @@ async fn snapshot() -> SettingsState {
         playback: playback(&s),
         services: services(&s),
         ai: ai(&s),
+        ai_requirements: ai_requirement_rows(),
         security: security(&s),
         data: data(&s),
         advanced: advanced(&s),
@@ -262,6 +274,8 @@ fn si(key: &str, kind: &str, label: &str, desc: &str, value: &str, on: bool, sta
         on,
         state: state.into(),
         options: Vec::new(),
+        btn: String::new(),
+        frac: -1.0,
     }
 }
 
@@ -283,6 +297,14 @@ fn stat(label: &str, value: &str, state: &str) -> SettingItem {
 
 fn act(key: &str, label: &str, desc: &str, btn: &str) -> SettingItem {
     si(key, "action", label, desc, btn, false, "")
+}
+
+/// A status reading and its action button in one row. `value` is the reading
+/// ("Installed", "Downloading"), `btn` the button ("Download", "Verify").
+fn statact(key: &str, label: &str, desc: &str, value: &str, state: &str, btn: &str) -> SettingItem {
+    let mut r = si(key, "status-action", label, desc, value, false, state);
+    r.btn = btn.into();
+    r
 }
 
 fn choice(s: &S, key: &str, label: &str, desc: &str, options: &[&str]) -> SettingItem {
@@ -307,6 +329,14 @@ fn playback(s: &S) -> Vec<SettingItem> {
         hdr("AUDIO & MUSIC"),
         tog(s, "playback.audio-exclusive", false, "Exclusive audio output", "Bit-perfect output straight to the audio device — silences other apps"),
         txt(s, "music.eq-preset", "Music equalizer preset", "flat · rock · pop · jazz · bass · treble — applies on the next track"),
+        tog(s, "music.autoplay", false, "Keep playing when the queue ends",
+            "Builds a run from the last few tracks — their artists, genres, tempo and key — drawn only from your own library. Needs the analysis below to have run"),
+        hdr("LIBRARY ANALYSIS"),
+        act("music-analyse", "Measure tempo, key and dynamic range",
+            "Reads every track once to work out its BPM, musical key, how compressed it is, and what it sounds like — which is what song matching, duplicate detection and keep-playing all read.              Runs in the background and can be stopped; already-measured tracks are skipped",
+            "Analyse"),
+        act("music-analyse-stop", "Stop measuring",
+            "Finishes the track it is on and leaves the rest for next time", "Stop"),
     ]
 }
 
@@ -336,7 +366,37 @@ fn services(s: &S) -> Vec<SettingItem> {
 }
 
 fn ai(s: &S) -> Vec<SettingItem> {
-    vec![
+    // Manifest-driven: ONE row per model -- status dot and Download/Verify
+    // button together. Two separate rows is what the Slint build started with,
+    // and the pair drifted the first time a model was renamed.
+    let mut rows = vec![hdr("ON-DEVICE MODELS")];
+    for m in &ai_manifest().models {
+        let installed = tulipix_photos::ai::models::is_installed(m);
+        let mb = m.size_bytes / 1_000_000;
+        let (nice, purpose) = model_display(&m.name, &m.cap);
+        let dl = ai_dl_progress().lock().ok().and_then(|g| g.get(m.name.as_str()).copied());
+        let mut row = statact(
+            &format!("ai-dl-{}", m.name),
+            &format!("{nice} · {mb} MB"),
+            purpose,
+            if dl.is_some() { "Downloading" } else if installed { "Installed" } else { "Not downloaded" },
+            if dl.is_some() { "busy" } else if installed { "ok" } else { "muted" },
+            if installed { "Verify" } else { "Download" },
+        );
+        if let Some(f) = dl {
+            row.frac = f as f64;
+        }
+        rows.push(row);
+    }
+    {
+        let mut chk = act("ai-update-check", "Check for model updates",
+            "Compare installed models against the latest versions", "Check");
+        if AI_CHECK_BUSY.load(std::sync::atomic::Ordering::Relaxed) {
+            chk.state = "busy".into();
+        }
+        rows.push(chk);
+    }
+    rows.extend([
         hdr("VOICE RECOGNITION"),
         choice(s, "ai.voice-lang", "Spoken language",
             "What the mic listens for — pinning a language beats auto-detect on short clips",
@@ -351,13 +411,172 @@ fn ai(s: &S) -> Vec<SettingItem> {
         hdr("FEATURES"),
         tog(s, "ai.captions", false, "Describe photos automatically", "Writes captions and alt-text for new photos as they are added"),
         tog(s, "ai.voice", true, "Voice search", "The mic button in search bars — speak instead of typing"),
-        tog(s, "ai.chat", false, "Chat assistant", "Ask questions about your library in plain language"),
+        tog(s, "ai.chat", false, "Chat assistant (Ctrl+J)", "Ask questions about your library in plain language"),
         hdr("BOOK READ-ALOUD"),
         tog(s, "books.tts.neural", true, "Use neural voice (Kokoro)",
             "Natural AI voice for the reader's Read Aloud. Off = robotic espeak voice (no model, needs espeak-ng)"),
+        hdr("SCROBBLING"),
+        tog(s, "api.listenbrainz", false, "Send listens to ListenBrainz",
+            "The open listening record. Plays are queued while you are offline and sent when you are back"),
+        txt(s, "api.listenbrainz-token", "ListenBrainz token",
+            "From listenbrainz.org → Settings. Nothing is sent until this is filled in"),
+        act("scrobble-flush", "Send queued listens now",
+            "Plays are queued while you are offline and go out with the next one. This sends them immediately",
+            "Send"),
         hdr("CLOUD"),
         tog(s, "ai.cloud-offload", false, "Allow cloud AI help", "Send selected questions to a cloud AI service. Off = everything stays on-device"),
-    ]
+    ]);
+    rows
+}
+
+// ── AI model manifest ───────────────────────────────────────────────────────
+
+/// Compiled-in AI model manifest (resources/ai-models.toml) -- parsed once.
+/// The SAME file the Slint build reads, by `include_str!` rather than a copy:
+/// two transcriptions of a model list is two lists that disagree.
+fn ai_manifest() -> &'static tulipix_core::ai_models::Manifest {
+    static M: std::sync::OnceLock<tulipix_core::ai_models::Manifest> = std::sync::OnceLock::new();
+    M.get_or_init(|| {
+        tulipix_core::ai_models::Manifest::from_toml(include_str!(
+            "../../../../resources/ai-models.toml"
+        ))
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "ai-models.toml parse");
+            Default::default()
+        })
+    })
+}
+
+/// Human name + purpose for a manifest model, keyed off its capability gate so
+/// the row says what the model DOES rather than naming its file.
+fn model_display<'a>(name: &'a str, cap: &str) -> (&'a str, &'static str) {
+    match cap {
+        "photos.ai.faces" => ("Face detection", "Finds faces in photos so people can be grouped"),
+        "photos.ai.heal" => ("Magic eraser", "Removes unwanted objects in the photo editor"),
+        "photos.ai.sky" => ("Smart select", "Selects sky / objects for one-tap edits"),
+        "voice.balanced" => ("Whisper Base (balanced)", "Good accuracy at near-instant speed — best all-rounder"),
+        "voice.accurate" => ("Whisper Small (accurate)", "Catches names and accents — great for subtitles"),
+        "voice.best" => ("Whisper Turbo (best)", "Top accuracy for dictation-grade transcription"),
+        _ => (name, ""),
+    }
+}
+
+/// "Check for model updates" in flight -- renders the button as a busy pill.
+static AI_CHECK_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Live model-download progress (model name → 0..1). The download runs
+/// detached, so this map is how a later `Refresh` learns how far it got --
+/// there is no stream back to Dart and a download does not need one.
+fn ai_dl_progress() -> &'static std::sync::Mutex<std::collections::HashMap<String, f32>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, f32>>> =
+        std::sync::OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+/// Per manifest entry: up-to-date, an older install awaiting update, or absent.
+fn ai_update_summary() -> String {
+    let (mut current, mut missing) = (0, 0);
+    let mut stale: Vec<String> = Vec::new();
+    let root = tulipix_photos::ai::models::models_root();
+    for m in &ai_manifest().models {
+        if tulipix_photos::ai::models::is_installed(m) {
+            current += 1;
+            continue;
+        }
+        // Any older "<name>-<version>" install dir → an update, not a gap.
+        let older = root
+            .as_deref()
+            .and_then(|r| std::fs::read_dir(r).ok())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with(&format!("{}-", m.name)));
+        if older {
+            stale.push(format!("{} → v{}", m.name, m.version));
+        } else {
+            missing += 1;
+        }
+    }
+    if stale.is_empty() {
+        format!("Models: {current} up-to-date · {missing} not installed — nothing to update.")
+    } else {
+        format!("Updates available: {} · {current} current · {missing} not installed.", stale.join(", "))
+    }
+}
+
+/// Installed RAM in MB, or 0 where we cannot tell -- a machine that cannot be
+/// measured gets a neutral row rather than a guess.
+fn total_ram_mb() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("MemTotal:"))
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .and_then(|kb| kb.parse::<u64>().ok())
+                    .map(|kb| kb / 1024)
+            })
+            .unwrap_or(0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
+    }
+}
+
+/// One row per on-device model saying what it wants from this machine.
+///
+/// The RAM figure is a recommendation, not a measurement: weights have to be
+/// resident and the runtime needs working buffers on top, which in practice
+/// lands near three times the file -- floored at 512 MB so a tiny model does
+/// not read as free.
+fn ai_requirement_rows() -> Vec<SettingItem> {
+    let ram = total_ram_mb();
+    let mut rows = vec![hdr("THIS COMPUTER")];
+    rows.push(stat(
+        "Installed memory",
+        &if ram > 0 { format!("{:.1} GB", ram as f64 / 1024.0) } else { "Unknown".to_string() },
+        if ram == 0 { "muted" } else if ram >= 8192 { "ok" } else { "warn" },
+    ));
+    rows.push(stat(
+        "Graphics acceleration",
+        if cfg!(feature = "ai-onnx") {
+            "ONNX runtime compiled in — GPU used when available"
+        } else {
+            "CPU only in this build"
+        },
+        if cfg!(feature = "ai-onnx") { "ok" } else { "muted" },
+    ));
+
+    rows.push(hdr("ON-DEVICE MODELS"));
+    for m in &ai_manifest().models {
+        let mb = m.size_bytes / 1_000_000;
+        let need = (mb * 3).max(512);
+        let (nice, purpose) = model_display(&m.name, &m.cap);
+        // What the row asks for, in the order it matters: memory, then disk,
+        // then whether a GPU is required or merely welcome.
+        let gpu = if m.min_vram_mb > 0 {
+            format!(" · {} MB VRAM", m.min_vram_mb)
+        } else {
+            String::new()
+        };
+        rows.push(si(
+            "",
+            "status",
+            nice,
+            purpose,
+            &format!("{need} MB RAM · {mb} MB disk{gpu}"),
+            false,
+            if ram == 0 { "muted" } else if ram >= need { "ok" } else { "warn" },
+        ));
+    }
+
+    rows.push(hdr("NOTES"));
+    rows.push(stat("Only what you use is loaded", "Models load on demand and unload after", "muted"));
+    rows.push(stat("Transcription is CPU-heavy", "Expect roughly real-time on four cores", "muted"));
+    rows
 }
 
 fn security(s: &S) -> Vec<SettingItem> {
@@ -480,6 +699,34 @@ async fn action(key: &str) -> String {
         },
         "open-logs" => open(tulipix_core::paths::data_dir().map(|d| d.join("logs"))),
         "open-data" => open(tulipix_core::paths::data_dir()),
+        "music-analyse" => {
+            let n = crate::api::music::music_analyse_all().await.unwrap_or(0);
+            match n {
+                0 => "Every track has already been measured.".into(),
+                1 => "Measuring 1 track…".into(),
+                n => format!("Measuring {n} tracks… you can keep using the app."),
+            }
+        }
+        "music-analyse-stop" => {
+            let _ = crate::api::music::music_analyse_stop().await;
+            "Stopping after the current track.".into()
+        }
+        "scrobble-flush" => {
+            let waiting = crate::api::scrobble::scrobble_pending_count()
+                .await
+                .unwrap_or(0);
+            if waiting == 0 {
+                return "Nothing is waiting to be sent.".into();
+            }
+            match crate::api::scrobble::scrobble_flush().await {
+                Ok(0) => format!(
+                    "{waiting} listen{} still waiting — check the token, or that you are online.",
+                    if waiting == 1 { "" } else { "s" }
+                ),
+                Ok(n) => format!("Sent {n} listen{}.", if n == 1 { "" } else { "s" }),
+                Err(e) => format!("Could not send: {e}"),
+            }
+        }
         "clear-thumbs" => match tulipix_core::paths::thumbs_dir() {
             Some(dir) => {
                 std::fs::remove_dir_all(&dir).ok();
@@ -488,6 +735,57 @@ async fn action(key: &str) -> String {
             }
             None => "No thumbnail cache to clear.".into(),
         },
+        // Manifest vs what is on disk. Cheap enough to await inline -- it is
+        // a directory listing, not a network call.
+        "ai-update-check" => {
+            AI_CHECK_BUSY.store(true, std::sync::atomic::Ordering::Relaxed);
+            let msg = ai_update_summary();
+            AI_CHECK_BUSY.store(false, std::sync::atomic::Ordering::Relaxed);
+            msg
+        }
+        // Model download / verify. The download is detached and reports into
+        // `ai_dl_progress`: a 574 MB blob cannot be awaited inside a settings
+        // dispatch, and Dart polls `Refresh` while any row reads "busy".
+        k if k.starts_with("ai-dl-") => {
+            let name = k.trim_start_matches("ai-dl-").to_string();
+            let Some(entry) = ai_manifest().find(&name).cloned() else {
+                return format!("No model called “{name}” is in the manifest.");
+            };
+            // A second click while it is already running is a no-op, not a
+            // second download writing over the same file.
+            if ai_dl_progress().lock().map(|g| g.contains_key(&name)).unwrap_or(false) {
+                return format!("{name} is already downloading.");
+            }
+            if let Ok(mut g) = ai_dl_progress().lock() {
+                g.insert(name.clone(), 0.0);
+            }
+            let started = name.clone();
+            tokio::spawn(async move {
+                // Record every >=1% step; the poll reads whatever is current,
+                // so finer granularity would only cost locks.
+                let mut last = -1.0f32;
+                let prog_name = name.clone();
+                let res = tulipix_photos::ai::models::download_with_progress(&entry, move |f| {
+                    if f - last >= 0.01 || f >= 1.0 {
+                        last = f;
+                        if let Ok(mut g) = ai_dl_progress().lock() {
+                            g.insert(prog_name.clone(), f);
+                        }
+                    }
+                })
+                .await;
+                // Cleared on both paths: a failed download left in the map
+                // would stick the row on "Downloading" for the session.
+                if let Ok(mut g) = ai_dl_progress().lock() {
+                    g.remove(&name);
+                }
+                match res {
+                    Ok(_) => tracing::info!(%name, "model installed"),
+                    Err(e) => tracing::error!(%name, error = %e, "model download"),
+                }
+            });
+            format!("Downloading {started}…")
+        }
         // An unknown key is a row that has a button and no handler yet. Saying
         // so beats a button that silently does nothing.
         other => format!("Nothing is wired to “{other}” yet."),

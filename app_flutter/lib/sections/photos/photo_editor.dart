@@ -59,6 +59,16 @@ const _aspects = <(String, String)>[
   ('5x4', '5:4'),
 ];
 
+/// The four AI ops `EditCmd.aiOp` accepts. The labels are the Slint build's,
+/// because these are the same four buttons and a user moving between the two
+/// should not have to work out that "Sky" and "Sky replace" are one thing.
+const _aiOps = <(String, String, IconData)>[
+  ('upscale', 'Upscale', Icons.zoom_out_map),
+  ('colorize', 'Colorize', Icons.palette_outlined),
+  ('heal', 'Magic Eraser', Icons.auto_fix_high),
+  ('sky', 'Sky', Icons.filter_drama_outlined),
+];
+
 /// What the pointer does over the preview. Only one at a time: a drag cannot
 /// mean both "move the crop box" and "put an eye here".
 enum _Tool { none, crop, redEye }
@@ -334,6 +344,7 @@ class _EditorState extends State<_Editor> {
                     onCurve: (pts) => _send(
                       EditCmd.setCurve(channel: _curveChannel, points: pts),
                     ),
+                    onAi: (op) => _send(EditCmd.aiOp(op: op)),
                     onRevert: _confirmRevert,
                   ),
                 ),
@@ -1063,6 +1074,7 @@ class _Panel extends StatelessWidget {
     required this.onClearEyes,
     required this.onCurveChannel,
     required this.onCurve,
+    required this.onAi,
     required this.onRevert,
   });
 
@@ -1089,6 +1101,7 @@ class _Panel extends StatelessWidget {
   final VoidCallback onClearEyes;
   final void Function(String) onCurveChannel;
   final void Function(List<CurvePoint>) onCurve;
+  final void Function(String op) onAi;
   final VoidCallback onRevert;
 
   Adjust _with(String field, double v) => Adjust(
@@ -1199,6 +1212,48 @@ class _Panel extends StatelessWidget {
           if ((s?.filter ?? '').isNotEmpty)
             _Slide('Strength', s?.filterStrength ?? 1, 0, 1, busy,
                 (v) => onFilter(s!.filter, v)),
+
+          const _Section(label: 'AI tools'),
+          // Upscale and Colorize write a new file next to the original and
+          // reopen the editor on it; Magic Eraser and Sky report what they
+          // still need. All four are one command apart -- the difference is
+          // in Rust, not here.
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final (id, label, icon) in _aiOps)
+                ActionChip(
+                  avatar: Icon(icon, size: 16),
+                  label: Text(label),
+                  onPressed: busy ? null : () => onAi(id),
+                ),
+            ],
+          ),
+          if ((s?.notice ?? '').isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.auto_awesome, size: 15, color: t.nInk2),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      s!.notice,
+                      style: TextStyle(fontSize: 11.5, color: t.nInk2),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              'Upscale and Colorize save a new file and continue editing it.',
+              style: TextStyle(fontSize: 10.5, color: t.nInk2),
+            ),
+          ),
 
           const _Section(label: 'Detail'),
           _Slide('Sharpen', s?.sharpen ?? 0, 0, 4, busy, onSharpen),
