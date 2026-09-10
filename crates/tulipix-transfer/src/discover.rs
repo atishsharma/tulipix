@@ -95,7 +95,10 @@ pub fn browse(secure: bool, own: Vec<IpAddr>) -> Option<Browser> {
                     let addrs: Vec<Found> = info
                         .get_addresses()
                         .iter()
-                        .map(|ip| Found { host: host.clone(), ip: *ip, port })
+                        // mdns-sd 0.21 hands out `ScopedIp` — an address plus the
+                        // interface it was heard on. We dial by address alone, as
+                        // 0.13 did, so drop the scope.
+                        .map(|ip| Found { host: host.clone(), ip: ip.to_ip_addr(), port })
                         .collect();
                     if let Ok(mut map) = sink.lock() {
                         map.insert(info.get_fullname().to_string(), addrs);
