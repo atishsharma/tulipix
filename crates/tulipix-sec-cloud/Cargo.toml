@@ -22,7 +22,7 @@ slint.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
 tulipix-ui = { path = "../tulipix-ui" }
 # `histogram`: this crate draws the histogram into a slint Image.
 tulipix-common = { path = "../tulipix-common", features = ["histogram"] }

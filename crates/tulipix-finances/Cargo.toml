@@ -32,7 +32,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # Statement PDFs. Already in the tree at this version for the Books reader, so this
 # adds no crate — only text extraction, which is all a statement needs.
-lopdf = { version = "0.44", default-features = false }
+lopdf = { version = "0.45", default-features = false }
 # Statement spreadsheets: .xlsx and the legacy binary .xls, which several banks
 # still export. Its zip + quick-xml + encoding_rs are all already in the lockfile.
 # `dates` is what makes a date cell readable as a date rather than as a serial

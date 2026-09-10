@@ -21,9 +21,9 @@ thiserror.workspace = true
 # Live TV and the 4KHDHub scraper both log what they skipped rather than
 # failing a whole batch, so they need the tracing macros.
 tracing.workspace = true
-hmac = "0.12"
-md-5 = "0.10"
-base64 = "0.22"
+hmac = "0.13"
+md-5 = "0.11"
+base64 = "0.23"
 url = "2"
 # Stream Plus streams a download to disk chunk by chunk rather than buffering a
 # whole episode in memory, which needs reqwest's byte stream.

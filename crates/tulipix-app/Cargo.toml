@@ -96,11 +96,11 @@ tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
 notify = { version = "8", optional = true }   # keep in step with tulipix-core
 # Dev-only hot-patch runtime + the section-wiring dylib it loads. Both optional,
 # pulled in ONLY by the `hot` feature, so default/release builds never see them.
-hot-lib-reloader = { version = "0.7", optional = true }
+hot-lib-reloader = { version = "0.8", optional = true }
 tulipix-hot = { path = "../tulipix-hot", optional = true }
 tulipix-core = { path = "../tulipix-core" }
 # `tray` on by default — np.p1.tray needs the real tray-icon backend, the
@@ -130,15 +130,15 @@ reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
 walkdir = "2"
 # OS media-key / now-playing integration (Linux MPRIS · Windows SMTC · macOS).
-souvlaki = "0.7"
+souvlaki = "0.8"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
-sha2 = "0.10"
+sha2 = "0.11"
 kamadak-exif = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 mimalloc = { version = "0.1", default-features = false, optional = true }
-tikv-jemallocator = { version = "0.6", optional = true }
+tikv-jemallocator = { version = "0.7", optional = true }
 
 # System light/dark detection. On Linux that is one XDG settings-portal read, and
 # rfd's xdg-portal backend already links ashpd 0.11 on zbus/tokio — so we call it
@@ -147,12 +147,12 @@ tikv-jemallocator = { version = "0.6", optional = true }
 # async-io/-fs/-net/-global-executor into every Linux build: a second async
 # runtime for one boolean.
 [target.'cfg(target_os = "linux")'.dependencies]
-ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
+ashpd = { version = "0.13", default-features = false, features = ["tokio"] }
 
 # Off Linux, dark-light IS the value: the Windows registry read and the macOS
 # AppleInterfaceStyle lookup. Neither drags an extra runtime there.
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-dark-light = "2"
+dark-light = "3"
 
 # libc was declared here for PR_SET_PDEATHSIG, but mpv_die_with_parent lives in
 # tulipix-common and that is where the dependency belongs; this crate never

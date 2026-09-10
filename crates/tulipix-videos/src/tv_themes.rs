@@ -67,7 +67,7 @@ impl ThemeProvider for PlexThemesProvider {
 fn cache_filename(url: &str) -> String {
     let mut h = Sha256::new();
     h.update(url.as_bytes());
-    format!("{:x}.mp3", h.finalize())
+    format!("{}.mp3", h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>())
 }
 
 /// Returns the local cache path. Pulls + writes on cache miss; otherwise

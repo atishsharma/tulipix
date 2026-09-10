@@ -15,7 +15,7 @@ sha2.workspace = true
 # Already resolved in both lockfiles via tulipix-books and tulipix-finances, at
 # this exact version and these features — so the PDF operations add a use, not
 # a dependency.
-lopdf = { version = "0.44", default-features = false }
+lopdf = { version = "0.45", default-features = false }
 # Same story as lopdf: this exact version and feature set is already in both
 # lockfiles, because Books reads EPUB and CBZ with it.
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
@@ -26,7 +26,7 @@ zip = { version = "2.4", default-features = false, features = ["deflate"] }
 # age: the file format is specified and audited, and a file encrypted here
 # opens anywhere the `age` command exists. Rolling our own AES would be a
 # smaller dependency graph and a much worse idea.
-age = { version = "0.11", default-features = false }
+age = { version = "0.12", default-features = false }
 # calamine reads .xlsx, rust_xlsxwriter writes it. Two crates for one
 # operation, which is worth it: the alternative is 250 lines of hand-rolled
 # SpreadsheetML over the zip crate, and being wrong about it silently.

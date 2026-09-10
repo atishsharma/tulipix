@@ -371,7 +371,7 @@ pub fn kick_discover_refresh(weak: slint::Weak<MainWindow>) {
                         let url = format!("https://image.tmdb.org/t/p/w500{}", pp);
                         let mut h = Sha256::new();
                         h.update(url.as_bytes());
-                        let name = format!("{:x}.jpg", h.finalize());
+                        let name = format!("{}.jpg", h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>());
                         let p = dir.join(name);
                         if p.exists() { Some(p) } else { None }
                     })

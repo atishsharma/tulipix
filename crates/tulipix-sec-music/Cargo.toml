@@ -24,11 +24,11 @@ serde_json.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-sha2 = "0.10"
+sha2 = "0.11"
 # Station-initial tile for radio without a favicon (same font the book
 # placeholder covers use, so no second font ships).
 ab_glyph = "0.2"
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
 tulipix-ui = { path = "../tulipix-ui" }
 tulipix-common = { path = "../tulipix-common" }
 tulipix-mdl = { path = "../tulipix-mdl" }

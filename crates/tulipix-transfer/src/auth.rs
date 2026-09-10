@@ -303,7 +303,7 @@ fn random_pin() -> String {
 
 fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
-    getrandom::getrandom(&mut buf).expect("system RNG unavailable");
+    getrandom::fill(&mut buf).expect("system RNG unavailable");
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -312,7 +312,7 @@ fn random_hex(bytes: usize) -> String {
 /// to something guessable.
 fn random_u64() -> u64 {
     let mut buf = [0u8; 8];
-    getrandom::getrandom(&mut buf).expect("system RNG unavailable");
+    getrandom::fill(&mut buf).expect("system RNG unavailable");
     u64::from_le_bytes(buf)
 }
 

@@ -1782,7 +1782,7 @@ fn cached_tmdb_poster(poster_path: &str, dir: &Path) -> Option<String> {
     let url = format!("https://image.tmdb.org/t/p/w500{poster_path}");
     let mut h = Sha256::new();
     h.update(url.as_bytes());
-    let p = dir.join(format!("{:x}.jpg", h.finalize()));
+    let p = dir.join(format!("{}.jpg", h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()));
     p.exists().then(|| p.to_string_lossy().into_owned())
 }
 

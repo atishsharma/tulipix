@@ -28,11 +28,11 @@ zip = { version = "2.4", default-features = false, features = ["deflate"] }
 # the page cache (see render.rs).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "pnm"] }
 mobi = "0.8"
-sha2 = "0.10"
+sha2 = "0.11"
 # Placeholder-cover text raster (already in the tree via Slint's femtovg).
 ab_glyph = "0.2"
 walkdir = "2"
-lopdf = { version = "0.44", default-features = false }
+lopdf = { version = "0.45", default-features = false }
 reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
 urlencoding = "2"

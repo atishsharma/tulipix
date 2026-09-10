@@ -13,7 +13,7 @@ tokio = { workspace = true }
 sqlx.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 # Last.fm API signatures are MD5 by spec (np.p5.music.scrobble).
-md-5 = "0.10"
+md-5 = "0.11"
 # YouTube thumbnail/avatar fetch decodes remote jpg/webp/png and re-encodes PNG.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # Stable per-folder cache stems for audiobook art (ab_meta), spelled the

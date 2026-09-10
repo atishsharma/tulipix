@@ -76,12 +76,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
 keyring = "3"
-sha2 = "0.10"
+sha2 = "0.11"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 wasmtime = { version = "26", default-features = false, features = ["runtime", "cranelift"] }
 # Transfer section. axum's default features drag in `form`, `multipart`
@@ -90,14 +90,14 @@ wasmtime = { version = "26", default-features = false, features = ["runtime", "c
 # tokio-util, futures-util — is already in the lockfile via reqwest, so the
 # real marginal cost is axum + axum-core + matchit + mime.
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query"] }
-fast_qr = { version = "0.12", default-features = false }
-if-addrs = "0.13"
+fast_qr = { version = "0.14", default-features = false }
+if-addrs = "0.15"
 # Already in the tree under reqwest; named directly so the transfer crate can
 # stream a request body and a file without pulling a second async-stream stack.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Already in the tree under rustls. Used for the PIN, pairing keys and tokens —
 # no separate RNG crate.
-getrandom = "0.2"
+getrandom = "0.4"
 mlua = { version = "0.10", features = ["lua54", "vendored", "send", "serialize"] }
 
 # NOTE: the Cranelift debug-codegen backend is a Linux-only / nightly-only

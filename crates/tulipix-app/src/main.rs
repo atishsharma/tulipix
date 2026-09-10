@@ -90,14 +90,15 @@ fn detect_dark() -> bool {
 /// lookup are its whole value, and neither is testable from here.
 #[cfg(not(target_os = "linux"))]
 fn detect_dark() -> bool {
-    let mode = std::thread::spawn(|| {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
-        rt.block_on(async { dark_light::detect() }).ok()
-    })
-    .join()
-    .ok()
-    .flatten()
-    .unwrap_or(dark_light::Mode::Dark);
+    // dark-light 3 made `detect` blocking (it was async in 2), so the
+    // current-thread runtime that used to drive it is gone. The thread stays:
+    // this runs before the window exists and the registry / NSUserDefaults read
+    // is still someone else's syscall.
+    let mode = std::thread::spawn(|| dark_light::detect().ok())
+        .join()
+        .ok()
+        .flatten()
+        .unwrap_or(dark_light::Mode::Dark);
     matches!(mode, dark_light::Mode::Dark | dark_light::Mode::Unspecified)
 }
 
@@ -4392,7 +4393,7 @@ fn build_props(path: &std::path::Path) -> AssetProperties {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
             h.update(&bytes);
-            format!("{:x}", h.finalize())
+            h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
         }).unwrap_or_else(|| "—".into())
     } else {
         "(skipped — file > 64 MB)".into()

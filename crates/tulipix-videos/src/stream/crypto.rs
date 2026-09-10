@@ -11,7 +11,8 @@
 //!   failed request, never take the app down.
 
 use base64::Engine;
-use hmac::{Hmac, Mac};
+// digest 0.11 (hmac 0.13) moved `new_from_slice` off `Mac` and onto `KeyInit`.
+use hmac::{Hmac, KeyInit, Mac};
 use md5::{Digest, Md5};
 use std::collections::BTreeMap;
 use std::sync::RwLock;

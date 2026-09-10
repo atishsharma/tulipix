@@ -198,8 +198,7 @@ pub async fn cache_image(http: &reqwest::Client, url: &str, cache_dir: &Path) ->
     std::fs::create_dir_all(cache_dir).ok();
     let mut h = Sha256::new();
     h.update(url.as_bytes());
-    let hash = h.finalize();
-    let name = format!("{:x}.jpg", &hash);
+    let name = format!("{}.jpg", h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>());
     let path = cache_dir.join(name);
     if path.exists() { return Ok(path); }
     let bytes = http.get(url).send().await?.error_for_status()?.bytes().await?;

@@ -23,8 +23,8 @@ async-trait = "0.1"
 # yt-dlp binary resolution (bundled tool + PATH + override dir).
 tulipix-core = { path = "../tulipix-core" }
 # Audio tag + cover-art write (Opus/Vorbis picture blocks handled correctly).
-lofty = "0.22"
-sanitize-filename = "0.5"
+lofty = "0.25"
+sanitize-filename = "0.6"
 
 [dev-dependencies]
 tokio = { workspace = true }

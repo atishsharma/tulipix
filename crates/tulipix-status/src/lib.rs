@@ -154,7 +154,7 @@ impl Running {
 /// from the URL this app opened.
 fn mint_token() -> String {
     let mut b = [0u8; 32];
-    if getrandom::getrandom(&mut b).is_err() {
+    if getrandom::fill(&mut b).is_err() {
         // Refusing to serve beats serving unauthenticated: the page can drive
         // the app, so a predictable token is worse than no status page.
         return String::new();

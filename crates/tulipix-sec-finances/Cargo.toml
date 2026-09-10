@@ -29,7 +29,7 @@ tracing.workspace = true
 anyhow.workspace = true
 sqlx.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
 # The one network call in this section: the daily exchange-rate fetch. Deliberately
 # not a dependency of tulipix-finances — that crate builds the URL and parses the
 # response, and stays testable with no network. Already in the tree, so no new

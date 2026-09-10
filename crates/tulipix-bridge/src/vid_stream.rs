@@ -381,7 +381,7 @@ pub(crate) async fn cache_cover(url: &str) -> Option<PathBuf> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(url.as_bytes());
-    let stem = format!("{:x}", h.finalize());
+    let stem = h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>();
     for ext in COVER_EXTS {
         let path = dir.join(format!("{stem}.{ext}"));
         if path.exists() {
