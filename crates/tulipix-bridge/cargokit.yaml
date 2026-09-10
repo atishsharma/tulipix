@@ -1,0 +1,23 @@
+# Cargo features for the Flutter build.
+#
+# cargokit builds this crate itself, from the CMake/Gradle glue rather than from
+# the justfile, so `--features` cannot be passed on a command line. It does read
+# this file out of the crate directory (`CargokitCrateOptions.load`, keyed on
+# CARGOKIT_MANIFEST_DIR, which linux/CMakeLists.txt points at
+# ../../../crates/tulipix-bridge) and splices `extra_flags` into the cargo
+# invocation. No patch to the vendored build tool needed.
+#
+# `books-tts` is the reader's neural read-aloud voice (Kokoro-82M through ORT).
+# It pulls `ort` and the onnxruntime binaries, which is a slow first build on a
+# 4-thread box -- so debug stays without it and `just dev` stays quick. Without
+# the feature the reader still speaks: `kokoro::available()` is false and
+# `tts_engine` steps down to espeak on its own.
+#
+# `ai-onnx` (the real ONNX photo-editor ops) belongs on these same two lines
+# whenever it is wanted; it has been unreachable from a Flutter build for the
+# same reason this file exists.
+cargo:
+  profile:
+    extra_flags: ["--features", "books-tts"]
+  release:
+    extra_flags: ["--features", "books-tts"]

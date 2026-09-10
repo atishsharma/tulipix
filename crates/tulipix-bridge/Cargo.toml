@@ -38,7 +38,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 # Must match BOTH the codegen CLI and the `flutter_rust_bridge` pin in
 # app_flutter/pubspec.yaml. frb checks all three and refuses on a mismatch.
-flutter_rust_bridge = "=2.12.0"
+flutter_rust_bridge = "=2.13.0"
 anyhow = "1"
 # `process` is Music's: mpv, ffprobe, ffmpeg and yt-dlp are all out-of-process,
 # and the ones that are awaited (yt-dlp listings, downloads) must not block a
@@ -168,6 +168,13 @@ tempfile = "3"
 default = []
 # Real ONNX editor ops, forwarded to tulipix-photos.
 ai-onnx = ["tulipix-photos/onnx"]
+
+# The reader's neural read-aloud voice (Kokoro-82M through ORT). Heavy -- it
+# pulls `ort` and the onnxruntime binaries -- and off by default for the same
+# reason it is off in the lite dev build. Without it `books_tts_say` still
+# speaks, in espeak's voice: `kokoro::available()` is false when the feature is
+# absent, so `tts_engine` degrades on its own rather than failing.
+books-tts = ["tulipix-books/kokoro"]
 
 # Cargo reads profiles from the workspace ROOT manifest, and this crate is its
 # own workspace root — so it inherits none of the tuning in the repo's
