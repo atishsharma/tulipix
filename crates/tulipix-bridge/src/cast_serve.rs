@@ -220,15 +220,22 @@ async fn handle(mut stream: TcpStream, _peer: SocketAddr) -> Result<()> {
     }
     let asked = target.trim_start_matches('/');
 
-    let (path, mime) = {
+    // Resolved to an owned answer before anything is awaited. A `MutexGuard`
+    // merely in lexical scope across an `.await` makes the whole future
+    // non-`Send`, and this one is spawned — the same trap `api/mdl.rs` keeps
+    // its `with()` helper for.
+    let found = {
         let g = slot().lock().map_err(|_| anyhow!("poisoned"))?;
         match g.as_ref() {
             // Constant-time is overkill for a 128-bit token nobody can probe
             // faster than the network allows, but the comparison is on the
             // whole string rather than a prefix.
-            Some(p) if p.token == asked => (p.path.clone(), mime_of(&p.path)),
-            _ => return respond_status(&mut stream, "404 Not Found").await,
+            Some(p) if p.token == asked => Some((p.path.clone(), mime_of(&p.path))),
+            _ => None,
         }
+    };
+    let Some((path, mime)) = found else {
+        return respond_status(&mut stream, "404 Not Found").await;
     };
 
     let mut file = tokio::fs::File::open(&path).await?;
