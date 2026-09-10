@@ -208,6 +208,7 @@ class _Head extends StatelessWidget {
           child: Align(
             alignment: Alignment.centerRight,
             child: IconButton(
+              tooltip: 'Close the manager',
               icon: const Icon(Icons.close, size: 18),
               // `Navigator.pop` goes straight past the `PopScope` guarding the
               // dialog, so the button asks for itself.

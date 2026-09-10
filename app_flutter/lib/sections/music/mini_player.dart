@@ -23,8 +23,10 @@ import 'player_bar.dart' show Transport;
 import 'player_widgets.dart';
 
 /// The host frame, before `miniScale`. `music-mini-w` / `music-mini-h` in
-/// ui/main.slint, which is 300 x 470 for music and books and 300 x 456 for the
-/// podcast mini the port does not have yet.
+/// ui/main.slint, which is 300 x 470 for music and books and 300 x 456 for
+/// podcasts. One frame here rather than three: the contents differ by mode —
+/// see [_MiniTransport] and the flip panel — and a fourteen-pixel difference in
+/// the shell is not worth a second constant to keep in step with the first.
 const Size kMiniSize = Size(300, 470);
 
 /// The minimised bubble's diameter. It hangs 18px off the right wall
@@ -68,8 +70,12 @@ class MiniPlayer extends StatelessWidget {
     // Slint has three mini components, not one: `MusicMini` (which carries its
     // own radio and YouTube branches), `PodcastMini` and `BookMini`. They share
     // a frame and nothing else — a spoken-word player has no vinyl, no shuffle
-    // and no lyrics, and a book has chapters where an album has a queue. The
-    // port drew the record player for all five.
+    // and no lyrics, and a book has chapters where an album has a queue.
+    //
+    // One widget here, three sets of contents, branched on `now.mode`: the
+    // transport below is a different five buttons per mode, the flip panel a
+    // different set of faces, and the ring a different colour. The frame is the
+    // only thing genuinely shared, which is the only thing worth sharing.
     final podcast = now.mode == 'podcast';
     final book = now.mode == 'book';
 

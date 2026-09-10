@@ -460,7 +460,7 @@ pub fn mdl_formats() -> Vec<String> {
 /// a provider grows a search.
 #[frb(sync)]
 pub fn mdl_search_providers() -> Vec<String> {
-    ["YT Music", "Spotify", "Deezer"]
+    ["YT Music", "Spotify", "Apple", "Deezer", "Bandcamp"]
         .iter()
         .map(|s| s.to_string())
         .collect()
@@ -576,11 +576,19 @@ fn start_search() {
                 }
             }
             // Keyless and unauthenticated, so there is nothing to fall back
-            // from: a Deezer failure is a Deezer failure, and saying so is
-            // more use than quietly answering with somebody else's catalogue.
+            // from: a failure here is that catalogue's failure, and saying so
+            // is more use than quietly answering with somebody else's.
             "Deezer" => {
                 cli(format!("▸ searching Deezer: {query}"));
                 tulipix_mdl::search_deezer(&client, &query, SEARCH_HITS).await
+            }
+            "Apple" => {
+                cli(format!("▸ searching Apple: {query}"));
+                tulipix_mdl::search_apple(&client, &query, SEARCH_HITS).await
+            }
+            "Bandcamp" => {
+                cli(format!("▸ searching Bandcamp: {query}"));
+                tulipix_mdl::search_bandcamp(&client, &query, SEARCH_HITS).await
             }
             _ => {
                 cli(format!("▸ searching YouTube Music: {query}"));

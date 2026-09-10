@@ -116,6 +116,10 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 # slint and nothing the bridge links may. It no longer does (see above), so it
 # is an ordinary dependency: `pool_for` -- which tulipix-status needs too -- and
 # `quotes::shuffled`, the Home page's quote shelf.
+# `cast_serve` needs an unguessable path segment for the file it publishes to
+# the network. getrandom is already in the tree under rustls; used here rather
+# than adding a second RNG, which is the same call tulipix-transfer makes.
+getrandom = { workspace = true }
 tulipix-common = { path = "../tulipix-common" }
 tulipix-core = { path = "../tulipix-core" }
 tulipix-photos = { path = "../tulipix-photos" }

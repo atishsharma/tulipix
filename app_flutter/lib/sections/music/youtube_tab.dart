@@ -1268,6 +1268,7 @@ class _ChannelPageState extends State<_ChannelPage> {
                     suffixIcon: st.ytChannelQuery.isEmpty
                         ? null
                         : IconButton(
+                            tooltip: 'Clear the search',
                             icon: const Icon(Icons.close, size: 14),
                             onPressed: () {
                               _search.clear();

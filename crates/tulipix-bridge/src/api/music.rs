@@ -542,6 +542,15 @@ pub struct MusicState {
     /// choice that resets on every launch is not a choice.
     pub viz_style: i64,
     pub viz_on: bool,
+    /// Renderers found on the network, by short name. Empty until Discover has
+    /// been asked for — SSDP is a multicast round trip, not something to run on
+    /// every snapshot.
+    pub cast_devices: Vec<String>,
+    /// The one being played to, and whether it is. Empty and false is the
+    /// normal state: casting is a thing you ask for.
+    pub cast_target: String,
+    pub cast_active: bool,
+    pub cast_busy: bool,
 
     // --- My Music ---
     /// home | songs | albums | artists | genres | playlists | folders |
@@ -1003,6 +1012,20 @@ pub enum MusicCmd {
     SetEqPreset { name: String },
     SetEqBand { index: i64, gain_db: f64 },
     ToggleEq,
+    // --- casting -----------------------------------------------------------
+    //
+    // `tulipix_music::cast` has lived in the *music* crate since before the
+    // port and been used only by the video streamer, because video casts
+    // streams — things that already have a URL a speaker can fetch. Music is
+    // local files, so the missing half was never the SOAP; it was an HTTP
+    // origin. See `crate::cast_serve`.
+    /// Look for renderers on the network. A few seconds of SSDP.
+    CastDiscover,
+    /// Send what is playing to one of them, by the name Discover listed.
+    CastTo { device: String },
+    /// Stop the renderer and take playback back.
+    CastStop,
+
     /// Load an AutoEq `ParametricEQ.txt` and flatten it onto the ten bands.
     ///
     /// The catalogue AutoEq's device auto-detection wants is thousands of files
@@ -1236,8 +1259,18 @@ struct Session {
 
     shuffle: bool,
     repeat: String,
+    /// Renderers from the last discovery, the one being played to, and its
+    /// AVTransport control endpoint — which is the handle Stop needs.
+    cast_devices: Vec<tulipix_music::cast::CastDevice>,
+    cast_target: String,
+    cast_control: Option<String>,
+    cast_busy: bool,
     sleep_min: i64,
     sleep_deadline: Option<std::time::Instant>,
+    /// `SleepMode::EndOfTrack`, the arm the bridge never implemented. Read and
+    /// cleared by the end-of-source hook, which is the only place that knows a
+    /// track has finished rather than been skipped.
+    sleep_end_of_track: bool,
     lyrics_offset_ms: i64,
     /// The order Prev walks back through. Not the queue: under shuffle the
     /// queue order and the played order are different, and Prev means the
@@ -1356,8 +1389,13 @@ impl Default for Session {
             detail_key: String::new(),
             shuffle: false,
             repeat: "off".into(),
+            cast_devices: Vec::new(),
+            cast_target: String::new(),
+            cast_control: None,
+            cast_busy: false,
             sleep_min: 0,
             sleep_deadline: None,
+            sleep_end_of_track: false,
             lyrics_offset_ms: 0,
             history: Vec::new(),
             pod_tab: "home".into(),
@@ -3025,9 +3063,32 @@ fn launch(src: &str, slot: mpv::Slot, start_s: Option<f64>) {
                 playing: !obs.paused,
             });
         },
-        || emit(MusicEvent::Ended),
+        || {
+            // "After this track" is decided here rather than in the queue,
+            // because the queue has no idea which track is the last one. A
+            // skip does not reach this hook, so pressing Next with the timer
+            // armed keeps going — which is what "after *this* track" means.
+            if end_of_track_sleep_due() {
+                mpv::stop();
+                emit(MusicEvent::TrackChanged);
+            } else {
+                emit(MusicEvent::Ended);
+            }
+        },
     );
     emit(MusicEvent::TrackChanged);
+}
+
+/// Read and clear the end-of-track sleep flag. One shot: the timer is spent
+/// once it fires, the same way a deadline is.
+fn end_of_track_sleep_due() -> bool {
+    let mut s = lock();
+    if !s.sleep_end_of_track {
+        return false;
+    }
+    s.sleep_end_of_track = false;
+    s.sleep_min = 0;
+    true
 }
 
 /// Write the real listening time onto the play that is ending.
@@ -4247,10 +4308,15 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             mpv::set_property("loop-file", if next == "one" { "\"inf\"" } else { "\"no\"" });
         }
         MusicCmd::SetSleep { minutes } => {
+            // Three modes, not two. The menu has offered "After this track"
+            // as -1 since the port, and `minutes.max(0)` quietly turned it
+            // into Off — so the one arm of `sleep_timer::SleepMode` the bridge
+            // never implemented was also the one the UI already promised.
             let had_deadline = {
                 let mut s = lock();
                 let had = s.sleep_deadline.is_some();
-                s.sleep_min = minutes.max(0);
+                s.sleep_min = minutes;
+                s.sleep_end_of_track = minutes < 0;
                 s.sleep_deadline = if minutes > 0 {
                     Some(
                         std::time::Instant::now()
@@ -4483,6 +4549,10 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             save_eq(&eq);
             apply_eq_live(&eq);
         }
+        MusicCmd::CastDiscover => cast_discover().await,
+        MusicCmd::CastTo { device } => cast_to(device).await?,
+        MusicCmd::CastStop => cast_stop().await,
+
         MusicCmd::ApplyAutoEq { path } => {
             use tulipix_music::eq::BANDS_HZ;
             use tulipix_music::headphone_eq as aeq;
@@ -5755,6 +5825,146 @@ fn apply_eq_live(eq: &tulipix_music::eq::Equalizer) {
     mpv::set_property("af", &value);
 }
 
+// ------------------------------------------------------------------- cast ----
+
+/// "Living Room (Sonos One)" out of whatever the device called itself. The
+/// same trimming `vid_stream` does, for the same reason: a renderer's
+/// advertised name often carries a model string nobody reads.
+fn short_device(name: &str) -> String {
+    crate::cast_serve::short_name(name)
+}
+
+/// Look for renderers. SSDP is a multicast question with a few seconds of
+/// answers, so it is a command rather than something the snapshot does.
+async fn cast_discover() {
+    lock().cast_busy = true;
+    let found = tokio::task::spawn_blocking(crate::cast_serve::discover)
+        .await
+        .unwrap_or_default();
+    let n = found.len();
+    let mut s = lock();
+    s.cast_devices = found;
+    s.cast_busy = false;
+    s.status = match n {
+        0 => "No speakers found. They have to be on the same network, and some \
+              need waking before they answer."
+            .to_string(),
+        1 => "1 speaker found.".to_string(),
+        n => format!("{n} speakers found."),
+    };
+}
+
+/// Hand the current track to `device`.
+///
+/// The renderer pulls the audio itself, so the file is published on a local
+/// HTTP origin first — see [`crate::cast_serve`]. Local playback stops: the
+/// alternative is hearing the same track twice, a second or two apart, which
+/// is worse than either.
+async fn cast_to(device: String) -> Result<()> {
+    use tulipix_music::cast as dlna;
+
+    // What is on the deck, by the one record that knows: every player in the
+    // section lands in `mpv::set_now_playing`, so this is right for a track
+    // started from Songs, from an album page or from the queue alike.
+    let item_id = mpv::now_playing().item_id;
+    if item_id == 0 {
+        anyhow::bail!("play something first — casting sends what is on the deck");
+    }
+    let pool = music_pool().await?;
+    let path = track_path(pool, item_id).await.unwrap_or_default();
+    if path.is_empty() {
+        anyhow::bail!("that track has no file to send");
+    }
+    let dev = {
+        let s = lock();
+        s.cast_devices
+            .iter()
+            .find(|d| short_device(&d.name) == device)
+            .cloned()
+    };
+    let Some(dev) = dev else {
+        anyhow::bail!("{device} is no longer listed — look again");
+    };
+
+    lock().cast_busy = true;
+    let client = tulipix_core::net::http().clone();
+
+    // The device description says where its AVTransport control endpoint is.
+    // A renderer without one can show pictures or nothing at all, and either
+    // way it is not going to play this.
+    let desc = match client.get(&dev.location).send().await {
+        Ok(r) => r.text().await.unwrap_or_default(),
+        Err(e) => {
+            lock().cast_busy = false;
+            anyhow::bail!("{device} did not answer: {e}");
+        }
+    };
+    let Some(ctl) = dlna::parse_control_url(&desc) else {
+        lock().cast_busy = false;
+        anyhow::bail!("{device} cannot play audio (it has no AVTransport)");
+    };
+    let ctl = dlna::resolve_url(&dev.location, &ctl);
+
+    let url = match crate::cast_serve::publish(Path::new(&path)).await {
+        Ok(u) => u,
+        Err(e) => {
+            lock().cast_busy = false;
+            return Err(e);
+        }
+    };
+
+    for (action, body) in [
+        ("SetAVTransportURI", dlna::soap_set_uri(0, &url)),
+        ("Play", dlna::soap_play(0)),
+    ] {
+        let ok = client
+            .post(&ctl)
+            .header("SOAPACTION", dlna::soap_action_header(action))
+            .header(reqwest::header::CONTENT_TYPE, "text/xml; charset=\"utf-8\"")
+            .body(body)
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+        if !ok {
+            crate::cast_serve::unpublish();
+            lock().cast_busy = false;
+            anyhow::bail!("{device} refused the track");
+        }
+    }
+
+    // Only now: a failed handoff should leave the music where it was rather
+    // than silent on both machines.
+    mpv::stop();
+    let mut s = lock();
+    s.cast_control = Some(ctl);
+    s.cast_target = device.clone();
+    s.cast_busy = false;
+    s.status = format!("Playing on {device}. The queue stays here — press Next to send the next track.");
+    Ok(())
+}
+
+/// Stop the renderer and stop publishing.
+async fn cast_stop() {
+    use tulipix_music::cast as dlna;
+    let ctl = {
+        let mut s = lock();
+        s.cast_target.clear();
+        s.cast_busy = false;
+        s.cast_control.take()
+    };
+    crate::cast_serve::unpublish();
+    let Some(ctl) = ctl else { return };
+    let _ = tulipix_core::net::http()
+        .post(&ctl)
+        .header("SOAPACTION", dlna::soap_action_header("Stop"))
+        .header(reqwest::header::CONTENT_TYPE, "text/xml; charset=\"utf-8\"")
+        .body(dlna::soap_stop(0))
+        .send()
+        .await;
+    lock().status = "Stopped casting.".to_string();
+}
+
 /// Put mpv's volume back where the settings say it belongs. The only thing
 /// that ever moves it out from under the user is the sleep fade, so this is
 /// the undo for that.
@@ -5774,6 +5984,7 @@ fn check_sleep() {
             let mut s = lock();
             s.sleep_deadline = None;
             s.sleep_min = 0;
+            s.sleep_end_of_track = false;
         }
         // The next track must not start at whatever the ramp reached.
         restore_volume();
@@ -8528,6 +8739,10 @@ async fn snapshot() -> Result<MusicState> {
         preamp_db: setting("music.preamp", "0").parse().unwrap_or(0.0),
         viz_style: setting("music.viz.style", "5").parse().unwrap_or(5).clamp(0, 5),
         viz_on: setting("music.viz.on", "1") != "0",
+        cast_devices: s.cast_devices.iter().map(|d| short_device(&d.name)).collect(),
+        cast_target: s.cast_target.clone(),
+        cast_active: s.cast_control.is_some(),
+        cast_busy: s.cast_busy,
 
         mgr_open: s.mgr_open,
         mgr_tab: s.mgr_tab.clone(),

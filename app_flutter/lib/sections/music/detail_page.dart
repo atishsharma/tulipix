@@ -1909,6 +1909,9 @@ class _Marks extends StatelessWidget {
             visualDensity: VisualDensity.compact,
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 24, minHeight: 30),
+            // Five identical icons in a row are five identical announcements
+            // without this, and the whole control is which one you press.
+            tooltip: i == 1 ? '1 star' : '$i stars',
             // Tapping the star that is already the rating clears it, which is
             // the only way back to unrated.
             onPressed: () => controller.send(

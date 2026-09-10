@@ -10,6 +10,8 @@ pub mod resolve;
 pub mod manifest;
 pub mod download;
 
+pub use provider::apple_music::search as search_apple;
+pub use provider::bandcamp::search as search_bandcamp;
 pub use provider::deezer::search as search_deezer;
 pub use provider::spotify::search as search_spotify;
 pub use provider::youtube_music::search as search_ytmusic;

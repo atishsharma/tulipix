@@ -578,6 +578,10 @@ class _FlagSliderState extends State<_FlagSlider> {
           min: widget.min,
           max: widget.max,
           divisions: widget.divisions,
+          // The label above is the whole caption for this control, and a
+          // screen reader reading them as two unrelated things is why every
+          // slider in this section used to announce as a bare number.
+          semanticFormatterCallback: widget.label,
           onChanged: (n) => setState(() => _dragging = n),
           onChangeEnd: (n) {
             setState(() => _dragging = n);
@@ -587,4 +591,94 @@ class _FlagSliderState extends State<_FlagSlider> {
       ],
     );
   }
+}
+
+/// Pick a speaker, or stop playing to one.
+///
+/// Discovery is a command rather than something the snapshot does: SSDP is a
+/// multicast question with a couple of seconds of answers, and running it on
+/// every refresh would put a broadcast on the network every time a tile
+/// scrolled.
+Future<void> castPicker(BuildContext context, MusicController c) async {
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AnimatedBuilder(
+      animation: c,
+      builder: (ctx, _) {
+        final st = c.state;
+        if (st == null) return const SizedBox.shrink();
+        final devices = st.castDevices;
+        return AlertDialog(
+          title: const Text('Play on a speaker'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (st.castActive) ...[
+                  Text('Playing on ${st.castTarget}.',
+                      style: TextStyle(color: ctx.tokens.nInk)),
+                  const SizedBox(height: 6),
+                  Text(
+                    'The queue stays on this machine — Next sends the next '
+                    'track. Volume is the speaker’s own.',
+                    style: TextStyle(fontSize: 12, color: ctx.tokens.nInk3),
+                  ),
+                  const SizedBox(height: 14),
+                ],
+                if (st.castBusy)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 18),
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+                else if (devices.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    child: Text(
+                      'No speakers found yet. They have to be on this network, '
+                      'and some only answer once they are awake.',
+                      style: TextStyle(fontSize: 12.5, color: ctx.tokens.nInk2),
+                    ),
+                  )
+                else
+                  for (final d in devices)
+                    ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(
+                        d == st.castTarget && st.castActive
+                            ? Icons.speaker
+                            : Icons.speaker_outlined,
+                        size: 20,
+                      ),
+                      title: Text(d),
+                      onTap: () => c.send(MusicCmd.castTo(device: d)),
+                    ),
+              ],
+            ),
+          ),
+          actions: [
+            if (st.castActive)
+              TextButton(
+                onPressed: () => c.send(const MusicCmd.castStop()),
+                child: const Text('Stop casting'),
+              ),
+            TextButton(
+              style: musicQuietStyle(ctx),
+              onPressed: st.castBusy
+                  ? null
+                  : () => c.send(const MusicCmd.castDiscover()),
+              child: Text(devices.isEmpty ? 'Look for speakers' : 'Look again'),
+            ),
+            FilledButton(
+              style: musicFilledStyle(),
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Done'),
+            ),
+          ],
+        );
+      },
+    ),
+  );
 }

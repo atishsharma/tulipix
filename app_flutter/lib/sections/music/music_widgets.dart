@@ -443,6 +443,9 @@ class _MusicCardState extends State<MusicCard> {
                                       : Icons.favorite_border,
                                   colour:
                                       w.loved! ? Tokens.secMusic : Colors.white,
+                                  label: w.loved!
+                                      ? 'Remove ${w.title} from favourites'
+                                      : 'Add ${w.title} to favourites',
                                   onTap: w.onFav,
                                 ),
                               ),
@@ -560,26 +563,38 @@ class _LyricDisc extends StatelessWidget {
 
 /// A 30px black disc with a glyph in it — the tile's fav corner.
 class _Disc extends StatelessWidget {
-  const _Disc({required this.icon, required this.colour, this.onTap});
+  const _Disc({
+    required this.icon,
+    required this.colour,
+    this.onTap,
+    this.label,
+  });
 
   final IconData icon;
   final Color colour;
   final VoidCallback? onTap;
 
+  /// What this disc is, for anyone not looking at it. A heart over a cover is
+  /// unambiguous by sight and completely silent otherwise.
+  final String? label;
+
   @override
-  Widget build(BuildContext context) => SizedBox(
-        width: 30,
-        height: 30,
-        child: Material(
-          color: const Color(0xAA000000),
-          shape: const CircleBorder(),
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            onTap: onTap,
-            child: Icon(icon, size: 16, color: colour),
-          ),
+  Widget build(BuildContext context) {
+    final disc = SizedBox(
+      width: 30,
+      height: 30,
+      child: Material(
+        color: const Color(0xAA000000),
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Icon(icon, size: 16, color: colour),
         ),
-      );
+      ),
+    );
+    return label == null ? disc : Tooltip(message: label!, child: disc);
+  }
 }
 
 /// The track count, top-right, in the section gradient. Always on: it is the
@@ -631,16 +646,25 @@ class _RateStrip extends StatelessWidget {
           children: [
             for (var n = 1; n <= 5; n++)
               Expanded(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap:
-                      onSet == null ? null : () => onSet!(stars == n ? 0 : n),
-                  child: Icon(
-                    stars >= n ? Icons.star : Icons.star_border,
-                    size: 13,
-                    color: stars >= n
-                        ? const Color(0xFFE5A00D)
-                        : const Color(0xCCFFFFFF),
+                child: Semantics(
+                  button: true,
+                  // Five stars in a strip are five identical hit targets.
+                  // Naming the action rather than the star: pressing the
+                  // current rating is how it gets cleared.
+                  label: stars == n
+                      ? 'Clear the rating'
+                      : (n == 1 ? 'Rate 1 star' : 'Rate $n stars'),
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap:
+                        onSet == null ? null : () => onSet!(stars == n ? 0 : n),
+                    child: Icon(
+                      stars >= n ? Icons.star : Icons.star_border,
+                      size: 13,
+                      color: stars >= n
+                          ? const Color(0xFFE5A00D)
+                          : const Color(0xCCFFFFFF),
+                    ),
                   ),
                 ),
               ),
@@ -1256,13 +1280,22 @@ class Pager extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           IconButton(
+            tooltip: 'Previous page',
             icon: const Icon(Icons.chevron_left),
             color: page > 0 ? Tokens.secMusic : t.nInk3,
             onPressed: page > 0 ? () => onGo(page - 1) : null,
           ),
-          Text('${page + 1} / $pages',
-              style: TextStyle(fontSize: 13, color: t.nInk)),
+          Semantics(
+            // Two chevrons and a fraction. Read out bare it is "1 / 12", which
+            // is not a sentence — this is the one place in the section where a
+            // number needs saying rather than showing.
+            label: 'Page ${page + 1} of $pages',
+            excludeSemantics: true,
+            child: Text('${page + 1} / $pages',
+                style: TextStyle(fontSize: 13, color: t.nInk)),
+          ),
           IconButton(
+            tooltip: 'Next page',
             icon: const Icon(Icons.chevron_right),
             color: page + 1 < pages ? Tokens.secMusic : t.nInk3,
             onPressed: page + 1 < pages ? () => onGo(page + 1) : null,

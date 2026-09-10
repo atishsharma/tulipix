@@ -656,3 +656,159 @@ mod tests {
         assert!(!m("https://example.com/album/x"));
     }
 }
+
+// ── search ──────────────────────────────────────────────────────────────────
+//
+// Bandcamp's own search box calls `api/fuzzysearch/1/autocomplete_elastic`, a
+// POST that answers JSON without a key. It is undocumented, which is the
+// honest caveat on this one: it is not promised to anybody and could change.
+// The failure mode is a clear error rather than wrong data — the shape either
+// deserializes or it does not — and the whole catalogue is otherwise reachable
+// only by already knowing the URL, which is the least useful kind of
+// reachable for the label whose whole point is finding people you have not
+// heard of.
+
+#[derive(Deserialize)]
+struct BcSearchResponse {
+    auto: Option<BcAuto>,
+}
+
+#[derive(Deserialize)]
+struct BcAuto {
+    results: Option<Vec<BcHit>>,
+}
+
+#[derive(Deserialize)]
+struct BcHit {
+    /// `t` track · `a` album · `b` band. Only tracks become rows.
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    id: Option<i64>,
+    name: Option<String>,
+    band_name: Option<String>,
+    album_name: Option<String>,
+    img: Option<String>,
+    item_url_path: Option<String>,
+}
+
+fn bc_clean(v: Option<&String>) -> Option<String> {
+    v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn bc_hit_to_track(h: &BcHit) -> Option<Track> {
+    // Albums and bands come back in the same list. An album is not a row here:
+    // the queue is tracks, and an album hit would have to be fetched before it
+    // became any. Pasting its URL is the path that already does that.
+    if h.kind.as_deref() != Some("t") {
+        return None;
+    }
+    let title = bc_clean(h.name.as_ref())?;
+    let artist = bc_clean(h.band_name.as_ref())?;
+    Some(Track {
+        id: h
+            .id
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| format!("{artist}-{title}")),
+        title,
+        artists: vec![artist],
+        album: bc_clean(h.album_name.as_ref()),
+        artwork_url: bc_clean(h.img.as_ref()),
+        // Autocomplete carries no length. The downloader's duration check reads
+        // 0 as "the provider did not say" and falls back to the first hit, so
+        // a Bandcamp search gets the old behaviour rather than a wrong one.
+        duration_ms: None,
+        source_url: bc_clean(h.item_url_path.as_ref()),
+    })
+}
+
+/// Search Bandcamp by name.
+pub async fn search(client: &reqwest::Client, query: &str, limit: usize) -> Result<Playlist> {
+    let q = query.trim();
+    if q.is_empty() {
+        bail!("Type something to search.");
+    }
+    let body = serde_json::json!({
+        "search_text": q,
+        "search_filter": "t",
+        "full_page": false,
+        "fan_id": serde_json::Value::Null,
+    });
+    let resp: BcSearchResponse = client
+        .post("https://bandcamp.com/api/fuzzysearch/1/autocomplete_elastic")
+        .header("user-agent", "Mozilla/5.0")
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let tracks: Vec<Track> = resp
+        .auto
+        .and_then(|a| a.results)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(bc_hit_to_track)
+        .take(limit.max(1))
+        .collect();
+    if tracks.is_empty() {
+        bail!("Bandcamp found no tracks for “{q}”.");
+    }
+    Ok(Playlist {
+        id: format!("search:{q}"),
+        title: format!("Search: {q}"),
+        owner: None,
+        artwork_url: tracks.iter().find_map(|t| t.artwork_url.clone()),
+        provider: ProviderId::Bandcamp,
+        source_url: format!("https://bandcamp.com/search?q={q}"),
+        tracks,
+    })
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    const PAYLOAD: &str = r#"{"auto":{"results":[
+      {"type":"t","id":11,"name":"Opening","band_name":"Ghost Ship",
+       "album_name":"Harbour","img":"https://f4.bcbits.com/img/a1_10.jpg",
+       "item_url_path":"https://band.bandcamp.com/track/opening"},
+      {"type":"a","id":12,"name":"Harbour","band_name":"Ghost Ship"},
+      {"type":"b","id":13,"name":"Ghost Ship"},
+      {"type":"t","id":14,"band_name":"No Name Here"}
+    ]}}"#;
+
+    #[test]
+    fn only_tracks_become_rows() {
+        let resp: BcSearchResponse = serde_json::from_str(PAYLOAD).unwrap();
+        let tracks: Vec<Track> = resp
+            .auto
+            .and_then(|a| a.results)
+            .unwrap()
+            .iter()
+            .filter_map(bc_hit_to_track)
+            .collect();
+        assert_eq!(tracks.len(), 1, "the album, the band and the untitled track are not rows");
+        assert_eq!(tracks[0].title, "Opening");
+        assert_eq!(tracks[0].album.as_deref(), Some("Harbour"));
+        assert_eq!(
+            tracks[0].source_url.as_deref(),
+            Some("https://band.bandcamp.com/track/opening")
+        );
+    }
+
+    #[test]
+    fn no_length_is_no_length_rather_than_zero() {
+        let resp: BcSearchResponse = serde_json::from_str(PAYLOAD).unwrap();
+        let t = resp
+            .auto
+            .and_then(|a| a.results)
+            .unwrap()
+            .iter()
+            .find_map(bc_hit_to_track)
+            .unwrap();
+        // The downloader reads None as "unknown" and keeps its old behaviour.
+        // Zero would look like a target and refuse every candidate.
+        assert_eq!(t.duration_ms, None);
+    }
+}

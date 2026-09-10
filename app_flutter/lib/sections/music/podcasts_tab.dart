@@ -136,6 +136,7 @@ class _HeaderState extends State<_Header> {
                 suffixIcon: st.podQuery.isEmpty
                     ? null
                     : IconButton(
+                        tooltip: 'Clear the search',
                         icon: const Icon(Icons.close, size: 14),
                         onPressed: () {
                           _search.clear();

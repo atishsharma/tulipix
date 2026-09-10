@@ -415,6 +415,7 @@ class _Bar extends StatelessWidget {
           ),
           if (onClose != null)
             IconButton(
+              tooltip: 'Dismiss',
               icon: const Icon(Icons.close, size: 16),
               onPressed: onClose,
               visualDensity: VisualDensity.compact,

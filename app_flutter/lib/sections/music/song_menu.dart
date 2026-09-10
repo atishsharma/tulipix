@@ -222,7 +222,15 @@ class _RatingRow extends StatelessWidget {
         Text('Rating', style: TextStyle(fontSize: 13, color: t.nInk2)),
         const Spacer(),
         for (var n = 1; n <= 5; n++)
-          InkWell(
+          Tooltip(
+            // Five identical stars announce identically without this, and
+            // which one you press is the entire control. The wording says what
+            // pressing does, not what the star is, because pressing the
+            // current rating is how you clear it.
+            message: track.stars == n
+                ? 'Clear the rating'
+                : (n == 1 ? 'Rate 1 star' : 'Rate $n stars'),
+            child: InkWell(
             onTap: () {
               Navigator.pop(context);
               controller.send(MusicCmd.rate(
@@ -237,6 +245,7 @@ class _RatingRow extends StatelessWidget {
                 size: 16,
                 color: track.stars >= n ? Tokens.warn : t.nInk2,
               ),
+            ),
             ),
           ),
       ],

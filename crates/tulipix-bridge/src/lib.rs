@@ -11,6 +11,7 @@ pub mod api;
 // section gets a real certificate, and the only Dart-facing part of it is the
 // four commands `api::transfer` exposes.
 mod acme;
+mod cast_serve;
 mod db;
 // Not under `api/`, so `rust_input: crate::api` never scans it: the mpv
 // transport is an implementation detail of the Music section, not part of the

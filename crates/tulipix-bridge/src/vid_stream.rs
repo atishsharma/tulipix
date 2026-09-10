@@ -2501,38 +2501,14 @@ async fn hosts_check(text: String) {
 // ------------------------------------------------------------------ cast ----
 
 /// One SSDP M-SEARCH round. Blocking, so it runs off the async worker.
+/// Both sections ask the same question of the same protocol, so the SSDP loop
+/// and the name trimming live in `cast_serve` now rather than twice.
 fn discover_renderers() -> Vec<tulipix_music::cast::CastDevice> {
-    use std::net::UdpSocket;
-    use tulipix_music::cast as dlna;
-    let mut out: Vec<dlna::CastDevice> = Vec::new();
-    let Ok(sock) = UdpSocket::bind("0.0.0.0:0") else { return out };
-    let _ = sock.set_read_timeout(Some(std::time::Duration::from_millis(600)));
-    let _ = sock.send_to(dlna::ssdp_msearch().as_bytes(), "239.255.255.250:1900");
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let mut buf = [0u8; 2048];
-    while std::time::Instant::now() < deadline {
-        let Ok((n, _)) = sock.recv_from(&mut buf) else { continue };
-        let raw = String::from_utf8_lossy(&buf[..n]);
-        if let Some(dev) = dlna::parse_ssdp_response(&raw) {
-            if !out.iter().any(|d| d.location == dev.location) {
-                out.push(dev);
-            }
-        }
-    }
-    out
+    crate::cast_serve::discover()
 }
 
-/// SSDP `SERVER` headers read like "Linux/4.9 UPnP/1.0 Sony/1.0" — keep the
-/// part with a name in it rather than the kernel version.
 fn short_name(raw: &str) -> String {
-    let cleaned = raw
-        .split_whitespace()
-        .filter(|part| !part.starts_with("UPnP/") && !part.starts_with("Linux/"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let name = if cleaned.trim().is_empty() { raw } else { &cleaned };
-    truncate_chars(name.trim(), 40)
+    crate::cast_serve::short_name(raw)
 }
 
 async fn cast_discover() {

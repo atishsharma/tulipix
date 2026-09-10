@@ -415,6 +415,7 @@ class _ControlsState extends State<_Controls> {
                     ),
                   ),
                 _SleepButton(controller: c),
+                _CastButton(controller: c),
                 PlayerBtn(
                   icon: Icons.picture_in_picture_alt,
                   tip: 'Mini player',
@@ -639,6 +640,32 @@ class _SpeedButton extends StatelessWidget {
   }
 }
 
+/// Send what is playing to a speaker on the network.
+///
+/// The renderer pulls the file over HTTP from this machine — see
+/// `crate::cast_serve` — so this is only offered for a track that is on disk.
+/// A YouTube or radio stream already has a URL, and casting those is the
+/// Videos section's job.
+class _CastButton extends StatelessWidget {
+  const _CastButton({required this.controller});
+
+  final MusicController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final st = controller.state;
+    final active = st?.castActive ?? false;
+    final target = st?.castTarget ?? '';
+    return PlayerBtn(
+      icon: active ? Icons.speaker : Icons.cast,
+      tip: active ? 'Playing on $target' : 'Play on a speaker',
+      active: active,
+      accent: controller.accent,
+      onTap: () => castPicker(context, controller),
+    );
+  }
+}
+
 class _SleepButton extends StatelessWidget {
   const _SleepButton({required this.controller});
 
@@ -854,6 +881,15 @@ class _EqPanelState extends State<_EqPanel> {
                               min: -12,
                               max: 12,
                               activeColor: Tokens.secMusic,
+                              // Ten vertical sliders in a row are ten
+                              // identical announcements otherwise. The band is
+                              // the only thing distinguishing them, and it is
+                              // in the label under each one where a screen
+                              // reader will not connect the two.
+                              label: '${_labels[i]}Hz',
+                              semanticFormatterCallback: (v) =>
+                                  '${_labels[i]} hertz, '
+                                  '${v.toStringAsFixed(0)} decibels',
                               onChanged: (v) => _drag(i, v),
                               onChangeEnd: (v) => _commit(i, v),
                             ),

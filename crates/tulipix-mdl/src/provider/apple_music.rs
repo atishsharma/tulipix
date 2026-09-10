@@ -391,3 +391,170 @@ mod tests {
         assert_eq!(AppleMusic.normalize(&u), "https://music.apple.com/us/album/foo/123?i=456");
     }
 }
+
+// ── search ──────────────────────────────────────────────────────────────────
+//
+// Nothing above this line is involved. Resolving a music.apple.com URL means
+// scraping a `serialized-server-data` blob out of a page; searching goes to the
+// iTunes Search API, which Apple documents, publishes without a key, and has
+// kept stable for fifteen years. Two different doors into the same catalogue,
+// and this is by far the better-behaved one.
+
+#[derive(serde::Deserialize)]
+struct ItunesPage {
+    results: Option<Vec<ItunesTrack>>,
+}
+
+#[derive(serde::Deserialize)]
+struct ItunesTrack {
+    #[serde(rename = "trackId")]
+    track_id: Option<i64>,
+    #[serde(rename = "trackName")]
+    track_name: Option<String>,
+    #[serde(rename = "artistName")]
+    artist_name: Option<String>,
+    #[serde(rename = "collectionName")]
+    collection_name: Option<String>,
+    /// 100x100 as published. The catalogue serves any size from the same path,
+    /// so it is rewritten below rather than embedded at thumbnail resolution.
+    #[serde(rename = "artworkUrl100")]
+    artwork_url100: Option<String>,
+    #[serde(rename = "trackTimeMillis")]
+    track_time_millis: Option<u64>,
+    #[serde(rename = "trackViewUrl")]
+    track_view_url: Option<String>,
+}
+
+/// `…/100x100bb.jpg` → `…/600x600bb.jpg`. The tagger embeds whatever it is
+/// given, and a 100px cover in a music library is a thumbnail forever.
+fn big_art(url: &str) -> String {
+    url.replace("/100x100bb.", "/600x600bb.")
+}
+
+fn clean(v: Option<&String>) -> Option<String> {
+    v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// Search Apple's catalogue by name, through the iTunes Search API.
+pub async fn search(client: &reqwest::Client, query: &str, limit: usize) -> Result<Playlist> {
+    let q = query.trim();
+    if q.is_empty() {
+        bail!("Type something to search.");
+    }
+    let url = Url::parse_with_params(
+        "https://itunes.apple.com/search",
+        &[
+            ("term", q),
+            ("entity", "song"),
+            ("media", "music"),
+            ("limit", &limit.clamp(1, 200).to_string()),
+        ],
+    )?
+    .to_string();
+
+    // The endpoint answers `text/javascript` rather than `application/json`,
+    // which is a leftover from when it was a JSONP API. `json()` in reqwest
+    // does not check the content type, but say so here so the next person does
+    // not go looking for a bug when they see it in a network trace.
+    let page: ItunesPage = client
+        .get(&url)
+        .header("user-agent", "Mozilla/5.0")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let tracks: Vec<Track> = page
+        .results
+        .unwrap_or_default()
+        .iter()
+        .filter_map(itunes_to_track)
+        .collect();
+    if tracks.is_empty() {
+        bail!("Apple found nothing for “{q}”.");
+    }
+    Ok(Playlist {
+        id: format!("search:{q}"),
+        title: format!("Search: {q}"),
+        owner: None,
+        artwork_url: tracks.iter().find_map(|t| t.artwork_url.clone()),
+        provider: ProviderId::AppleMusic,
+        source_url: url,
+        tracks,
+    })
+}
+
+fn itunes_to_track(r: &ItunesTrack) -> Option<Track> {
+    let title = clean(r.track_name.as_ref())?;
+    let artist = clean(r.artist_name.as_ref())?;
+    Some(Track {
+        id: r
+            .track_id
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| format!("{artist}-{title}")),
+        title,
+        artists: vec![artist],
+        album: clean(r.collection_name.as_ref()),
+        artwork_url: clean(r.artwork_url100.as_ref()).map(|u| big_art(&u)),
+        duration_ms: r.track_time_millis.filter(|ms| *ms > 0),
+        source_url: clean(r.track_view_url.as_ref()),
+    })
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    const PAYLOAD: &str = r#"{"resultCount":2,"results":[
+      {"trackId":1,"trackName":"Roads","artistName":"Portishead",
+       "collectionName":"Dummy",
+       "artworkUrl100":"https://is1.mzstatic.com/image/thumb/x/100x100bb.jpg",
+       "trackTimeMillis":304000,
+       "trackViewUrl":"https://music.apple.com/us/album/roads/1?i=2"},
+      {"trackId":2,"artistName":"No Title Here"}
+    ]}"#;
+
+    #[test]
+    fn a_payload_becomes_tracks_and_skips_the_untitled() {
+        let page: ItunesPage = serde_json::from_str(PAYLOAD).unwrap();
+        let tracks: Vec<Track> = page
+            .results
+            .unwrap()
+            .iter()
+            .filter_map(itunes_to_track)
+            .collect();
+        assert_eq!(tracks.len(), 1, "a result with no track name is not a track");
+        assert_eq!(tracks[0].title, "Roads");
+        assert_eq!(tracks[0].artists, vec!["Portishead".to_string()]);
+        assert_eq!(tracks[0].album.as_deref(), Some("Dummy"));
+        assert_eq!(tracks[0].duration_ms, Some(304_000));
+    }
+
+    #[test]
+    fn artwork_is_asked_for_at_a_useful_size() {
+        assert_eq!(
+            big_art("https://is1.mzstatic.com/image/thumb/x/100x100bb.jpg"),
+            "https://is1.mzstatic.com/image/thumb/x/600x600bb.jpg"
+        );
+        // Anything that is not the published shape is left alone rather than
+        // mangled.
+        assert_eq!(big_art("https://example.invalid/a.jpg"), "https://example.invalid/a.jpg");
+    }
+
+    #[test]
+    fn a_duration_of_zero_is_no_duration() {
+        let r = ItunesTrack {
+            track_id: Some(9),
+            track_name: Some("T".into()),
+            artist_name: Some("A".into()),
+            collection_name: None,
+            artwork_url100: None,
+            track_time_millis: Some(0),
+            track_view_url: None,
+        };
+        // Zero would otherwise reach the downloader's duration check as a real
+        // target and refuse every hit.
+        assert_eq!(itunes_to_track(&r).unwrap().duration_ms, None);
+    }
+}
