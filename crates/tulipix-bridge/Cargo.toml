@@ -44,7 +44,7 @@ anyhow = "1"
 # and the ones that are awaited (yt-dlp listings, downloads) must not block a
 # bridge worker for the minutes they can take.
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "fs", "process", "time"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
@@ -98,7 +98,7 @@ instant-acme = { version = "0.8.5", default-features = false, features = ["ring"
 # LRCLIB, artwork — and the domain crate hands back parsed types rather than
 # bytes, so the client is named here too. Same version and same TLS backend as
 # the root workspace: a second rustls in one process is a second root store.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 
 # There is no slint in this file, and that is the point. It used to be here --
 # `renderer-software`, declared purely so `slint/backend-winit`'s compile_error!

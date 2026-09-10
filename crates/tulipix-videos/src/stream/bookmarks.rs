@@ -149,9 +149,9 @@ fn bookmark_of(r: Row) -> Bookmark {
 
 /// Newest first.
 pub async fn list(pool: &SqlitePool) -> Vec<Bookmark> {
-    let rows: Vec<Row> = sqlx::query_as(&format!(
+    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM stream_bookmarks ORDER BY added_at DESC"
-    ))
+    )))
     .fetch_all(pool)
     .await
     .unwrap_or_default();
@@ -163,10 +163,10 @@ pub async fn due_for_check(pool: &SqlitePool, older_than_secs: i64) -> Vec<Bookm
     // A negative age means "everything is due" — the refresh-now path, and what
     // the tests use to avoid waiting out a real interval.
     let cutoff = now_secs().saturating_sub(older_than_secs);
-    let rows: Vec<Row> = sqlx::query_as(&format!(
+    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM stream_bookmarks
          WHERE is_series = 1 AND checked_at < ? ORDER BY added_at DESC LIMIT 40"
-    ))
+    )))
     .bind(cutoff)
     .fetch_all(pool)
     .await

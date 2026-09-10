@@ -59,16 +59,16 @@ const ROW_SQL: &str =
      WHERE b.missing = 0 AND b.trashed = 0";
 
 pub async fn load(pool: &SqlitePool) -> Result<HomeData> {
-    let recently_added: Vec<BookRow> = sqlx::query_as(&format!(
+    let recently_added: Vec<BookRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{ROW_SQL} ORDER BY b.added_at DESC LIMIT {SHELF}"
-    ))
+    )))
     .fetch_all(pool)
     .await?;
 
-    let in_progress: Vec<BookRow> = sqlx::query_as(&format!(
+    let in_progress: Vec<BookRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{ROW_SQL} AND b.finished = 0 AND COALESCE(p.percent, 0) > 0
          ORDER BY last_read DESC LIMIT {SHELF}"
-    ))
+    )))
     .fetch_all(pool)
     .await?;
 
@@ -79,9 +79,9 @@ pub async fn load(pool: &SqlitePool) -> Result<HomeData> {
         std::collections::HashMap::new();
     if !ids.is_empty() {
         let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        let rows: Vec<(i64, i64, i64)> = sqlx::query_as(&format!(
+        let rows: Vec<(i64, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT book_id, page, total_pages FROM progress WHERE book_id IN ({list})"
-        ))
+        )))
         .fetch_all(pool)
         .await?;
         pos_by_id = rows.into_iter().map(|(id, p, t)| (id, (p, t))).collect();

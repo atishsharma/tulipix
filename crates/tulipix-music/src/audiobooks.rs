@@ -54,7 +54,7 @@ pub async fn chapter_states(pool: &SqlitePool, ids: &[i64]) -> Result<(Vec<i64>,
     if ids.is_empty() { return Ok((Vec::new(), None)); }
     let ph = vec!["?"; ids.len()].join(",");
     let sql = format!("SELECT item_id, updated FROM audiobook_progress WHERE item_id IN ({ph})");
-    let mut q = sqlx::query_as::<_, (i64, i64)>(&sql);
+    let mut q = sqlx::query_as::<_, (i64, i64)>(sqlx::AssertSqlSafe(&*sql));
     for id in ids { q = q.bind(id); }
     let rows: Vec<(i64, i64)> = q.fetch_all(pool).await?;
     let current = rows.iter().max_by_key(|(_, u)| *u).map(|(id, _)| *id);
@@ -87,9 +87,9 @@ pub async fn bookmarks(pool: &SqlitePool, item_id: i64) -> Result<Vec<(f64, Stri
 pub async fn book_bookmarks(pool: &SqlitePool, item_ids: &[i64]) -> Result<Vec<(i64, f64, String)>> {
     if item_ids.is_empty() { return Ok(vec![]); }
     let list = item_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-    let rows: Vec<(i64, f64, Option<String>)> = sqlx::query_as(&format!(
+    let rows: Vec<(i64, f64, Option<String>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT item_id, position_s, label FROM audiobook_bookmarks
-         WHERE item_id IN ({list}) ORDER BY item_id, position_s")).fetch_all(pool).await?;
+         WHERE item_id IN ({list}) ORDER BY item_id, position_s"))).fetch_all(pool).await?;
     // Preserve the caller's chapter order rather than the id order — chapter 10
     // can have a lower rowid than chapter 2.
     let rank: std::collections::HashMap<i64, usize> =
@@ -171,7 +171,7 @@ fn norm_folder(folder: &str) -> &str {
 /// sub-folders (each sub-folder stays its own book via `book_folders`).
 /// Returns the number of track_meta rows updated.
 pub async fn set_folder_flag(pool: &SqlitePool, folder: &str, on: bool) -> Result<u64> {
-    let res = sqlx::query(&format!("UPDATE track_meta SET is_audiobook = ?2 WHERE {UNDER_FOLDER}"))
+    let res = sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE track_meta SET is_audiobook = ?2 WHERE {UNDER_FOLDER}")))
         .bind(norm_folder(folder))
         .bind(if on { 1 } else { 0 })
         .execute(pool)
@@ -191,9 +191,9 @@ pub async fn flag_audiobook_folder(pool: &SqlitePool, folder: &str) -> Result<(u
     // `book_folders`), and un-hide anything a previous metadata-gated pass
     // wrongly buried with `missing_since`.
     let restored = sqlx::query(
-        &format!("UPDATE items SET missing_since = NULL \
+        sqlx::AssertSqlSafe(format!("UPDATE items SET missing_since = NULL \
                   WHERE missing_since IS NOT NULL AND id IN (\
-                     SELECT item_id FROM track_meta WHERE {UNDER_FOLDER})"))
+                     SELECT item_id FROM track_meta WHERE {UNDER_FOLDER})")))
         .bind(folder).execute(pool).await?.rows_affected();
     let flagged = set_folder_flag(pool, folder, true).await?;
     let _ = restored;

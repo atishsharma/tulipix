@@ -42,11 +42,11 @@ tokio = { workspace = true, optional = true }
 # the gtk-rs 0.18 stack — 21 crates, eight of them carrying "no longer maintained"
 # advisories. default-features off drops the libxdo (xdotool) link dep.
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
-muda = { version = "0.15", default-features = false }
-tray-icon = { version = "0.19", optional = true, default-features = false }
+muda = { version = "0.19", default-features = false }
+tray-icon = { version = "0.24", optional = true, default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_UI_WindowsAndMessaging",
@@ -55,4 +55,4 @@ windows = { version = "0.58", features = [
 [target.'cfg(target_os = "macos")'.dependencies]
 # Raw `objc2::msg_send` only — the typed AppKit/Foundation wrappers were
 # declared but never named, so objc2-foundation and objc2-app-kit are gone.
-objc2 = "0.5"
+objc2 = "0.6"

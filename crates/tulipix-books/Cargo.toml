@@ -23,7 +23,7 @@ tokio = { workspace = true }
 tracing.workspace = true
 sqlx.workspace = true
 tulipix-core = { path = "../tulipix-core" }
-zip = { version = "2.4", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 # pnm: ddjvu's only portable raster output is PPM, transcoded on the way into
 # the page cache (see render.rs).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "pnm"] }
@@ -37,7 +37,7 @@ reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
 urlencoding = "2"
 # Kokoro TTS (feature `kokoro`) — same ORT pin as tulipix-photos.
-ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["std", "download-binaries"] }
+ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["std", "download-binaries"] }
 
 [dev-dependencies]
 tempfile = "3"

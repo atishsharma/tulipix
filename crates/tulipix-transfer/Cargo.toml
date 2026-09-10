@@ -16,7 +16,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 if-addrs.workspace = true
 # The `tulipix.local` record. Best-effort by design — see src/mdns.rs.
-mdns-sd = "0.13"
+mdns-sd = "0.21"
 # The app's own CA and the leaf it signs. `ring` to match the rustls provider
 # already resolved in this tree; the default would be free to pick aws-lc-rs and
 # link a second crypto library in beside it.

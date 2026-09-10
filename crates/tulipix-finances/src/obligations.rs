@@ -155,9 +155,9 @@ const SELECT: &str = "SELECT o.id, o.recurrence_id, o.name, o.due_on, o.estimate
 /// The window is inclusive on both ends and dated on `due_on`, which is the date
 /// the user thinks in — not `created_at`.
 pub async fn between(pool: &SqlitePool, from: &str, to: &str, today: NaiveDate) -> Result<Vec<Obligation>> {
-    let rows = sqlx::query_as::<_, Row>(&format!(
+    let rows = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(format!(
         "{SELECT} WHERE o.due_on BETWEEN ? AND ? ORDER BY o.due_on, o.name COLLATE NOCASE"
-    ))
+    )))
     .bind(from)
     .bind(to)
     .fetch_all(pool)
@@ -174,11 +174,11 @@ pub async fn needs_you(pool: &SqlitePool, today: NaiveDate, days: i64) -> Result
     let horizon = date::iso(today + chrono::Duration::days(days.max(0)));
     // One bound, not two: every overdue date is already below `today`, which is
     // at or below the horizon, so `<= horizon` catches the whole backlog.
-    let rows = sqlx::query_as::<_, Row>(&format!(
+    let rows = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(format!(
         "{SELECT}
           WHERE o.status IN ('upcoming', 'due', 'overdue') AND o.due_on <= ?
           ORDER BY o.due_on, o.name COLLATE NOCASE"
-    ))
+    )))
     .bind(&horizon)
     .fetch_all(pool)
     .await?;

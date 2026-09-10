@@ -198,7 +198,7 @@ where
     for chunk in present.chunks(400) {
         let holes = vec!["?"; chunk.len()].join(",");
         let sql = format!("UPDATE books SET missing = 0 WHERE missing = 1 AND path IN ({holes})");
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(&*sql));
         for p in chunk {
             q = q.bind(p);
         }

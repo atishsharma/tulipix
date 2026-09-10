@@ -43,7 +43,7 @@ pub async fn recent(pool: &SqlitePool, limit: i64, exclude_finished: bool) -> Re
         sql.push_str(" AND COALESCE(wp.finished, 0) = 0");
     }
     sql.push_str(" ORDER BY video_meta.last_accessed DESC LIMIT ?");
-    let rows: Vec<(i64, String, i64, Option<f64>, Option<f64>, i64)> = sqlx::query_as(&sql)
+    let rows: Vec<(i64, String, i64, Option<f64>, Option<f64>, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(&*sql))
         .bind(limit).fetch_all(pool).await?;
     Ok(rows.into_iter().map(|(item_id, abs_path, last_accessed, position_s, duration_s, fin)| RecentItem {
         item_id, abs_path, last_accessed, position_s, duration_s, finished: fin != 0,

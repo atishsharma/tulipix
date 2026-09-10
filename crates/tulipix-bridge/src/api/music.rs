@@ -2093,7 +2093,7 @@ pub async fn music_similar_artists(artist_id: i64, limit: u32) -> Result<Vec<Bro
          JOIN items i ON i.id = tm.item_id AND i.missing_since IS NULL \
          WHERE ar.id IN ({holes}) GROUP BY ar.id"
     );
-    let mut q = sqlx::query_as::<_, (i64, String, i64)>(&sql);
+    let mut q = sqlx::query_as::<_, (i64, String, i64)>(sqlx::AssertSqlSafe(&*sql));
     for (id, _) in &hits {
         q = q.bind(id);
     }
@@ -5313,7 +5313,7 @@ async fn mgr_load_list(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState
     let (ok_sql, missing_sql) = mgr_clauses(&s.mgr_tab);
     let count = |extra: String| async move {
         let sql = format!("SELECT COUNT(*){MGR_FROM}{MUSIC_WHERE}{extra}");
-        sqlx::query_scalar::<_, i64>(&sql)
+        sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(&*sql))
             .fetch_one(pool)
             .await
             .unwrap_or(0)
@@ -5344,7 +5344,7 @@ async fn mgr_load_list(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState
     let sql = format!(
         "{TRACK_SELECT}{MUSIC_WHERE}{filter} ORDER BY COALESCE(tm.title, '') LIMIT ? OFFSET ?"
     );
-    let rows = sqlx::query_as::<_, TrackRow>(&sql)
+    let rows = sqlx::query_as::<_, TrackRow>(sqlx::AssertSqlSafe(&*sql))
         .bind(MGR_PAGE)
         .bind(page * MGR_PAGE)
         .fetch_all(pool)
@@ -5529,7 +5529,7 @@ fn mgr_sync_all() {
     tokio::spawn(async move {
         let Ok(pool) = music_pool().await else { return };
         let sql = format!("SELECT i.id{MGR_FROM}{MUSIC_WHERE} AND ly.item_id IS NULL LIMIT 500");
-        let ids: Vec<i64> = sqlx::query_scalar(&sql)
+        let ids: Vec<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(&*sql))
             .fetch_all(pool)
             .await
             .unwrap_or_default();
@@ -5585,7 +5585,7 @@ async fn open_item_detail(item_id: i64, kind: &str) -> Result<()> {
     let pool = music_pool().await?;
     let column = if kind == "album" { "album_id" } else { "artist_id" };
     let id: Option<i64> =
-        sqlx::query_scalar(&format!("SELECT {column} FROM track_meta WHERE item_id = ?"))
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT {column} FROM track_meta WHERE item_id = ?")))
             .bind(item_id)
             .fetch_optional(pool)
             .await?
@@ -6058,9 +6058,9 @@ async fn rebuild_fresh_playlist(pool: &sqlx::SqlitePool) -> Result<i64> {
         .bind(id)
         .execute(pool)
         .await?;
-    let ids: Vec<i64> = sqlx::query_scalar(&format!(
+    let ids: Vec<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT i.id FROM items i JOIN track_meta tm ON tm.item_id = i.id         {MUSIC_WHERE} ORDER BY i.added DESC LIMIT ?"
-    ))
+    )))
     .bind(KEEP)
     .fetch_all(pool)
     .await
@@ -7285,7 +7285,7 @@ async fn tracks_by_ids(pool: &sqlx::SqlitePool, ids: &[i64]) -> Vec<Track> {
     }
     let holes = vec!["?"; ids.len()].join(",");
     let sql = format!("{TRACK_SELECT} WHERE i.id IN ({holes})");
-    let mut q = sqlx::query_as::<_, TrackRow>(&sql);
+    let mut q = sqlx::query_as::<_, TrackRow>(sqlx::AssertSqlSafe(&*sql));
     for id in ids {
         q = q.bind(id);
     }
@@ -7334,7 +7334,7 @@ async fn songs_page(pool: &sqlx::SqlitePool, s: &Session) -> (Vec<Track>, i64, i
          LEFT JOIN artists ar ON ar.id = tm.artist_id \
          LEFT JOIN albums al ON al.id = tm.album_id{MUSIC_WHERE}{filter}"
     );
-    let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
+    let mut cq = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(&*count_sql));
     if filtered {
         cq = cq.bind(&like).bind(&like).bind(&like);
     }
@@ -7344,7 +7344,7 @@ async fn songs_page(pool: &sqlx::SqlitePool, s: &Session) -> (Vec<Track>, i64, i
         "{TRACK_SELECT}{MUSIC_WHERE}{filter}{} LIMIT ? OFFSET ?",
         song_order(&s.song_sort, &s.song_dir)
     );
-    let mut q = sqlx::query_as::<_, TrackRow>(&sql);
+    let mut q = sqlx::query_as::<_, TrackRow>(sqlx::AssertSqlSafe(&*sql));
     if filtered {
         q = q.bind(&like).bind(&like).bind(&like);
     }
@@ -7474,10 +7474,10 @@ async fn playlist_cards(pool: &sqlx::SqlitePool) -> Vec<BrowseCard> {
 /// What a browse tile shows beyond its name. One query per kind, not per tile —
 /// and only the rows that carry a mark, since most do not.
 async fn browse_marks(pool: &sqlx::SqlitePool, table: &str) -> HashMap<i64, (bool, i64)> {
-    sqlx::query_as::<_, (i64, i64, i64)>(&format!(
+    sqlx::query_as::<_, (i64, i64, i64)>(sqlx::AssertSqlSafe(format!(
         "SELECT id, COALESCE(loved, 0), COALESCE(rating, 0) FROM {table} \
          WHERE COALESCE(loved, 0) <> 0 OR COALESCE(rating, 0) <> 0"
-    ))
+    )))
     .fetch_all(pool)
     .await
     .unwrap_or_default()
@@ -7771,7 +7771,7 @@ async fn detail_tracks(pool: &sqlx::SqlitePool, s: &Session) -> (Vec<Track>, Str
         " ORDER BY COALESCE(tm.disc_no, 0), COALESCE(tm.track_no, 0), tm.title COLLATE NOCASE"
     };
     let sql = format!("{TRACK_SELECT}{MUSIC_WHERE}{clause}{order}");
-    let mut q = sqlx::query_as::<_, TrackRow>(&sql);
+    let mut q = sqlx::query_as::<_, TrackRow>(sqlx::AssertSqlSafe(&*sql));
     if let Some(v) = bind_i {
         q = q.bind(v);
     }
@@ -8635,9 +8635,9 @@ async fn fill_mymusic(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState)
         if s.detail_kind == "album" || s.detail_kind == "artist" {
             ensure_browse_columns(pool).await;
             let table = if s.detail_kind == "album" { "albums" } else { "artists" };
-            let row: (i64, i64) = sqlx::query_as(&format!(
+            let row: (i64, i64) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "SELECT COALESCE(loved, 0), COALESCE(rating, 0) FROM {table} WHERE id = ?"
-            ))
+            )))
             .bind(s.detail_id)
             .fetch_optional(pool)
             .await
@@ -9007,7 +9007,7 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
     };
 
     if s.pod_open >= 0 {
-        let show: Option<ShowRow> = sqlx::query_as(&format!("{SHOW_SELECT} WHERE p.id = ?"))
+        let show: Option<ShowRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!("{SHOW_SELECT} WHERE p.id = ?")))
             .bind(s.pod_open)
             .fetch_optional(pool)
             .await
@@ -9026,10 +9026,10 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
         .fetch_one(pool)
         .await
         .unwrap_or(0);
-        let rows: Vec<EpisodeRow> = sqlx::query_as(&format!(
+        let rows: Vec<EpisodeRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "{EPISODE_SELECT} WHERE e.podcast_id = ? \
              ORDER BY COALESCE(e.published, 0) {order} LIMIT ? OFFSET ?"
-        ))
+        )))
         .bind(s.pod_open)
         .bind(LIST_PAGE)
         .bind(s.pod_ep_page * LIST_PAGE)
@@ -9059,7 +9059,7 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
     };
     // Bound in the order the placeholders appear, category first.
     let count_sql = format!("SELECT COUNT(*) FROM podcasts p{where_cat}");
-    let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
+    let mut cq = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(&*count_sql));
     if filtered {
         cq = cq.bind(s.pod_cat.clone());
     }
@@ -9070,7 +9070,7 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
 
     let show_sql =
         format!("{SHOW_SELECT}{where_cat} ORDER BY p.title COLLATE NOCASE LIMIT ? OFFSET ?");
-    let mut q = sqlx::query_as::<_, ShowRow>(&show_sql);
+    let mut q = sqlx::query_as::<_, ShowRow>(sqlx::AssertSqlSafe(&*show_sql));
     if filtered {
         q = q.bind(s.pod_cat.clone());
     }
@@ -9091,9 +9091,9 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
         // subscription list -- the whole point of Home is that it is a chosen
         // shelf. Sorted here rather than in SQL because `latest` is a computed
         // column in SHOW_SELECT.
-        let pinned: Vec<ShowRow> = sqlx::query_as(&format!(
+        let pinned: Vec<ShowRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "{SHOW_SELECT} WHERE COALESCE(p.home_pinned, 0) = 1"
-        ))
+        )))
         .fetch_all(pool)
         .await
         .unwrap_or_default();
@@ -9124,14 +9124,14 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
 
         // Newest episode per show, which is what "what's new" means when you
         // follow forty podcasts and one of them posts daily.
-        let rows: Vec<EpisodeRow> = sqlx::query_as(&format!(
+        let rows: Vec<EpisodeRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "{EPISODE_SELECT} WHERE e.id IN ( \
                  SELECT id FROM podcast_episodes pe \
                  WHERE pe.published = (SELECT MAX(published) FROM podcast_episodes x \
                                        WHERE x.podcast_id = pe.podcast_id) \
                  GROUP BY pe.podcast_id) \
              ORDER BY COALESCE(e.published, 0) DESC LIMIT ?"
-        ))
+        )))
         .bind(RAIL)
         .fetch_all(pool)
         .await
@@ -9148,10 +9148,10 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
             "old" => "COALESCE(e.published, 0) ASC",
             _ => "e.id DESC",
         };
-        let rows: Vec<EpisodeRow> = sqlx::query_as(&format!(
+        let rows: Vec<EpisodeRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "{EPISODE_SELECT} WHERE e.downloaded_path IS NOT NULL AND e.downloaded_path != '' \
              ORDER BY {order} LIMIT ? OFFSET ?"
-        ))
+        )))
         .bind(LIST_PAGE)
         .bind(s.pod_page * LIST_PAGE)
         .fetch_all(pool)
@@ -9224,7 +9224,7 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
     if !s.pod_queue.is_empty() {
         let holes = vec!["?"; s.pod_queue.len()].join(",");
         let queue_sql = format!("{EPISODE_SELECT} WHERE e.id IN ({holes})");
-        let mut q = sqlx::query_as::<_, EpisodeRow>(&queue_sql);
+        let mut q = sqlx::query_as::<_, EpisodeRow>(sqlx::AssertSqlSafe(&*queue_sql));
         for id in &s.pod_queue {
             q = q.bind(id);
         }
@@ -9269,7 +9269,7 @@ async fn fill_books(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState) {
              FROM track_meta tm LEFT JOIN audiobook_progress ap ON ap.item_id = tm.item_id \
              WHERE tm.item_id IN ({holes})"
         );
-        let mut q = sqlx::query_as::<_, (i64, String, f64, f64)>(&chapter_sql);
+        let mut q = sqlx::query_as::<_, (i64, String, f64, f64)>(sqlx::AssertSqlSafe(&*chapter_sql));
         for id in &ids {
             q = q.bind(id);
         }

@@ -286,7 +286,7 @@ pub async fn video_rows_for(pool: &sqlx::SqlitePool, category: &str) -> Vec<Vide
          WHERE {filter}{kind_clause} ORDER BY {order}",
     );
     let rows: Vec<(String, i64, i64, i64, f64, Option<f64>, i64, i64, Option<String>)> =
-        sqlx::query_as(&sql).fetch_all(pool).await.unwrap_or_default();
+        sqlx::query_as(sqlx::AssertSqlSafe(&*sql)).fetch_all(pool).await.unwrap_or_default();
     let q = video_query().lock().map(|g| g.to_lowercase()).unwrap_or_default();
     rows.into_iter().filter(|(abs_path, ..)| {
         // Filename search filter (case-insensitive substring).

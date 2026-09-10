@@ -37,7 +37,7 @@ lopdf = { version = "0.45", default-features = false }
 # still export. Its zip + quick-xml + encoding_rs are all already in the lockfile.
 # `dates` is what makes a date cell readable as a date rather than as a serial
 # number; it pulls in chrono, which this crate already depends on.
-calamine = { version = "0.26", features = ["dates"] }
+calamine = { version = "0.36", features = ["dates"] }
 
 [dev-dependencies]
 # Not a workspace dep; matches tulipix-transfer and tulipix-genesis.

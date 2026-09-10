@@ -1306,7 +1306,7 @@ async fn rows_for(
          WHERE {filter}{kind_clause} ORDER BY {order}",
     );
     let rows: Vec<(String, i64, i64, i64, f64, Option<f64>, i64, i64, Option<String>)> =
-        sqlx::query_as(&sql).fetch_all(pool).await.unwrap_or_default();
+        sqlx::query_as(sqlx::AssertSqlSafe(&*sql)).fetch_all(pool).await.unwrap_or_default();
 
     let q = query.trim().to_lowercase();
     rows.into_iter()

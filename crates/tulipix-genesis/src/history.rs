@@ -130,7 +130,7 @@ pub async fn known(pool: &SqlitePool, md5s: &[String]) -> Result<Vec<String>> {
     // still bound rather than interpolated.
     let holes = std::iter::repeat_n("?", md5s.len()).collect::<Vec<_>>().join(",");
     let sql = format!("SELECT md5 FROM downloads WHERE md5 IN ({holes})");
-    let mut q = sqlx::query_scalar::<_, String>(&sql);
+    let mut q = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(&*sql));
     for id in md5s {
         q = q.bind(id);
     }

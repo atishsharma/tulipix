@@ -185,10 +185,10 @@ pub async fn balance(pool: &SqlitePool, id: i64) -> Result<i64> {
         .fetch_optional(pool)
         .await?
         .context("no such account")?;
-    let delta: i64 = sqlx::query_scalar(&format!(
+    let delta: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT COALESCE(SUM({SIGNED}), 0) FROM transactions
           WHERE account_id = ? OR to_account_id = ?"
-    ))
+    )))
     .bind(id)
     .bind(id)
     .bind(id)

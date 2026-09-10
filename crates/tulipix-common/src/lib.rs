@@ -125,7 +125,7 @@ async fn migrate_split_from_music(dest: &sqlx::SqlitePool, tables: &[(&str, &str
     let Some(music_path) = tulipix_core::paths::db_path("music") else { return; };
     if !music_path.exists() { return; }
     let Ok(mut conn) = dest.acquire().await else { return; };
-    if sqlx::query(&format!("ATTACH DATABASE '{}' AS legacy", music_path.display()))
+    if sqlx::query(sqlx::AssertSqlSafe(format!("ATTACH DATABASE '{}' AS legacy", music_path.display())))
         .execute(&mut *conn).await.is_err() { return; }
     let mut moved_any = false;
     for (table, cols) in tables {
@@ -134,13 +134,13 @@ async fn migrate_split_from_music(dest: &sqlx::SqlitePool, tables: &[(&str, &str
             .bind(*table).fetch_optional(&mut *conn).await.ok().flatten();
         if exists.is_none() { continue; }
         moved_any = true;
-        let _ = sqlx::query(&format!(
-            "INSERT OR IGNORE INTO {table} ({cols}) SELECT {cols} FROM legacy.{table}"))
+        let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT OR IGNORE INTO {table} ({cols}) SELECT {cols} FROM legacy.{table}")))
             .execute(&mut *conn).await;
     }
     if moved_any {
         for (table, _) in tables.iter().rev() {
-            let _ = sqlx::query(&format!("DROP TABLE IF EXISTS legacy.{table}")).execute(&mut *conn).await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS legacy.{table}"))).execute(&mut *conn).await;
         }
         tracing::info!("migrated {} table(s) out of music.db into a split section DB", tables.len());
     }

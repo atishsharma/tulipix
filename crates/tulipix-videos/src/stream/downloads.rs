@@ -162,10 +162,10 @@ pub async fn enqueue(pool: &SqlitePool, job: &Job) -> Result<i64> {
 
 /// Everything, newest first, with the unfinished jobs ahead of the rest.
 pub async fn list(pool: &SqlitePool, limit: i64) -> Vec<Job> {
-    let rows: Vec<Row> = sqlx::query_as(&format!(
+    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM stream_downloads
          ORDER BY (state IN ('queued','running')) DESC, queued_at DESC LIMIT ?"
-    ))
+    )))
     .bind(limit.max(0))
     .fetch_all(pool)
     .await
@@ -175,10 +175,10 @@ pub async fn list(pool: &SqlitePool, limit: i64) -> Vec<Job> {
 
 /// The next job to run, oldest first.
 pub async fn next_queued(pool: &SqlitePool) -> Option<Job> {
-    let row: Option<Row> = sqlx::query_as(&format!(
+    let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM stream_downloads WHERE state = 'queued'
          ORDER BY queued_at LIMIT 1"
-    ))
+    )))
     .fetch_optional(pool)
     .await
     .ok()
@@ -188,7 +188,7 @@ pub async fn next_queued(pool: &SqlitePool) -> Option<Job> {
 
 pub async fn get(pool: &SqlitePool, id: i64) -> Option<Job> {
     let row: Option<Row> =
-        sqlx::query_as(&format!("SELECT {COLUMNS} FROM stream_downloads WHERE id = ?"))
+        sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {COLUMNS} FROM stream_downloads WHERE id = ?")))
             .bind(id)
             .fetch_optional(pool)
             .await

@@ -23,5 +23,5 @@ flate2 = "1"
 tar = "0.4"
 # BtbN ffmpeg Linux builds ship as .tar.xz
 xz2 = "0.1"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 sevenz-rust = "0.6"

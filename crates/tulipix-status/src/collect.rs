@@ -96,15 +96,15 @@ pub struct Snapshot {
 // to render because one table is mid-migration is worse than a status page with
 // one zero on it, and the section's own `level` is what reports the trouble.
 
-async fn n(pool: &SqlitePool, q: &str) -> i64 {
+async fn n(pool: &SqlitePool, q: &'static str) -> i64 {
     sqlx::query_scalar::<_, i64>(q).fetch_one(pool).await.unwrap_or(0)
 }
 
-async fn n_at(pool: &SqlitePool, q: &str, bind: i64) -> i64 {
+async fn n_at(pool: &SqlitePool, q: &'static str, bind: i64) -> i64 {
     sqlx::query_scalar::<_, i64>(q).bind(bind).fetch_one(pool).await.unwrap_or(0)
 }
 
-async fn two(pool: &SqlitePool, q: &str) -> (i64, i64) {
+async fn two(pool: &SqlitePool, q: &'static str) -> (i64, i64) {
     sqlx::query_as::<_, (i64, i64)>(q).fetch_one(pool).await.unwrap_or((0, 0))
 }
 

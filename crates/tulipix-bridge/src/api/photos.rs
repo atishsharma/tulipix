@@ -488,7 +488,7 @@ pub struct PhotoDetail {
 pub async fn photos_item_detail(item_id: i64) -> Result<Option<PhotoDetail>> {
     let pool = photos_pool().await?;
     let sql = format!("{TILE_SELECT} WHERE items.id = ?");
-    let row = sqlx::query_as::<sqlx::Sqlite, TileRow>(&sql)
+    let row = sqlx::query_as::<sqlx::Sqlite, TileRow>(sqlx::AssertSqlSafe(&*sql))
         .bind(item_id)
         .fetch_optional(pool)
         .await?;
@@ -687,12 +687,12 @@ async fn load_tiles(pool: &sqlx::SqlitePool, s: &Session) -> Result<(Vec<PhotoTi
     let count_sql = format!(
         "SELECT COUNT(*) FROM items LEFT JOIN photo_meta pm ON pm.item_id = items.id WHERE {where_sql}"
     );
-    let total = sqlx::query_scalar::<sqlx::Sqlite, i64>(&count_sql)
+    let total = sqlx::query_scalar::<sqlx::Sqlite, i64>(sqlx::AssertSqlSafe(&*count_sql))
         .fetch_one(pool)
         .await?;
 
     let sql = format!("{TILE_SELECT} WHERE {where_sql} ORDER BY {order} LIMIT ?");
-    let rows = sqlx::query_as::<sqlx::Sqlite, TileRow>(&sql)
+    let rows = sqlx::query_as::<sqlx::Sqlite, TileRow>(sqlx::AssertSqlSafe(&*sql))
         .bind(s.limit)
         .fetch_all(pool)
         .await?;
@@ -810,7 +810,7 @@ async fn rows_for_ids(pool: &sqlx::SqlitePool, ids: &[i64]) -> Result<Vec<PhotoT
     // and are i64, so formatting them in is not an injection surface.
     let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let sql = format!("{TILE_SELECT} WHERE items.id IN ({list})");
-    let rows = sqlx::query_as::<sqlx::Sqlite, TileRow>(&sql).fetch_all(pool).await?;
+    let rows = sqlx::query_as::<sqlx::Sqlite, TileRow>(sqlx::AssertSqlSafe(&*sql)).fetch_all(pool).await?;
     Ok(rows.into_iter().map(into_tile).collect())
 }
 
@@ -947,7 +947,7 @@ async fn covers(
         return Ok(std::collections::HashMap::new());
     }
     let sql = format!("SELECT id, abs_path, mtime, size FROM items WHERE id IN ({list})");
-    let rows = sqlx::query_as::<sqlx::Sqlite, (i64, String, i64, i64)>(&sql)
+    let rows = sqlx::query_as::<sqlx::Sqlite, (i64, String, i64, i64)>(sqlx::AssertSqlSafe(&*sql))
         .fetch_all(pool)
         .await?;
     Ok(rows

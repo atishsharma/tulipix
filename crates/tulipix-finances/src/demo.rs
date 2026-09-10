@@ -731,7 +731,7 @@ async fn high_water(pool: &SqlitePool) -> Result<Vec<(&'static str, i64)>> {
     let mut out = Vec::with_capacity(TABLES.len());
     for (kind, table) in TABLES {
         let sql = format!("SELECT COALESCE(MAX(id), 0) FROM {table}");
-        out.push((*kind, sqlx::query_scalar::<_, i64>(&sql).fetch_one(pool).await?));
+        out.push((*kind, sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(&*sql)).fetch_one(pool).await?));
     }
     Ok(out)
 }
@@ -1083,7 +1083,7 @@ mod tests {
 
     async fn count(p: &SqlitePool, table: &str) -> i64 {
         let sql = format!("SELECT COUNT(*) FROM {table}");
-        sqlx::query_scalar(&sql).fetch_one(p).await.unwrap()
+        sqlx::query_scalar(sqlx::AssertSqlSafe(&*sql)).fetch_one(p).await.unwrap()
     }
 
     #[tokio::test]

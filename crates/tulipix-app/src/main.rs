@@ -9875,10 +9875,10 @@ fn wire_music_metadata(window: &MainWindow) {
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
-            let _ = sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN loved INTEGER NOT NULL DEFAULT 0")).execute(&pool).await;
-            let _ = sqlx::query(&format!("UPDATE {table} SET loved = CASE COALESCE(loved,0) WHEN 1 THEN 0 ELSE 1 END WHERE id = ?"))
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!("ALTER TABLE {table} ADD COLUMN loved INTEGER NOT NULL DEFAULT 0"))).execute(&pool).await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE {table} SET loved = CASE COALESCE(loved,0) WHEN 1 THEN 0 ELSE 1 END WHERE id = ?")))
                 .bind(id).execute(&pool).await;
-            let loved: i64 = sqlx::query_scalar(&format!("SELECT COALESCE(loved,0) FROM {table} WHERE id = ?"))
+            let loved: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COALESCE(loved,0) FROM {table} WHERE id = ?")))
                 .bind(id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
             let _ = weak.upgrade_in_event_loop(move |w| { w.set_music_detail_loved(loved != 0); populate_music_views(w.as_weak()); });
         });
@@ -9893,8 +9893,8 @@ fn wire_music_metadata(window: &MainWindow) {
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
-            let _ = sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN rating INTEGER NOT NULL DEFAULT 0")).execute(&pool).await;
-            let _ = sqlx::query(&format!("UPDATE {table} SET rating = ? WHERE id = ?")).bind(n as i64).bind(id).execute(&pool).await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!("ALTER TABLE {table} ADD COLUMN rating INTEGER NOT NULL DEFAULT 0"))).execute(&pool).await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE {table} SET rating = ? WHERE id = ?"))).bind(n as i64).bind(id).execute(&pool).await;
             let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
         });
     });

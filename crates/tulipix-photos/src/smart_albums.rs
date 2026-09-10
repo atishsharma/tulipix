@@ -150,7 +150,7 @@ pub async fn matches(pool: &SqlitePool, c: &Compiled) -> Result<Vec<i64>> {
            AND {}",
         c.sql
     );
-    let mut q = sqlx::query_as::<Sqlite, (i64,)>(&sql);
+    let mut q = sqlx::query_as::<Sqlite, (i64,)>(sqlx::AssertSqlSafe(&*sql));
     for p in &c.params {
         q = match p {
             Param::Text(s) => q.bind(s.clone()),

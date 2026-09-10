@@ -132,7 +132,7 @@ pub async fn record(pool: &SqlitePool, e: &Entry) -> Result<()> {
     }
     let finished = is_finished(e.position_s, e.duration_s);
     let updated = if e.updated > 0 { e.updated } else { now_secs() };
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO stream_progress ({COLUMNS})
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(subject_id, season, episode) DO UPDATE SET
@@ -147,7 +147,7 @@ pub async fn record(pool: &SqlitePool, e: &Entry) -> Result<()> {
              -- there rather than erasing a source we can still resume with.
              source     = CASE WHEN excluded.source = '' THEN stream_progress.source
                                ELSE excluded.source END"
-    ))
+    )))
     .bind(&e.subject_id)
     .bind(e.season)
     .bind(e.episode)
@@ -165,10 +165,10 @@ pub async fn record(pool: &SqlitePool, e: &Entry) -> Result<()> {
 }
 
 pub async fn get(pool: &SqlitePool, subject_id: &str, season: i64, episode: i64) -> Option<Entry> {
-    let row: Option<Row> = sqlx::query_as(&format!(
+    let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM stream_progress
          WHERE subject_id = ? AND season = ? AND episode = ?"
-    ))
+    )))
     .bind(subject_id)
     .bind(season)
     .bind(episode)
@@ -182,9 +182,9 @@ pub async fn get(pool: &SqlitePool, subject_id: &str, season: i64, episode: i64)
 /// Every episode of one title that has been played, for the episode strip's
 /// progress bars.
 pub async fn for_subject(pool: &SqlitePool, subject_id: &str) -> Vec<Entry> {
-    let rows: Vec<Row> = sqlx::query_as(&format!(
+    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM stream_progress WHERE subject_id = ? ORDER BY season, episode"
-    ))
+    )))
     .bind(subject_id)
     .fetch_all(pool)
     .await
@@ -194,9 +194,9 @@ pub async fn for_subject(pool: &SqlitePool, subject_id: &str) -> Vec<Entry> {
 
 /// Newest first, everything that has been played.
 pub async fn history(pool: &SqlitePool, limit: i64) -> Vec<Entry> {
-    let rows: Vec<Row> = sqlx::query_as(&format!(
+    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM stream_progress ORDER BY updated DESC LIMIT ?"
-    ))
+    )))
     .bind(limit.max(0))
     .fetch_all(pool)
     .await
@@ -218,11 +218,11 @@ pub async fn continue_watching(pool: &SqlitePool, limit: usize) -> Vec<Entry> {
     }
     // Deduping in SQL means either a correlated subquery or SQLite's bare-column
     // trick; the candidate set is small, so the loop below is the honest version.
-    let rows: Vec<Row> = sqlx::query_as(&format!(
+    let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM stream_progress
          WHERE finished = 0 AND position_s > ?
          ORDER BY updated DESC LIMIT 200"
-    ))
+    )))
     .bind(RESUME_FLOOR_S)
     .fetch_all(pool)
     .await

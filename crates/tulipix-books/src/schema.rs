@@ -254,7 +254,7 @@ pub async fn apply(pool: &SqlitePool) -> Result<()> {
         let _ = sqlx::query("UPDATE books SET art_state = 1").execute(pool).await;
     }
     if rev < SCHEMA_REV {
-        sqlx::query(&format!("PRAGMA user_version = {SCHEMA_REV}")).execute(pool).await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA user_version = {SCHEMA_REV}"))).execute(pool).await?;
     }
     // Superseded by the NOCASE pair above.
     for drop in ["DROP INDEX IF EXISTS idx_books_title", "DROP INDEX IF EXISTS idx_books_author"] {

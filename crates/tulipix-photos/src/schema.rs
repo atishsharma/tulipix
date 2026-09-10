@@ -209,7 +209,7 @@ pub(crate) mod tests {
         // sanity: each declared table is queryable.
         for t in ["photo_meta", "albums", "album_items", "photo_fts", "people", "faces", "tags", "item_tags", "dedup_clusters", "dedup_members", "photo_edits", "clip_embeddings", "edit_clipboard"] {
             let q = format!("SELECT COUNT(*) FROM {t}");
-            let _: i64 = sqlx::query_scalar(&q).fetch_one(&pool).await.unwrap();
+            let _: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(&*q)).fetch_one(&pool).await.unwrap();
         }
     }
 }

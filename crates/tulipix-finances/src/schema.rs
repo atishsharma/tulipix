@@ -260,7 +260,7 @@ async fn add_missing_columns(pool: &SqlitePool) -> Result<()> {
         .await?;
         if !exists {
             // Table and column names are from the literal above, never from input.
-            sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))
+            sqlx::query(sqlx::AssertSqlSafe(format!("ALTER TABLE {table} ADD COLUMN {column} {decl}")))
                 .execute(pool)
                 .await?;
         }

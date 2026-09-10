@@ -1526,11 +1526,11 @@ pub fn populate_podcasts(w: &MainWindow) {
                     COALESCE(p.home_pinned,0)
              FROM podcasts p";
         let rows: Vec<(i64, String, String, String, String, i64, i64, i64, i64)> = if filter.trim().is_empty() {
-            sqlx::query_as(&format!("{base} ORDER BY p.title COLLATE NOCASE")).fetch_all(&pool).await.unwrap_or_default()
+            sqlx::query_as(sqlx::AssertSqlSafe(format!("{base} ORDER BY p.title COLLATE NOCASE"))).fetch_all(&pool).await.unwrap_or_default()
         } else {
-            sqlx::query_as(&format!("{base} WHERE p.title LIKE ?1 OR p.author LIKE ?1 OR p.category LIKE ?1 OR p.feed_url LIKE ?1
+            sqlx::query_as(sqlx::AssertSqlSafe(format!("{base} WHERE p.title LIKE ?1 OR p.author LIKE ?1 OR p.category LIKE ?1 OR p.feed_url LIKE ?1
                     OR EXISTS (SELECT 1 FROM podcast_episodes e WHERE e.podcast_id = p.id AND e.title LIKE ?1)
-                 ORDER BY p.title COLLATE NOCASE"))
+                 ORDER BY p.title COLLATE NOCASE")))
                 .bind(&like).fetch_all(&pool).await.unwrap_or_default()
         };
         let client = tulipix_core::net::http().clone();
@@ -1636,7 +1636,7 @@ pub fn load_podcast_detail(w: &MainWindow, pid: i64) {
         let extra = if has_f { " AND title LIKE ?".to_string() } else { String::new() };
         let total: i64 = {
             let cq = format!("SELECT COUNT(*) FROM podcast_episodes WHERE podcast_id = ?{extra}");
-            let mut qb = sqlx::query_scalar(&cq).bind(pid);
+            let mut qb = sqlx::query_scalar(sqlx::AssertSqlSafe(&*cq)).bind(pid);
             if has_f { qb = qb.bind(like.clone()); }
             qb.fetch_one(&pool).await.unwrap_or(0)
         };
@@ -1648,7 +1648,7 @@ pub fn load_podcast_detail(w: &MainWindow, pid: i64) {
                     , COALESCE(position_s, 0)
              FROM podcast_episodes WHERE podcast_id = ?{extra}
              ORDER BY COALESCE(published,0) {order}, id {order} LIMIT ? OFFSET ?");
-        let mut qb = sqlx::query_as(&q).bind(pid);
+        let mut qb = sqlx::query_as(sqlx::AssertSqlSafe(&*q)).bind(pid);
         if has_f { qb = qb.bind(like); }
         let eps: Vec<(i64, String, String, Option<i64>, Option<f64>, String, Option<String>, i64, f64)> =
             qb.bind(PODCAST_PAGE).bind(page * PODCAST_PAGE)
@@ -1758,7 +1758,7 @@ pub fn populate_podcast_latest(w: &MainWindow) {
              JOIN podcasts p ON p.id = e.podcast_id
              WHERE e.rn = 1{extra}
              ORDER BY e.published DESC, e.id DESC LIMIT 14");
-        let mut qb = sqlx::query_as(&q);
+        let mut qb = sqlx::query_as(sqlx::AssertSqlSafe(&*q));
         if !filter.trim().is_empty() { qb = qb.bind(like); }
         let eps: Vec<EpQueryRow> = qb.fetch_all(&pool).await.unwrap_or_default();
         let data = build_episode_data(eps).await;
@@ -1856,7 +1856,7 @@ pub fn populate_podcast_downloads(w: &MainWindow) {
         let extra = if has_f { " AND (e.title LIKE ? OR p.title LIKE ?)".to_string() } else { String::new() };
         let total: i64 = {
             let cq = format!("SELECT COUNT(*) FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id WHERE e.downloaded_path IS NOT NULL{extra}");
-            let mut qb = sqlx::query_scalar(&cq);
+            let mut qb = sqlx::query_scalar(sqlx::AssertSqlSafe(&*cq));
             if has_f { qb = qb.bind(like.clone()).bind(like.clone()); }
             qb.fetch_one(&pool).await.unwrap_or(0)
         };
@@ -1876,7 +1876,7 @@ pub fn populate_podcast_downloads(w: &MainWindow) {
              FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id
              WHERE e.downloaded_path IS NOT NULL{extra}
              ORDER BY {order_by} LIMIT ? OFFSET ?");
-        let mut qb = sqlx::query_as(&q);
+        let mut qb = sqlx::query_as(sqlx::AssertSqlSafe(&*q));
         if has_f { qb = qb.bind(like.clone()).bind(like); }
         let eps: Vec<EpQueryRow> =
             qb.bind(PODCAST_DL_PAGE).bind(page * PODCAST_DL_PAGE).fetch_all(&pool).await.unwrap_or_default();
@@ -2167,8 +2167,8 @@ pub fn load_book_detail_bookmarks(w: &MainWindow, ids: Vec<i64>) {
         // Finished when every chapter is. A part-finished book is in progress.
         let finished = if ids.is_empty() { false } else {
             let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-            let done: i64 = sqlx::query_scalar(&format!(
-                "SELECT COUNT(*) FROM audiobook_progress WHERE finished = 1 AND item_id IN ({list})"))
+            let done: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM audiobook_progress WHERE finished = 1 AND item_id IN ({list})")))
                 .fetch_one(&pool).await.unwrap_or(0);
             done as usize == ids.len()
         };
@@ -2408,12 +2408,12 @@ pub fn populate_podcast_queue(w: &MainWindow) {
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("podcasts").await else { return; };
         let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        let eps: Vec<EpQueryRow> = sqlx::query_as(&format!(
+        let eps: Vec<EpQueryRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT e.id, COALESCE(e.title,''), e.audio_url, e.published, e.duration_s,
                     COALESCE(e.image_url,''), COALESCE(NULLIF(p.custom_image,''), p.image_url, ''),
                     p.id, e.downloaded_path, COALESCE(e.played,0), COALESCE(p.title,''), e.downloaded_at
              FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id
-             WHERE e.id IN ({list})")).fetch_all(&pool).await.unwrap_or_default();
+             WHERE e.id IN ({list})"))).fetch_all(&pool).await.unwrap_or_default();
         let data = build_episode_data(eps).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
             // The SQL returns them in whatever order it likes; the queue's

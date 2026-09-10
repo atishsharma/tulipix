@@ -317,7 +317,7 @@ fn thousands(n: i64) -> String {
 
 // ── counts ──────────────────────────────────────────────────────────────────
 
-async fn n(pool: &SqlitePool, q: &str) -> i64 {
+async fn n(pool: &SqlitePool, q: &'static str) -> i64 {
     sqlx::query_scalar::<_, i64>(q).fetch_one(pool).await.unwrap_or(0)
 }
 

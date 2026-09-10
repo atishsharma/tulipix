@@ -11,7 +11,7 @@ fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-async fn ids(pool: &SqlitePool, sql: &str, limit: i64) -> Result<Vec<i64>> {
+async fn ids(pool: &SqlitePool, sql: &'static str, limit: i64) -> Result<Vec<i64>> {
     let rows: Vec<(i64,)> = sqlx::query_as(sql).bind(limit).fetch_all(pool).await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
@@ -112,11 +112,11 @@ const MUSIC_WHERE: &str = "COALESCE(tm.is_audiobook, 0) = 0";
 
 pub async fn stats(pool: &SqlitePool) -> Result<Stats> {
     let n = now();
-    let (total_ms,): (i64,) = sqlx::query_as(&format!(
-        "SELECT COALESCE(SUM(ph.ms_played), 0) FROM play_history ph {MUSIC}"))
+    let (total_ms,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT COALESCE(SUM(ph.ms_played), 0) FROM play_history ph {MUSIC}")))
         .fetch_one(pool).await.unwrap_or((0,));
-    let (week_ms,): (i64,) = sqlx::query_as(&format!(
-        "SELECT COALESCE(SUM(ph.ms_played), 0) FROM play_history ph {MUSIC} AND ph.played_at >= ?"))
+    let (week_ms,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT COALESCE(SUM(ph.ms_played), 0) FROM play_history ph {MUSIC} AND ph.played_at >= ?")))
         .bind(n - 7 * 86_400).fetch_one(pool).await.unwrap_or((0,));
     let top_genre: Option<(String,)> = sqlx::query_as(
         "SELECT tm.genre FROM play_history ph
@@ -125,8 +125,8 @@ pub async fn stats(pool: &SqlitePool) -> Result<Stats> {
          GROUP BY tm.genre ORDER BY COUNT(*) DESC LIMIT 1")
         .fetch_optional(pool).await.unwrap_or(None);
     // Distinct local days with a play, newest first.
-    let days: Vec<(i64,)> = sqlx::query_as(&format!(
-        "SELECT DISTINCT ph.played_at / 86400 FROM play_history ph {MUSIC} ORDER BY 1 DESC LIMIT 400"))
+    let days: Vec<(i64,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT DISTINCT ph.played_at / 86400 FROM play_history ph {MUSIC} ORDER BY 1 DESC LIMIT 400")))
         .fetch_all(pool).await.unwrap_or_default();
     let today = n / 86_400;
     let mut streak = 0i64;
@@ -164,7 +164,7 @@ fn window(since: Option<i64>) -> &'static str {
 }
 
 async fn tally(pool: &SqlitePool, sql: String, since: Option<i64>, limit: i64) -> Result<Vec<Tally>> {
-    let mut q = sqlx::query_as::<_, (String, i64, i64, i64)>(&sql);
+    let mut q = sqlx::query_as::<_, (String, i64, i64, i64)>(sqlx::AssertSqlSafe(&*sql));
     if let Some(s) = since {
         q = q.bind(s);
     }
@@ -219,7 +219,7 @@ pub async fn by_hour(pool: &SqlitePool, since: Option<i64>) -> Result<[i64; 24]>
         "SELECT CAST(strftime('%H', ph.played_at, 'unixepoch', 'localtime') AS INTEGER), \
                 COALESCE(SUM(ph.ms_played), 0) \
          FROM play_history ph {MUSIC}{} GROUP BY 1", window(since));
-    let mut q = sqlx::query_as::<_, (i64, i64)>(&sql);
+    let mut q = sqlx::query_as::<_, (i64, i64)>(sqlx::AssertSqlSafe(&*sql));
     if let Some(s) = since {
         q = q.bind(s);
     }
@@ -241,7 +241,7 @@ const ABANDON_FRACTION: f64 = 0.6;
 /// Needs a known duration to judge against, so a track with none never appears
 /// here. `plays` counts the abandonments, not the plays.
 pub async fn abandoned(pool: &SqlitePool, limit: i64) -> Result<Vec<Tally>> {
-    let rows: Vec<(String, i64, i64, i64)> = sqlx::query_as(&format!(
+    let rows: Vec<(String, i64, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT COALESCE(NULLIF(TRIM(tm.title), ''), i.abs_path), tm.item_id, \
                 COALESCE(SUM(ph.ms_played), 0), COUNT(*) \
          FROM play_history ph {MUSIC_JOIN} \
@@ -250,7 +250,7 @@ pub async fn abandoned(pool: &SqlitePool, limit: i64) -> Result<Vec<Tally>> {
            AND tm.duration_s > 0 \
            AND ph.ms_played > 0 \
            AND ph.ms_played < tm.duration_s * 1000 * ? \
-         GROUP BY tm.item_id HAVING COUNT(*) > 1 ORDER BY 4 DESC LIMIT ?"))
+         GROUP BY tm.item_id HAVING COUNT(*) > 1 ORDER BY 4 DESC LIMIT ?")))
         .bind(ABANDON_FRACTION)
         .bind(limit)
         .fetch_all(pool)
@@ -290,12 +290,12 @@ pub async fn resume_albums(pool: &SqlitePool, limit: i64) -> Result<Vec<AlbumRes
     // The bare `ph.item_id` beside MAX() is SQLite's documented min/max bare
     // column rule: it comes from the same row the maximum did, which is exactly
     // the track that was played last. Any other engine would reject this.
-    let recent: Vec<(i64, i64, i64)> = sqlx::query_as(&format!(
+    let recent: Vec<(i64, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT tm.album_id, ph.item_id, MAX(ph.played_at) \
          FROM play_history ph {MUSIC_JOIN} \
          JOIN items i ON i.id = tm.item_id AND i.missing_since IS NULL \
          WHERE {MUSIC_WHERE} AND tm.album_id IS NOT NULL \
-         GROUP BY tm.album_id ORDER BY 3 DESC LIMIT ?"))
+         GROUP BY tm.album_id ORDER BY 3 DESC LIMIT ?")))
         .bind(limit * 4) // room to drop the finished ones and still fill the rail
         .fetch_all(pool)
         .await

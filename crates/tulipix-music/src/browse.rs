@@ -41,14 +41,14 @@ pub async fn albums(pool: &SqlitePool) -> Result<Vec<AlbumRow>> {
 /// Distinct genres with track counts, busiest first.
 pub async fn genres(pool: &SqlitePool) -> Result<Vec<(String, i64)>> {
     Ok(sqlx::query_as(
-        &format!("SELECT genre, COUNT(*) FROM track_meta {PRESENT} AND genre IS NOT NULL AND genre != '' GROUP BY genre ORDER BY COUNT(*) DESC"),
+        sqlx::AssertSqlSafe(format!("SELECT genre, COUNT(*) FROM track_meta {PRESENT} AND genre IS NOT NULL AND genre != '' GROUP BY genre ORDER BY COUNT(*) DESC")),
     ).fetch_all(pool).await?)
 }
 
 /// Distinct release years with track counts, newest first.
 pub async fn years(pool: &SqlitePool) -> Result<Vec<(i64, i64)>> {
     Ok(sqlx::query_as(
-        &format!("SELECT year, COUNT(*) FROM track_meta {PRESENT} AND year IS NOT NULL GROUP BY year ORDER BY year DESC"),
+        sqlx::AssertSqlSafe(format!("SELECT year, COUNT(*) FROM track_meta {PRESENT} AND year IS NOT NULL GROUP BY year ORDER BY year DESC")),
     ).fetch_all(pool).await?)
 }
 

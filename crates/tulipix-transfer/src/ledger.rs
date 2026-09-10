@@ -135,14 +135,14 @@ async fn add_missing_columns(pool: &SqlitePool) -> Result<()> {
         // `table` is one of the literals above, never a caller-supplied
         // string, so formatting it into the probe carries no injection
         // surface the way a bound parameter would still need one for `column`.
-        let exists: bool = sqlx::query_scalar(&format!(
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?)"
-        ))
+        )))
         .bind(column)
         .fetch_one(pool)
         .await?;
         if !exists {
-            sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))
+            sqlx::query(sqlx::AssertSqlSafe(format!("ALTER TABLE {table} ADD COLUMN {column} {decl}")))
                 .execute(pool)
                 .await?;
         }

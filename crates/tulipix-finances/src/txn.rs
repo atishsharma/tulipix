@@ -413,7 +413,7 @@ pub async fn page(
            LEFT JOIN accounts   a ON a.id = t.account_id
          WHERE {cond}"
     );
-    let total: i64 = bind_filter!(sqlx::query_scalar(&count_sql), filter)
+    let total: i64 = bind_filter!(sqlx::query_scalar(sqlx::AssertSqlSafe(&*count_sql)), filter)
         .fetch_one(pool)
         .await?;
 
@@ -425,7 +425,7 @@ pub async fn page(
            LEFT JOIN accounts   a ON a.id = t.account_id
          WHERE {cond}"
     );
-    let (spent_minor, income_minor) = bind_filter!(sqlx::query_as::<_, (i64, i64)>(&sums_sql), filter)
+    let (spent_minor, income_minor) = bind_filter!(sqlx::query_as::<_, (i64, i64)>(sqlx::AssertSqlSafe(&*sums_sql)), filter)
         .fetch_one(pool)
         .await?;
 
@@ -449,7 +449,7 @@ pub async fn page(
          LIMIT ? OFFSET ?"
     );
 
-    let rows = bind_filter!(sqlx::query(&sql), filter)
+    let rows = bind_filter!(sqlx::query(sqlx::AssertSqlSafe(&*sql)), filter)
         .bind(PAGE as i64)
         .bind((page * PAGE) as i64)
         .fetch_all(pool)
@@ -513,11 +513,11 @@ async fn attach_running(pool: &SqlitePool, account_id: i64, rows: &mut [TxnRow])
     });
 
     let first = &rows[order[0]];
-    let before: i64 = sqlx::query_scalar(&format!(
+    let before: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT COALESCE(SUM({SIGNED}), 0) FROM transactions
           WHERE (account_id = ? OR to_account_id = ?)
             AND (occurred_on < ? OR (occurred_on = ? AND id < ?))"
-    ))
+    )))
     .bind(account_id)
     .bind(account_id)
     .bind(account_id)
@@ -792,10 +792,10 @@ mod tests {
 
     /// `SIGNED` summed over one account, which is what `accounts::balance` does.
     async fn sql_signed_sum(p: &SqlitePool, account_id: i64) -> i64 {
-        sqlx::query_scalar(&format!(
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT COALESCE(SUM({SIGNED}), 0) FROM transactions
               WHERE account_id = ? OR to_account_id = ?"
-        ))
+        )))
         .bind(account_id)
         .bind(account_id)
         .bind(account_id)

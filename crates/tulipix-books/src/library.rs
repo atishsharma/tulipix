@@ -173,7 +173,7 @@ pub async fn list_page(
     let (tail, binds) = where_tail(f);
 
     let count_sql = format!("SELECT COUNT(*) {tail}");
-    let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
+    let mut count_q = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(&*count_sql));
     for b in &binds {
         count_q = count_q.bind(b);
     }
@@ -188,7 +188,7 @@ pub async fn list_page(
          {tail} ORDER BY {} LIMIT ? OFFSET ?",
         f.sort.sql(),
     );
-    let mut q = sqlx::query_as::<_, BookRow>(&sql);
+    let mut q = sqlx::query_as::<_, BookRow>(sqlx::AssertSqlSafe(&*sql));
     for b in &binds {
         q = q.bind(b);
     }
@@ -473,7 +473,7 @@ pub async fn set_reader_view(pool: &SqlitePool, id: i64, view: i64) -> Result<()
 /// Remove a book row (file untouched) plus its progress/marks/notes.
 pub async fn remove(pool: &SqlitePool, id: i64) -> Result<()> {
     for t in ["annotations", "bookmarks", "progress", "collection_books"] {
-        sqlx::query(&format!("DELETE FROM {t} WHERE book_id = ?"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {t} WHERE book_id = ?")))
             .bind(id)
             .execute(pool)
             .await?;

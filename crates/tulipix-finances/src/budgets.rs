@@ -331,7 +331,7 @@ pub async fn envelope_history(
         "SELECT DISTINCT c.id, c.name FROM budgets b JOIN categories c ON c.id = b.category_id
           WHERE b.period IN ({marks}) ORDER BY c.name COLLATE NOCASE"
     );
-    let mut q = sqlx::query_as::<_, (i64, String)>(&sql);
+    let mut q = sqlx::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(&*sql));
     for p in &periods {
         q = q.bind(p);
     }

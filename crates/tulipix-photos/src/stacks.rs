@@ -79,7 +79,7 @@ async fn pick_cover(pool: &SqlitePool, ids: &[i64]) -> Result<i64> {
                   items.id ASC
          LIMIT 1",
     );
-    let mut q = sqlx::query_scalar::<_, i64>(&sql);
+    let mut q = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(&*sql));
     for id in ids { q = q.bind(*id); }
     Ok(q.fetch_one(pool).await?)
 }
