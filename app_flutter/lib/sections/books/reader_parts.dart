@@ -218,6 +218,32 @@ class _EdgeNavState extends State<EdgeNav> {
 /// One paper page: the folio `‹ n ›` pinned to the top edge, then the body
 /// column. No paper or shadow of its own — it sits on the open-book mockup the
 /// spread draws underneath.
+/// `body` as one span, or three with the read-aloud sentence lit in the middle.
+///
+/// Found by searching the page text rather than by offset: the bridge's
+/// sentence carries a page index, not a character range into the laid-out page
+/// -- and a sentence that came out of this page's text is in this page's text.
+/// A page it is not on returns the plain span, which is what makes this safe to
+/// hand to both halves of a spread.
+TextSpan _readAloudSpans(String body, String? sentence, Color ink) {
+  final s = sentence?.trim() ?? '';
+  // Two characters is not a sentence, and a one-character needle would light
+  // the first letter of an unrelated word.
+  final at = s.length < 3 ? -1 : body.indexOf(s);
+  if (at < 0) return TextSpan(text: body);
+  return TextSpan(children: [
+    TextSpan(text: body.substring(0, at)),
+    TextSpan(
+      text: body.substring(at, at + s.length),
+      // A wash behind the words, not a change of ink: the reader has four
+      // themes and each picks its own ink, so recolouring the text would
+      // fight whichever one is up.
+      style: TextStyle(backgroundColor: ink.withValues(alpha: 0.15)),
+    ),
+    TextSpan(text: body.substring(at + s.length)),
+  ]);
+}
+
 class PaperPage extends StatelessWidget {
   const PaperPage({
     super.key,
@@ -228,6 +254,7 @@ class PaperPage extends StatelessWidget {
     required this.prefs,
     required this.onPrev,
     required this.onNext,
+    this.highlight,
   });
 
   final String body;
@@ -237,6 +264,10 @@ class PaperPage extends StatelessWidget {
   final ReaderPrefs prefs;
   final VoidCallback onPrev;
   final VoidCallback onNext;
+
+  /// The sentence Read Aloud is speaking. Lit where it falls on this page; a
+  /// page that does not contain it is drawn exactly as before.
+  final String? highlight;
 
   /// Horizontal padding, both sides combined — the engine's own MARGINS table,
   /// so what is rendered matches what was paginated.
@@ -296,8 +327,8 @@ class PaperPage extends StatelessWidget {
                   const SizedBox(height: 26),
                 ],
                 Expanded(
-                  child: Text(
-                    body,
+                  child: Text.rich(
+                    _readAloudSpans(body, highlight, ink),
                     textAlign: align(p.align.toInt()),
                     style: TextStyle(
                       fontSize: p.fontPx,

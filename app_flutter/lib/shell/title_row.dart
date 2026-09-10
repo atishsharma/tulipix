@@ -355,9 +355,16 @@ class WindowResizeEdges extends StatelessWidget {
       // 3px belong to the peek strip, which a north handle would swallow.
       animation: Listenable.merge([chrome, shell]),
       builder: (context, _) {
-        if (!chrome.custom || chrome.maximized || shell.appFullscreen) {
-          return child;
-        }
+        // The handles come and go; the SHAPE of this tree must not. Returning
+        // a bare `child` when there are none and a `Stack` when there are put
+        // the app at two different depths, so toggling maximise moved every
+        // element below here -- Flutter matches elements by position, could
+        // not, and threw the whole subtree away and rebuilt it. Every page in
+        // the IndexedStack lost its State: the section you were on, its scroll,
+        // its controllers. That is what "maximise reloads the app" was. One
+        // Stack, always, with only its children conditional.
+        final handles =
+            chrome.custom && !chrome.maximized && !shell.appFullscreen;
         const t = thickness;
         const c = thickness * 2;
         return Stack(
@@ -366,19 +373,24 @@ class WindowResizeEdges extends StatelessWidget {
             // Edges first, corners over them: a corner is the intersection of
             // two edges and has to win there, or the last few pixels of every
             // corner resize one axis only.
-            const _Edge(WindowEdge.north, top: 0, left: c, right: c, height: t),
-            const _Edge(WindowEdge.south,
-                bottom: 0, left: c, right: c, height: t),
-            const _Edge(WindowEdge.west, left: 0, top: c, bottom: c, width: t),
-            const _Edge(WindowEdge.east, right: 0, top: c, bottom: c, width: t),
-            const _Edge(WindowEdge.northWest,
-                top: 0, left: 0, width: c, height: c),
-            const _Edge(WindowEdge.northEast,
-                top: 0, right: 0, width: c, height: c),
-            const _Edge(WindowEdge.southWest,
-                bottom: 0, left: 0, width: c, height: c),
-            const _Edge(WindowEdge.southEast,
-                bottom: 0, right: 0, width: c, height: c),
+            if (handles) ...[
+              const _Edge(WindowEdge.north,
+                  top: 0, left: c, right: c, height: t),
+              const _Edge(WindowEdge.south,
+                  bottom: 0, left: c, right: c, height: t),
+              const _Edge(WindowEdge.west,
+                  left: 0, top: c, bottom: c, width: t),
+              const _Edge(WindowEdge.east,
+                  right: 0, top: c, bottom: c, width: t),
+              const _Edge(WindowEdge.northWest,
+                  top: 0, left: 0, width: c, height: c),
+              const _Edge(WindowEdge.northEast,
+                  top: 0, right: 0, width: c, height: c),
+              const _Edge(WindowEdge.southWest,
+                  bottom: 0, left: 0, width: c, height: c),
+              const _Edge(WindowEdge.southEast,
+                  bottom: 0, right: 0, width: c, height: c),
+            ],
           ],
         );
       },

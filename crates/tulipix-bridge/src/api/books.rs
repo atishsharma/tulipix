@@ -2065,3 +2065,208 @@ fn empty_reader(prefs: Prefs) -> Reader {
         error: String::new(),
     }
 }
+
+// ── read-aloud ──────────────────────────────────────────────────────────────
+//
+// Split here, spoken from Dart.
+//
+// The Slint build runs the whole loop in Rust: `tts_audio_step` in
+// crates/tulipix-sec-books/src/lib.rs synthesises a sentence, plays it through
+// an mpv it spawns itself, and recurses -- with an IPC socket stashed in a
+// static so a pause can quit mpv mid-sentence, and a generation counter so an
+// in-flight synth thread knows it has been cancelled.
+//
+// None of that is needed here. Flutter already owns libmpv through media_kit
+// and owns the reader's UI, so the loop belongs on that side: this hands back
+// the sentence list, and one WAV at a time. Dart plays it, moves the highlight,
+// turns the spread and asks for the next one. Stopping is Dart not asking
+// again, which is why there is no generation counter and no socket.
+
+/// Speaking speeds the reader offers, and the same four the Slint build's
+/// stepper cycles.
+pub const TTS_SPEEDS: [f32; 4] = [0.75, 1.0, 1.25, 1.5];
+
+/// The Kokoro voices, label → style-vector id. Same table as the Slint build's
+/// `TTS_VOICES`; the ids name `voices/<id>.bin` beside the model.
+const TTS_VOICES: [(&str, &str); 4] = [
+    ("Heart (F)", "af_heart"),
+    ("Bella (F)", "af_bella"),
+    ("Michael (M)", "am_michael"),
+    ("Adam (M)", "am_adam"),
+];
+
+fn tts_voice_id(label: &str) -> &'static str {
+    TTS_VOICES
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, id)| *id)
+        .unwrap_or(TTS_VOICES[0].1)
+}
+
+/// A cap on the list, not on the book. The read-along view is not virtualised
+/// on either side, and a novel is tens of thousands of sentences.
+const TTS_MAX_SENTENCES: usize = 1500;
+
+/// One sentence of the open book.
+pub struct TtsSentence {
+    pub text: String,
+    /// 0-based index into the reader's laid-out pages. Carried per sentence so
+    /// the highlight can turn the spread as it advances, rather than the reader
+    /// having to map a character offset back to a page.
+    pub page: i64,
+}
+
+/// What the reader needs to start reading aloud.
+pub struct TtsPlan {
+    pub sentences: Vec<TtsSentence>,
+    /// Voice labels for the picker.
+    pub voices: Vec<String>,
+    /// The one in use, resolved from `voice` or defaulted.
+    pub voice: String,
+    pub speeds: Vec<f64>,
+    /// There is a synthesiser: sentences can actually be spoken.
+    pub audio: bool,
+    /// And it is Kokoro rather than espeak.
+    pub neural: bool,
+    /// Why, when `audio` is false or `neural` is not what was asked for. Empty
+    /// when the neural voice is running, because then there is nothing to say.
+    pub note: String,
+}
+
+/// Which engine will speak, and what to tell the user if it is not the one they
+/// asked for. `decide_engine` in crates/tulipix-sec-books/src/lib.rs, with the
+/// same order: Kokoro, then espeak, then no audio at all.
+fn tts_engine(voice_label: &str) -> (bool, bool, String) {
+    let prefer_neural = tulipix_core::settings::Settings::load()
+        .map(|s| s.flag("books.tts.neural", true))
+        .unwrap_or(true);
+    if prefer_neural && tulipix_books::kokoro::available(tts_voice_id(voice_label)) {
+        return (true, true, String::new());
+    }
+    if tulipix_books::speech::espeak_available() {
+        let note = if prefer_neural {
+            "Neural voice unavailable — reading in the espeak voice. \
+             Settings › AI Features lists what Kokoro needs."
+        } else {
+            "Reading in the espeak voice, as set in Settings › AI Features."
+        };
+        return (true, false, note.to_string());
+    }
+    (
+        false,
+        false,
+        "No speech engine installed — the highlight follows the text on a timer. \
+         Download the Kokoro model in Settings › AI Features, or install espeak-ng."
+            .to_string(),
+    )
+}
+
+/// Segment the open book and report which engine will read it.
+///
+/// Per page rather than over one joined string: a sentence has to know which
+/// page it sits on, and joining first would put the page boundary inside a
+/// sentence and lose it.
+pub async fn books_tts_plan(voice: String) -> Result<TtsPlan> {
+    let (sentences, image_mode) = {
+        let s = lock();
+        let r = &s.reader;
+        if !r.open {
+            anyhow::bail!("no book is open");
+        }
+        let mut out = Vec::new();
+        'pages: for (pi, page) in r.pages.iter().enumerate() {
+            for sent in tulipix_books::tts::sentences(&page.text) {
+                out.push(TtsSentence {
+                    text: sent.text,
+                    page: pi as i64,
+                });
+                if out.len() >= TTS_MAX_SENTENCES {
+                    break 'pages;
+                }
+            }
+        }
+        (out, r.image_mode)
+    };
+    // A PDF or a comic has rendered pages, not a text layer to read.
+    if image_mode {
+        anyhow::bail!("this book is pages of images — there is no text to read aloud");
+    }
+    if sentences.is_empty() {
+        anyhow::bail!("no readable text on these pages");
+    }
+    let voice = match TTS_VOICES.iter().any(|(l, _)| *l == voice) {
+        true => voice,
+        false => TTS_VOICES[0].0.to_string(),
+    };
+    let (audio, neural, note) = tts_engine(&voice);
+    Ok(TtsPlan {
+        sentences,
+        voices: TTS_VOICES.iter().map(|(l, _)| (*l).to_string()).collect(),
+        voice,
+        speeds: TTS_SPEEDS.iter().map(|s| *s as f64).collect(),
+        audio,
+        neural,
+        note,
+    })
+}
+
+/// Rotating WAV slot. Dart may fetch the next sentence while the current one is
+/// still playing, so a single path would be overwritten under the player; eight
+/// is more than the one-ahead it needs and keeps temp bounded whatever happens.
+fn tts_wav_path() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let slot = N.fetch_add(1, Ordering::Relaxed) % 8;
+    std::env::temp_dir().join(format!("tulipix-tts-{}-{slot}.wav", std::process::id()))
+}
+
+/// Speak one sentence to a WAV and return its path.
+///
+/// espeak's `-s` is words per minute and 175 is its own default, so the speed
+/// multiplier scales that; Kokoro takes the multiplier directly.
+pub async fn books_tts_say(text: String, voice: String, speed: f64) -> Result<String> {
+    let (audio, neural, note) = tts_engine(&voice);
+    if !audio {
+        anyhow::bail!("{note}");
+    }
+    let id = tts_voice_id(&voice).to_string();
+    let speed = speed.clamp(0.5, 2.0) as f32;
+    // Both synths block, and Kokoro's ONNX run is hundreds of milliseconds of
+    // CPU per sentence -- not something to do on the async runtime's thread.
+    tokio::task::spawn_blocking(move || {
+        let out = tts_wav_path();
+        if neural {
+            let samples = tulipix_books::kokoro::synth(&text, &id, speed)?;
+            tulipix_books::kokoro::write_wav(&samples, &out)?;
+        } else {
+            let wpm = (175.0 * speed).round().clamp(80.0, 450.0) as u32;
+            if !tulipix_books::speech::espeak_to_wav(&text, id.starts_with("af"), wpm, &out) {
+                anyhow::bail!("espeak-ng could not speak that sentence");
+            }
+        }
+        Ok(out.to_string_lossy().into_owned())
+    })
+    .await?
+}
+
+/// The 1-based screen page a leaf sits on.
+///
+/// Asked per advance rather than baked into [`TtsSentence`]: `per_screen`
+/// depends on the reader's single-page toggle, which the user can flip while it
+/// is reading, and a spread number worked out in Dart would also have to know
+/// about right-to-left books. The reader turns the page when this stops
+/// matching `Reader.page` -- the same test as `tts_follow_page` in
+/// crates/tulipix-sec-books/src/lib.rs, expressed once instead of twice.
+pub fn books_tts_screen_for(page: i64) -> i64 {
+    let s = lock();
+    let step = per_screen(&s.reader).max(1) as i64;
+    page.max(0) / step + 1
+}
+
+/// How long to leave a sentence lit when there is no audio to end.
+///
+/// The timer tier. 200 wpm is the estimate the Slint build paces with, and
+/// sharing `speak_ms` is what keeps the two readers moving at the same rate.
+pub fn books_tts_pace_ms(text: String, speed: f64) -> u64 {
+    tulipix_books::tts::speak_ms(&text, 200.0, speed as f32)
+}

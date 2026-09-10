@@ -1,6 +1,7 @@
 //! The Dart-facing surface. Three to four exported symbols per section.
 
 pub mod books;
+pub mod chat;
 pub mod cloud;
 pub mod editor;
 pub mod finances;
@@ -9,6 +10,7 @@ pub mod home;
 pub mod mdl;
 pub mod music;
 pub mod photos;
+pub mod scrobble;
 pub mod settings;
 pub mod shell;
 pub mod status;

@@ -28,6 +28,7 @@ import 'package:pdfrx/pdfrx.dart';
 import '../../src/rust/api/books.dart';
 import 'book_theme.dart';
 import 'books_controller.dart';
+import 'read_aloud.dart';
 import 'reader_parts.dart';
 
 /// Which side panel is docked. A view preference of this screen, not of the
@@ -45,6 +46,10 @@ class BookReader extends StatefulWidget {
 
 class _BookReaderState extends State<BookReader> {
   _Panel _panel = _Panel.none;
+
+  /// Read Aloud. Owned by the reader rather than the section: it reads the book
+  /// that is open, and closing the reader has to stop the voice.
+  late final ReadAloud _aloud = ReadAloud(widget.controller);
   bool _typography = false;
   bool _more = false;
   bool _closeConfirm = false;
@@ -81,6 +86,37 @@ class _BookReaderState extends State<BookReader> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    // The highlight and the bar both live in this tree, so the reader repaints
+    // on every sentence.
+    _aloud.addListener(_onAloud);
+  }
+
+  @override
+  void dispose() {
+    _aloud.removeListener(_onAloud);
+    // Not just paused: closing the reader has to take the voice with it, or a
+    // sentence keeps playing over a library with no book open.
+    _aloud.dispose();
+    super.dispose();
+  }
+
+  void _onAloud() {
+    if (mounted) setState(() {});
+  }
+
+  /// Start reading, or stop if it is already going. The bar's own play button
+  /// pauses; this is the door in and out.
+  void _readAloud() {
+    if (_aloud.open) {
+      _aloud.stop();
+    } else {
+      _aloud.start();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final r = _c.reader!;
     final pal = ReaderPalette.of(r.prefs.theme);
@@ -105,6 +141,11 @@ class _BookReaderState extends State<BookReader> {
             _c.send(const BooksCmd.toggleBookmark()),
         const SingleActivator(LogicalKeyboardKey.keyT): () =>
             _panelTo(_Panel.contents),
+        // Not a bare letter: the reader's single-key shortcuts are page turns
+        // and panels, and starting a voice is not something to do by brushing
+        // the keyboard.
+        const SingleActivator(LogicalKeyboardKey.keyR, control: true):
+            _readAloud,
       },
       child: Focus(
         autofocus: true,
@@ -126,6 +167,8 @@ class _BookReaderState extends State<BookReader> {
                               maxHeight: 72,
                               alignment: Alignment.topCenter,
                               child: _TopBar(
+                                reading: _aloud.open,
+                                onReadAloud: _readAloud,
                                 controller: _c,
                                 reader: r,
                                 panel: _panel,
@@ -144,6 +187,7 @@ class _BookReaderState extends State<BookReader> {
                       children: [
                         Expanded(
                           child: _Stage(
+                            highlight: _aloud.activeText,
                             controller: _c,
                             reader: r,
                             palette: pal,
@@ -229,6 +273,7 @@ class _BookReaderState extends State<BookReader> {
                     onDone: () => setState(() => _more = false),
                   ),
                 ),
+              ReadAloudBar(aloud: _aloud),
               if (_closeConfirm)
                 _CloseConfirm(
                   onCancel: () => setState(() => _closeConfirm = false),
@@ -308,6 +353,8 @@ class _Broken extends StatelessWidget {
 
 class _TopBar extends StatelessWidget {
   const _TopBar({
+    required this.reading,
+    required this.onReadAloud,
     required this.controller,
     required this.reader,
     required this.panel,
@@ -318,6 +365,10 @@ class _TopBar extends StatelessWidget {
     required this.onMore,
   });
 
+  /// Read Aloud is up. The button is a toggle, not a play button -- the bar
+  /// owns play/pause once it is open.
+  final bool reading;
+  final VoidCallback onReadAloud;
   final BooksController controller;
   final Reader reader;
   final _Panel panel;
@@ -366,6 +417,19 @@ class _TopBar extends StatelessWidget {
               onFocus: () {
                 if (panel != _Panel.search) onPanel(_Panel.search);
               },
+            ),
+            const SizedBox(width: 8),
+          ],
+          // Only where there is text to read: a comic or a scanned PDF has
+          // rendered pages and no text layer, and the bridge would only answer
+          // with "there is no text to read aloud".
+          if (!r.imageMode) ...[
+            ChromeButton(
+              icon: Icons.headphones,
+              accent: BookTheme.accent,
+              tip: reading ? 'Stop reading aloud' : 'Read aloud  (Ctrl+R)',
+              active: reading,
+              onTap: onReadAloud,
             ),
             const SizedBox(width: 8),
           ],
@@ -680,6 +744,7 @@ class _InlineSearchState extends State<_InlineSearch> {
 
 class _Stage extends StatelessWidget {
   const _Stage({
+    required this.highlight,
     required this.controller,
     required this.reader,
     required this.palette,
@@ -690,6 +755,8 @@ class _Stage extends StatelessWidget {
     required this.onEdgeHover,
   });
 
+  /// The sentence Read Aloud is on, passed down to the page that holds it.
+  final String highlight;
   final BooksController controller;
   final Reader reader;
   final ReaderPalette palette;
@@ -802,8 +869,16 @@ class _Stage extends StatelessWidget {
       );
     }
     return r.single
-        ? _SingleSheet(controller: controller, reader: r, palette: palette)
-        : _Spread(controller: controller, reader: r, palette: palette);
+        ? _SingleSheet(
+            highlight: highlight,
+            controller: controller,
+            reader: r,
+            palette: palette)
+        : _Spread(
+            highlight: highlight,
+            controller: controller,
+            reader: r,
+            palette: palette);
   }
 }
 
@@ -815,11 +890,14 @@ class _Stage extends StatelessWidget {
 /// height, each column 0.34 × 0.87 of it.
 class _Spread extends StatelessWidget {
   const _Spread({
+    required this.highlight,
     required this.controller,
     required this.reader,
     required this.palette,
   });
 
+  /// The sentence Read Aloud is on, passed down to the page that holds it.
+  final String highlight;
   final BooksController controller;
   final Reader reader;
   final ReaderPalette palette;
@@ -849,6 +927,7 @@ class _Spread extends StatelessWidget {
               width: pageW,
               height: pageH,
               child: PaperPage(
+                highlight: highlight,
                 body: body,
                 heading: heading,
                 folio: folio,
@@ -935,11 +1014,14 @@ class _Spread extends StatelessWidget {
 /// alone and centred.
 class _SingleSheet extends StatelessWidget {
   const _SingleSheet({
+    required this.highlight,
     required this.controller,
     required this.reader,
     required this.palette,
   });
 
+  /// The sentence Read Aloud is on, passed down to the page that holds it.
+  final String highlight;
   final BooksController controller;
   final Reader reader;
   final ReaderPalette palette;
@@ -962,6 +1044,7 @@ class _SingleSheet extends StatelessWidget {
                 ],
               ),
               child: PaperPage(
+                highlight: highlight,
                 body: reader.leftText,
                 heading: reader.leftHeading,
                 folio: reader.leftFolio.toInt(),
