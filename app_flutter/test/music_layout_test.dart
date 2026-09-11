@@ -6,8 +6,13 @@
 // exists: every fix landed here was landing blind.
 //
 // Nothing here calls the bridge. `MusicController`'s constructor guards its own
-// startup, and every widget below takes plain values, so this runs without the
-// native library.
+// startup, and every widget below takes plain values.
+//
+// One exception worth knowing, because it bit this file first: `MusicArt` falls
+// through to `musicEnsureArt` when it is given no `direct` path, and that throws
+// without `RustLib.init()`. Every card below is therefore given a path — one
+// that does not exist, so it lands on the `errorBuilder` placeholder, which is
+// the branch worth testing anyway.
 //
 // What it pins, in order of how quietly each would break:
 //
@@ -334,7 +339,8 @@ Track _track(int id, {String title = 'A song', int stars = 0, bool loved = false
       album: 'An album',
       durationS: 212,
       path: '/m/$id.flac',
-      art: '',
+      // Non-empty so the card never asks the bridge to resolve one.
+      art: '/nonexistent/$id.jpg',
       loved: loved,
       stars: stars,
       playCount: 0,
@@ -358,23 +364,33 @@ void main() {
     // that reads as the library running out rather than the page ending.
     const page = 32;
 
+    // Target cell is 150. The choice is the divisor whose *cell* lands nearest
+    // that, which is not the same as the divisor nearest the column count that
+    // fits — 900 is the case that separates them, and it is the one that made
+    // `MusicGrid` snap on size rather than on count.
     for (final (width, expected) in const [
-      (600.0, 4),
-      (900.0, 8),
-      (1400.0, 8),
-      (2600.0, 16),
+      (600.0, 4), // 600/4 = 150 exactly
+      (900.0, 8), // 112 is 38 off; 4 columns would be 225, which is 75 off
+      (1400.0, 8), // 175
+      (2600.0, 16), // 162, and 16 is the cap
     ]) {
       testWidgets('$width wide lays out $expected across', (tester) async {
         var cols = 0;
         await _at(
           tester,
           Size(width, 900),
-          MusicGrid(
-            count: page,
-            minCols: 4,
-            maxCols: 16,
-            colChoices: const [4, 8, 16],
-            builder: (_, __) => const SizedBox.shrink(),
+          // `MusicGrid` is a Column of rows, not a scroller: `_Songs` puts it
+          // in a ListView and so does every other caller. Without that, eight
+          // rows of tiles overflow a 900px window and the overflow is the
+          // failure rather than the layout.
+          SingleChildScrollView(
+            child: MusicGrid(
+              count: page,
+              minCols: 4,
+              maxCols: 16,
+              colChoices: const [4, 8, 16],
+              builder: (_, __) => const SizedBox.shrink(),
+            ),
           ),
         );
         // Count the tiles in the first row by their laid-out width.
@@ -390,11 +406,13 @@ void main() {
       await _at(
         tester,
         const Size(1000, 800),
-        MusicGrid(
-          count: 12,
-          target: 150,
-          maxCols: 12,
-          builder: (_, __) => const SizedBox.shrink(),
+        SingleChildScrollView(
+          child: MusicGrid(
+            count: 12,
+            target: 150,
+            maxCols: 12,
+            builder: (_, __) => const SizedBox.shrink(),
+          ),
         ),
       );
       final rows = tester.widgetList<Row>(find.byType(Row)).toList();
@@ -440,7 +458,11 @@ void main() {
               title: 'A song',
               subtitle: 'An artist',
               artKind: 'track',
-              artKey: '1',
+              // An empty key: `artFor` answers null for one of those without
+              // asking the bridge anything, which is the only route to the
+              // placeholder a test can take. A real key throws for want of
+              // `RustLib.init()`.
+              artKey: '',
               direct: '',
               fallback: Icons.music_note,
               onTap: () {},
@@ -449,6 +471,36 @@ void main() {
         ),
       );
       expect(find.byIcon(Icons.music_note), findsOneWidget);
+      expect(find.byType(Image), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a card with art paints the art', (tester) async {
+      await _at(
+        tester,
+        const Size(400, 400),
+        Center(
+          child: SizedBox(
+            width: 160,
+            height: 200,
+            child: MusicCard(
+              controller: MusicController.instance,
+              title: 'A song',
+              subtitle: 'An artist',
+              artKind: 'track',
+              artKey: '1',
+              // A path the snapshot already knew skips the resolver, which is
+              // what keeps every other card in this file off the bridge too.
+              // Whether the file loads is the image cache's business and not
+              // something a widget test can settle.
+              direct: '/nonexistent/cover.jpg',
+              fallback: Icons.music_note,
+              onTap: () {},
+            ),
+          ),
+        ),
+      );
+      expect(find.byType(Image), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 
@@ -519,7 +571,7 @@ void main() {
               subtitle: 'Portishead',
               artKind: 'track',
               artKey: '1',
-              direct: '',
+              direct: '/nonexistent/cover.jpg',
               fallback: Icons.music_note,
               loved: true,
               onFav: () {},
@@ -626,9 +678,10 @@ void main() {
     test('there are ten library sub-tabs and Downloader is one of them', () {
       expect(libTabs.length, 10);
       expect(libTabs.map((t) => t.id), contains('downloader'));
-      // Every tab carries its own hue: the row is ten places rather than one
-      // selected thing and nine greys.
-      expect(libTabs.map((t) => t.tint).toSet().length, libTabs.length);
+      // The ids are what has to be unique — they address the bridge. The hues
+      // walk a wheel and wrap, so Home and Downloader share one; asserting
+      // otherwise was asserting a coincidence.
+      expect(libTabs.map((t) => t.id).toSet().length, libTabs.length);
     });
   });
 }

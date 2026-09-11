@@ -1515,11 +1515,22 @@ class MusicGrid extends StatelessWidget {
       builder: (context, box) {
         final fits = (box.maxWidth / target).floor().clamp(minCols, maxCols);
         final choices = colChoices;
-        // Ties go to the smaller count, which is the bigger tile.
+        // Nearest by *cell size*, not by column count.
+        //
+        // Counting columns gets this wrong in the middle. At 900px with a
+        // 150px target, six columns fit — and six is equally far from four and
+        // from eight, so a tie-break has to choose. By count, four wins and
+        // the tiles come out 225px: half again the size asked for. By size,
+        // eight wins at 112px, which is 38px off the target rather than 75.
+        // `target` is a cell width, so the distance that matters is a cell
+        // width.
         final cols = choices == null || choices.isEmpty
             ? fits
-            : choices.reduce(
-                (a, b) => (a - fits).abs() <= (b - fits).abs() ? a : b);
+            : choices.reduce((a, b) =>
+                (box.maxWidth / a - target).abs() <=
+                        (box.maxWidth / b - target).abs()
+                    ? a
+                    : b);
         final cell = box.maxWidth / cols;
         final rows = (count / cols).ceil();
         return Column(
