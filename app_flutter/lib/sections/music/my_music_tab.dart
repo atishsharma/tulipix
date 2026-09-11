@@ -1265,13 +1265,13 @@ class _Songs extends StatelessWidget {
         ],
         MusicGrid(
           count: songs.length,
-          // Eight was pinned so a page of SONGS_PAGE = 32 filled four whole
-          // rows. It still does — 4, 8 and 16 all divide 32 — but the window
-          // now gets a say, so a narrow one is not eight unreadable columns
-          // and an ultrawide is not four wasted ones.
+          // A page of SONGS_PAGE = 32 is eight across and four down, as Slint
+          // pins it. A narrow window gets four, so it is not eight unreadable
+          // columns — but never sixteen: past ~1600px the nearest cell size
+          // was sixteen's, and the page became two long rows.
           minCols: 4,
-          maxCols: 16,
-          colChoices: const [4, 8, 16],
+          maxCols: 8,
+          colChoices: const [4, 8],
           builder: (context, i) => SongContextMenu(
             controller: controller,
             track: songs[i],

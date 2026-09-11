@@ -359,9 +359,11 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('the Songs grid keeps whole pages', () {
-    // SONGS_PAGE is 32. Four, eight and sixteen divide it; five, seven and
-    // eleven do not, and a page laid out in one of those ends in a ragged row
-    // that reads as the library running out rather than the page ending.
+    // SONGS_PAGE is 32. Four and eight divide it; five, seven and eleven do
+    // not, and a page laid out in one of those ends in a ragged row that reads
+    // as the library running out rather than the page ending. Sixteen divides
+    // it too, and is not offered: a page of two sixteen-wide rows is not the
+    // eight-by-four grid a page is.
     const page = 32;
 
     // Target cell is 150. The choice is the divisor whose *cell* lands nearest
@@ -372,7 +374,7 @@ void main() {
       (600.0, 4), // 600/4 = 150 exactly
       (900.0, 8), // 112 is 38 off; 4 columns would be 225, which is 75 off
       (1400.0, 8), // 175
-      (2600.0, 16), // 162, and 16 is the cap
+      (2600.0, 8), // 325 — wide, but eight by four, never two rows of 16
     ]) {
       testWidgets('$width wide lays out $expected across', (tester) async {
         var cols = 0;
@@ -387,8 +389,8 @@ void main() {
             child: MusicGrid(
               count: page,
               minCols: 4,
-              maxCols: 16,
-              colChoices: const [4, 8, 16],
+              maxCols: 8,
+              colChoices: const [4, 8],
               builder: (_, __) => const SizedBox.shrink(),
             ),
           ),
