@@ -41,6 +41,12 @@ dependencies:
   # outline set, whose fine strokes read as engraved into the soft sheet. An
   # icon font, so it tree-shakes like Material's.
   flutter_tabler_icons: ^1.43.0
+  # Glassmorphism's icons: even outlines stay sharp over blur, where filled or
+  # duotone glyphs muddy against the colour behind them.
+  lucide_icons_flutter: ^3.1.19
+  # Skeuomorphism's and Expressive's icons: Material Symbols Rounded, a
+  # variable font whose fill axis Icon.fill and IconTheme drive.
+  material_symbols_icons: ^4.2960.0
 
 dev_dependencies:
   flutter_test:
@@ -87,4 +93,63 @@ flutter:
         - asset: fonts/MPLUSRounded1c-Bold.ttf
           weight: 700
         - asset: fonts/MPLUSRounded1c-ExtraBold.ttf
+          weight: 800
+    # Claymorphism's face. Static instances of the variable file, cut to Latin
+    # with pyftsubset. OFL; the licence is fonts/OFL-Fredoka.txt.
+    - family: Fredoka
+      fonts:
+        - asset: fonts/Fredoka-Regular.ttf
+        - asset: fonts/Fredoka-Medium.ttf
+          weight: 500
+        - asset: fonts/Fredoka-SemiBold.ttf
+          weight: 600
+        - asset: fonts/Fredoka-Bold.ttf
+          weight: 700
+    # Claymorphism's icons: Phosphor's Fill font, cut to the 49 glyphs the skin
+    # maps. Bundled rather than taken from phosphor_flutter, whose IconData
+    # subclass does not compile now that IconData is a final class. MIT; the
+    # licence is fonts/LICENSE-Phosphor.txt.
+    - family: PhosphorFill
+      fonts:
+        - asset: fonts/PhosphorFill.ttf
+    # Glassmorphism's face. Static weights of the variable file, cut to Latin.
+    # OFL; the licence is fonts/OFL-Lexend.txt.
+    - family: Lexend
+      fonts:
+        - asset: fonts/Lexend-Light.ttf
+          weight: 300
+        - asset: fonts/Lexend-Regular.ttf
+        - asset: fonts/Lexend-Medium.ttf
+          weight: 500
+        - asset: fonts/Lexend-SemiBold.ttf
+          weight: 600
+    # Skeuomorphism's faces: Geist for text, and Doto's dot matrix for figures
+    # at 16px and up — below that the dots stop resolving. Doto is cut to ASCII.
+    # OFL; fonts/OFL-Geist.txt and fonts/OFL-Doto.txt.
+    - family: Geist
+      fonts:
+        - asset: fonts/Geist-Regular.ttf
+        - asset: fonts/Geist-Medium.ttf
+          weight: 500
+        - asset: fonts/Geist-SemiBold.ttf
+          weight: 600
+        - asset: fonts/Geist-Bold.ttf
+          weight: 700
+    - family: Doto
+      fonts:
+        - asset: fonts/Doto-ExtraBold.ttf
+          weight: 800
+    # Material 3 Expressive's face, pinned at opsz 18, width 100, and no slant,
+    # grade or rounding. OFL; fonts/OFL-GoogleSansFlex.txt. "Google Sans" is a
+    # Google trademark: the family name here is an asset id, never shown.
+    - family: GoogleSansFlex
+      fonts:
+        - asset: fonts/GoogleSansFlex-Regular.ttf
+        - asset: fonts/GoogleSansFlex-Medium.ttf
+          weight: 500
+        - asset: fonts/GoogleSansFlex-SemiBold.ttf
+          weight: 600
+        - asset: fonts/GoogleSansFlex-Bold.ttf
+          weight: 700
+        - asset: fonts/GoogleSansFlex-ExtraBold.ttf
           weight: 800

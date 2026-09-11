@@ -1027,7 +1027,10 @@ class _ResumeCardTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final skin = context.skin;
-    return Material(
+    return skin.frame(
+        SurfaceRole.card,
+        radius: 14,
+        Material(
         // Clear under a skin: the card is the skin's raised surface below.
         color: skin.isStandard ? t.nCard : Colors.transparent,
         borderRadius: BorderRadius.circular(14),
@@ -1098,7 +1101,7 @@ class _ResumeCardTile extends StatelessWidget {
             ),
           ),
         ),
-    );
+    ));
   }
 }
 
@@ -1123,8 +1126,14 @@ class _StatsStrip extends StatelessWidget {
     // Four figures are a teaser for the summary behind them: the same play
     // history answers "when do you listen", "who to", and "what did you start
     // eleven times and never finish". Tapping any card opens all of it.
-    Widget card(String label, String value) => Expanded(
-          child: Material(
+    // A skin draws each figure as a control in a library tab's colour, so under
+    // Clay the four are four clays; under Neumorphism they are wells, which is
+    // what that sheet does with a thing that holds a value.
+    Widget card(String label, String value, Color tint) => Expanded(
+          child: skin.frame(
+          SurfaceRole.card,
+          radius: 24,
+          Material(
             color: skin.isStandard ? t.nCard : Colors.transparent,
             borderRadius: BorderRadius.circular(14),
             child: InkWell(
@@ -1134,7 +1143,8 @@ class _StatsStrip extends StatelessWidget {
                 height: 84,
                 padding:
                     const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: skin.surface(SurfaceRole.card, radius: 14) ??
+                decoration: skin.control(
+                        active: true, tint: tint, radius: 24) ??
                     BoxDecoration(
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(color: t.nHair),
@@ -1150,7 +1160,7 @@ class _StatsStrip extends StatelessWidget {
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
                     letterSpacing: 0.6,
-                    color: t.nInk3,
+                    color: skin.inkDim ?? t.nInk3,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -1159,10 +1169,12 @@ class _StatsStrip extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontFamily: skin.fontFamily ?? Tokens.fontFamily,
+                    fontFamily: skin.numberFamily ??
+                        skin.fontFamily ??
+                        Tokens.fontFamily,
                     fontSize: 20,
                     fontWeight: FontWeight.w800,
-                    color: t.nInk,
+                    color: skin.ink ?? t.nInk,
                   ),
                     ),
                   ],
@@ -1170,25 +1182,29 @@ class _StatsStrip extends StatelessWidget {
               ),
             ),
           ),
+          ),
         );
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 36),
       child: Row(
         children: [
-          card('THIS WEEK', stats.week),
+          card('THIS WEEK', stats.week, libTabs[1].tint),
           const SizedBox(width: 14),
-          card('ALL TIME', stats.total),
+          card('ALL TIME', stats.total, libTabs[2].tint),
           const SizedBox(width: 14),
-          card('TOP GENRE', stats.genre),
+          card('TOP GENRE', stats.genre, libTabs[4].tint),
           const SizedBox(width: 14),
-          card('DAY STREAK', stats.streak),
+          card('DAY STREAK', stats.streak, libTabs[6].tint),
           const SizedBox(width: 14),
           // Library maintenance, next to the library's own figures. Its own
           // button because it is the one thing on this row that changes files
           // rather than reporting on them.
           Tooltip(
             message: 'Find duplicate recordings',
-            child: Material(
+            child: skin.frame(
+              SurfaceRole.card,
+              radius: 14,
+              Material(
               color: skin.isStandard ? t.nCard : Colors.transparent,
               borderRadius: BorderRadius.circular(14),
               child: InkWell(
@@ -1206,7 +1222,7 @@ class _StatsStrip extends StatelessWidget {
                       size: 20, color: t.nInk3),
                 ),
               ),
-            ),
+            )),
           ),
         ],
       ),

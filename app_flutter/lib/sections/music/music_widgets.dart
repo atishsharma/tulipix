@@ -145,6 +145,11 @@ class MusicChip extends StatefulWidget {
 
 class _MusicChipState extends State<MusicChip> {
   bool _hovered = false;
+  bool _pressed = false;
+
+  void _press(bool down) {
+    if (_pressed != down) setState(() => _pressed = down);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -154,16 +159,22 @@ class _MusicChipState extends State<MusicChip> {
     final active = widget.active;
     final shown = !widget.collapsible || active || _hovered;
     final skin = context.skin;
-    // A skin draws the chip in its own material — pressed in when active — and
-    // inks it in its accent, in place of the tint wash and the gradient.
-    final skinned =
-        skin.control(active: active, hovered: _hovered, radius: 18);
+    // A skin draws the chip in its own material — pressed in, or in its own
+    // clay, when active — and inks it itself, in place of the tint wash and
+    // the gradient.
+    final skinned = skin.control(
+      active: active,
+      hovered: _hovered,
+      pressed: _pressed,
+      radius: 18,
+      tint: widget.tint,
+    );
 
     // `tint.mix(#000000, 0.72)` / `tint.mix(#ffffff, 0.5)` — Slint's mix is
     // factor * self + (1 - factor) * other, so these are lerps *from* the
     // second colour. A raw tint on a pale canvas is unreadable at 13px.
     final ink = skinned != null
-        ? (active ? skin.accent! : skin.inkDim!)
+        ? (active ? (skin.activeInk ?? skin.accent!) : skin.inkDim!)
         : active
             ? Colors.white
             : (t.dark
@@ -174,8 +185,17 @@ class _MusicChipState extends State<MusicChip> {
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: GestureDetector(
+        onTapDown: (_) => _press(true),
+        onTapUp: (_) => _press(false),
+        onTapCancel: () => _press(false),
         onTap: widget.onTap,
-        child: AnimatedContainer(
+        child: AnimatedScale(
+          scale: _pressed ? skin.pressScale : 1,
+          duration: t.reduceMotion
+              ? Duration.zero
+              : const Duration(milliseconds: 180),
+          curve: Curves.easeOutBack,
+          child: AnimatedContainer(
           duration: t.reduceMotion
               ? Duration.zero
               : const Duration(milliseconds: 140),
@@ -218,7 +238,13 @@ class _MusicChipState extends State<MusicChip> {
             mainAxisSize: widget.expand ? MainAxisSize.max : MainAxisSize.min,
             children: [
               if (widget.icon != null)
-                Icon(skin.icon(widget.icon!), size: 15, color: ink),
+                Icon(
+                  skin.icon(widget.icon!),
+                  size: 15,
+                  color: ink,
+                  // An open tab fills its glyph, for the fonts that can.
+                  fill: skinned != null && active ? 1 : null,
+                ),
               if (shown && widget.label.isNotEmpty) ...[
                 if (widget.icon != null) const SizedBox(width: 7),
                 // Flexible, because the label appears the frame `shown` flips
@@ -260,6 +286,7 @@ class _MusicChipState extends State<MusicChip> {
               ],
             ],
           ),
+        ),
         ),
       ),
     );

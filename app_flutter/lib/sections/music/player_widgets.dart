@@ -57,6 +57,9 @@ class PlayerBtn extends StatelessWidget {
           skin.icon(icon),
           size: iconSize,
           color: active ? skin.accent : (onTap == null ? t.nInk2 : skin.inkDim),
+          // On fills the glyph, for the fonts with a fill axis. Off leaves it
+          // to the section's IconTheme, so a skin that fills everything can.
+          fill: active ? 1 : null,
         ),
       );
       return tip == null ? b : Tooltip(message: tip!, child: b);
@@ -125,11 +128,13 @@ class _BigPlayButtonState extends State<BigPlayButton> {
         height: widget.size,
         radius: widget.size / 2,
         prominent: true,
+        // Told, for the languages whose play button changes shape with it.
+        active: widget.playing,
         onTap: widget.onTap,
         child: Icon(
           skin.icon(widget.playing ? Icons.pause : Icons.play_arrow),
           size: widget.size * 0.42,
-          color: skin.accent,
+          color: skin.onProminent ?? skin.accent,
         ),
       );
     }
@@ -282,7 +287,7 @@ class _SeekPillState extends State<SeekPill>
     final label = TextStyle(
       fontSize: 11 * s,
       fontWeight: FontWeight.w600,
-      color: skin.inkDim ?? t.nInk2,
+      color: skin.wellInkDim ?? skin.inkDim ?? t.nInk2,
       fontFeatures: const [FontFeature.tabularFigures()],
     );
 
@@ -694,7 +699,7 @@ class VolPill extends StatelessWidget {
               textAlign: TextAlign.right,
               style: TextStyle(
                 fontSize: 10 * s,
-                color: t.nInk2,
+                color: skin.wellInkDim ?? skin.inkDim ?? t.nInk2,
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),

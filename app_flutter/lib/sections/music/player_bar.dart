@@ -53,9 +53,9 @@ class PlayerBar extends StatelessWidget {
 
     // A skin's bar is a slab standing on its own material, not a strip bolted
     // to the window's foot — so it floats clear of the edges.
-    final slab = context.skin.surface(SurfaceRole.bar, radius: 30);
-    return Container(
-      margin: slab == null ? null : const EdgeInsets.fromLTRB(22, 4, 22, 22),
+    final skin = context.skin;
+    final slab = skin.surface(SurfaceRole.bar, radius: 30);
+    final bar = Container(
       decoration: slab ?? BoxDecoration(
         color: t.panel,
         border: Border(top: BorderSide(color: t.nHair)),
@@ -71,7 +71,7 @@ class PlayerBar extends StatelessWidget {
           if (controller.panel == 'eq')
             SizedBox(height: 260, child: _Panel(controller: controller)),
           SizedBox(
-            height: 124,
+            height: skin.barHeight ?? 124,
             // Animated, not decorated: the palette should arrive with the next
             // record rather than snap to it, and a DecoratedBox cannot tween.
             child: AnimatedContainer(
@@ -104,6 +104,12 @@ class PlayerBar extends StatelessWidget {
           ),
         ],
       ),
+    );
+    if (slab == null) return bar;
+    // Framed inside the margin, so a blur behind the slab stops at its edge.
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 4, 22, 22),
+      child: skin.frame(SurfaceRole.bar, bar, radius: 30),
     );
   }
 }
@@ -169,6 +175,9 @@ class _SeekRow extends StatelessWidget {
     final t = context.tokens;
     final st = controller.state!;
     final now = st.now;
+    final skin = context.skin;
+    // The live pill is a well, which in some skins is a black screen.
+    final label = skin.wellInkDim ?? skin.inkDim ?? t.nInk2;
     return SizedBox(
       height: 26,
       child: Row(
@@ -194,7 +203,7 @@ class _SeekRow extends StatelessWidget {
                             style: TextStyle(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w800,
-                                color: t.nInk2)),
+                                color: label)),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
@@ -203,13 +212,19 @@ class _SeekRow extends StatelessWidget {
                                 : now.streamTitle,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontSize: 11, color: t.nInk2),
+                            style: TextStyle(fontSize: 11, color: label),
                           ),
                         ),
                       ],
                     ),
                   )
-                : SeekPill(
+                : skin.seekBar(SeekSlot(
+                      pos: controller.tickPos,
+                      dur: controller.tickDur,
+                      playing: controller.tickPlaying,
+                      onSeek: (v) => controller.send(MusicCmd.seek(secs: v)),
+                    )) ??
+                    SeekPill(
                     pos: controller.tickPos,
                     dur: controller.tickDur,
                     accent: controller.accent,
@@ -236,7 +251,14 @@ class _SeekRow extends StatelessWidget {
             onTap: () => controller.setPanel('eq'),
           ),
           const SizedBox(width: 6),
-          VolPill(
+          skin.volume(VolumeSlot(
+                volume: now.volume,
+                muted: now.muted,
+                onVolume: (v) =>
+                    controller.send(MusicCmd.setVolume(volume: v)),
+                onMute: () => controller.send(const MusicCmd.toggleMute()),
+              )) ??
+              VolPill(
             volume: now.volume,
             muted: now.muted,
             accent: controller.accent,
@@ -371,7 +393,15 @@ class _ControlsState extends State<_Controls> {
           ),
         ),
         const SizedBox(width: 12),
-        Transport(
+        context.skin.transport(TransportSlot(
+              controller: c,
+              mode: now.mode,
+              live: widget.live,
+              compact: !wide,
+              loved: widget.library ? now.loved : null,
+              onFav: () => c.send(MusicCmd.love(itemId: now.itemId)),
+            )) ??
+            Transport(
           controller: c,
           mode: now.mode,
           live: widget.live,

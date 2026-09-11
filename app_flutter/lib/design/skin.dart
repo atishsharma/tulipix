@@ -12,8 +12,13 @@
 
 import 'package:flutter/material.dart';
 
+import '../sections/music/music_controller.dart' show MusicController;
 import 'design_language.dart';
+import 'languages/claymorphism.dart';
+import 'languages/expressive.dart';
+import 'languages/glassmorphism.dart';
 import 'languages/neumorphism.dart';
+import 'languages/skeuomorphism.dart';
 import 'tokens.dart';
 
 /// What kind of surface is being drawn.
@@ -52,15 +57,58 @@ abstract class MusicSkin extends ThemeExtension<MusicSkin> {
 
   /// Something you press. [active] is a selected tab or a switched-on toggle;
   /// [pressed] is the pointer being down on it right now; [prominent] is the
-  /// one control a screen is built around — the play button.
+  /// one control a screen is built around — the play button. [tint] is the
+  /// control's own colour, where it has one — a library tab's.
   Decoration? control({
     required bool active,
     bool hovered = false,
     bool pressed = false,
     bool prominent = false,
     double radius = 18,
+    Color? tint,
   }) =>
       null;
+
+  /// Ink on an active control. Null: the accent.
+  Color? get activeInk => null;
+
+  /// How far a control shrinks while pressed. 1: it does not.
+  double get pressScale => 1;
+
+  /// The glyph on the prominent control. Null: the accent, for a language
+  /// whose play button is not itself filled with the accent.
+  Color? get onProminent => null;
+
+  /// Text inside a [SurfaceRole.well], where a well is another material from
+  /// the page — the black glass of a machined screen. Null: [ink], [inkDim].
+  Color? get wellInk => null;
+  Color? get wellInkDim => null;
+
+  /// A face for figures at 16px and up — totals, counts. Null: [fontFamily].
+  String? get numberFamily => null;
+
+  /// The fill axis for every icon in the section, for the glyph fonts that
+  /// have one. Null: each icon's own.
+  double? get iconFill => null;
+
+  /// The player bar's height. Null: the bar's own 124.
+  double? get barHeight => null;
+
+  /// Painted behind the whole section, over the canvas colour — an aura, a
+  /// brushed plate. [accent] and [alt] are the playing cover's colours.
+  Widget? pageBackdrop({required Color accent, Color? alt}) => null;
+
+  /// Wraps a surface's widget — a backdrop blur, say. Identity by default.
+  Widget frame(SurfaceRole role, Widget child, {double radius = 16}) => child;
+
+  /// The bar's whole transport row. Null: `Transport` as it is.
+  Widget? transport(TransportSlot s) => null;
+
+  /// The bar's volume control. Null: the volume pill.
+  Widget? volume(VolumeSlot s) => null;
+
+  /// The bar's seek control. Null: the seek pill.
+  Widget? seekBar(SeekSlot slot) => null;
 
   /// This language's glyph for a Material icon, or the icon itself.
   IconData icon(IconData material) => material;
@@ -82,11 +130,67 @@ class StandardSkin extends MusicSkin {
   DesignLanguage get language => DesignLanguage.standard;
 }
 
-/// The skin for [language] under the theme [t] describes. A language whose
-/// skin is not built yet draws Standard.
+/// What a replacement transport is given: what `Transport` takes.
+class TransportSlot {
+  const TransportSlot({
+    required this.controller,
+    required this.mode,
+    required this.live,
+    required this.compact,
+    this.loved,
+    this.onFav,
+  });
+
+  final MusicController controller;
+  final String mode;
+  final bool live;
+  final bool compact;
+
+  /// Null where there is nothing to love.
+  final bool? loved;
+  final VoidCallback? onFav;
+}
+
+/// What a replacement volume control is given: what the volume pill takes.
+class VolumeSlot {
+  const VolumeSlot({
+    required this.volume,
+    required this.muted,
+    required this.onVolume,
+    required this.onMute,
+  });
+
+  /// 0..130 — mpv's softvol headroom.
+  final double volume;
+  final bool muted;
+  final ValueChanged<double> onVolume;
+  final VoidCallback onMute;
+}
+
+/// What a replacement seek bar is given.
+class SeekSlot {
+  const SeekSlot({
+    required this.pos,
+    required this.dur,
+    required this.playing,
+    required this.onSeek,
+  });
+
+  /// Seconds, from the once-a-second snapshot.
+  final double pos;
+  final double dur;
+  final bool playing;
+  final ValueChanged<double> onSeek;
+}
+
+/// The skin for [language] under the theme [t] describes.
 MusicSkin skinFor(DesignLanguage language, Tokens t) => switch (language) {
+      DesignLanguage.standard => const StandardSkin(),
       DesignLanguage.neumorphism => NeuSkin(t),
-      _ => const StandardSkin(),
+      DesignLanguage.claymorphism => ClaySkin(t),
+      DesignLanguage.skeuomorphism => UnibodySkin(t),
+      DesignLanguage.glassmorphism => GlassSkin(t),
+      DesignLanguage.expressive => ExpressiveSkin(t),
     };
 
 extension SkinOf on BuildContext {
@@ -164,19 +268,26 @@ class _SkinButtonState extends State<SkinButton> {
           onTapUp: enabled ? (_) => _press(false) : null,
           onTapCancel: enabled ? () => _press(false) : null,
           onTap: widget.onTap,
-          child: Container(
-            width: widget.width,
-            height: widget.height,
-            padding: widget.padding,
-            alignment: Alignment.center,
-            decoration: context.skin.control(
-              active: widget.active,
-              hovered: enabled && (_hovered || _focused),
-              pressed: _pressed,
-              prominent: widget.prominent,
-              radius: widget.radius,
+          child: AnimatedScale(
+            scale: _pressed ? context.skin.pressScale : 1,
+            duration: context.tokens.reduceMotion
+                ? Duration.zero
+                : const Duration(milliseconds: 180),
+            curve: Curves.easeOutBack,
+            child: Container(
+              width: widget.width,
+              height: widget.height,
+              padding: widget.padding,
+              alignment: Alignment.center,
+              decoration: context.skin.control(
+                active: widget.active,
+                hovered: enabled && (_hovered || _focused),
+                pressed: _pressed,
+                prominent: widget.prominent,
+                radius: widget.radius,
+              ),
+              child: widget.child,
             ),
-            child: widget.child,
           ),
         ),
       ),

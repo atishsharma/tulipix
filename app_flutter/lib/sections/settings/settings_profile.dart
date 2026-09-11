@@ -603,9 +603,7 @@ class _Identity extends StatelessWidget {
 }
 
 /// One design language: a two-tone swatch of its material, the style's name,
-/// and underneath either this app's name for it or "coming soon". A language
-/// whose skin is not built can still be picked and saved — the choice is kept
-/// — and Music draws Standard until the skin lands.
+/// and underneath this app's name for it.
 class _LanguageTile extends StatelessWidget {
   const _LanguageTile({
     required this.language,
@@ -683,9 +681,7 @@ class _LanguageTile extends StatelessWidget {
                         ),
                       ),
                       Text(
-                        language.built
-                            ? language.name
-                            : '${language.name}, coming soon',
+                        language.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(fontSize: 10.5, color: t.textDim),

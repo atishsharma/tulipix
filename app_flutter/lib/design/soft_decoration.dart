@@ -114,8 +114,19 @@ class _SoftPainter extends BoxPainter {
     final rect = offset & size;
     final shape = d._shape(rect);
 
-    for (final s in d.outer) {
-      canvas.drawRRect(shape.shift(s.offset), _shadow(s));
+    if (d.outer.isNotEmpty) {
+      // Outside the shape only, as CSS draws a box-shadow. Under an opaque
+      // fill nobody could tell; under 7% glass the cast would be a grey smear
+      // across the pane's own face.
+      canvas.save();
+      canvas.clipPath(Path()
+        ..fillType = PathFillType.evenOdd
+        ..addRect(rect.inflate(200))
+        ..addRRect(shape));
+      for (final s in d.outer) {
+        canvas.drawRRect(shape.shift(s.offset), _shadow(s));
+      }
+      canvas.restore();
     }
 
     final fill = Paint()..color = d.color;

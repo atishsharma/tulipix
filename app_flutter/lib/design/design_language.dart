@@ -63,8 +63,4 @@ enum DesignLanguage {
   /// app already had.
   static DesignLanguage fromId(String? id) =>
       values.firstWhere((l) => l.id == id, orElse: () => standard);
-
-  /// Whether a skin exists yet. The rest can be picked and saved — the choice
-  /// is kept — but draw Standard until their plan lands.
-  bool get built => this == standard || this == neumorphism;
 }

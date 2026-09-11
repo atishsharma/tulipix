@@ -158,10 +158,14 @@ class NeuSkin extends MusicSkin {
     bool pressed = false,
     bool prominent = false,
     double radius = 18,
+    // One sheet, one colour: a tab's own tint does not change what it is
+    // pressed out of.
+    Color? tint,
   }) {
-    if (active || pressed) return sunk(radius, depth: prominent ? 4 : 2);
     if (prominent) {
-      // The play button is a convex disc: raised, and lit across its face.
+      // The play button is a convex disc: raised, and lit across its face. It
+      // does not latch — playing is not "on" for it — so only a press sinks it.
+      if (pressed) return sunk(radius, depth: 4);
       return raised(
         radius,
         depth: hovered ? 8 : 7,
@@ -172,6 +176,7 @@ class NeuSkin extends MusicSkin {
         ),
       );
     }
+    if (active || pressed) return sunk(radius, depth: 2);
     return raised(radius, depth: hovered ? 4 : 3);
   }
 

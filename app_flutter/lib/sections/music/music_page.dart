@@ -86,8 +86,12 @@ class _MusicPageState extends State<MusicPage> {
     final t = context.tokens;
     // A skin's face reaches every Music text that does not name one. Null
     // under Standard, which merges to nothing — the ambient Sora stands.
+    final skin = context.skin;
     return DefaultTextStyle.merge(
-      style: TextStyle(fontFamily: context.skin.fontFamily),
+      style: TextStyle(fontFamily: skin.fontFamily),
+      // And its fill axis to every icon, for the glyph fonts that have one.
+      child: IconTheme.merge(
+      data: IconThemeData(fill: skin.iconFill),
       child: AnimatedBuilder(
       animation: _c,
       builder: (context, _) {
@@ -153,8 +157,12 @@ class _MusicPageState extends State<MusicPage> {
               },
           },
           child: ColoredBox(
-            color: context.skin.canvas ?? t.nCanvas,
-            child: Column(
+            color: skin.canvas ?? t.nCanvas,
+            // One blur pass for every frosted pane on the page, not one each.
+            child: BackdropGroup(
+            child: _withBackdrop(
+            skin.pageBackdrop(accent: _c.accent, alt: _c.accentAlt),
+            Column(
               children: [
                 _Header(controller: _c, search: _search),
                 if (_c.progress != null) _ProgressBar(controller: _c),
@@ -210,13 +218,25 @@ class _MusicPageState extends State<MusicPage> {
                 PlayerBar(controller: _c),
               ],
             ),
+            ),
+            ),
           ),
         );
       },
       ),
+      ),
     );
   }
 }
+
+/// [backdrop] behind [child], or [child] alone — so a skin without one lays
+/// out exactly as the page always did.
+Widget _withBackdrop(Widget? backdrop, Widget child) => backdrop == null
+    ? child
+    : Stack(
+        fit: StackFit.expand,
+        children: [Positioned.fill(child: backdrop), child],
+      );
 
 class _Header extends StatelessWidget {
   const _Header({required this.controller, required this.search});
@@ -254,7 +274,9 @@ class _Header extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.only(bottom: 2),
         child: ColoredBox(
-          color: skin.canvas ?? t.nCanvas,
+          // Clear under a skin: the page already paints its canvas below, and
+          // a backdrop — an aura, a metal plate — has to show through.
+          color: skin.isStandard ? t.nCanvas : Colors.transparent,
           // The album-art wash, which is the thing the header was missing: the
           // player bar at the foot of the page is painted in the cover's
           // colour and the header at the top of it was not, so the section
@@ -490,7 +512,10 @@ class _SearchPill extends StatelessWidget {
     // Search holds a value, so a skin sinks it into the page: its own well in
     // place of the gradient ring and the white field.
     final well = skin.surface(SurfaceRole.well, radius: 22);
-    return Container(
+    return skin.frame(
+      SurfaceRole.well,
+      radius: 22,
+      Container(
       width: 340,
       height: 44,
       decoration: well ?? BoxDecoration(
@@ -514,7 +539,10 @@ class _SearchPill extends StatelessWidget {
         child: Row(
           children: [
             Icon(skin.icon(Icons.search),
-                size: 15, color: skin.inkDim ?? const Color(0xFF6B6B74)),
+                size: 15,
+                color: skin.wellInkDim ??
+                    skin.inkDim ??
+                    const Color(0xFF6B6B74)),
             const SizedBox(width: 8),
             Expanded(
               child: TextField(
@@ -522,7 +550,8 @@ class _SearchPill extends StatelessWidget {
                 style: TextStyle(
                   fontFamily: skin.fontFamily ?? Tokens.fontFamily,
                   fontSize: 14,
-                  color: skin.ink ?? const Color(0xFF16161B),
+                  color:
+                      skin.wellInk ?? skin.ink ?? const Color(0xFF16161B),
                 ),
                 cursorColor: skin.accent ?? const Color(0xFFEC4899),
                 // Radio is not in the library, so the library filter cannot
@@ -547,7 +576,9 @@ class _SearchPill extends StatelessWidget {
                   hintStyle: TextStyle(
                     fontFamily: skin.fontFamily ?? Tokens.fontFamily,
                     fontSize: 14,
-                    color: skin.inkDim ?? const Color(0xFF8A8A92),
+                    color: skin.wellInkDim ??
+                        skin.inkDim ??
+                        const Color(0xFF8A8A92),
                   ),
                 ),
               ),
@@ -568,6 +599,7 @@ class _SearchPill extends StatelessWidget {
             const _Round(icon: Icons.mic_none, onTap: null),
           ],
         ),
+      ),
       ),
     );
   }

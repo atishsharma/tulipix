@@ -1,0 +1,74 @@
+// Material Symbols Rounded, for every Material icon the skinned Music widgets
+// draw. Unibody and Expressive both speak Symbols and differ only in how they
+// fill them — Unibody all the time, Expressive when a control is on — so they
+// share one map.
+
+import 'package:flutter/material.dart';
+import 'package:material_symbols_icons/symbols.dart';
+
+final Map<IconData, IconData> roundedSymbols = {
+  // Transport.
+  Icons.play_arrow: Symbols.play_arrow_rounded,
+  Icons.play_arrow_rounded: Symbols.play_arrow_rounded,
+  Icons.pause: Symbols.pause_rounded,
+  Icons.skip_previous: Symbols.skip_previous_rounded,
+  Icons.skip_next: Symbols.skip_next_rounded,
+  Icons.replay_30: Symbols.replay_30_rounded,
+  Icons.forward_30: Symbols.forward_30_rounded,
+  Icons.stop: Symbols.stop_rounded,
+  Icons.shuffle: Symbols.shuffle_rounded,
+  Icons.repeat: Symbols.repeat_rounded,
+  Icons.repeat_one: Symbols.repeat_one_rounded,
+  Icons.favorite: Symbols.favorite_rounded,
+  Icons.favorite_border: Symbols.favorite_rounded,
+  Icons.star: Symbols.star_rounded,
+  Icons.star_border: Symbols.star_rounded,
+  Icons.equalizer: Symbols.equalizer_rounded,
+  // The bar's extras.
+  Icons.tune: Symbols.tune_rounded,
+  Icons.queue_music: Symbols.queue_music_rounded,
+  Icons.lyrics_outlined: Symbols.lyrics_rounded,
+  Icons.playlist_add: Symbols.playlist_add_rounded,
+  Icons.bedtime_outlined: Symbols.bedtime_rounded,
+  Icons.cast: Symbols.cast_rounded,
+  Icons.speaker: Symbols.speaker_rounded,
+  Icons.picture_in_picture_alt: Symbols.picture_in_picture_alt_rounded,
+  Icons.settings_outlined: Symbols.settings_rounded,
+  Icons.open_in_full: Symbols.open_in_full_rounded,
+  Icons.volume_up: Symbols.volume_up_rounded,
+  Icons.volume_down: Symbols.volume_down_rounded,
+  Icons.volume_mute: Symbols.volume_mute_rounded,
+  Icons.volume_off: Symbols.volume_off_rounded,
+  // The five categories and the ten library tabs.
+  Icons.library_music_outlined: Symbols.album_rounded,
+  Icons.mic_none_outlined: Symbols.podcasts_rounded,
+  Icons.menu_book_outlined: Symbols.headphones_rounded,
+  Icons.radio_outlined: Symbols.radio_rounded,
+  Icons.home_outlined: Symbols.home_rounded,
+  Icons.music_note_outlined: Symbols.music_note_rounded,
+  Icons.grid_view_outlined: Symbols.grid_view_rounded,
+  Icons.person_outline: Symbols.person_rounded,
+  Icons.queue_music_outlined: Symbols.playlist_play_rounded,
+  Icons.folder_outlined: Symbols.folder_rounded,
+  Icons.rotate_left: Symbols.history_rounded,
+  Icons.download_outlined: Symbols.download_rounded,
+  // Header, pagers, sorting, row actions.
+  Icons.music_note: Symbols.music_note_rounded,
+  Icons.search: Symbols.search_rounded,
+  Icons.close: Symbols.close_rounded,
+  Icons.mic_none: Symbols.mic_rounded,
+  Icons.chevron_left: Symbols.chevron_left_rounded,
+  Icons.chevron_right: Symbols.chevron_right_rounded,
+  Icons.expand_more: Symbols.expand_more_rounded,
+  Icons.expand_less: Symbols.expand_less_rounded,
+  Icons.keyboard_arrow_up: Symbols.keyboard_arrow_up_rounded,
+  Icons.keyboard_arrow_down: Symbols.keyboard_arrow_down_rounded,
+  Icons.sort: Symbols.sort_rounded,
+  Icons.arrow_upward: Symbols.arrow_upward_rounded,
+  Icons.arrow_downward: Symbols.arrow_downward_rounded,
+  Icons.refresh: Symbols.refresh_rounded,
+  Icons.label_outline: Symbols.label_rounded,
+  Icons.delete_outline: Symbols.delete_rounded,
+  Icons.move_to_inbox_outlined: Symbols.move_to_inbox_rounded,
+  Icons.content_copy_outlined: Symbols.content_copy_rounded,
+};
