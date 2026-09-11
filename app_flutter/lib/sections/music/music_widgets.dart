@@ -10,6 +10,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
@@ -152,15 +153,22 @@ class _MusicChipState extends State<MusicChip> {
     final b = widget.tint2 ?? Tokens.brand;
     final active = widget.active;
     final shown = !widget.collapsible || active || _hovered;
+    final skin = context.skin;
+    // A skin draws the chip in its own material — pressed in when active — and
+    // inks it in its accent, in place of the tint wash and the gradient.
+    final skinned =
+        skin.control(active: active, hovered: _hovered, radius: 18);
 
     // `tint.mix(#000000, 0.72)` / `tint.mix(#ffffff, 0.5)` — Slint's mix is
     // factor * self + (1 - factor) * other, so these are lerps *from* the
     // second colour. A raw tint on a pale canvas is unreadable at 13px.
-    final ink = active
-        ? Colors.white
-        : (t.dark
-            ? Color.lerp(Colors.white, a, 0.5)!
-            : Color.lerp(Colors.black, a, 0.72)!);
+    final ink = skinned != null
+        ? (active ? skin.accent! : skin.inkDim!)
+        : active
+            ? Colors.white
+            : (t.dark
+                ? Color.lerp(Colors.white, a, 0.5)!
+                : Color.lerp(Colors.black, a, 0.72)!);
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
@@ -179,7 +187,8 @@ class _MusicChipState extends State<MusicChip> {
               ? BoxConstraints(minWidth: widget.minWidth)
               : const BoxConstraints(),
           padding: const EdgeInsets.symmetric(horizontal: 4),
-          decoration: BoxDecoration(
+          decoration: skinned ??
+              BoxDecoration(
             borderRadius: BorderRadius.circular(18),
             gradient: active
                 ? LinearGradient(
@@ -208,7 +217,8 @@ class _MusicChipState extends State<MusicChip> {
             mainAxisAlignment: MainAxisAlignment.center,
             mainAxisSize: widget.expand ? MainAxisSize.max : MainAxisSize.min,
             children: [
-              if (widget.icon != null) Icon(widget.icon, size: 15, color: ink),
+              if (widget.icon != null)
+                Icon(skin.icon(widget.icon!), size: 15, color: ink),
               if (shown && widget.label.isNotEmpty) ...[
                 if (widget.icon != null) const SizedBox(width: 7),
                 // Flexible, because the label appears the frame `shown` flips
@@ -223,7 +233,7 @@ class _MusicChipState extends State<MusicChip> {
                     overflow: TextOverflow.clip,
                     softWrap: false,
                     style: TextStyle(
-                      fontFamily: Tokens.fontFamily,
+                      fontFamily: skin.fontFamily ?? Tokens.fontFamily,
                       fontSize: 13,
                       fontWeight: FontWeight.w700,
                       color: ink,
@@ -384,10 +394,15 @@ class _MusicCardState extends State<MusicCard> {
                   builder: (context, box) {
                     final side = box.maxWidth;
                     final radius = w.round ? side / 2 : 10.0;
-                    return DecoratedBox(
+                    // A skin sets the art in a mat of its own material, in
+                    // place of the hover ring and glow.
+                    final mat = context.skin
+                        .surface(SurfaceRole.art, radius: radius + 5);
+                    return Container(
+                      padding: EdgeInsets.all(mat == null ? 0 : 5),
                       // Hover elevation: a 2px accent ring and a coloured glow,
                       // drawn outside the clip so neither eats into the art.
-                      decoration: BoxDecoration(
+                      decoration: mat ?? BoxDecoration(
                         borderRadius: BorderRadius.circular(radius),
                         border: _hovered
                             ? Border.all(color: Tokens.secMusic, width: 2)
@@ -957,7 +972,12 @@ class _TrackRowState extends State<TrackRow> {
               left: widget.compact ? 10 : 12,
               right: widget.compact ? 16 : 12,
             ),
-            decoration: BoxDecoration(
+            // A skin presses the row you are hearing (or have picked) into its
+            // material; the rest stay flat on it.
+            decoration: (widget.selected || playing
+                    ? context.skin.control(active: true, radius: 12)
+                    : null) ??
+                BoxDecoration(
               borderRadius: BorderRadius.circular(8),
               // Selection reads over now-playing: a row can be both, and while
               // you are picking rows the selection is what you are looking at.
@@ -978,7 +998,8 @@ class _TrackRowState extends State<TrackRow> {
                   SizedBox(
                     width: 28,
                     child: playing
-                        ? const Icon(Icons.equalizer, size: 16, color: _np)
+                        ? Icon(context.skin.icon(Icons.equalizer),
+                            size: 16, color: _np)
                         : Text(
                             '${widget.index + 1}',
                             textAlign: TextAlign.center,
@@ -1008,7 +1029,8 @@ class _TrackRowState extends State<TrackRow> {
                             child: ColoredBox(
                               color: Color(playing ? 0xAA000000 : 0x88000000),
                               child: Icon(
-                                playing ? Icons.equalizer : Icons.play_arrow,
+                                context.skin.icon(
+                                    playing ? Icons.equalizer : Icons.play_arrow),
                                 size: 15,
                                 color: playing ? _np : Colors.white,
                               ),
@@ -1060,7 +1082,7 @@ class _TrackRowState extends State<TrackRow> {
                           ? 'Synced lyrics'
                           : 'Lyrics stored',
                       child: Icon(
-                        Icons.lyrics_outlined,
+                        context.skin.icon(Icons.lyrics_outlined),
                         size: 15,
                         color:
                             tr.lyrics == 'synced' ? Tokens.secMusic : t.nInk2,
@@ -1074,9 +1096,9 @@ class _TrackRowState extends State<TrackRow> {
                       visualDensity: VisualDensity.compact,
                       tooltip: _showCredits ? 'Hide credits' : 'Credits',
                       icon: Icon(
-                        _showCredits
+                        context.skin.icon(_showCredits
                             ? Icons.expand_less
-                            : Icons.expand_more,
+                            : Icons.expand_more),
                         color: _showCredits ? Tokens.secMusic : t.nInk2,
                       ),
                       onPressed: _toggleCredits,
@@ -1087,7 +1109,8 @@ class _TrackRowState extends State<TrackRow> {
                     visualDensity: VisualDensity.compact,
                     tooltip: tr.loved ? 'Remove from favourites' : 'Favourite',
                     icon: Icon(
-                      tr.loved ? Icons.favorite : Icons.favorite_border,
+                      context.skin.icon(
+                          tr.loved ? Icons.favorite : Icons.favorite_border),
                       color: tr.loved ? Tokens.secMusic : t.nInk2,
                     ),
                     onPressed: () => widget.controller
@@ -1205,7 +1228,7 @@ class _Stars extends StatelessWidget {
             // is the only way to get back to "unrated" from five.
             onTap: () => onSet(stars == i ? 0 : i),
             child: Icon(
-              i <= stars ? Icons.star : Icons.star_border,
+              context.skin.icon(i <= stars ? Icons.star : Icons.star_border),
               size: 13,
               color: i <= stars ? Tokens.warn : t.nInk2,
             ),
@@ -1242,7 +1265,17 @@ class Pager extends StatelessWidget {
       // action pills in the section's own accent was two grey discs nobody
       // found. The disabled end of the range keeps the chip grey, so the pager
       // still says which way it can go.
-      Widget btn(IconData icon, int to, bool on) => SizedBox(
+      final skin = context.skin;
+      Widget btn(IconData icon, int to, bool on) => !skin.isStandard
+          ? SkinButton(
+              width: 28,
+              height: 28,
+              radius: 14,
+              onTap: on ? () => onGo(to) : null,
+              child: Icon(skin.icon(icon),
+                  size: 15, color: on ? skin.accent : skin.inkDim),
+            )
+          : SizedBox(
             width: 28,
             height: 28,
             child: Material(
@@ -1263,7 +1296,7 @@ class Pager extends StatelessWidget {
           Text(
             '${page + 1} / $pages',
             style: TextStyle(
-              fontFamily: Tokens.fontFamily,
+              fontFamily: skin.fontFamily ?? Tokens.fontFamily,
               fontSize: 12,
               fontWeight: FontWeight.w700,
               color: t.nInk,
@@ -1597,7 +1630,9 @@ class _BrowseChipState extends State<BrowseChip> {
         child: Container(
           height: 40,
           padding: const EdgeInsets.symmetric(horizontal: 18),
-          decoration: BoxDecoration(
+          decoration: context.skin.control(
+                  active: widget.dot, hovered: _hovered, radius: 20) ??
+              BoxDecoration(
             color: _hovered ? t.nHover : t.nChip,
             borderRadius: BorderRadius.circular(20),
             border: Border.all(color: t.nHair),
@@ -1617,13 +1652,14 @@ class _BrowseChipState extends State<BrowseChip> {
                 const SizedBox(width: 8),
               ],
               if (widget.icon != null) ...[
-                Icon(widget.icon, size: 14, color: t.nInk2),
+                Icon(context.skin.icon(widget.icon!),
+                    size: 14, color: t.nInk2),
                 const SizedBox(width: 8),
               ],
               Text(
                 widget.label,
                 style: TextStyle(
-                  fontFamily: Tokens.fontFamily,
+                  fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
                   color: t.nInk2,
@@ -1690,7 +1726,8 @@ class SortMenu extends StatelessWidget {
       child: Container(
         height: 38,
         padding: const EdgeInsets.only(left: 14, right: 12),
-        decoration: BoxDecoration(
+        decoration: context.skin.control(active: false, radius: 19) ??
+            BoxDecoration(
           color: t.nChip,
           borderRadius: BorderRadius.circular(19),
           border: Border.all(color: t.nHair),
@@ -1698,20 +1735,23 @@ class SortMenu extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.sort, size: 15, color: t.nInk2),
+            Icon(context.skin.icon(Icons.sort), size: 15, color: t.nInk2),
             const SizedBox(width: 8),
             Text(
               modes[mode] ?? mode,
               style: TextStyle(
-                fontFamily: Tokens.fontFamily,
+                fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
                 color: t.nInk2,
               ),
             ),
             const SizedBox(width: 6),
-            Icon(up ? Icons.arrow_upward : Icons.arrow_downward,
-                size: 13, color: Tokens.secMusic),
+            Icon(
+                context.skin
+                    .icon(up ? Icons.arrow_upward : Icons.arrow_downward),
+                size: 13,
+                color: context.skin.accent ?? Tokens.secMusic),
           ],
         ),
       ),
@@ -1738,13 +1778,17 @@ class SortChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final fg = active ? Tokens.secMusic : t.nInk2;
+    final skin = context.skin;
+    final fg = active
+        ? (skin.accent ?? Tokens.secMusic)
+        : (skin.inkDim ?? t.nInk2);
     return GestureDetector(
       onTap: onTap,
       child: Container(
         height: 28,
         padding: const EdgeInsets.symmetric(horizontal: 12),
-        decoration: BoxDecoration(
+        decoration: skin.control(active: active, radius: 14) ??
+            BoxDecoration(
           color: active
               ? Tokens.secMusic.withValues(alpha: 0.15)
               : Colors.transparent,
@@ -1829,7 +1873,11 @@ class _DetailActionBtnState extends State<DetailActionBtn> {
         child: Container(
           height: 38,
           padding: const EdgeInsets.only(left: 15, right: 16),
-          decoration: BoxDecoration(
+          // A skin raises the pill out of its material; the tint stays on the
+          // label and glyph, so Play all is still green and Clear still red.
+          decoration: context.skin
+                  .control(active: false, hovered: _hovered, radius: 19) ??
+              BoxDecoration(
             color: tint == null
                 ? (_hovered ? t.nHover : t.nChip)
                 : tint.withValues(
@@ -1848,7 +1896,7 @@ class _DetailActionBtnState extends State<DetailActionBtn> {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (widget.icon != null) ...[
-                Icon(widget.icon,
+                Icon(context.skin.icon(widget.icon!),
                     size: 15,
                     color: tint == null
                         ? (_hovered ? Tokens.secMusic : t.nInk2)
@@ -1858,7 +1906,7 @@ class _DetailActionBtnState extends State<DetailActionBtn> {
               Text(
                 widget.label,
                 style: TextStyle(
-                  fontFamily: Tokens.fontFamily,
+                  fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
                   color: ink,

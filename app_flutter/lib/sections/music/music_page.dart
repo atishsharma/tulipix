@@ -12,6 +12,7 @@ import 'package:flutter/services.dart';
 
 import '../../design/first_load.dart';
 import '../../design/pick.dart';
+import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/music.dart';
@@ -83,7 +84,11 @@ class _MusicPageState extends State<MusicPage> {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    return AnimatedBuilder(
+    // A skin's face reaches every Music text that does not name one. Null
+    // under Standard, which merges to nothing — the ambient Sora stands.
+    return DefaultTextStyle.merge(
+      style: TextStyle(fontFamily: context.skin.fontFamily),
+      child: AnimatedBuilder(
       animation: _c,
       builder: (context, _) {
         final st = _c.state;
@@ -148,7 +153,7 @@ class _MusicPageState extends State<MusicPage> {
               },
           },
           child: ColoredBox(
-            color: t.nCanvas,
+            color: context.skin.canvas ?? t.nCanvas,
             child: Column(
               children: [
                 _Header(controller: _c, search: _search),
@@ -208,6 +213,7 @@ class _MusicPageState extends State<MusicPage> {
           ),
         );
       },
+      ),
     );
   }
 }
@@ -226,9 +232,13 @@ class _Header extends StatelessWidget {
         orElse: () => musicViews.first);
     final st = controller.state;
     final accent = controller.accent;
+    final skin = context.skin;
     return DecoratedBox(
       // The 2px gradient underline the Slint header draws beneath its tab row.
-      decoration: const BoxDecoration(
+      // A Standard trait: a skin keeps its one material edge to edge.
+      decoration: !skin.isStandard
+          ? const BoxDecoration()
+          : const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.bottomLeft,
           end: Alignment.bottomRight,
@@ -244,7 +254,7 @@ class _Header extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.only(bottom: 2),
         child: ColoredBox(
-          color: t.nCanvas,
+          color: skin.canvas ?? t.nCanvas,
           // The album-art wash, which is the thing the header was missing: the
           // player bar at the foot of the page is painted in the cover's
           // colour and the header at the top of it was not, so the section
@@ -256,7 +266,11 @@ class _Header extends StatelessWidget {
           // A BoxDecoration cannot carry both: a gradient replaces the colour
           // outright, so the canvas is the box under this one.
           child: DecoratedBox(
-            decoration: BoxDecoration(
+            // The cover wash is Standard's too; a skin lets its accent carry
+            // the state instead.
+            decoration: !skin.isStandard
+                ? const BoxDecoration()
+                : BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.centerLeft,
                 end: Alignment.centerRight,
@@ -420,8 +434,9 @@ class _Wordmark extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    const style = TextStyle(
-      fontFamily: Tokens.fontFamily,
+    final skin = context.skin;
+    final style = TextStyle(
+      fontFamily: skin.fontFamily ?? Tokens.fontFamily,
       fontSize: 22,
       fontWeight: FontWeight.w700,
     );
@@ -434,7 +449,7 @@ class _Wordmark extends StatelessWidget {
             // A note, not a record crate. `Icons.music` in Slint, tinted
             // `np-accent.mix(fg, 0.45)` — the cover's colour pulled most of the
             // way to the page's ink, so it reads as text and not as a badge.
-            Icons.music_note,
+            skin.icon(Icons.music_note),
             size: 22,
             color: Color.lerp(t.nInk, accent, 0.45),
           ),
@@ -471,10 +486,14 @@ class _SearchPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final radio = controller.view == 'radio';
+    final skin = context.skin;
+    // Search holds a value, so a skin sinks it into the page: its own well in
+    // place of the gradient ring and the white field.
+    final well = skin.surface(SurfaceRole.well, radius: 22);
     return Container(
       width: 340,
       height: 44,
-      decoration: BoxDecoration(
+      decoration: well ?? BoxDecoration(
         borderRadius: BorderRadius.circular(22),
         gradient: const LinearGradient(
           begin: Alignment(-1, -0.58),
@@ -485,24 +504,27 @@ class _SearchPill extends StatelessWidget {
       ),
       padding: const EdgeInsets.all(1.5),
       child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(20.5),
-        ),
+        decoration: well != null
+            ? null
+            : BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20.5),
+              ),
         padding: const EdgeInsets.only(left: 14, right: 8),
         child: Row(
           children: [
-            const Icon(Icons.search, size: 15, color: Color(0xFF6B6B74)),
+            Icon(skin.icon(Icons.search),
+                size: 15, color: skin.inkDim ?? const Color(0xFF6B6B74)),
             const SizedBox(width: 8),
             Expanded(
               child: TextField(
                 controller: search,
-                style: const TextStyle(
-                  fontFamily: Tokens.fontFamily,
+                style: TextStyle(
+                  fontFamily: skin.fontFamily ?? Tokens.fontFamily,
                   fontSize: 14,
-                  color: Color(0xFF16161B),
+                  color: skin.ink ?? const Color(0xFF16161B),
                 ),
-                cursorColor: const Color(0xFFEC4899),
+                cursorColor: skin.accent ?? const Color(0xFFEC4899),
                 // Radio is not in the library, so the library filter cannot
                 // reach it: its stations live in radio.db and are found by
                 // asking radio-browser. One box, two questions — which is what
@@ -522,10 +544,10 @@ class _SearchPill extends StatelessWidget {
                   border: InputBorder.none,
                   hintText:
                       radio ? 'Search stations — press ↵' : 'Search music',
-                  hintStyle: const TextStyle(
-                    fontFamily: Tokens.fontFamily,
+                  hintStyle: TextStyle(
+                    fontFamily: skin.fontFamily ?? Tokens.fontFamily,
                     fontSize: 14,
-                    color: Color(0xFF8A8A92),
+                    color: skin.inkDim ?? const Color(0xFF8A8A92),
                   ),
                 ),
               ),
@@ -561,7 +583,16 @@ class _Round extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.only(left: 4),
-        child: SizedBox(
+        child: !context.skin.isStandard
+            ? SkinButton(
+                width: 26,
+                height: 26,
+                radius: 13,
+                onTap: onTap,
+                child: Icon(context.skin.icon(icon),
+                    size: 13, color: context.skin.accent),
+              )
+            : SizedBox(
           width: 26,
           height: 26,
           child: Material(
@@ -590,7 +621,10 @@ class _CountPill extends StatelessWidget {
         height: 44,
         constraints: const BoxConstraints(minWidth: 150),
         padding: const EdgeInsets.only(left: 20, right: 22),
-        decoration: BoxDecoration(
+        // A skin raises the count out of its material and inks it in the
+        // accent, rather than a gradient pill with white type.
+        decoration: context.skin.control(active: false, radius: 22) ??
+            BoxDecoration(
           borderRadius: BorderRadius.circular(22),
           gradient: const LinearGradient(
             begin: Alignment(-1, -0.58),
@@ -607,22 +641,22 @@ class _CountPill extends StatelessWidget {
           children: [
             Text(
               '$count',
-              style: const TextStyle(
-                fontFamily: Tokens.fontFamily,
+              style: TextStyle(
+                fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                 fontSize: 23,
                 fontWeight: FontWeight.w800,
-                color: Colors.white,
+                color: context.skin.accent ?? Colors.white,
               ),
             ),
             const SizedBox(width: 9),
             Text(
               label,
-              style: const TextStyle(
-                fontFamily: Tokens.fontFamily,
+              style: TextStyle(
+                fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
                 letterSpacing: 0.5,
-                color: Color(0xDDFFFFFF),
+                color: context.skin.inkDim ?? const Color(0xDDFFFFFF),
               ),
             ),
           ],

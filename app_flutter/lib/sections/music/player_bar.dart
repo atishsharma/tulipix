@@ -22,6 +22,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../design/pick.dart';
+import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
@@ -50,8 +51,12 @@ class PlayerBar extends StatelessWidget {
     final accent = controller.accent;
     final library = now.itemId != 0 && now.mode == 'music';
 
+    // A skin's bar is a slab standing on its own material, not a strip bolted
+    // to the window's foot — so it floats clear of the edges.
+    final slab = context.skin.surface(SurfaceRole.bar, radius: 30);
     return Container(
-      decoration: BoxDecoration(
+      margin: slab == null ? null : const EdgeInsets.fromLTRB(22, 4, 22, 22),
+      decoration: slab ?? BoxDecoration(
         color: t.panel,
         border: Border(top: BorderSide(color: t.nHair)),
         boxShadow: const [
@@ -72,7 +77,10 @@ class PlayerBar extends StatelessWidget {
             child: AnimatedContainer(
               duration: Motion.wash,
               curve: Motion.ease,
-              decoration: artWash(accent, alt: controller.accentAlt),
+              // The cover wash is a Standard trait; a skin keeps its material.
+              decoration: slab != null
+                  ? const BoxDecoration()
+                  : artWash(accent, alt: controller.accentAlt),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(22, 6, 22, 9),
                 child: Column(
@@ -133,10 +141,10 @@ class _LyricLine extends StatelessWidget {
               lines[a].text,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w800,
-                color: Tokens.secMusic,
+                color: context.skin.accent ?? Tokens.secMusic,
               ),
             ),
           ),
@@ -170,7 +178,9 @@ class _SeekRow extends StatelessWidget {
                 ? Container(
                     height: 26,
                     padding: const EdgeInsets.symmetric(horizontal: 12),
-                    decoration: BoxDecoration(
+                    decoration: context.skin
+                            .surface(SurfaceRole.well, radius: 13) ??
+                        BoxDecoration(
                       color: t.nChip,
                       borderRadius: BorderRadius.circular(13),
                       border: Border.all(color: t.nHair),
@@ -299,7 +309,9 @@ class _ControlsState extends State<_Controls> {
                   child: Container(
                     width: 56,
                     height: 56,
-                    decoration: BoxDecoration(
+                    decoration: context.skin
+                            .surface(SurfaceRole.art, radius: 10) ??
+                        BoxDecoration(
                       color: t.nTile,
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(color: t.nHair),

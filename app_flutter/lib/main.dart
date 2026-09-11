@@ -14,6 +14,8 @@ import 'dart:ui' show AppExitResponse;
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'design/design_language.dart';
+import 'design/skin.dart';
 import 'design/tokens.dart';
 import 'sections/books/books_page.dart';
 import 'sections/cloud/cloud_page.dart';
@@ -64,6 +66,10 @@ class _TulipixAppState extends State<TulipixApp> {
   // "dark" | "extra-dark".
   bool _dark = true;
   bool _oled = false;
+
+  /// `ui.design-language`, from the same snapshot as the theme. Only Music
+  /// reads it so far; see lib/design/skin.dart.
+  DesignLanguage _language = DesignLanguage.standard;
 
   final ShellController _shell = ShellController.instance;
 
@@ -116,10 +122,13 @@ class _TulipixAppState extends State<TulipixApp> {
     // every Material button with it. Sixty-two of them were re-animating on the
     // shell's 30-second tick, for a theme that had not changed. Everything else
     // this file draws from the shell redraws through the AnimatedBuilder below.
-    if (dark == _dark && oled == _oled) return;
+    // The design language rides the same gate: it is part of the ThemeData too.
+    final language = _shell.designLanguage;
+    if (dark == _dark && oled == _oled && language == _language) return;
     setState(() {
       _dark = dark;
       _oled = oled;
+      _language = language;
     });
   }
 
@@ -135,7 +144,10 @@ class _TulipixAppState extends State<TulipixApp> {
     return MaterialApp(
       title: 'Tulipix',
       debugShowCheckedModeBanner: false,
-      theme: tulipixTheme(tokens),
+      // The skin rides beside the tokens, so `context.skin` answers anywhere
+      // below. tokens.dart stays a literal transcription of tokens.slint.
+      theme: tulipixTheme(tokens)
+          .copyWith(extensions: [tokens, skinFor(_language, tokens)]),
       // The floating mini, the zen player and the video all wrap the whole
       // app: what is playing does not stop playing when you leave the section
       // that started it, and these are how it stays visible. Video covers the

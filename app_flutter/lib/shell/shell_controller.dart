@@ -9,6 +9,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../design/design_language.dart';
 import '../design/tokens.dart';
 
 import '../src/rust/api/shell.dart';
@@ -134,6 +135,11 @@ class ShellController extends ChangeNotifier {
 
   /// `light` | `dark` | `extra-dark`, whatever the shell last stored.
   String get theme => state?.theme ?? 'system';
+
+  /// Which material the Music section is drawn in, as last stored. Standard
+  /// until the first snapshot lands, and for any name this build does not know.
+  DesignLanguage get designLanguage =>
+      DesignLanguage.fromId(state?.designLanguage);
 
   void toggleCollapsed() {
     collapsed = !collapsed;

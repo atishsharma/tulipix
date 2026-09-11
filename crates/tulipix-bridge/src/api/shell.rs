@@ -40,6 +40,11 @@ pub struct ShellState {
     /// so the picker's choice lasted exactly as long as the session that made
     /// it. Empty means "never chosen", and the default stands.
     pub mini_widget_style: String,
+    /// `ui.design-language`: which material the Music section is drawn in.
+    /// The Slint build writes `standard` | `clay` | `skeuo` to the same key and
+    /// the Flutter build adds `neumorphism` | `glass` | `expressive`; each build
+    /// treats a name it does not know as Standard. Empty means never chosen.
+    pub design_language: String,
 }
 
 pub enum ShellCmd {
@@ -96,6 +101,7 @@ async fn snapshot() -> Result<ShellState> {
         reduce_motion: s.reduce_motion,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         mini_widget_style: s.text("ui.mini-widget.style"),
+        design_language: s.text("ui.design-language"),
     })
 }
 

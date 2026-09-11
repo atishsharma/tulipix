@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../design/app_mark.dart';
+import '../../design/design_language.dart';
 import '../../design/tokens.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/settings.dart';
@@ -93,6 +94,12 @@ class _ProfileTabState extends State<ProfileTab> {
 
   bool _justSaved = false;
 
+  /// The design language being picked. Null until a tile is clicked; like the
+  /// name and the mark, it only reaches disk on Save.
+  DesignLanguage? _language;
+
+  DesignLanguage get _savedLanguage => ShellController.instance.designLanguage;
+
   @override
   void initState() {
     super.initState();
@@ -115,14 +122,16 @@ class _ProfileTabState extends State<ProfileTab> {
     super.dispose();
   }
 
-  /// The two things Save writes. Theme, reduce motion and the layout are NOT in
-  /// here — those go to disk the moment they are clicked, so counting them as
-  /// unsaved work would leave the button lit forever.
+  /// What Save writes: the name, the mark and the design language. Theme,
+  /// reduce motion and the layout are NOT in here — those go to disk the moment
+  /// they are clicked, so counting them as unsaved work would leave the button
+  /// lit forever.
   bool get _dirty =>
       !_justSaved &&
       (_name.text != widget.state.displayName ||
           _logo != widget.state.logoChoice ||
-          _defaultPicked);
+          _defaultPicked ||
+          (_language != null && _language != _savedLanguage));
 
   Future<void> _save() async {
     await widget.controller.send(SettingsCmd.saveProfile(
@@ -131,11 +140,22 @@ class _ProfileTabState extends State<ProfileTab> {
       emoji: widget.state.avatarEmoji,
       logo: _logo,
     ));
-    // The sidebar prints the same name and mark, so it has to hear about it.
+    final language = _language;
+    if (language != null && language != _savedLanguage) {
+      // The key and spellings the Slint build reads, through the generic text
+      // arm — no bridge command of its own.
+      await widget.controller.send(SettingsCmd.setText(
+        key: 'ui.design-language',
+        value: language.id,
+      ));
+    }
+    // The sidebar prints the same name and mark, so it has to hear about it —
+    // and the shell snapshot is where the app reads the design language from.
     await ShellController.instance.refresh();
     if (!mounted) return;
     setState(() {
       _defaultPicked = false;
+      _language = null;
       _justSaved = true;
     });
     await Future<void>.delayed(const Duration(seconds: 2));
@@ -274,6 +294,8 @@ class _ProfileTabState extends State<ProfileTab> {
             _Identity(
               state: st,
               name: _name,
+              language: _language ?? _savedLanguage,
+              onLanguage: (l) => setState(() => _language = l),
               onEmoji: _editEmoji,
               onStatus: () => widget.onTab?.call('status'),
               onCopyUrl: () async {
@@ -423,6 +445,8 @@ class _Identity extends StatelessWidget {
   const _Identity({
     required this.state,
     required this.name,
+    required this.language,
+    required this.onLanguage,
     required this.onEmoji,
     required this.onStatus,
     required this.onCopyUrl,
@@ -430,6 +454,11 @@ class _Identity extends StatelessWidget {
 
   final SettingsState state;
   final TextEditingController name;
+
+  /// The design language shown as picked — staged if one was clicked, the
+  /// stored one otherwise.
+  final DesignLanguage language;
+  final ValueChanged<DesignLanguage> onLanguage;
   final VoidCallback onEmoji;
   final VoidCallback onStatus;
   final VoidCallback onCopyUrl;
@@ -543,7 +572,131 @@ class _Identity extends StatelessWidget {
               ],
             ),
           ),
+          // Under the name: which material Music is drawn in. Staged like the
+          // name and the mark — it goes on Save changes, in the Appearance card.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const _RowLabel('Design language'),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final l in DesignLanguage.values)
+                      _LanguageTile(
+                        language: l,
+                        active: l == language,
+                        onTap: () => onLanguage(l),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ],
+      ),
+    );
+  }
+}
+
+/// One design language: a two-tone swatch of its material, the style's name,
+/// and underneath either this app's name for it or "coming soon". A language
+/// whose skin is not built can still be picked and saved — the choice is kept
+/// — and Music draws Standard until the skin lands.
+class _LanguageTile extends StatelessWidget {
+  const _LanguageTile({
+    required this.language,
+    required this.active,
+    required this.onTap,
+  });
+
+  final DesignLanguage language;
+  final bool active;
+  final VoidCallback onTap;
+
+  /// Each language's material in two stops, from its mockup.
+  static const Map<DesignLanguage, (Color, Color)> _swatch = {
+    DesignLanguage.standard: (Tokens.brand, Tokens.brand2),
+    DesignLanguage.neumorphism: (Color(0xFFE4E6EE), Color(0xFFBCC0D1)),
+    DesignLanguage.claymorphism: (Color(0xFFFFC8DF), Color(0xFFEE4F9B)),
+    DesignLanguage.skeuomorphism: (Color(0xFFDADAD6), Color(0xFF0B0B0D)),
+    DesignLanguage.glassmorphism: (Color(0xFFF472B6), Color(0xFF8B5CF6)),
+    DesignLanguage.expressive: (Color(0xFFFFD9E4), Color(0xFFA3175E)),
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final (a, b) = _swatch[language]!;
+    return Tooltip(
+      message: language.blurb,
+      waitDuration: const Duration(milliseconds: 500),
+      child: Material(
+        color:
+            active ? Tokens.brand.withValues(alpha: 0.12) : Colors.transparent,
+        borderRadius: BorderRadius.circular(Tokens.radiusSm),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(Tokens.radiusSm),
+          onTap: onTap,
+          child: Container(
+            width: 184,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(Tokens.radiusSm),
+              border: Border.all(
+                color: active ? Tokens.brand : t.outline,
+                width: active ? 1.5 : 1,
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [a, b],
+                    ),
+                    border: Border.all(color: t.outline),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        language.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: t.text,
+                        ),
+                      ),
+                      Text(
+                        language.built
+                            ? language.name
+                            : '${language.name}, coming soon',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 10.5, color: t.textDim),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

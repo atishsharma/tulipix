@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 import '../../playback/audio_deck.dart' show audioPositionS;
 import 'package:flutter/scheduler.dart' show Ticker;
 
+import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
@@ -43,6 +44,23 @@ class PlayerBtn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    final skin = context.skin;
+    if (!skin.isStandard) {
+      // The skin's round control: on is pressed in and lit in its accent.
+      final b = SkinButton(
+        width: size,
+        height: size,
+        radius: size / 2,
+        active: active,
+        onTap: onTap,
+        child: Icon(
+          skin.icon(icon),
+          size: iconSize,
+          color: active ? skin.accent : (onTap == null ? t.nInk2 : skin.inkDim),
+        ),
+      );
+      return tip == null ? b : Tooltip(message: tip!, child: b);
+    }
     // Outlined, as in Slint: `border-width: 1px` with the accent at half
     // strength when active and the hairline otherwise. A bare glyph on a
     // washed bar does not read as a thing you can press — which is what the
@@ -98,6 +116,23 @@ class _BigPlayButtonState extends State<BigPlayButton> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = context.skin;
+    if (!skin.isStandard) {
+      // The one prominent control: the skin draws it as the thing the whole
+      // bar is built around, and pressing it is the skin's press.
+      return SkinButton(
+        width: widget.size,
+        height: widget.size,
+        radius: widget.size / 2,
+        prominent: true,
+        onTap: widget.onTap,
+        child: Icon(
+          skin.icon(widget.playing ? Icons.pause : Icons.play_arrow),
+          size: widget.size * 0.42,
+          color: skin.accent,
+        ),
+      );
+    }
     final lit = _hover || _down;
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -237,20 +272,25 @@ class _SeekPillState extends State<SeekPill>
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    final skin = context.skin;
+    // A skin's accent replaces the record's colour on the bar: the material is
+    // the identity there, and the cover wash is a Standard trait.
+    final accent = skin.accent ?? widget.accent;
     final dur = widget.dur <= 0 ? 1.0 : widget.dur;
     final shown = (_dragging ?? widget.pos).clamp(0.0, dur);
     final s = widget.scale;
     final label = TextStyle(
       fontSize: 11 * s,
       fontWeight: FontWeight.w600,
-      color: t.nInk2,
+      color: skin.inkDim ?? t.nInk2,
       fontFeatures: const [FontFeature.tabularFigures()],
     );
 
     return Container(
       height: 30 * s,
       padding: EdgeInsets.symmetric(horizontal: 12 * s),
-      decoration: BoxDecoration(
+      decoration: skin.surface(SurfaceRole.well, radius: 15 * s) ??
+          BoxDecoration(
         // The pill wears the record's colour too, at a fifth: Slint's is
         // `accent.with-alpha(0.20)` over a `0.45` outline, and a neutral chip
         // under a coloured fill made the bar look bolted on.
@@ -293,14 +333,14 @@ class _SeekPillState extends State<SeekPill>
                       child: widget.wave == null || widget.wave!.isEmpty
                           ? TrackBar(
                               frac: (shown / dur).clamp(0.0, 1.0),
-                              accent: widget.accent,
+                              accent: accent,
                               scale: s,
                             )
                           : WaveBar(
                               wave: widget.wave!,
                               frac: (shown / dur).clamp(0.0, 1.0),
                               live: widget.smooth ? _frac : null,
-                              accent: widget.accent,
+                              accent: accent,
                               scale: s,
                             ),
                     ),
@@ -466,6 +506,51 @@ class TrackBar extends StatelessWidget {
     final h = thickness * scale;
     final r = BorderRadius.circular(h / 2);
     final f = frac.clamp(0.0, 1.0);
+    final skin = context.skin;
+    if (!skin.isStandard) {
+      // A groove sunk into the skin's material, the level running pale to full
+      // accent inside it, and a raised knob with an accent dot to hold.
+      final knob = (thickness + 10) * scale;
+      return Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.centerLeft,
+        children: [
+          Container(
+            height: h,
+            decoration: skin.surface(SurfaceRole.well, radius: h / 2),
+          ),
+          FractionallySizedBox(
+            widthFactor: f,
+            child: Container(
+              height: h,
+              decoration: BoxDecoration(
+                borderRadius: r,
+                gradient: LinearGradient(
+                  colors: [skin.accentSoft ?? accent, skin.accent ?? accent],
+                ),
+              ),
+            ),
+          ),
+          Align(
+            alignment: Alignment(f * 2 - 1, 0),
+            child: Container(
+              width: knob,
+              height: knob,
+              alignment: Alignment.center,
+              decoration: skin.control(active: false, radius: knob / 2),
+              child: Container(
+                width: 4 * scale,
+                height: 4 * scale,
+                decoration: BoxDecoration(
+                  color: skin.accent ?? accent,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
     return Stack(
       clipBehavior: Clip.none,
       alignment: Alignment.centerLeft,
@@ -542,13 +627,15 @@ class VolPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    final skin = context.skin;
     final s = scale;
-    final tint = muted ? t.nInk2 : accent;
+    final tint = muted ? (skin.inkDim ?? t.nInk2) : (skin.accent ?? accent);
     return Container(
       width: width,
       height: 30 * s,
       padding: EdgeInsets.only(left: 6 * s, right: 10 * s),
-      decoration: BoxDecoration(
+      decoration: skin.surface(SurfaceRole.well, radius: 15 * s) ??
+          BoxDecoration(
         color: tint.withValues(alpha: 0.20),
         borderRadius: BorderRadius.circular(15 * s),
         border: Border.all(color: tint.withValues(alpha: 0.45)),
@@ -559,13 +646,13 @@ class VolPill extends StatelessWidget {
             onTap: onMute,
             radius: 14 * s,
             child: Icon(
-              muted
+              skin.icon(muted
                   ? Icons.volume_off
                   : (volume > 66
                       ? Icons.volume_up
-                      : (volume > 0 ? Icons.volume_down : Icons.volume_mute)),
+                      : (volume > 0 ? Icons.volume_down : Icons.volume_mute))),
               size: 15 * s,
-              color: muted ? t.nInk2 : accent,
+              color: tint,
             ),
           ),
           SizedBox(width: 6 * s),
@@ -671,6 +758,9 @@ class _NowPlayingLinesState extends State<NowPlayingLines> {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    final skin = context.skin;
+    final font = skin.fontFamily ?? Tokens.fontFamily;
+    final hoverInk = skin.accent ?? Tokens.secMusic;
     final now = widget.now;
     final c = widget.controller;
     // Only library audio has an album and an artist page to land on. A station
@@ -699,10 +789,10 @@ class _NowPlayingLinesState extends State<NowPlayingLines> {
               text: text,
               speed: size >= 15 ? 34 : 26,
               style: TextStyle(
-                fontFamily: Tokens.fontFamily,
+                fontFamily: font,
                 fontSize: size,
                 fontWeight: weight,
-                color: hovered && linked ? Tokens.secMusic : colour,
+                color: hovered && linked ? hoverInk : colour,
               ),
             )
           : Text(
@@ -711,10 +801,10 @@ class _NowPlayingLinesState extends State<NowPlayingLines> {
               overflow: TextOverflow.ellipsis,
               textAlign: widget.centred ? TextAlign.center : TextAlign.start,
               style: TextStyle(
-                fontFamily: Tokens.fontFamily,
+                fontFamily: font,
                 fontSize: size,
                 fontWeight: weight,
-                color: hovered && linked ? Tokens.secMusic : colour,
+                color: hovered && linked ? hoverInk : colour,
               ),
             );
       final box = SizedBox(height: height, child: label);
@@ -736,7 +826,7 @@ class _NowPlayingLinesState extends State<NowPlayingLines> {
           text: title,
           size: widget.titleSize,
           weight: FontWeight.w700,
-          colour: t.nInk,
+          colour: skin.ink ?? t.nInk,
           hovered: _titleHover,
           onHover: (v) => setState(() => _titleHover = v),
           onTap: () => c.openNowDetail(album: true),
@@ -746,7 +836,7 @@ class _NowPlayingLinesState extends State<NowPlayingLines> {
           text: sub,
           size: widget.subSize,
           weight: FontWeight.w400,
-          colour: t.nInk2,
+          colour: skin.inkDim ?? t.nInk2,
           hovered: _subHover,
           onHover: (v) => setState(() => _subHover = v),
           onTap: () => c.openNowDetail(album: false),

@@ -12,6 +12,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../design/pick.dart';
+import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'detail_page.dart';
@@ -571,7 +572,7 @@ class _Heading extends StatelessWidget {
         Text(
           text,
           style: TextStyle(
-            fontFamily: Tokens.fontFamily,
+            fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
             fontSize: 20,
             fontWeight: FontWeight.w700,
             color: t.nInk,
@@ -687,7 +688,17 @@ class _MiniPager extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    Widget btn(IconData icon, int to, bool on) => SizedBox(
+    final skin = context.skin;
+    Widget btn(IconData icon, int to, bool on) => !skin.isStandard
+        ? SkinButton(
+            width: 30,
+            height: 28,
+            radius: 14,
+            onTap: on ? () => onGo(to) : null,
+            child: Icon(skin.icon(icon),
+                size: 13, color: on ? skin.inkDim : t.nInk3),
+          )
+        : SizedBox(
           width: 30,
           height: 28,
           child: Material(
@@ -1015,8 +1026,10 @@ class _ResumeCardTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    final skin = context.skin;
     return Material(
-        color: t.nCard,
+        // Clear under a skin: the card is the skin's raised surface below.
+        color: skin.isStandard ? t.nCard : Colors.transparent,
         borderRadius: BorderRadius.circular(14),
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
@@ -1026,7 +1039,8 @@ class _ResumeCardTile extends StatelessWidget {
               controller.send(MusicCmd.resumeAlbum(albumId: card.albumId)),
           child: Container(
             padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
+            decoration: skin.surface(SurfaceRole.card, radius: 14) ??
+                BoxDecoration(
               borderRadius: BorderRadius.circular(14),
               border: Border.all(color: t.nHair),
             ),
@@ -1078,7 +1092,8 @@ class _ResumeCardTile extends StatelessWidget {
                     ],
                   ),
                 ),
-                Icon(Icons.play_arrow_rounded, size: 22, color: t.nInk2),
+                Icon(skin.icon(Icons.play_arrow_rounded),
+                    size: 22, color: skin.accent ?? t.nInk2),
               ],
             ),
           ),
@@ -1099,6 +1114,7 @@ class _StatsStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    final skin = context.skin;
     // 84, not 76, and less padding. An 11px caption over a 20px figure is a
     // little over 53 points of line box in Sora, and 76 minus 28 of padding
     // left 48 — so all four cards overflowed by five pixels on every visit to
@@ -1109,7 +1125,7 @@ class _StatsStrip extends StatelessWidget {
     // eleven times and never finish". Tapping any card opens all of it.
     Widget card(String label, String value) => Expanded(
           child: Material(
-            color: t.nCard,
+            color: skin.isStandard ? t.nCard : Colors.transparent,
             borderRadius: BorderRadius.circular(14),
             child: InkWell(
               borderRadius: BorderRadius.circular(14),
@@ -1118,7 +1134,8 @@ class _StatsStrip extends StatelessWidget {
                 height: 84,
                 padding:
                     const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
+                decoration: skin.surface(SurfaceRole.card, radius: 14) ??
+                    BoxDecoration(
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(color: t.nHair),
                 ),
@@ -1129,7 +1146,7 @@ class _StatsStrip extends StatelessWidget {
                 Text(
                   label,
                   style: TextStyle(
-                    fontFamily: Tokens.fontFamily,
+                    fontFamily: skin.fontFamily ?? Tokens.fontFamily,
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
                     letterSpacing: 0.6,
@@ -1142,7 +1159,7 @@ class _StatsStrip extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontFamily: Tokens.fontFamily,
+                    fontFamily: skin.fontFamily ?? Tokens.fontFamily,
                     fontSize: 20,
                     fontWeight: FontWeight.w800,
                     color: t.nInk,
@@ -1172,7 +1189,7 @@ class _StatsStrip extends StatelessWidget {
           Tooltip(
             message: 'Find duplicate recordings',
             child: Material(
-              color: t.nCard,
+              color: skin.isStandard ? t.nCard : Colors.transparent,
               borderRadius: BorderRadius.circular(14),
               child: InkWell(
                 borderRadius: BorderRadius.circular(14),
@@ -1180,11 +1197,12 @@ class _StatsStrip extends StatelessWidget {
                 child: Container(
                   width: 56,
                   height: 84,
-                  decoration: BoxDecoration(
+                  decoration: skin.surface(SurfaceRole.card, radius: 14) ??
+                      BoxDecoration(
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(color: t.nHair),
                   ),
-                  child: Icon(Icons.content_copy_outlined,
+                  child: Icon(skin.icon(Icons.content_copy_outlined),
                       size: 20, color: t.nInk3),
                 ),
               ),
