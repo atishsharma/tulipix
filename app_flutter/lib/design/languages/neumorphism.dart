@@ -47,7 +47,7 @@ class _Palette {
   final Color accentSoft;
 }
 
-class NeuSkin extends MusicSkin {
+class NeuSkin extends AppSkin {
   NeuSkin(Tokens t)
       : oled = t.dark && t.oled,
         _p = !t.dark ? _light : (t.oled ? _oled : _dark);
@@ -99,6 +99,28 @@ class NeuSkin extends MusicSkin {
   Color get accentSoft => _p.accentSoft;
   @override
   String get fontFamily => 'MPLUSRounded1c';
+
+  /// One sheet: page, panels and dialogs are all the same surface, told
+  /// apart by light, not by colour. On OLED the dark cast is 4% white and
+  /// would not show as a line, so the hairline is the light rim.
+  @override
+  Tokens retint(Tokens base) => tokensFrom(
+        base,
+        page: _p.bg,
+        atmosphere: _p.bg,
+        panel: _p.bg,
+        panel2: _p.bg,
+        modal: _p.bg,
+        ink: _p.ink,
+        inkDim: _p.inkDim,
+        inkInv: _p.bg,
+        hair: oled ? _p.hi : _p.lo,
+        light: _p.hi,
+      );
+  @override
+  double get controlRadius => 14;
+  @override
+  double get panelRadius => 20;
 
   /// Standing up out of the sheet: a dark cast down-right, a light cast up-left.
   SoftDecoration raised(double radius, {double depth = 7, Gradient? gradient}) =>
@@ -247,6 +269,21 @@ class NeuSkin extends MusicSkin {
     Icons.delete_outline: TablerIcons.trash,
     Icons.move_to_inbox_outlined: TablerIcons.file_import,
     Icons.content_copy_outlined: TablerIcons.copy,
+    // The shell: sections, dock, caption buttons, chat.
+    Icons.image_outlined: TablerIcons.photo,
+    Icons.movie_outlined: TablerIcons.movie,
+    Icons.cloud_outlined: TablerIcons.cloud,
+    Icons.build_outlined: TablerIcons.tool,
+    Icons.share_outlined: TablerIcons.share,
+    Icons.account_balance_wallet_outlined: TablerIcons.wallet,
+    Icons.light_mode: TablerIcons.sun,
+    Icons.dark_mode: TablerIcons.moon,
+    Icons.star_outline: TablerIcons.star,
+    Icons.remove: TablerIcons.minus,
+    Icons.crop_square: TablerIcons.square,
+    Icons.filter_none: TablerIcons.copy,
+    Icons.fullscreen_exit: TablerIcons.arrows_minimize,
+    Icons.auto_awesome: TablerIcons.sparkles,
   };
 
   @override

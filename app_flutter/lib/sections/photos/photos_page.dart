@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 import '../../design/first_load.dart';
 import '../../design/pick.dart';
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../src/rust/api/photos.dart';
 import 'photo_tile.dart';
 import 'photo_viewer.dart';
@@ -120,7 +121,7 @@ class _Header extends StatelessWidget {
           Text(
             'Photos',
             style: TextStyle(
-              fontFamily: Tokens.fontFamily,
+              fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
               fontSize: 26,
               fontWeight: FontWeight.w600,
               color: t.nInk,
@@ -139,8 +140,8 @@ class _Header extends StatelessWidget {
                         const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     child: Text(
                       crumb.$2,
-                      style: const TextStyle(
-                        fontFamily: Tokens.fontFamily,
+                      style: TextStyle(
+                        fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                         fontSize: 20,
                         fontWeight: FontWeight.w500,
                         color: Tokens.secPhotos,
@@ -328,6 +329,36 @@ class _Chip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const r = 18.0;
+    final skin = context.skin;
+    if (!skin.isStandard) {
+      // The skin's key, latched in the category's own colour when open.
+      final on = skin.activeInk ?? category.tint;
+      return SkinButton(
+        active: active,
+        tint: category.tint,
+        radius: r,
+        height: 36,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        onTap: onTap,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(skin.icon(category.icon),
+                size: 16, color: active ? on : category.tint),
+            const SizedBox(width: 7),
+            Text(
+              category.label,
+              style: TextStyle(
+                fontFamily: skin.fontFamily,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: active ? on : tokens.nInk3,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return Material(
       color: active ? Colors.transparent : tokens.nChip,
       borderRadius: BorderRadius.circular(r),
@@ -361,7 +392,7 @@ class _Chip extends StatelessWidget {
                 Text(
                   category.label,
                   style: TextStyle(
-                    fontFamily: Tokens.fontFamily,
+                    fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
                     color: active ? Colors.white : tokens.nInk3,
@@ -435,7 +466,7 @@ class _TileGrid extends StatelessWidget {
                 child: Text(
                   label,
                   style: TextStyle(
-                    fontFamily: Tokens.fontFamily,
+                    fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
                     color: t.nInk,
@@ -579,10 +610,13 @@ class _AlbumsGrid extends StatelessWidget {
               Expanded(
                 child: Container(
                   width: double.infinity,
-                  decoration: BoxDecoration(
-                    color: t.nTile,
-                    borderRadius: BorderRadius.circular(Tokens.radiusMd),
-                  ),
+                  // An album's cover sits in the skin's mat.
+                  decoration: context.skin.surface(SurfaceRole.art,
+                          radius: Tokens.radiusMd) ??
+                      BoxDecoration(
+                        color: t.nTile,
+                        borderRadius: BorderRadius.circular(Tokens.radiusMd),
+                      ),
                   child: _CoverThumb(
                     path: a.cover,
                     fallback: Icon(
@@ -948,7 +982,7 @@ class _Empty extends StatelessWidget {
               title,
               textAlign: TextAlign.center,
               style: TextStyle(
-                fontFamily: Tokens.fontFamily,
+                fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                 fontSize: 17,
                 fontWeight: FontWeight.w600,
                 color: t.nInk,
@@ -1124,7 +1158,7 @@ class _PeopleGrid extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontFamily: Tokens.fontFamily,
+                    fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
                     color: named ? t.nInk : Tokens.secPhotos,
@@ -1134,7 +1168,7 @@ class _PeopleGrid extends StatelessWidget {
               Text(
                 '${p.count} ${p.count == 1 ? 'face' : 'faces'}',
                 style: TextStyle(
-                    fontFamily: Tokens.fontFamily,
+                    fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                     fontSize: 11,
                     color: t.nInk2),
               ),
@@ -1244,8 +1278,8 @@ class _ThingsGrid extends StatelessWidget {
                         tag.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontFamily: Tokens.fontFamily,
+                        style: TextStyle(
+                          fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
                           color: Colors.white,
@@ -1253,8 +1287,8 @@ class _ThingsGrid extends StatelessWidget {
                       ),
                       Text(
                         '${tag.count}',
-                        style: const TextStyle(
-                          fontFamily: Tokens.fontFamily,
+                        style: TextStyle(
+                          fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                           fontSize: 11,
                           color: Colors.white70,
                         ),
@@ -1316,7 +1350,7 @@ class _DedupeList extends StatelessWidget {
                       child: Text(
                         identical ? 'SHA-256' : 'pHash',
                         style: TextStyle(
-                          fontFamily: Tokens.fontFamily,
+                          fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                           fontSize: 10.5,
                           fontWeight: FontWeight.w700,
                           color: identical

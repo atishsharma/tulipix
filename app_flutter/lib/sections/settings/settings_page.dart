@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import '../../design/pick.dart';
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../src/rust/api/settings.dart';
 import '../status/status_page.dart';
 import 'settings_controller.dart';
@@ -171,18 +172,24 @@ class _RailItem extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Material(
-        color: active
+        // Under a skin the open item is the skin's latched key, drawn below.
+        color: active && context.skin.isStandard
             ? Tokens.secSettings.withValues(alpha: 0.16)
             : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
           onTap: onTap,
-          child: Padding(
+          child: Container(
+            decoration: active
+                ? context.skin.control(
+                    active: true, tint: Tokens.secSettings, radius: 10)
+                : null,
             padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 10),
             child: Row(
               children: [
-                Icon(icon, size: 17, color: active ? t.text : t.textDim),
+                Icon(context.skin.icon(icon),
+                    size: 17, color: active ? t.text : t.textDim),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(label,

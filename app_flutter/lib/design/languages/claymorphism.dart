@@ -70,6 +70,18 @@ abstract final class _Ph {
   static const trash = IconData(0xe4a6, fontFamily: _f);
   static const tray = IconData(0xe4aa, fontFamily: _f);
   static const copy = IconData(0xe1ca, fontFamily: _f);
+  // The shell.
+  static const image = IconData(0xe2ca, fontFamily: _f);
+  static const filmStrip = IconData(0xe792, fontFamily: _f);
+  static const cloud = IconData(0xe1aa, fontFamily: _f);
+  static const wrench = IconData(0xe5d4, fontFamily: _f);
+  static const shareNetwork = IconData(0xe408, fontFamily: _f);
+  static const wallet = IconData(0xe68a, fontFamily: _f);
+  static const sun = IconData(0xe472, fontFamily: _f);
+  static const minus = IconData(0xe32a, fontFamily: _f);
+  static const square = IconData(0xe45e, fontFamily: _f);
+  static const cornersIn = IconData(0xe1ce, fontFamily: _f);
+  static const sparkle = IconData(0xe6a2, fontFamily: _f);
 }
 
 class _Clay {
@@ -103,7 +115,7 @@ class _Clay {
   final Color inLo;
 }
 
-class ClaySkin extends MusicSkin {
+class ClaySkin extends AppSkin {
   ClaySkin(Tokens t)
       : dark = t.dark,
         oled = t.dark && t.oled,
@@ -170,6 +182,27 @@ class ClaySkin extends MusicSkin {
   /// White on the pink gumdrop.
   @override
   Color get onProminent => Colors.white;
+
+  /// The table is the page, the clay is every panel. On the dark tiers the
+  /// inner shade is black on near-black, so the hairline is the glaze.
+  @override
+  Tokens retint(Tokens base) => tokensFrom(
+        base,
+        page: _c.bg,
+        atmosphere: _c.bg,
+        panel: _c.card,
+        panel2: _c.card,
+        modal: _c.card,
+        ink: _c.ink,
+        inkDim: _c.inkDim,
+        inkInv: _c.card,
+        hair: dark ? _c.inHi : _c.inLo,
+        light: _c.inHi,
+      );
+  @override
+  double get controlRadius => 22;
+  @override
+  double get panelRadius => 30;
 
   /// A tab's tint as clay: pastel by day, a deep glaze by night.
   Color clayOf(Color tint) => !dark
@@ -304,6 +337,21 @@ class ClaySkin extends MusicSkin {
     Icons.delete_outline: _Ph.trash,
     Icons.move_to_inbox_outlined: _Ph.tray,
     Icons.content_copy_outlined: _Ph.copy,
+    // The shell: sections, dock, caption buttons, chat.
+    Icons.image_outlined: _Ph.image,
+    Icons.movie_outlined: _Ph.filmStrip,
+    Icons.cloud_outlined: _Ph.cloud,
+    Icons.build_outlined: _Ph.wrench,
+    Icons.share_outlined: _Ph.shareNetwork,
+    Icons.account_balance_wallet_outlined: _Ph.wallet,
+    Icons.light_mode: _Ph.sun,
+    Icons.dark_mode: _Ph.moon,
+    Icons.star_outline: _Ph.star,
+    Icons.remove: _Ph.minus,
+    Icons.crop_square: _Ph.square,
+    Icons.filter_none: _Ph.copy,
+    Icons.fullscreen_exit: _Ph.cornersIn,
+    Icons.auto_awesome: _Ph.sparkle,
   };
 
   @override

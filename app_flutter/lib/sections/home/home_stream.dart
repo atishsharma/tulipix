@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 
 import '../../design/app_mark.dart';
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/home.dart';
 import 'home_controller.dart';
@@ -379,10 +380,12 @@ class _FeedRow extends StatelessWidget {
             return AnimatedContainer(
               duration: const Duration(milliseconds: 110),
               height: 66,
-              decoration: BoxDecoration(
-                color: fill,
-                borderRadius: BorderRadius.circular(12),
-              ),
+              decoration:
+                  context.skin.surface(SurfaceRole.card, radius: 12) ??
+                      BoxDecoration(
+                        color: fill,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
               // Stretch, so every column is the row's full 66px: the
               // timeline's rule and its dot live in column one and are
               // positioned against that height.
@@ -417,7 +420,13 @@ class _FeedRow extends StatelessWidget {
                                 shape: BoxShape.circle,
                                 // Ring in the ROW's own fill, so the dot sits
                                 // on the line rather than being crossed by it.
-                                border: Border.all(color: fill, width: 4),
+                                // Under a skin the row is its card, so the
+                                // ring borrows the card's panel instead.
+                                border: Border.all(
+                                    color: context.skin.isStandard
+                                        ? fill
+                                        : Color.alphaBlend(t.panel, t.bg),
+                                    width: 4),
                               ),
                             ),
                           ),
@@ -577,7 +586,12 @@ class _ActionPill extends StatelessWidget {
         height: 28,
         padding: const EdgeInsets.symmetric(horizontal: 12),
         alignment: Alignment.center,
-        decoration: BoxDecoration(
+        // An alarm keeps its red; the rest are the skin's control.
+        decoration: (alarm
+                ? null
+                : context.skin.control(
+                    active: false, hovered: hov, tint: accent, radius: 14)) ??
+            BoxDecoration(
           color: hov
               ? (alarm ? Tokens.error : accent).withValues(alpha: 0.22)
               : (alarm ? Tokens.error.withValues(alpha: 0.12) : t.glass),
@@ -614,6 +628,14 @@ class _FeedChip extends StatelessWidget {
   final bool active;
   final VoidCallback onTap;
 
+  /// White on Standard's solid accent; a skin's own active ink on its latched
+  /// control.
+  Color _ink(BuildContext context, Tokens t) {
+    if (!active) return t.textDim;
+    final skin = context.skin;
+    return skin.isStandard ? Colors.white : (skin.activeInk ?? accent);
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
@@ -624,20 +646,28 @@ class _FeedChip extends StatelessWidget {
         height: 40,
         margin: const EdgeInsets.symmetric(horizontal: 1),
         padding: const EdgeInsets.symmetric(horizontal: 15),
-        decoration: BoxDecoration(
-          color: active ? accent : (hov ? t.glassStrong : Colors.transparent),
-          borderRadius: BorderRadius.circular(20),
-        ),
+        decoration: context.skin.control(
+              active: active,
+              hovered: hov,
+              tint: accent,
+              radius: 20,
+            ) ??
+            BoxDecoration(
+              color:
+                  active ? accent : (hov ? t.glassStrong : Colors.transparent),
+              borderRadius: BorderRadius.circular(20),
+            ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 15, color: active ? Colors.white : t.textDim),
+            Icon(context.skin.icon(icon),
+                size: 15, color: _ink(context, t)),
             const SizedBox(width: 8),
             Text(label,
                 style: TextStyle(
                     fontSize: 11.5,
                     fontWeight: active ? FontWeight.w700 : FontWeight.w500,
-                    color: active ? Colors.white : t.textDim)),
+                    color: _ink(context, t))),
           ],
         ),
       ),

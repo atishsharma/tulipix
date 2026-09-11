@@ -12,6 +12,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../design/skin.dart';
+
 import '../../design/first_load.dart';
 import '../../design/pick.dart';
 import '../../design/tokens.dart';
@@ -261,7 +263,9 @@ class _Modal extends StatelessWidget {
               height: height.clamp(0.0, box.maxHeight - 32),
               child: Container(
                 clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
+                decoration: context.skin
+                        .surface(SurfaceRole.card, radius: 20) ??
+                    BoxDecoration(
                   color: b.card,
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
@@ -308,11 +312,16 @@ class _Header extends StatelessWidget {
           width: 40,
           height: 40,
           alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: b.tintViolet,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: const Icon(Icons.menu_book_outlined,
+          decoration: context.skin.control(
+                active: true,
+                tint: BookTheme.accent,
+                radius: 12,
+              ) ??
+              BoxDecoration(
+                color: b.tintViolet,
+                borderRadius: BorderRadius.circular(12),
+              ),
+          child: Icon(context.skin.icon(Icons.menu_book_outlined),
               size: 22, color: BookTheme.accent),
         ),
         const SizedBox(width: 16),
@@ -371,31 +380,40 @@ class _SearchBox extends StatelessWidget {
     final b = context.book;
     final st = controller.state;
     final inside = st?.searchContents ?? false;
+    // Search holds a value, so a skin sinks it into its well — black glass
+    // under Unibody, which is why the ink comes from the well.
+    final skin = context.skin;
     return SizedBox(
       width: 340,
       height: 42,
       child: Container(
         padding: const EdgeInsets.fromLTRB(16, 0, 10, 0),
-        decoration: BoxDecoration(
-          color: b.card,
-          borderRadius: BorderRadius.circular(21),
-          border: Border.all(color: b.hairline, width: 1.5),
-        ),
+        decoration: skin.surface(SurfaceRole.well, radius: 21) ??
+            BoxDecoration(
+              color: b.card,
+              borderRadius: BorderRadius.circular(21),
+              border: Border.all(color: b.hairline, width: 1.5),
+            ),
         child: Row(
           children: [
-            Icon(Icons.search, size: 18, color: b.inkDim),
+            Icon(skin.icon(Icons.search),
+                size: 18, color: skin.wellInkDim ?? b.inkDim),
             const SizedBox(width: 10),
             Expanded(
               child: TextField(
                 controller: search,
-                style: TextStyle(fontSize: 14, color: b.ink),
+                style: TextStyle(fontSize: 14, color: skin.wellInk ?? b.ink),
                 decoration: InputDecoration(
                   border: InputBorder.none,
                   isCollapsed: true,
+                  // The theme fills fields under a skin; this one sits in its
+                  // own well already.
+                  filled: false,
                   hintText: inside
                       ? 'Search inside books…'
                       : 'Search by title, author, genre…',
-                  hintStyle: TextStyle(fontSize: 14, color: b.inkDim),
+                  hintStyle: TextStyle(
+                      fontSize: 14, color: skin.wellInkDim ?? b.inkDim),
                 ),
                 onSubmitted: (v) =>
                     controller.send(BooksCmd.search(text: v.trim())),
@@ -807,12 +825,14 @@ class _RoundIconState extends State<_RoundIcon> {
           width: 34,
           height: 34,
           alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: _hover ? b.pillBg : b.card,
-            shape: BoxShape.circle,
-            border: Border.all(color: b.hairline),
-          ),
-          child: Icon(widget.icon, size: 18, color: b.ink),
+          decoration: context.skin
+                  .control(active: false, hovered: _hover, radius: 17) ??
+              BoxDecoration(
+                color: _hover ? b.pillBg : b.card,
+                shape: BoxShape.circle,
+                border: Border.all(color: b.hairline),
+              ),
+          child: Icon(context.skin.icon(widget.icon), size: 18, color: b.ink),
         ),
       ),
     );
@@ -1205,12 +1225,16 @@ class _ViewToggle extends StatelessWidget {
             width: 32,
             height: 28,
             alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: on ? b.tintViolet : Colors.transparent,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child:
-                Icon(icon, size: 16, color: on ? BookTheme.accent : b.inkDim),
+            decoration: (on
+                    ? context.skin.control(
+                        active: true, tint: BookTheme.accent, radius: 14)
+                    : null) ??
+                BoxDecoration(
+                  color: on ? b.tintViolet : Colors.transparent,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+            child: Icon(context.skin.icon(icon),
+                size: 16, color: on ? BookTheme.accent : b.inkDim),
           ),
         ),
       );
@@ -1220,11 +1244,12 @@ class _ViewToggle extends StatelessWidget {
       width: 74,
       height: 36,
       padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: b.card,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: b.hairline),
-      ),
+      decoration: context.skin.surface(SurfaceRole.card, radius: 18) ??
+          BoxDecoration(
+            color: b.card,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: b.hairline),
+          ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1254,12 +1279,18 @@ class _FiltersButton extends StatelessWidget {
         child: Container(
           height: 36,
           padding: const EdgeInsets.symmetric(horizontal: 14),
-          decoration: BoxDecoration(
-            color: b.card,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-                color: BookTheme.accent.withValues(alpha: 0.35), width: 1.5),
-          ),
+          decoration: context.skin.control(
+                active: false,
+                tint: BookTheme.accent,
+                radius: 18,
+              ) ??
+              BoxDecoration(
+                color: b.card,
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(
+                    color: BookTheme.accent.withValues(alpha: 0.35),
+                    width: 1.5),
+              ),
           child: const Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1385,12 +1416,16 @@ class _Pager extends StatelessWidget {
               width: 32,
               height: 32,
               alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: live ? b.card : b.pillBg,
-                shape: BoxShape.circle,
-                border: Border.all(color: b.hairline),
-              ),
-              child: Icon(icon, size: 16, color: b.ink),
+              decoration: (live
+                      ? context.skin.control(
+                          active: false, tint: BookTheme.accent, radius: 16)
+                      : null) ??
+                  BoxDecoration(
+                    color: live ? b.card : b.pillBg,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: b.hairline),
+                  ),
+              child: Icon(context.skin.icon(icon), size: 16, color: b.ink),
             ),
           ),
         );
@@ -1436,15 +1471,18 @@ class _FilterPill extends StatelessWidget {
           height: 34,
           constraints: const BoxConstraints(maxWidth: 280),
           padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: hue.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(17),
-            border: Border.all(color: hue.withValues(alpha: 0.45)),
-          ),
+          // An applied filter is a latched key in its own hue.
+          decoration: context.skin
+                  .control(active: true, tint: hue, radius: 17) ??
+              BoxDecoration(
+                color: hue.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(17),
+                border: Border.all(color: hue.withValues(alpha: 0.45)),
+              ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 14, color: hue),
+              Icon(context.skin.icon(icon), size: 14, color: hue),
               const SizedBox(width: 6),
               Flexible(
                 child: Text('$label  ·  $count',

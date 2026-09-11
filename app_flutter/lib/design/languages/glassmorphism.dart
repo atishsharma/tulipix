@@ -55,7 +55,7 @@ class _Glass {
   final double aura;
 }
 
-class GlassSkin extends MusicSkin {
+class GlassSkin extends AppSkin {
   GlassSkin(Tokens t)
       : oled = t.dark && t.oled,
         _g = !t.dark ? _light : (t.oled ? _oled : _dark);
@@ -119,6 +119,29 @@ class GlassSkin extends MusicSkin {
   /// The page's colour on the solid ink play button.
   @override
   Color get onProminent => _g.base;
+
+  /// Panes over the base. A dialog is strong glass composited onto the base,
+  /// so it stays opaque enough to read over anything behind it.
+  @override
+  Tokens retint(Tokens base) => tokensFrom(
+        base,
+        page: _g.base,
+        atmosphere: _g.base,
+        panel: _g.glass,
+        panel2: _g.strong,
+        modal: Color.alphaBlend(_g.strong, _g.base),
+        ink: _g.ink,
+        inkDim: _g.inkDim,
+        inkInv: _g.base,
+        hair: _g.edge,
+        light: _g.sheen,
+        fill: _g.glass,
+        fillStrong: _g.strong,
+      );
+  @override
+  double get controlRadius => 14;
+  @override
+  double get panelRadius => 20;
 
   SoftDecoration pane(double radius, {bool strong = false}) {
     final drop = _g.drop;
@@ -287,6 +310,21 @@ class GlassSkin extends MusicSkin {
     Icons.delete_outline: LucideIcons.trash2,
     Icons.move_to_inbox_outlined: LucideIcons.fileInput,
     Icons.content_copy_outlined: LucideIcons.copy,
+    // The shell: sections, dock, caption buttons, chat.
+    Icons.image_outlined: LucideIcons.image,
+    Icons.movie_outlined: LucideIcons.film,
+    Icons.cloud_outlined: LucideIcons.cloud,
+    Icons.build_outlined: LucideIcons.wrench,
+    Icons.share_outlined: LucideIcons.share2,
+    Icons.account_balance_wallet_outlined: LucideIcons.wallet,
+    Icons.light_mode: LucideIcons.sun,
+    Icons.dark_mode: LucideIcons.moon,
+    Icons.star_outline: LucideIcons.star,
+    Icons.remove: LucideIcons.minus,
+    Icons.crop_square: LucideIcons.square,
+    Icons.filter_none: LucideIcons.copy,
+    Icons.fullscreen_exit: LucideIcons.minimize2,
+    Icons.auto_awesome: LucideIcons.sparkles,
   };
 
   @override

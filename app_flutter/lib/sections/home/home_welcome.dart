@@ -13,6 +13,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/home.dart';
 import '../music/music_controller.dart';
@@ -357,11 +358,13 @@ class _WelCard extends StatelessWidget {
     final t = context.tokens;
     return Container(
       padding: padding,
-      decoration: BoxDecoration(
-        color: t.panel,
-        borderRadius: BorderRadius.circular(kCardRadius),
-        border: Border.all(color: t.outline),
-      ),
+      decoration: context.skin
+              .surface(SurfaceRole.card, radius: kCardRadius) ??
+          BoxDecoration(
+            color: t.panel,
+            borderRadius: BorderRadius.circular(kCardRadius),
+            border: Border.all(color: t.outline),
+          ),
       child: child,
     );
   }

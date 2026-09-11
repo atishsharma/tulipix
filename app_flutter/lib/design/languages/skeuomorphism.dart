@@ -63,7 +63,7 @@ class _Metal {
   final Color signal2;
 }
 
-class UnibodySkin extends MusicSkin {
+class UnibodySkin extends AppSkin {
   UnibodySkin(Tokens t)
       : oled = t.dark && t.oled,
         _m = !t.dark ? _light : (t.oled ? _oled : _dark);
@@ -149,6 +149,27 @@ class UnibodySkin extends MusicSkin {
   /// Tall enough for the jog wheel, which carries the transport.
   @override
   double get barHeight => 184;
+
+  /// The plate is the page, a key face is a panel, a milled pocket the
+  /// second surface.
+  @override
+  Tokens retint(Tokens base) => tokensFrom(
+        base,
+        page: _m.m2,
+        atmosphere: _m.m1,
+        panel: _m.key1,
+        panel2: _m.pocket,
+        modal: _m.m1,
+        ink: _m.ink,
+        inkDim: _m.inkDim,
+        inkInv: _m.key1,
+        hair: _m.lo,
+        light: _m.hi,
+      );
+  @override
+  double get controlRadius => 11;
+  @override
+  double get panelRadius => 16;
 
   /// Lit from above: a chamfer of light on the top edge, a contact shadow, a
   /// short one and a long soft one.

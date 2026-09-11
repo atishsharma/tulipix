@@ -1,4 +1,4 @@
-// The Music section's skin — the design language as something a widget can ask.
+// The app's skin — the design language as something a widget can ask.
 //
 // Every question has a default meaning "draw what you draw today", and
 // Standard answers nothing else, so picking Standard runs exactly the code the
@@ -36,8 +36,8 @@ enum SurfaceRole {
   bar,
 }
 
-abstract class MusicSkin extends ThemeExtension<MusicSkin> {
-  const MusicSkin();
+abstract class AppSkin extends ThemeExtension<AppSkin> {
+  const AppSkin();
 
   DesignLanguage get language;
 
@@ -74,6 +74,15 @@ abstract class MusicSkin extends ThemeExtension<MusicSkin> {
 
   /// How far a control shrinks while pressed. 1: it does not.
   double get pressScale => 1;
+
+  /// The app's tokens in this language — every section's page, panels, ink
+  /// and hairlines. Standard: [base] itself, untouched.
+  Tokens retint(Tokens base) => base;
+
+  /// Corners of a control and of a panel in the stock widgets the theme
+  /// styles. Null: Material's own.
+  double? get controlRadius => null;
+  double? get panelRadius => null;
 
   /// The glyph on the prominent control. Null: the accent, for a language
   /// whose play button is not itself filled with the accent.
@@ -114,16 +123,16 @@ abstract class MusicSkin extends ThemeExtension<MusicSkin> {
   IconData icon(IconData material) => material;
 
   @override
-  MusicSkin copyWith() => this;
+  AppSkin copyWith() => this;
 
   /// Languages swap, they do not cross-fade — the same rule `Tokens.lerp`
   /// keeps for themes.
   @override
-  MusicSkin lerp(covariant ThemeExtension<MusicSkin>? other, double t) =>
-      other is MusicSkin && t >= 0.5 ? other : this;
+  AppSkin lerp(covariant ThemeExtension<AppSkin>? other, double t) =>
+      other is AppSkin && t >= 0.5 ? other : this;
 }
 
-class StandardSkin extends MusicSkin {
+class StandardSkin extends AppSkin {
   const StandardSkin();
 
   @override
@@ -184,7 +193,7 @@ class SeekSlot {
 }
 
 /// The skin for [language] under the theme [t] describes.
-MusicSkin skinFor(DesignLanguage language, Tokens t) => switch (language) {
+AppSkin skinFor(DesignLanguage language, Tokens t) => switch (language) {
       DesignLanguage.standard => const StandardSkin(),
       DesignLanguage.neumorphism => NeuSkin(t),
       DesignLanguage.claymorphism => ClaySkin(t),
@@ -193,13 +202,71 @@ MusicSkin skinFor(DesignLanguage language, Tokens t) => switch (language) {
       DesignLanguage.expressive => ExpressiveSkin(t),
     };
 
+/// A language's tokens from a handful of roles. Section accents are not among
+/// them: a section keeps its colour in every language.
+///
+/// The neutral ramp (`n*`) is composited over [page], because Photos, Cloud
+/// and Music paint it as solid colour. Strong hairlines run a quarter of the
+/// way from [hair] toward the ink in every language, and the neutral glass
+/// fills are [hair] at 35% and 60% unless the language has its own.
+Tokens tokensFrom(
+  Tokens base, {
+  required Color page,
+  required Color atmosphere,
+  required Color panel,
+  required Color panel2,
+  required Color modal,
+  required Color ink,
+  required Color inkDim,
+  required Color inkInv,
+  required Color hair,
+  required Color light,
+  Color? fill,
+  Color? fillStrong,
+}) {
+  final glass = fill ?? hair.withValues(alpha: hair.a * 0.35);
+  final glassStrong = fillStrong ?? hair.withValues(alpha: hair.a * 0.6);
+  final card = Color.alphaBlend(panel, page);
+  final chip = Color.alphaBlend(glassStrong, card);
+  return Tokens(
+    dark: base.dark,
+    oled: base.oled,
+    reduceMotion: base.reduceMotion,
+    bg: page,
+    atmosphere: atmosphere,
+    panel: panel,
+    panel2: panel2,
+    modal: modal,
+    text: ink,
+    textDim: inkDim,
+    textInv: inkInv,
+    outline: hair,
+    outlineStrong: Color.lerp(hair, ink, 0.25)!,
+    highlightInner: light,
+    glass: glass,
+    glassStrong: glassStrong,
+    glassBorder: hair,
+    nCanvas: page,
+    nCard: card,
+    nChip: chip,
+    nTile: Color.alphaBlend(panel2, page),
+    nHover: chip,
+    nHair: Color.alphaBlend(hair, card),
+    nInk: ink,
+    nInk2: inkDim,
+    nInk3: inkDim,
+    nAccentSoft: base.nAccentSoft,
+  );
+}
+
+/// The skin anywhere in the app. Standard where no theme carries one.
 extension SkinOf on BuildContext {
-  MusicSkin get skin =>
-      Theme.of(this).extension<MusicSkin>() ?? const StandardSkin();
+  AppSkin get skin =>
+      Theme.of(this).extension<AppSkin>() ?? const StandardSkin();
 }
 
 /// Something pressable that a skin draws: rest, hover, focus and pressed all
-/// come from [MusicSkin.control], so the language decides what pressing looks
+/// come from [AppSkin.control], so the language decides what pressing looks
 /// like — sinking into the sheet, squashing, a key travelling down.
 ///
 /// Only used while a skin is on. Standard keeps each widget's own Material
@@ -215,6 +282,7 @@ class SkinButton extends StatefulWidget {
     this.width,
     this.height,
     this.padding,
+    this.tint,
   });
 
   final Widget child;
@@ -223,6 +291,9 @@ class SkinButton extends StatefulWidget {
   final VoidCallback? onTap;
   final bool active;
   final bool prominent;
+
+  /// The control's own colour, where it has one — a category's, a tab's.
+  final Color? tint;
   final double radius;
   final double? width;
   final double? height;
@@ -285,6 +356,7 @@ class _SkinButtonState extends State<SkinButton> {
                 pressed: _pressed,
                 prominent: widget.prominent,
                 radius: widget.radius,
+                tint: widget.tint,
               ),
               child: widget.child,
             ),

@@ -14,6 +14,7 @@
 import 'package:flutter/material.dart';
 
 import '../design/app_mark.dart';
+import '../design/skin.dart';
 import '../design/tokens.dart';
 import '../src/rust/api/shell.dart';
 import 'shell_controller.dart';
@@ -78,11 +79,13 @@ class Sidebar extends StatelessWidget {
       curve: Curves.easeOut,
       width: collapsed ? kSidebarCollapsed : kSidebarExpanded,
       margin: const EdgeInsets.fromLTRB(14, 14, 0, 14),
-      decoration: BoxDecoration(
-        color: t.panel,
-        borderRadius: BorderRadius.circular(Tokens.radiusLg),
-        border: Border.all(color: t.outline),
-      ),
+      decoration: context.skin
+              .surface(SurfaceRole.card, radius: Tokens.radiusLg) ??
+          BoxDecoration(
+            color: t.panel,
+            borderRadius: BorderRadius.circular(Tokens.radiusLg),
+            border: Border.all(color: t.outline),
+          ),
       child: Padding(
         padding: EdgeInsets.all(collapsed ? 10 : 12),
         child: Column(
@@ -183,6 +186,18 @@ class _NavRowState extends State<_NavRow> {
     final accent = accentFor(widget.section);
     final meta = kSectionMeta[widget.section]!;
     final h = widget.collapsed ? 46.0 : 52.0;
+    // A skin draws the open row as its latched control in the section's own
+    // colour, and the hovered one as its hover. At rest a row is bare on the
+    // rail: nine raised rows would be a keyboard, not a list.
+    final skin = context.skin;
+    final skinned = widget.active || _hover
+        ? skin.control(
+            active: widget.active,
+            hovered: _hover,
+            tint: accent,
+            radius: Tokens.radiusMd,
+          )
+        : null;
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: MouseRegion(
@@ -196,22 +211,25 @@ class _NavRowState extends State<_NavRow> {
             height: h,
             padding:
                 EdgeInsets.symmetric(horizontal: widget.collapsed ? 0 : 12),
-            decoration: BoxDecoration(
-              color: widget.active
-                  ? accent.withValues(alpha: 0.16)
-                  : _hover
-                      ? t.glass
-                      : Colors.transparent,
-              borderRadius: BorderRadius.circular(Tokens.radiusMd),
-              border: Border.all(
-                color: widget.active
-                    ? accent.withValues(alpha: 0.55)
-                    : _hover
-                        ? t.outline
-                        : Colors.transparent,
-                width: widget.active ? 1.5 : 1,
-              ),
-            ),
+            decoration: skinned ??
+                (!skin.isStandard
+                    ? const BoxDecoration()
+                    : BoxDecoration(
+                        color: widget.active
+                            ? accent.withValues(alpha: 0.16)
+                            : _hover
+                                ? t.glass
+                                : Colors.transparent,
+                        borderRadius: BorderRadius.circular(Tokens.radiusMd),
+                        border: Border.all(
+                          color: widget.active
+                              ? accent.withValues(alpha: 0.55)
+                              : _hover
+                                  ? t.outline
+                                  : Colors.transparent,
+                          width: widget.active ? 1.5 : 1,
+                        ),
+                      )),
             child: widget.collapsed
                 ? Center(child: _glyph(accent, t))
                 : Row(
@@ -226,7 +244,9 @@ class _NavRowState extends State<_NavRow> {
                               fontWeight: widget.active
                                   ? FontWeight.w700
                                   : FontWeight.w500,
-                              color: widget.active ? accent : t.text,
+                              color: widget.active
+                                  ? (skin.activeInk ?? accent)
+                                  : t.text,
                             )),
                       ),
                       if (widget.badge > 0)
@@ -241,7 +261,7 @@ class _NavRowState extends State<_NavRow> {
 
   Widget _glyph(Color accent, Tokens t) {
     final icon = Icon(
-      kSectionMeta[widget.section]!.icon,
+      context.skin.icon(kSectionMeta[widget.section]!.icon),
       size: widget.collapsed ? 21 : 19,
       color: widget.active ? accent : t.textDim,
     );
@@ -398,11 +418,13 @@ class _UserCard extends StatelessWidget {
         onTap: onTap,
         child: Container(
           padding: const EdgeInsets.all(9),
-          decoration: BoxDecoration(
-            color: t.glass,
-            borderRadius: BorderRadius.circular(Tokens.radiusMd),
-            border: Border.all(color: t.glassBorder),
-          ),
+          decoration: context.skin
+                  .surface(SurfaceRole.card, radius: Tokens.radiusMd) ??
+              BoxDecoration(
+                color: t.glass,
+                borderRadius: BorderRadius.circular(Tokens.radiusMd),
+                border: Border.all(color: t.glassBorder),
+              ),
           child: Row(
             children: [
               Container(
@@ -414,7 +436,8 @@ class _UserCard extends StatelessWidget {
                   shape: BoxShape.circle,
                 ),
                 child: emoji.isEmpty
-                    ? Icon(Icons.person_outline, size: 15, color: t.text)
+                    ? Icon(context.skin.icon(Icons.person_outline),
+                        size: 15, color: t.text)
                     : Text(emoji, style: const TextStyle(fontSize: 14)),
               ),
               const SizedBox(width: 9),
@@ -594,13 +617,20 @@ class _DockBtnState extends State<_DockBtn> {
             duration: const Duration(milliseconds: 120),
             height: 34,
             alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: widget.active || _hover
-                  ? widget.accent.withValues(alpha: widget.active ? 0.20 : 0.12)
-                  : t.glass,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(widget.icon,
+            decoration: context.skin.control(
+                  active: widget.active,
+                  hovered: _hover,
+                  tint: widget.accent,
+                  radius: 10,
+                ) ??
+                BoxDecoration(
+                  color: widget.active || _hover
+                      ? widget.accent
+                          .withValues(alpha: widget.active ? 0.20 : 0.12)
+                      : t.glass,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+            child: Icon(context.skin.icon(widget.icon),
                 size: 17,
                 color: widget.active || _hover ? widget.accent : t.textDim),
           ),

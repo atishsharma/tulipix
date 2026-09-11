@@ -18,6 +18,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../src/rust/api/photos.dart';
 import 'photos_controller.dart';
 
@@ -261,8 +262,8 @@ class _Pin extends StatelessWidget {
             ),
             child: Text(
               pin.count > 99 ? '99+' : '${pin.count}',
-              style: const TextStyle(
-                fontFamily: Tokens.fontFamily,
+              style: TextStyle(
+                fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                 fontSize: 9.5,
                 fontWeight: FontWeight.w700,
                 color: Colors.white,
@@ -284,6 +285,16 @@ class _ZoomButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    final skin = context.skin;
+    if (!skin.isStandard) {
+      return SkinButton(
+        width: 34,
+        height: 34,
+        radius: 17,
+        onTap: onTap,
+        child: Icon(skin.icon(icon), size: 18, color: t.nInk),
+      );
+    }
     return Material(
       color: t.nCard,
       shape: const CircleBorder(),

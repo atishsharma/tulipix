@@ -71,4 +71,20 @@ final Map<IconData, IconData> roundedSymbols = {
   Icons.delete_outline: Symbols.delete_rounded,
   Icons.move_to_inbox_outlined: Symbols.move_to_inbox_rounded,
   Icons.content_copy_outlined: Symbols.content_copy_rounded,
+  // The shell: sections, dock, caption buttons, chat.
+  Icons.image_outlined: Symbols.image_rounded,
+  Icons.movie_outlined: Symbols.movie_rounded,
+  Icons.cloud_outlined: Symbols.cloud_rounded,
+  Icons.build_outlined: Symbols.build_rounded,
+  Icons.share_outlined: Symbols.share_rounded,
+  Icons.account_balance_wallet_outlined:
+      Symbols.account_balance_wallet_rounded,
+  Icons.light_mode: Symbols.light_mode_rounded,
+  Icons.dark_mode: Symbols.dark_mode_rounded,
+  Icons.star_outline: Symbols.star_rounded,
+  Icons.remove: Symbols.remove_rounded,
+  Icons.crop_square: Symbols.crop_square_rounded,
+  Icons.filter_none: Symbols.filter_none_rounded,
+  Icons.fullscreen_exit: Symbols.fullscreen_exit_rounded,
+  Icons.auto_awesome: Symbols.auto_awesome_rounded,
 };

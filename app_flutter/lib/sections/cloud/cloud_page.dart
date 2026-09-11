@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../design/pick.dart';
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../src/rust/api/cloud.dart';
 import 'cloud_connect.dart';
 import 'cloud_controller.dart';
@@ -235,11 +236,17 @@ class _RemoteRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     return Material(
-      color:
-          active ? Tokens.secCloud.withValues(alpha: 0.14) : Colors.transparent,
+      // Under a skin the open remote is the skin's latched row, below.
+      color: active && context.skin.isStandard
+          ? Tokens.secCloud.withValues(alpha: 0.14)
+          : Colors.transparent,
       child: InkWell(
         onTap: () => controller.send(CloudCmd.openRemote(name: remote.name)),
-        child: Padding(
+        child: Container(
+          decoration: active
+              ? context.skin
+                  .control(active: true, tint: Tokens.secCloud, radius: 10)
+              : null,
           padding: const EdgeInsets.fromLTRB(16, 9, 6, 9),
           child: Row(
             children: [
@@ -395,11 +402,13 @@ class _Browser extends StatelessWidget {
             Container(
               width: 96,
               height: 96,
-              decoration: BoxDecoration(
-                color: Tokens.secCloud.withValues(alpha: 0.14),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.cloud_outlined,
+              decoration: context.skin
+                      .control(active: true, tint: Tokens.secCloud, radius: 48) ??
+                  BoxDecoration(
+                    color: Tokens.secCloud.withValues(alpha: 0.14),
+                    shape: BoxShape.circle,
+                  ),
+              child: Icon(context.skin.icon(Icons.cloud_outlined),
                   size: 40, color: Tokens.secCloud),
             ),
             const SizedBox(height: 16),

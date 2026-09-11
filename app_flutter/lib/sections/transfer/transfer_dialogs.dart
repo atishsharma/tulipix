@@ -10,6 +10,7 @@
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../src/rust/api/transfer.dart';
 import 'connection_card.dart' show deviceGlyph;
 import 'transfer_widgets.dart';
@@ -61,7 +62,7 @@ Future<void> showHelp(
                           Text(
                             'Connecting a device',
                             style: TextStyle(
-                              fontFamily: Tokens.fontFamily,
+                              fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                               fontSize: 17,
                               fontWeight: FontWeight.w700,
                               color: t.text,
@@ -234,7 +235,7 @@ Future<(DeviceAction, String)?> showDevice(
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                              fontFamily: Tokens.fontFamily,
+                              fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                               fontSize: 16,
                               fontWeight: FontWeight.w700,
                               color: t.text,

@@ -105,8 +105,8 @@ flutter:
           weight: 600
         - asset: fonts/Fredoka-Bold.ttf
           weight: 700
-    # Claymorphism's icons: Phosphor's Fill font, cut to the 49 glyphs the skin
-    # maps. Bundled rather than taken from phosphor_flutter, whose IconData
+    # Claymorphism's icons: Phosphor's Fill font, cut to the 60 glyphs the skin
+    # maps (Music's and the shell's). Bundled rather than taken from phosphor_flutter, whose IconData
     # subclass does not compile now that IconData is a final class. MIT; the
     # licence is fonts/LICENSE-Phosphor.txt.
     - family: PhosphorFill

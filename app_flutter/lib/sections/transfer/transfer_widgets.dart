@@ -9,6 +9,7 @@
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 
 /// The section's own hues. `Theme.transfer-accent` and the five box tints the
 /// page assigns in its property block, transcribed rather than reinvented.
@@ -85,11 +86,13 @@ class TCard extends StatelessWidget {
             Container(
               width: 38,
               height: 38,
-              decoration: BoxDecoration(
-                color: wash(tint, 0.16),
-                borderRadius: BorderRadius.circular(11),
-              ),
-              child: Icon(icon, size: 19, color: tint),
+              decoration: context.skin
+                      .control(active: true, tint: tint, radius: 11) ??
+                  BoxDecoration(
+                    color: wash(tint, 0.16),
+                    borderRadius: BorderRadius.circular(11),
+                  ),
+              child: Icon(context.skin.icon(icon), size: 19, color: tint),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -100,7 +103,7 @@ class TCard extends StatelessWidget {
                   Text(
                     title,
                     style: TextStyle(
-                      fontFamily: Tokens.fontFamily,
+                      fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
                       color: t.text,
@@ -133,11 +136,13 @@ class TCard extends StatelessWidget {
     return Container(
       height: height,
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: t.panel,
-        borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        border: Border.all(color: t.outline),
-      ),
+      decoration: context.skin
+              .surface(SurfaceRole.card, radius: Tokens.radiusMd) ??
+          BoxDecoration(
+            color: t.panel,
+            borderRadius: BorderRadius.circular(Tokens.radiusMd),
+            border: Border.all(color: t.outline),
+          ),
       child: body,
     );
   }
@@ -297,11 +302,12 @@ class Outline extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        color: wash(tint, 0.05),
-        border: Border.all(color: edge(tint, 0.42), width: 1.5),
-      ),
+      decoration: context.skin.surface(SurfaceRole.card, radius: 12) ??
+          BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color: wash(tint, 0.05),
+            border: Border.all(color: edge(tint, 0.42), width: 1.5),
+          ),
       padding: const EdgeInsets.all(10),
       child: LayoutBuilder(
         builder: (context, box) {
@@ -454,11 +460,13 @@ class ValueField extends StatelessWidget {
     return Container(
       constraints: const BoxConstraints(minHeight: 38),
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-      decoration: BoxDecoration(
-        color: t.panel2,
-        borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: t.outline),
-      ),
+      // A value to read or copy out: the skin's well.
+      decoration: context.skin.surface(SurfaceRole.well, radius: 9) ??
+          BoxDecoration(
+            color: t.panel2,
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(color: t.outline),
+          ),
       // The action sits inside the well beside the value, until the well is
       // too narrow to hold both — which happens on a phone, and on the
       // Connection card whenever the QR plate has eaten most of the column.
@@ -471,7 +479,7 @@ class ValueField extends StatelessWidget {
             style: TextStyle(
               fontSize: size,
               fontWeight: weight,
-              color: tone ?? t.text,
+              color: tone ?? context.skin.wellInk ?? t.text,
             ),
           );
           final act = action;
@@ -591,7 +599,7 @@ class HelpBlock extends StatelessWidget {
               Text(
                 title,
                 style: TextStyle(
-                  fontFamily: Tokens.fontFamily,
+                  fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                   fontSize: 13.5,
                   fontWeight: FontWeight.w700,
                   color: t.text,

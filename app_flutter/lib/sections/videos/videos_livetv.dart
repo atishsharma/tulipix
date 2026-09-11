@@ -8,6 +8,7 @@
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../src/rust/api/videos.dart';
 import 'videos_controller.dart';
 import 'videos_widgets.dart';
@@ -256,7 +257,13 @@ class _ChannelCardState extends State<_ChannelCard> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 120),
           padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
+          // The channel on air is latched in the section's colour; the rest
+          // are the skin's cards.
+          decoration: (widget.playing
+                  ? context.skin.control(
+                      active: true, tint: Tokens.secVideos, radius: 10)
+                  : context.skin.surface(SurfaceRole.card, radius: 10)) ??
+              BoxDecoration(
             color: _hover ? t.panel2 : t.panel,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
@@ -429,12 +436,16 @@ class _GroupRow extends StatelessWidget {
       child: Container(
         height: 34,
         padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: BoxDecoration(
-          color: active
-              ? Tokens.secVideos.withValues(alpha: 0.16)
-              : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
-        ),
+        decoration: (active
+                ? context.skin.control(
+                    active: true, tint: Tokens.secVideos, radius: 8)
+                : null) ??
+            BoxDecoration(
+              color: active
+                  ? Tokens.secVideos.withValues(alpha: 0.16)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+            ),
         child: Row(
           children: [
             Expanded(

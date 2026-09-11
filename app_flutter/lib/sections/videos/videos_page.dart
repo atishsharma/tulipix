@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/videos.dart';
 import 'videos_controller.dart';
@@ -198,11 +199,17 @@ class _Header extends StatelessWidget {
           Container(
             width: 34,
             height: 34,
-            decoration: BoxDecoration(
-              color: Tokens.secVideos.withValues(alpha: 0.18),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(Icons.movie, size: 18, color: Tokens.secVideos),
+            decoration: context.skin.control(
+                  active: true,
+                  tint: Tokens.secVideos,
+                  radius: 10,
+                ) ??
+                BoxDecoration(
+                  color: Tokens.secVideos.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+            child: Icon(context.skin.icon(Icons.movie),
+                size: 18, color: Tokens.secVideos),
           ),
           const SizedBox(width: 10),
           Text('Videos',

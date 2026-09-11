@@ -8,6 +8,7 @@
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../src/rust/api/transfer.dart';
 import 'transfer_widgets.dart';
 
@@ -95,11 +96,11 @@ Future<void> showQrDialog(
           final t = context.tokens;
           return AlertDialog(
             backgroundColor: t.modal,
-            title: const Text(
+            title: Text(
               'Scan to pair',
               textAlign: TextAlign.center,
               style: TextStyle(
-                fontFamily: Tokens.fontFamily,
+                fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                 fontSize: 15,
                 fontWeight: FontWeight.w800,
               ),

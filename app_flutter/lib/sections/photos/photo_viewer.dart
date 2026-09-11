@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../src/rust/api/photos.dart';
 import 'photo_editor.dart';
 import 'photos_controller.dart';
@@ -384,8 +385,8 @@ class _TopBar extends StatelessWidget {
                     Text(
                       label,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontFamily: Tokens.fontFamily,
+                      style: TextStyle(
+                        fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                         color: Colors.white,
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
@@ -394,8 +395,8 @@ class _TopBar extends StatelessWidget {
                     if (position.isNotEmpty)
                       Text(
                         position,
-                        style: const TextStyle(
-                          fontFamily: Tokens.fontFamily,
+                        style: TextStyle(
+                          fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                           color: Colors.white60,
                           fontSize: 11,
                         ),
@@ -543,7 +544,7 @@ class _InfoPanel extends StatelessWidget {
                       child: Text(
                         rows[i].label,
                         style: TextStyle(
-                          fontFamily: Tokens.fontFamily,
+                          fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                           fontSize: 11.5,
                           color: tokens.nInk2,
                         ),
@@ -553,7 +554,7 @@ class _InfoPanel extends StatelessWidget {
                       child: SelectableText(
                         rows[i].value,
                         style: TextStyle(
-                          fontFamily: Tokens.fontFamily,
+                          fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                           fontSize: 11.5,
                           color: tokens.nInk,
                         ),

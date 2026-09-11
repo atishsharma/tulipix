@@ -12,6 +12,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 
 /// The idle fill for a pill or a ghost button, per theme.
 Color _idle(Tokens t) =>
@@ -22,6 +23,13 @@ Color _idleHi(Tokens t) =>
 /// Ink on an idle fill.
 Color _idleInk(Tokens t) =>
     t.dark ? const Color(0xFFECEEF8) : const Color(0xFF241D5E);
+
+/// Ink in the stepper: its well's under a skin (Unibody's is black glass), the
+/// idle ink otherwise.
+Color _stepInk(BuildContext context, Tokens t) {
+  final skin = context.skin;
+  return skin.wellInk ?? (skin.isStandard ? _idleInk(t) : t.text);
+}
 
 /// The tinted lettering an inactive coloured pill uses — its own hue, darkened
 /// on the pale canvas so it is still legible.
@@ -60,7 +68,19 @@ class _VideoTabState extends State<VideoTab> {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final ink = widget.active ? Colors.white : hueInk(t, widget.hue);
+    // A skin draws the tab as its own control, latched in the tab's hue.
+    final skin = context.skin;
+    final skinned = skin.control(
+      active: widget.active,
+      hovered: _hover,
+      tint: widget.hue,
+      radius: 18,
+    );
+    final ink = !widget.active
+        ? hueInk(t, widget.hue)
+        : skinned == null
+            ? Colors.white
+            : (skin.activeInk ?? widget.hue);
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hover = true),
@@ -72,7 +92,8 @@ class _VideoTabState extends State<VideoTab> {
           height: 36,
           constraints: const BoxConstraints(minWidth: 88),
           padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
+          decoration: skinned ??
+              BoxDecoration(
             color:
                 widget.active ? widget.hue : (_hover ? _idleHi(t) : _idle(t)),
             borderRadius: BorderRadius.circular(18),
@@ -137,7 +158,10 @@ class _PlexButtonState extends State<PlexButton> {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final ink = widget.filled ? Colors.white : _idleInk(t);
+    final skin = context.skin;
+    final ink = widget.filled
+        ? Colors.white
+        : (skin.isStandard ? _idleInk(t) : t.text);
     final bg = widget.filled
         ? (_hover ? Color.lerp(widget.hue, Colors.white, 0.18)! : widget.hue)
         : (_hover ? _idleHi(t) : _idle(t));
@@ -155,7 +179,17 @@ class _PlexButtonState extends State<PlexButton> {
             height: 40,
             constraints: BoxConstraints(minWidth: widget.compact ? 74 : 120),
             padding: EdgeInsets.symmetric(horizontal: widget.compact ? 8 : 4),
-            decoration: BoxDecoration(
+            // Filled keeps its function colour (Play is green in every
+            // language); the chip form is the skin's key.
+            decoration: (widget.filled
+                    ? null
+                    : skin.control(
+                        active: false,
+                        hovered: _hover,
+                        tint: widget.hue,
+                        radius: 8,
+                      )) ??
+                BoxDecoration(
               color: bg,
               borderRadius: BorderRadius.circular(6),
               border: widget.filled
@@ -217,12 +251,16 @@ class IconBtn extends StatelessWidget {
         child: Container(
           width: size,
           height: size,
-          decoration: BoxDecoration(
-            color: filled ? hue : _idle(t),
-            shape: BoxShape.circle,
-            border: Border.all(color: hue.withValues(alpha: 0.6)),
-          ),
-          child: Icon(icon,
+          decoration: (filled
+                  ? null
+                  : context.skin
+                      .control(active: false, tint: hue, radius: size / 2)) ??
+              BoxDecoration(
+                color: filled ? hue : _idle(t),
+                shape: BoxShape.circle,
+                border: Border.all(color: hue.withValues(alpha: 0.6)),
+              ),
+          child: Icon(context.skin.icon(icon),
               size: size * 0.44, color: filled ? Colors.white : hueInk(t, hue)),
         ),
       ),
@@ -257,17 +295,24 @@ class SortChip extends StatelessWidget {
           height: 28,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: active ? hue : _idle(t),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: hue.withValues(alpha: active ? 1 : 0.5)),
-          ),
+          decoration: context.skin
+                  .control(active: active, tint: hue, radius: 14) ??
+              BoxDecoration(
+                color: active ? hue : _idle(t),
+                borderRadius: BorderRadius.circular(14),
+                border:
+                    Border.all(color: hue.withValues(alpha: active ? 1 : 0.5)),
+              ),
           child: Text(
             label,
             style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.w700,
-              color: active ? Colors.white : hueInk(t, hue),
+              color: !active
+                  ? hueInk(t, hue)
+                  : context.skin.isStandard
+                      ? Colors.white
+                      : (context.skin.activeInk ?? hue),
             ),
           ),
         ),
@@ -296,11 +341,13 @@ class PanelBox extends StatelessWidget {
     final t = context.tokens;
     return Container(
       padding: padding,
-      decoration: BoxDecoration(
-        color: t.panel,
-        borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        border: Border.all(color: t.nHair),
-      ),
+      decoration: context.skin
+              .surface(SurfaceRole.card, radius: Tokens.radiusMd) ??
+          BoxDecoration(
+            color: t.panel,
+            borderRadius: BorderRadius.circular(Tokens.radiusMd),
+            border: Border.all(color: t.nHair),
+          ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
@@ -390,10 +437,12 @@ class StepperPill extends StatelessWidget {
     return Container(
       height: 32,
       padding: const EdgeInsets.symmetric(horizontal: 4),
-      decoration: BoxDecoration(
-        color: _idle(t),
-        borderRadius: BorderRadius.circular(16),
-      ),
+      // A stepper holds a value: the skin's well, and the well's ink.
+      decoration: context.skin.surface(SurfaceRole.well, radius: 16) ??
+          BoxDecoration(
+            color: _idle(t),
+            borderRadius: BorderRadius.circular(16),
+          ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -403,20 +452,20 @@ class StepperPill extends StatelessWidget {
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
             onPressed: onMinus,
-            icon: Icon(Icons.remove, color: _idleInk(t)),
+            icon: Icon(Icons.remove, color: _stepInk(context, t)),
           ),
           Text(label,
               style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
-                  color: _idleInk(t))),
+                  color: _stepInk(context, t))),
           IconButton(
             iconSize: 14,
             visualDensity: VisualDensity.compact,
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
             onPressed: onPlus,
-            icon: Icon(Icons.add, color: _idleInk(t)),
+            icon: Icon(Icons.add, color: _stepInk(context, t)),
           ),
         ],
       ),
@@ -448,10 +497,12 @@ class Artwork extends StatelessWidget {
     return Container(
       width: width,
       height: height,
-      decoration: BoxDecoration(
-        color: posterWell(t),
-        borderRadius: BorderRadius.circular(radius),
-      ),
+      // A poster's mat in the skin — raised, clay, black glass, a pane edge.
+      decoration: context.skin.surface(SurfaceRole.art, radius: radius) ??
+          BoxDecoration(
+            color: posterWell(t),
+            borderRadius: BorderRadius.circular(radius),
+          ),
       clipBehavior: Clip.antiAlias,
       child: path.isEmpty
           ? Icon(fallback, color: t.nInk3, size: width * 0.28)
@@ -601,9 +652,12 @@ class VideoSearchField extends StatelessWidget {
         decoration: InputDecoration(
           isDense: true,
           filled: true,
-          fillColor: t.dark
-              ? (t.oled ? const Color(0xFF121420) : const Color(0xFF20233A))
-              : Colors.white,
+          // Under a skin, the language's second surface with its glass over it.
+          fillColor: !context.skin.isStandard
+              ? Color.alphaBlend(t.glassStrong, Color.alphaBlend(t.panel2, t.bg))
+              : t.dark
+                  ? (t.oled ? const Color(0xFF121420) : const Color(0xFF20233A))
+                  : Colors.white,
           hintText: hint,
           hintStyle: TextStyle(fontSize: large ? 15 : 13, color: t.nInk3),
           prefixIcon: Icon(Icons.search, size: large ? 20 : 16, color: t.nInk2),

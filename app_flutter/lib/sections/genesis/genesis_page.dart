@@ -20,6 +20,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../design/first_load.dart';
+import '../../design/skin.dart';
 import '../../sections/books/book_theme.dart';
 import '../../src/rust/api/genesis.dart';
 import 'genesis_controller.dart';
@@ -153,15 +154,19 @@ class _Header extends StatelessWidget {
           height: 46,
           padding: const EdgeInsets.fromLTRB(16, 0, 18, 0),
           alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: kGen.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(23),
-            border: Border.all(color: kGen.withValues(alpha: 0.5), width: 1.5),
-          ),
+          decoration:
+              context.skin.control(active: true, tint: kGen, radius: 23) ??
+                  BoxDecoration(
+                    color: kGen.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(23),
+                    border: Border.all(
+                        color: kGen.withValues(alpha: 0.5), width: 1.5),
+                  ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.menu_book_outlined, size: 19, color: kGen),
+              Icon(context.skin.icon(Icons.menu_book_outlined),
+                  size: 19, color: kGen),
               const SizedBox(width: 10),
               // The Books section's own button stays "Genesis"; once you are on
               // the page, it says what it is.
@@ -237,6 +242,16 @@ class _RoundBtn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.book;
+    final skin = context.skin;
+    if (!skin.isStandard) {
+      return SkinButton(
+        width: side,
+        height: side,
+        radius: side / 2,
+        onTap: onTap,
+        child: Icon(skin.icon(icon), size: 18, color: t.ink),
+      );
+    }
     return SizedBox(
       width: side,
       height: side,
@@ -293,21 +308,27 @@ class _SearchRow extends StatelessWidget {
           child: Container(
             height: 52,
             padding: const EdgeInsets.symmetric(horizontal: 18),
-            decoration: BoxDecoration(
-              color: kGen.withValues(alpha: 0.10),
-              borderRadius: BorderRadius.circular(26),
-              border:
-                  Border.all(color: kGen.withValues(alpha: 0.4), width: 1.5),
-            ),
+            // The search box is the skin's well; Unibody's is black glass,
+            // hence the well's ink below.
+            decoration:
+                context.skin.surface(SurfaceRole.well, radius: 26) ??
+                    BoxDecoration(
+                      color: kGen.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(26),
+                      border: Border.all(
+                          color: kGen.withValues(alpha: 0.4), width: 1.5),
+                    ),
             child: Row(
               children: [
-                Icon(Icons.search, size: 19, color: t.inkDim),
+                Icon(context.skin.icon(Icons.search),
+                    size: 19, color: context.skin.wellInkDim ?? t.inkDim),
                 const SizedBox(width: 12),
                 Expanded(
                   child: TextField(
                     controller: terms,
                     onSubmitted: (_) => _go(),
-                    style: TextStyle(fontSize: 15, color: t.ink),
+                    style: TextStyle(
+                        fontSize: 15, color: context.skin.wellInk ?? t.ink),
                     decoration: InputDecoration(
                       border: InputBorder.none,
                       isCollapsed: true,

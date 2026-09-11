@@ -8,6 +8,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../design/skin.dart';
 import '../design/tokens.dart';
 import '../src/rust/api/chat.dart';
 
@@ -119,7 +120,9 @@ class _ChatOverlayState extends State<ChatOverlay> {
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 680, maxHeight: 560),
               child: Material(
-                color: t.panel,
+                // A language's dialog surface: Glass's panel is translucent,
+                // and this floats on a black scrim.
+                color: context.skin.isStandard ? t.panel : t.modal,
                 elevation: 24,
                 borderRadius: BorderRadius.circular(Tokens.radiusLg),
                 clipBehavior: Clip.antiAlias,
@@ -129,7 +132,8 @@ class _ChatOverlayState extends State<ChatOverlay> {
                     children: [
                       Row(
                         children: [
-                          Icon(Icons.auto_awesome, size: 16, color: t.text),
+                          Icon(context.skin.icon(Icons.auto_awesome),
+                              size: 16, color: t.text),
                           const SizedBox(width: 6),
                           Text('Chat',
                               style: TextStyle(
@@ -142,7 +146,8 @@ class _ChatOverlayState extends State<ChatOverlay> {
                           const SizedBox(width: 4),
                           IconButton(
                             onPressed: _toggle,
-                            icon: const Icon(Icons.close, size: 18),
+                            icon: Icon(context.skin.icon(Icons.close),
+                                size: 18),
                           ),
                         ],
                       ),

@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../src/rust/api/transfer.dart';
 import 'certificate_card.dart';
 import 'connection_card.dart';
@@ -311,7 +312,7 @@ class _Header extends StatelessWidget {
           Text(
             'Transfer',
             style: TextStyle(
-              fontFamily: Tokens.fontFamily,
+              fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
               fontSize: 23,
               fontWeight: FontWeight.w700,
               color: t.text,

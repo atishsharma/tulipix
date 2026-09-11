@@ -12,6 +12,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../shell/shell_controller.dart';
 import '../../shell/sidebar.dart';
 import '../../src/rust/api/books.dart';
@@ -170,27 +171,39 @@ class HomeChip extends StatelessWidget {
     final t = context.tokens;
     return Hover(
       onTap: onTap,
-      builder: (context, hov) => AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
-        height: 30,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: on ? accent : (hov ? t.panel : t.panel2),
-          borderRadius: BorderRadius.circular(15),
-          border: Border.all(color: on ? accent : t.outline),
-        ),
-        child: Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: on ? Colors.white : t.text,
+      builder: (context, hov) {
+        // A skin draws the chip as its own control, latched in the kind's
+        // colour when on.
+        final skin = context.skin;
+        final skinned = skin.control(
+            active: on, hovered: hov, tint: accent, radius: 15);
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          height: 30,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          alignment: Alignment.center,
+          decoration: skinned ??
+              BoxDecoration(
+                color: on ? accent : (hov ? t.panel : t.panel2),
+                borderRadius: BorderRadius.circular(15),
+                border: Border.all(color: on ? accent : t.outline),
+              ),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: !on
+                  ? t.text
+                  : skinned == null
+                      ? Colors.white
+                      : (skin.activeInk ?? accent),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
@@ -245,14 +258,20 @@ class TitlePill extends StatelessWidget {
     final t = context.tokens;
     // Dark: a deep-accent pill with WHITE ink so the label shines in the card's
     // colour. Light keeps the white pill with accent text.
-    final ink = t.dark ? Colors.white : accent;
+    // A skin draws the pill as its latched control in the card's colour.
+    final skin = context.skin;
+    final skinned = skin.control(active: true, tint: accent, radius: 10);
+    final ink = skinned != null
+        ? (skin.activeInk ?? accent)
+        : (t.dark ? Colors.white : accent);
     return Container(
       padding: const EdgeInsets.fromLTRB(11, 6, 12, 6),
-      decoration: BoxDecoration(
-        color: t.dark ? darker(accent, 0.55) : Colors.white,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: accent, width: 1.5),
-      ),
+      decoration: skinned ??
+          BoxDecoration(
+            color: t.dark ? darker(accent, 0.55) : Colors.white,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: accent, width: 1.5),
+          ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -312,10 +331,16 @@ class ProgressPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final ink = t.dark ? Colors.white : t.text;
+    // Progress holds a value, so a skin sinks it into its well.
+    final skin = context.skin;
+    final well = skin.surface(SurfaceRole.well, radius: 9);
+    final ink = well != null
+        ? (skin.wellInk ?? t.text)
+        : (t.dark ? Colors.white : t.text);
     return Container(
       padding: const EdgeInsets.fromLTRB(9, 4, 9, 5),
-      decoration: BoxDecoration(
+      decoration: well ??
+          BoxDecoration(
         color: t.dark
             ? darker(accent, 0.30)
             : (compact ? Colors.white : accent.withValues(alpha: 0.12)),
@@ -362,10 +387,16 @@ class ProgressPill extends StatelessWidget {
               child: LinearProgressIndicator(
                 value: frac.clamp(0.0, 1.0),
                 minHeight: compact ? 12 : 8,
-                backgroundColor: t.dark
-                    ? Colors.white.withValues(alpha: 0.25)
-                    : accent.withValues(alpha: 0.18),
-                color: t.dark ? Colors.white : accent,
+                backgroundColor: well != null
+                    ? t.glassStrong
+                    : t.dark
+                        ? Colors.white.withValues(alpha: 0.25)
+                        : accent.withValues(alpha: 0.18),
+                color: well != null
+                    ? accent
+                    : t.dark
+                        ? Colors.white
+                        : accent,
               ),
             ),
           ],
@@ -491,7 +522,10 @@ class HubTile extends StatelessWidget {
       onTap: onTap,
       builder: (context, hov) => AnimatedContainer(
         duration: const Duration(milliseconds: 130),
-        decoration: BoxDecoration(
+        // A skin stands the tile up as its card; the armed ring below still
+        // answers the hover.
+        decoration: context.skin.surface(SurfaceRole.card, radius: 16) ??
+            BoxDecoration(
           color: accent.withValues(
               alpha: hov
                   ? (t.dark ? 0.28 : 0.18 * washScale)
@@ -522,13 +556,18 @@ class HubTile extends StatelessWidget {
                 Container(
                   width: disc,
                   height: disc,
-                  decoration: BoxDecoration(
-                    // White on every theme — the accent glyph is drawn for a
-                    // light plate and the dark panel swallowed it.
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(15),
-                  ),
-                  child: Icon(icon, size: disc * 0.44, color: accent),
+                  // A skin's disc is its latched control in the section's
+                  // colour — pressed in, a pastel clay, a pocket, a pane.
+                  decoration: context.skin
+                          .control(active: true, tint: accent, radius: 15) ??
+                      BoxDecoration(
+                        // White on every theme — the accent glyph is drawn for
+                        // a light plate and the dark panel swallowed it.
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                  child: Icon(context.skin.icon(icon),
+                      size: disc * 0.44, color: accent),
                 ),
                 SizedBox(height: 7 * s),
                 // Flexible, not a bare Text: the disc and the count pill are
@@ -753,7 +792,13 @@ class TopPill extends StatelessWidget {
         duration: const Duration(milliseconds: 120),
         height: 31,
         padding: const EdgeInsets.symmetric(horizontal: 12),
-        decoration: BoxDecoration(
+        // Solid stays the section's colour; the glass version is the skin's
+        // control.
+        decoration: (solid
+                ? null
+                : context.skin.control(
+                    active: false, hovered: hov, tint: accent, radius: 16)) ??
+            BoxDecoration(
           color: solid
               ? (hov ? accent.withValues(alpha: 0.85) : accent)
               : (hov ? t.glassStrong : t.glass),
@@ -839,6 +884,7 @@ class CineBtn extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final size = primary ? 53.0 : 32.0;
+    final skin = context.skin;
     return Hover(
       onTap: onTap,
       builder: (context, hov) {
@@ -847,13 +893,29 @@ class CineBtn extends StatelessWidget {
           duration: const Duration(milliseconds: 120),
           width: size,
           height: size,
-          decoration: BoxDecoration(
-            color: on ? accent : t.glass,
-            shape: BoxShape.circle,
-            border: Border.all(color: on ? accent : t.glassBorder),
-          ),
-          child: Icon(icon,
-              size: primary ? 22 : 14, color: on ? Colors.white : t.text),
+          // A skin's key: the play button its prominent control, a lit one
+          // latched.
+          decoration: skin.control(
+                active: lit,
+                hovered: hov,
+                prominent: primary,
+                tint: accent,
+                radius: size / 2,
+              ) ??
+              BoxDecoration(
+                color: on ? accent : t.glass,
+                shape: BoxShape.circle,
+                border: Border.all(color: on ? accent : t.glassBorder),
+              ),
+          child: Icon(skin.icon(icon),
+              size: primary ? 22 : 14,
+              color: skin.isStandard
+                  ? (on ? Colors.white : t.text)
+                  : primary
+                      ? (skin.onProminent ?? accent)
+                      : lit
+                          ? (skin.activeInk ?? accent)
+                          : t.text),
         );
       },
     );
@@ -890,7 +952,11 @@ class HeroBtn extends StatelessWidget {
         duration: const Duration(milliseconds: 120),
         height: 42,
         padding: const EdgeInsets.symmetric(horizontal: 18),
-        decoration: BoxDecoration(
+        decoration: (primary
+                ? null
+                : context.skin
+                    .control(active: false, hovered: hov, radius: 21)) ??
+            BoxDecoration(
           color: primary
               ? (hov ? fill.withValues(alpha: 0.88) : fill)
               : (hov ? t.glassStrong : t.glass),

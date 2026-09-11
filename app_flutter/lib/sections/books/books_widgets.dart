@@ -10,6 +10,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../../design/skin.dart';
+
 import '../../src/rust/api/books.dart';
 import 'book_mockup.dart';
 import 'book_theme.dart';
@@ -70,12 +72,13 @@ class PanelCard extends StatelessWidget {
       width: width,
       padding: padding,
       clipBehavior: clip ? Clip.antiAlias : Clip.none,
-      decoration: BoxDecoration(
-        color: b.card,
-        borderRadius: BorderRadius.circular(radius),
-        border: border,
-        boxShadow: b.cardShadow,
-      ),
+      decoration: context.skin.surface(SurfaceRole.card, radius: radius) ??
+          BoxDecoration(
+            color: b.card,
+            borderRadius: BorderRadius.circular(radius),
+            border: border,
+            boxShadow: b.cardShadow,
+          ),
       child: child,
     );
   }
@@ -128,7 +131,16 @@ class _PillButtonState extends State<PillButton> {
           height: h,
           padding: EdgeInsets.fromLTRB(
               widget.compact ? 14 : 16, 0, widget.compact ? 15 : 18, 0),
-          decoration: BoxDecoration(
+          // Filled stays Books' violet; the outline pill is the skin's key.
+          decoration: (widget.filled
+                  ? null
+                  : context.skin.control(
+                      active: false,
+                      hovered: _hover,
+                      tint: widget.accent,
+                      radius: h / 2,
+                    )) ??
+              BoxDecoration(
             color: bg,
             borderRadius: BorderRadius.circular(h / 2),
             border: widget.filled
@@ -175,6 +187,10 @@ class BookFilterChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // A skin latches the chip in its own hue; its ink on that is the skin's.
+    final skin = context.skin;
+    final skinned = skin.control(active: active, tint: hue, radius: 17);
+    final on = skinned == null ? Colors.white : (skin.activeInk ?? hue);
     return GestureDetector(
       onTap: onTap,
       child: MouseRegion(
@@ -182,12 +198,14 @@ class BookFilterChip extends StatelessWidget {
         child: Container(
           height: 34,
           padding: const EdgeInsets.symmetric(horizontal: 14),
-          decoration: BoxDecoration(
-            color: active ? hue : hue.withValues(alpha: 0.10),
-            borderRadius: BorderRadius.circular(17),
-            border: Border.all(
-                color: hue.withValues(alpha: active ? 0 : 0.45), width: 1.5),
-          ),
+          decoration: skinned ??
+              BoxDecoration(
+                color: active ? hue : hue.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(17),
+                border: Border.all(
+                    color: hue.withValues(alpha: active ? 0 : 0.45),
+                    width: 1.5),
+              ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -195,7 +213,7 @@ class BookFilterChip extends StatelessWidget {
                   style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
-                      color: active ? Colors.white : hue)),
+                      color: active ? on : hue)),
               if (count >= 0) ...[
                 const SizedBox(width: 6),
                 Text('$count',
@@ -203,7 +221,7 @@ class BookFilterChip extends StatelessWidget {
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                         color: active
-                            ? Colors.white.withValues(alpha: 0.8)
+                            ? on.withValues(alpha: 0.8)
                             : hue.withValues(alpha: 0.75))),
               ],
             ],
@@ -252,11 +270,12 @@ class _EntryCardState extends State<EntryCard> {
         child: Container(
           height: 54,
           padding: const EdgeInsets.fromLTRB(14, 0, 12, 0),
-          decoration: BoxDecoration(
-            color: _hover ? b.pillBg : b.card,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: b.hairline),
-          ),
+          decoration: context.skin.surface(SurfaceRole.card, radius: 12) ??
+              BoxDecoration(
+                color: _hover ? b.pillBg : b.card,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: b.hairline),
+              ),
           child: Row(
             children: [
               Container(
@@ -557,7 +576,9 @@ class _StatCardState extends State<StatCard> {
         onTap: widget.onTap,
         child: Container(
           padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
+          decoration: context.skin
+                  .surface(SurfaceRole.card, radius: BookTheme.radius) ??
+              BoxDecoration(
             color: _hover ? b.pillBg : b.card,
             borderRadius: BorderRadius.circular(BookTheme.radius),
             border: Border.all(
@@ -802,12 +823,22 @@ class _RailRowState extends State<RailRow> {
           duration: const Duration(milliseconds: 100),
           height: 36,
           padding: const EdgeInsets.fromLTRB(10, 0, 12, 0),
-          decoration: BoxDecoration(
-            color: widget.active
-                ? b.tintViolet
-                : (_hover ? b.pillBg : Colors.transparent),
-            borderRadius: BorderRadius.circular(10),
-          ),
+          // Open or hovered, a skin draws the row as its control; at rest it
+          // is bare on the rail.
+          decoration: (widget.active || _hover
+                  ? context.skin.control(
+                      active: widget.active,
+                      hovered: _hover,
+                      tint: BookTheme.accent,
+                      radius: 10,
+                    )
+                  : null) ??
+              BoxDecoration(
+                color: widget.active
+                    ? b.tintViolet
+                    : (_hover ? b.pillBg : Colors.transparent),
+                borderRadius: BorderRadius.circular(10),
+              ),
           child: Row(
             children: [
               Icon(widget.icon,
@@ -856,44 +887,50 @@ class GenreChip extends StatelessWidget {
   final bool active;
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap: onTap,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: Container(
-            height: 30,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: hue.withValues(alpha: active ? 0.9 : 0.12),
-              borderRadius: BorderRadius.circular(15),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Flexible(
-                  child: Text(label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: active ? Colors.white : hue)),
-                ),
-                if (count >= 0) ...[
-                  const SizedBox(width: 8),
-                  Text('$count',
-                      style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: active
-                              ? Colors.white.withValues(alpha: 0.8)
-                              : hue.withValues(alpha: 0.7))),
-                ],
+  Widget build(BuildContext context) {
+    final skin = context.skin;
+    final skinned = skin.control(active: active, tint: hue, radius: 15);
+    final on = skinned == null ? Colors.white : (skin.activeInk ?? hue);
+    return GestureDetector(
+      onTap: onTap,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          height: 30,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: skinned ??
+              BoxDecoration(
+                color: hue.withValues(alpha: active ? 0.9 : 0.12),
+                borderRadius: BorderRadius.circular(15),
+              ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: active ? on : hue)),
+              ),
+              if (count >= 0) ...[
+                const SizedBox(width: 8),
+                Text('$count',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: active
+                            ? on.withValues(alpha: 0.8)
+                            : hue.withValues(alpha: 0.7))),
               ],
-            ),
+            ],
           ),
         ),
-      );
+      ),
+    );
+  }
 }
 
 /// The big grid card: cover on the left at 40 % of the width, the info column
@@ -946,13 +983,16 @@ class _BookGridTileState extends State<BookGridTile> {
         onTap: widget.onOpen,
         child: Container(
           clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: b.card,
-            borderRadius: BorderRadius.circular(BookTheme.radius),
-            border: Border.all(
-                color: hue.withValues(alpha: _hover ? 0.85 : 0.45), width: 1.5),
-            boxShadow: b.cardShadow,
-          ),
+          decoration: context.skin
+                  .surface(SurfaceRole.card, radius: BookTheme.radius) ??
+              BoxDecoration(
+                color: b.card,
+                borderRadius: BorderRadius.circular(BookTheme.radius),
+                border: Border.all(
+                    color: hue.withValues(alpha: _hover ? 0.85 : 0.45),
+                    width: 1.5),
+                boxShadow: b.cardShadow,
+              ),
           child: LayoutBuilder(
             builder: (context, box) => Padding(
               padding: const EdgeInsets.all(16),
@@ -1334,11 +1374,13 @@ class _Dot extends StatelessWidget {
         width: side,
         height: side,
         alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: hue.withValues(alpha: 0.10),
-          borderRadius: BorderRadius.circular(side / 2),
-          border: Border.all(color: hue.withValues(alpha: 0.4)),
-        ),
+        decoration: context.skin
+                .control(active: false, tint: hue, radius: side / 2) ??
+            BoxDecoration(
+              color: hue.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(side / 2),
+              border: Border.all(color: hue.withValues(alpha: 0.4)),
+            ),
         child: child,
       );
 }
@@ -1393,13 +1435,16 @@ class _BookListRowState extends State<BookListRow> {
         onTap: widget.onOpen,
         child: Container(
           clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: b.card,
-            borderRadius: BorderRadius.circular(BookTheme.radius),
-            border: Border.all(
-                color: hue.withValues(alpha: _hover ? 0.85 : 0.45), width: 1.5),
-            boxShadow: b.cardShadow,
-          ),
+          decoration: context.skin
+                  .surface(SurfaceRole.card, radius: BookTheme.radius) ??
+              BoxDecoration(
+                color: b.card,
+                borderRadius: BorderRadius.circular(BookTheme.radius),
+                border: Border.all(
+                    color: hue.withValues(alpha: _hover ? 0.85 : 0.45),
+                    width: 1.5),
+                boxShadow: b.cardShadow,
+              ),
           child: LayoutBuilder(
             builder: (context, box) => Padding(
               padding: const EdgeInsets.all(10),

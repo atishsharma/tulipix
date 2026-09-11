@@ -14,6 +14,7 @@ import 'dart:ui' show AppExitResponse;
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'design/app_theme.dart';
 import 'design/design_language.dart';
 import 'design/skin.dart';
 import 'design/tokens.dart';
@@ -140,14 +141,17 @@ class _TulipixAppState extends State<TulipixApp> {
 
   @override
   Widget build(BuildContext context) {
-    final tokens = _dark ? Tokens.dark(oled: _oled) : Tokens.light();
+    // Base tokens from the theme, the language's skin over them, and the
+    // language's own tokens from the skin — so every `context.tokens` in
+    // every section answers in the language. tokens.dart stays a literal
+    // transcription of tokens.slint; Standard's retint is the base itself.
+    final base = _dark ? Tokens.dark(oled: _oled) : Tokens.light();
+    final skin = skinFor(_language, base);
+    final tokens = skin.retint(base);
     return MaterialApp(
       title: 'Tulipix',
       debugShowCheckedModeBanner: false,
-      // The skin rides beside the tokens, so `context.skin` answers anywhere
-      // below. tokens.dart stays a literal transcription of tokens.slint.
-      theme: tulipixTheme(tokens)
-          .copyWith(extensions: [tokens, skinFor(_language, tokens)]),
+      theme: appTheme(tokens, skin),
       // The floating mini, the zen player and the video all wrap the whole
       // app: what is playing does not stop playing when you leave the section
       // that started it, and these are how it stays visible. Video covers the
@@ -166,6 +170,17 @@ class _TulipixAppState extends State<TulipixApp> {
                   builder: (context, _) {
                     final at = _shell.section;
                     return Stack(children: [
+                      // The language's backdrop under the whole shell — the
+                      // aura, the plate. Always a child, empty under Standard:
+                      // a child that comes and goes moves its siblings, and
+                      // that costs every page its State (see the resize edges).
+                      Positioned.fill(
+                        child: skin.pageBackdrop(
+                              accent: Tokens.accentOf(at),
+                              alt: Tokens.brand2,
+                            ) ??
+                            const SizedBox.shrink(),
+                      ),
                       Column(children: [
                         // Above the rail and the page both, the way the caption row
                         // is in ui/main.slint — it is the window's row, not the
@@ -210,7 +225,11 @@ class _TulipixAppState extends State<TulipixApp> {
                                 child: Container(
                                   margin:
                                       const EdgeInsets.fromLTRB(14, 14, 14, 14),
-                                  decoration: BoxDecoration(
+                                  // The language's card: a raised sheet, a
+                                  // slab of clay, a pane, a milled pocket.
+                                  decoration: skin.surface(SurfaceRole.card,
+                                          radius: Tokens.radiusLg) ??
+                                      BoxDecoration(
                                     color: tokens.panel,
                                     borderRadius:
                                         BorderRadius.circular(Tokens.radiusLg),

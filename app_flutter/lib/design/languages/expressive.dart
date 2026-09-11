@@ -21,7 +21,7 @@ import '../skin.dart';
 import '../tokens.dart';
 import 'symbols_glyphs.dart';
 
-class ExpressiveSkin extends MusicSkin {
+class ExpressiveSkin extends AppSkin {
   ExpressiveSkin(Tokens t)
       : reduceMotion = t.reduceMotion,
         s = _scheme(t);
@@ -67,6 +67,29 @@ class ExpressiveSkin extends MusicSkin {
   Color get onProminent => s.onPrimary;
   @override
   String get fontFamily => 'GoogleSansFlex';
+
+  /// The tonal surfaces, tier by tier. No top-edge light: depth is the
+  /// container tier, never a highlight.
+  @override
+  Tokens retint(Tokens base) => tokensFrom(
+        base,
+        page: s.surface,
+        atmosphere: s.surfaceContainerLowest,
+        panel: s.surfaceContainer,
+        panel2: s.surfaceContainerHigh,
+        modal: s.surfaceContainerHigh,
+        ink: s.onSurface,
+        inkDim: s.onSurfaceVariant,
+        inkInv: s.surface,
+        hair: s.outlineVariant,
+        light: const Color(0x00000000),
+        fill: s.onSurface.withValues(alpha: 0.05),
+        fillStrong: s.onSurface.withValues(alpha: 0.10),
+      );
+  @override
+  double get controlRadius => 20;
+  @override
+  double get panelRadius => 28;
 
   @override
   Decoration surface(SurfaceRole role, {double radius = 16}) => switch (role) {

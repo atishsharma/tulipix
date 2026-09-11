@@ -21,6 +21,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../src/rust/api/editor.dart';
 import 'photos_controller.dart';
 
@@ -234,7 +235,7 @@ class _EditorState extends State<_Editor> {
             Text(
               'Edit',
               style: TextStyle(
-                fontFamily: Tokens.fontFamily,
+                fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                 fontSize: 18,
                 fontWeight: FontWeight.w600,
                 color: t.nInk,
@@ -1490,7 +1491,7 @@ class _Section extends StatelessWidget {
         child: Text(
           label.toUpperCase(),
           style: TextStyle(
-            fontFamily: Tokens.fontFamily,
+            fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
             fontSize: 10.5,
             letterSpacing: 1.1,
             fontWeight: FontWeight.w600,
@@ -1609,7 +1610,7 @@ class _EditorError extends StatelessWidget {
             Text(
               'This photo could not be opened for editing',
               style: TextStyle(
-                fontFamily: Tokens.fontFamily,
+                fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
                 color: t.nInk,

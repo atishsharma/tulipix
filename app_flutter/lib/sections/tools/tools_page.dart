@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import '../../design/first_load.dart';
 import '../../shell/shell_controller.dart';
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../src/rust/api/tools.dart';
 import 'tools_controller.dart';
 import 'tools_form.dart';
@@ -240,32 +241,44 @@ class _SearchPillState extends State<_SearchPill> {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final has = widget.search.text.isNotEmpty;
+    // A skin sinks the search into its well in place of the gradient ring.
+    final skin = context.skin;
+    final well = skin.surface(SurfaceRole.well, radius: 21);
     return Container(
       width: 290,
       height: 42,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(21),
-        gradient: const LinearGradient(
-          begin: Alignment(-1, -0.58),
-          end: Alignment(1, 0.58),
-          colors: [Color(0xFF06B6D4), Color(0xFF6366F1), Color(0xFF8B5CF6)],
-        ),
-      ),
+      decoration: well ??
+          BoxDecoration(
+            borderRadius: BorderRadius.circular(21),
+            gradient: const LinearGradient(
+              begin: Alignment(-1, -0.58),
+              end: Alignment(1, 0.58),
+              colors: [
+                Color(0xFF06B6D4),
+                Color(0xFF6366F1),
+                Color(0xFF8B5CF6)
+              ],
+            ),
+          ),
       padding: const EdgeInsets.all(1.4),
       child: Container(
-        decoration: BoxDecoration(
-          color: t.nCard,
-          borderRadius: BorderRadius.circular(19.6),
-        ),
+        decoration: well != null
+            ? null
+            : BoxDecoration(
+                color: t.nCard,
+                borderRadius: BorderRadius.circular(19.6),
+              ),
         padding: const EdgeInsets.only(left: 13, right: 5),
         child: Row(
           children: [
-            Icon(Icons.search, size: 17, color: t.nInk3),
+            Icon(skin.icon(Icons.search),
+                size: 17, color: skin.wellInkDim ?? t.nInk3),
             const SizedBox(width: 8),
             Expanded(
               child: TextField(
                 controller: widget.search,
-                style: TextStyle(fontSize: 15, color: t.nInk),
+                style:
+                    TextStyle(fontSize: 15, color: skin.wellInk ?? t.nInk),
                 cursorColor: Tokens.secTools,
                 onChanged: (v) =>
                     widget.controller.send(ToolsCmd.search(text: v.trim())),
@@ -338,7 +351,12 @@ class _Tab extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: Material(
-        color: active ? tab.tint.withValues(alpha: 0.16) : t.nChip,
+        // Under a skin the tab is its control, drawn on the Container below.
+        color: !context.skin.isStandard
+            ? Colors.transparent
+            : active
+                ? tab.tint.withValues(alpha: 0.16)
+                : t.nChip,
         borderRadius: BorderRadius.circular(20),
         child: InkWell(
           borderRadius: BorderRadius.circular(20),
@@ -347,13 +365,15 @@ class _Tab extends StatelessWidget {
           // tab has to be obvious now that the grid no longer repeats its name
           // in a heading above the tiles.
           child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: active ? tab.tint : Colors.transparent,
-                width: 1.4,
-              ),
-            ),
+            decoration: context.skin
+                    .control(active: active, tint: tab.tint, radius: 20) ??
+                BoxDecoration(
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: active ? tab.tint : Colors.transparent,
+                    width: 1.4,
+                  ),
+                ),
             padding: const EdgeInsets.all(2.5),
             child: Container(
               decoration: BoxDecoration(
@@ -506,11 +526,13 @@ class _OpCardState extends State<_OpCard> {
         child: AnimatedContainer(
           duration: Duration(milliseconds: t.reduceMotion ? 0 : 130),
           padding: const EdgeInsets.fromLTRB(10, 7, 10, 9),
-          decoration: BoxDecoration(
-            color: _hover ? tint.withValues(alpha: 0.09) : t.nCard,
-            borderRadius: BorderRadius.circular(13),
-            border: Border.all(color: _hover ? tint : t.nHair),
-          ),
+          // The disc below still answers the hover; the tile is the skin's.
+          decoration: context.skin.surface(SurfaceRole.card, radius: 13) ??
+              BoxDecoration(
+                color: _hover ? tint.withValues(alpha: 0.09) : t.nCard,
+                borderRadius: BorderRadius.circular(13),
+                border: Border.all(color: _hover ? tint : t.nHair),
+              ),
           child: Stack(
             children: [
               Column(

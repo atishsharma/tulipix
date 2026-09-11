@@ -21,6 +21,7 @@ import 'package:flutter/gestures.dart' show kPrimaryButton;
 import 'package:flutter/material.dart';
 
 import '../design/app_mark.dart';
+import '../design/skin.dart';
 import '../design/tokens.dart';
 import 'shell_controller.dart';
 import '../sections/music/music_controller.dart';
@@ -174,7 +175,7 @@ class _AppTitleRowState extends State<AppTitleRow> {
                                       0,
                             )
                           else
-                            Icon(Icons.music_note,
+                            Icon(context.skin.icon(Icons.music_note),
                                 size: 15, color: _music.accent),
                           const SizedBox(width: 9),
                           Expanded(
@@ -308,12 +309,15 @@ class _CapBtnState extends State<_CapBtn> {
             // One pixel down while held — the whole press feedback.
             padding: EdgeInsets.only(top: _down ? 2 : 0),
             child: Icon(
-              widget.icon,
+              context.skin.icon(widget.icon),
               size: widget.iconSize,
-              // Ink at rest, white once the blue is under it.
+              // Ink at rest, white once the plate is under it. A language's
+              // page is not Standard's black or white, so it rests in its ink.
               color: _hover
                   ? Colors.white
-                  : (t.dark ? Colors.white : Colors.black),
+                  : !context.skin.isStandard
+                      ? t.text
+                      : (t.dark ? Colors.white : Colors.black),
             ),
           ),
         ),
@@ -581,7 +585,7 @@ class _PeekBtnState extends State<_PeekBtn> {
             ),
             alignment: Alignment.center,
             child: Icon(
-              widget.icon,
+              context.skin.icon(widget.icon),
               size: 14,
               color: _hover && widget.tone != null ? Colors.white : t.text,
             ),

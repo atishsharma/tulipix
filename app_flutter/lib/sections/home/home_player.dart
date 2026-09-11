@@ -12,6 +12,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/music.dart';
 import '../music/mini_player.dart';
@@ -1294,7 +1295,9 @@ class ClassicMusicCard extends StatelessWidget {
         };
         final src = playingSource(mode);
         return Container(
-          decoration: BoxDecoration(
+          decoration: context.skin
+                  .surface(SurfaceRole.card, radius: kCardRadius) ??
+              BoxDecoration(
             // Pink reads far brighter than the other section accents, so this
             // card sits at a third of the standard fill to land at the same
             // perceived darkness.
@@ -1318,7 +1321,9 @@ class ClassicMusicCard extends StatelessWidget {
               // The player floats on the card's canvas in its own well.
               Expanded(
                 child: Container(
-                  decoration: BoxDecoration(
+                  decoration: context.skin
+                          .surface(SurfaceRole.card, radius: 12) ??
+                      BoxDecoration(
                     // Theme-aware fill: white-cream on light themes, the panel
                     // surface on dark — the fixed cream glared.
                     color: t.dark ? t.panel2 : const Color(0xFFFAFAF7),
@@ -1440,7 +1445,13 @@ class HomeCircleTab extends StatelessWidget {
               duration: const Duration(milliseconds: 120),
               width: 48,
               height: 48,
-              decoration: BoxDecoration(
+              decoration: context.skin.control(
+                    active: active,
+                    hovered: hov,
+                    tint: tint,
+                    radius: 24,
+                  ) ??
+                  BoxDecoration(
                 color: active ? tint : wash(tint, hov ? 0.30 : 0.15),
                 shape: BoxShape.circle,
                 border: Border.all(
@@ -1470,8 +1481,13 @@ class HomeCircleTab extends StatelessWidget {
                       width: active ? 2 : 0,
                     ),
                   ),
-                  child:
-                      Icon(icon, size: 22, color: active ? Colors.white : tint),
+                  child: Icon(context.skin.icon(icon),
+                      size: 22,
+                      color: !active
+                          ? tint
+                          : context.skin.isStandard
+                              ? Colors.white
+                              : (context.skin.activeInk ?? tint)),
                 ),
               ),
             ),

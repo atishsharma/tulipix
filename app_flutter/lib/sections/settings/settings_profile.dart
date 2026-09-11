@@ -18,6 +18,7 @@ import 'package:flutter/services.dart';
 import '../../design/app_mark.dart';
 import '../../design/design_language.dart';
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/settings.dart';
 import '../music/mini_widget.dart';
@@ -467,11 +468,13 @@ class _Identity extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     return Container(
-      decoration: BoxDecoration(
-        color: t.panel2,
-        borderRadius: BorderRadius.circular(Tokens.radiusLg),
-        border: Border.all(color: t.outline),
-      ),
+      decoration: context.skin
+              .surface(SurfaceRole.card, radius: Tokens.radiusLg) ??
+          BoxDecoration(
+            color: t.panel2,
+            borderRadius: BorderRadius.circular(Tokens.radiusLg),
+            border: Border.all(color: t.outline),
+          ),
       clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
@@ -920,11 +923,13 @@ class _Card extends StatelessWidget {
     final t = context.tokens;
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-      decoration: BoxDecoration(
-        color: t.panel2,
-        borderRadius: BorderRadius.circular(Tokens.radiusLg),
-        border: Border.all(color: t.outline),
-      ),
+      decoration: context.skin
+              .surface(SurfaceRole.card, radius: Tokens.radiusLg) ??
+          BoxDecoration(
+            color: t.panel2,
+            borderRadius: BorderRadius.circular(Tokens.radiusLg),
+            border: Border.all(color: t.outline),
+          ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -933,11 +938,13 @@ class _Card extends StatelessWidget {
               Container(
                 width: 28,
                 height: 28,
-                decoration: BoxDecoration(
-                  color: tint.withValues(alpha: 0.16),
-                  borderRadius: BorderRadius.circular(9),
-                ),
-                child: Icon(glyph, size: 15, color: tint),
+                decoration: context.skin
+                        .control(active: true, tint: tint, radius: 9) ??
+                    BoxDecoration(
+                      color: tint.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                child: Icon(context.skin.icon(glyph), size: 15, color: tint),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -1250,21 +1257,29 @@ class _PickTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    final skin = context.skin;
     return Material(
-      color: active ? Tokens.brand.withValues(alpha: 0.12) : Colors.transparent,
+      color: active && skin.isStandard
+          ? Tokens.brand.withValues(alpha: 0.12)
+          : Colors.transparent,
       borderRadius: BorderRadius.circular(Tokens.radiusSm),
       child: InkWell(
         borderRadius: BorderRadius.circular(Tokens.radiusSm),
         onTap: onTap,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(Tokens.radiusSm),
-            border: Border.all(
-              color: active ? Tokens.brand : t.outline,
-              width: active ? 1.5 : 1,
-            ),
-          ),
+          decoration: skin.control(
+                active: active,
+                tint: Tokens.brand,
+                radius: Tokens.radiusSm,
+              ) ??
+              BoxDecoration(
+                borderRadius: BorderRadius.circular(Tokens.radiusSm),
+                border: Border.all(
+                  color: active ? Tokens.brand : t.outline,
+                  width: active ? 1.5 : 1,
+                ),
+              ),
           child: Row(
             children: [
               Icon(
@@ -1427,14 +1442,21 @@ class _LayoutTile extends StatelessWidget {
     final t = context.tokens;
     return Container(
       padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: t.panel2,
-        borderRadius: BorderRadius.circular(Tokens.radiusLg),
-        border: Border.all(
-          color: active ? Tokens.brand : t.outline,
-          width: active ? 2 : 1,
-        ),
-      ),
+      // The layout in use is latched in the brand's colour; the others are the
+      // skin's cards.
+      decoration: (active
+              ? context.skin.control(
+                  active: true, tint: Tokens.brand, radius: Tokens.radiusLg)
+              : context.skin
+                  .surface(SurfaceRole.card, radius: Tokens.radiusLg)) ??
+          BoxDecoration(
+            color: t.panel2,
+            borderRadius: BorderRadius.circular(Tokens.radiusLg),
+            border: Border.all(
+              color: active ? Tokens.brand : t.outline,
+              width: active ? 2 : 1,
+            ),
+          ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

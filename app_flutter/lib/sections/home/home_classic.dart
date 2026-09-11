@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 
 import '../../design/app_mark.dart';
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/home.dart';
 import '../music/music_controller.dart';
@@ -658,7 +659,9 @@ class RowCard extends StatelessWidget {
   Widget build(BuildContext context) => Hover(
         onTap: onTap,
         builder: (context, hov) => Container(
-          decoration: BoxDecoration(
+          decoration: context.skin
+                  .surface(SurfaceRole.card, radius: kCardRadius) ??
+              BoxDecoration(
             color: plate(accent),
             borderRadius: BorderRadius.circular(kCardRadius),
             border: Border.all(
@@ -820,7 +823,9 @@ class _LiftTile extends StatelessWidget {
           padding: EdgeInsets.only(top: hov ? 0 : 12),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 130),
-            decoration: BoxDecoration(
+            // A cover's mat in the skin; the lift above still answers hover.
+            decoration: context.skin.surface(SurfaceRole.art, radius: 10) ??
+                BoxDecoration(
               color: hov ? t.panel : t.panel2,
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
@@ -914,15 +919,21 @@ class CloudRow extends StatelessWidget {
                     builder: (context, hov) => AnimatedContainer(
                       duration: const Duration(milliseconds: 130),
                       padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: hov ? t.panel : t.panel2,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                            color: hov
-                                ? Tokens.secCloud
-                                : t.outline.withValues(alpha: 0.9),
-                            width: hov ? 2 : 1.5),
-                      ),
+                      decoration: context.skin.control(
+                            active: false,
+                            hovered: hov,
+                            tint: Tokens.secCloud,
+                            radius: 10,
+                          ) ??
+                          BoxDecoration(
+                            color: hov ? t.panel : t.panel2,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color: hov
+                                    ? Tokens.secCloud
+                                    : t.outline.withValues(alpha: 0.9),
+                                width: hov ? 2 : 1.5),
+                          ),
                       child: FittedBox(
                         fit: BoxFit.scaleDown,
                         child: Column(
@@ -953,15 +964,21 @@ class CloudRow extends StatelessWidget {
                     onTap: () => ShellController.instance.go(Section.cloud),
                     builder: (context, hov) => Container(
                       alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: hov ? t.panel : t.panel2,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                            color: hov
-                                ? Tokens.secCloud
-                                : t.outline.withValues(alpha: 0.9),
-                            width: hov ? 2 : 1.5),
-                      ),
+                      decoration: context.skin.control(
+                            active: false,
+                            hovered: hov,
+                            tint: Tokens.secCloud,
+                            radius: 10,
+                          ) ??
+                          BoxDecoration(
+                            color: hov ? t.panel : t.panel2,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color: hov
+                                    ? Tokens.secCloud
+                                    : t.outline.withValues(alpha: 0.9),
+                                width: hov ? 2 : 1.5),
+                          ),
                       child: Text('+${total - shown}',
                           style: TextStyle(
                               fontSize: 15,
@@ -1061,16 +1078,28 @@ class CircleAction extends StatelessWidget {
             curve: Curves.easeOut,
             width: disc,
             height: disc,
-            decoration: BoxDecoration(
-              color:
-                  hov ? tint : (mono && !t.dark ? monoFill : wash(tint, 0.15)),
-              shape: BoxShape.circle,
-              border: Border.all(
-                  color: mono ? monoOutline : tint.withValues(alpha: 0.40)),
-            ),
-            child: Icon(icon,
+            decoration: context.skin.control(
+                  active: false,
+                  hovered: hov,
+                  tint: tint,
+                  radius: disc / 2,
+                ) ??
+                BoxDecoration(
+                  color: hov
+                      ? tint
+                      : (mono && !t.dark ? monoFill : wash(tint, 0.15)),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                      color:
+                          mono ? monoOutline : tint.withValues(alpha: 0.40)),
+                ),
+            child: Icon(context.skin.icon(icon),
                 size: disc * 0.44,
-                color: hov ? Colors.white : (mono ? monoIcon : tint)),
+                color: !context.skin.isStandard
+                    ? tint
+                    : hov
+                        ? Colors.white
+                        : (mono ? monoIcon : tint)),
           ),
           const SizedBox(height: 7),
           Container(
@@ -1115,13 +1144,15 @@ class ContinueStrip extends StatelessWidget {
     final t = context.tokens;
     final st = state;
     return Container(
-      decoration: BoxDecoration(
-        color: plateQuiet(Tokens.secMusic),
-        borderRadius: BorderRadius.circular(kCardRadius),
-        border: Border.all(
-            color: plateBorder(Tokens.secMusic, false),
-            width: plateBorderW(false)),
-      ),
+      decoration: context.skin
+              .surface(SurfaceRole.card, radius: kCardRadius) ??
+          BoxDecoration(
+            color: plateQuiet(Tokens.secMusic),
+            borderRadius: BorderRadius.circular(kCardRadius),
+            border: Border.all(
+                color: plateBorder(Tokens.secMusic, false),
+                width: plateBorderW(false)),
+          ),
       padding: const EdgeInsets.all(14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1207,7 +1238,8 @@ class ContinueCard extends StatelessWidget {
       onTap: () => ShellController.instance.go(kindSection(row.kind)),
       builder: (context, hov) => AnimatedContainer(
         duration: const Duration(milliseconds: 120),
-        decoration: BoxDecoration(
+        decoration: context.skin.surface(SurfaceRole.card, radius: 10) ??
+            BoxDecoration(
           color: hov ? t.panel : t.panel.withValues(alpha: 0.6),
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
@@ -1396,7 +1428,9 @@ class _QuickLaunch extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        decoration: BoxDecoration(
+        decoration: context.skin
+                .surface(SurfaceRole.card, radius: kCardRadius) ??
+            BoxDecoration(
           // The same pink splash as the player card above it.
           color: plateQuiet(Tokens.secMusic),
           borderRadius: BorderRadius.circular(kCardRadius),

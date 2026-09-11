@@ -6,6 +6,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/finances.dart';
 import 'finances_controller.dart';
@@ -31,11 +32,13 @@ class FinCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     return Container(
-      decoration: BoxDecoration(
-        color: t.nCard,
-        borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        border: Border.all(color: t.nHair),
-      ),
+      decoration: context.skin
+              .surface(SurfaceRole.card, radius: Tokens.radiusMd) ??
+          BoxDecoration(
+            color: t.nCard,
+            borderRadius: BorderRadius.circular(Tokens.radiusMd),
+            border: Border.all(color: t.nHair),
+          ),
       padding: padding,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -95,11 +98,13 @@ class StatCard extends StatelessWidget {
     final card = Container(
       width: width,
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-      decoration: BoxDecoration(
-        color: t.nCard,
-        borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        border: Border.all(color: t.nHair),
-      ),
+      decoration: context.skin
+              .surface(SurfaceRole.card, radius: Tokens.radiusMd) ??
+          BoxDecoration(
+            color: t.nCard,
+            borderRadius: BorderRadius.circular(Tokens.radiusMd),
+            border: Border.all(color: t.nHair),
+          ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -248,11 +253,12 @@ class CountChip extends StatelessWidget {
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-        decoration: BoxDecoration(
-          color: active ? c.withValues(alpha: 0.16) : t.nChip,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: active ? c : t.nHair),
-        ),
+        decoration: context.skin.control(active: active, tint: c, radius: 16) ??
+            BoxDecoration(
+              color: active ? c.withValues(alpha: 0.16) : t.nChip,
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: active ? c : t.nHair),
+            ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -446,11 +452,14 @@ class FlagCard extends StatelessWidget {
     final look = severityLook(flag.severity);
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
-      decoration: BoxDecoration(
-        color: t.nCard,
-        borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        border: Border.all(color: look.colour.withValues(alpha: 0.4)),
-      ),
+      // The severity stays in the glyph's colour; the card is the skin's.
+      decoration: context.skin
+              .surface(SurfaceRole.card, radius: Tokens.radiusMd) ??
+          BoxDecoration(
+            color: t.nCard,
+            borderRadius: BorderRadius.circular(Tokens.radiusMd),
+            border: Border.all(color: look.colour.withValues(alpha: 0.4)),
+          ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

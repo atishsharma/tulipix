@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
+import '../../design/skin.dart';
 import '../../src/rust/api/status.dart';
 import 'status_controller.dart';
 import 'status_dialogs.dart';
@@ -169,11 +170,12 @@ class Panel extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final body = DecoratedBox(
-      decoration: BoxDecoration(
-        color: t.panel,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: t.outline),
-      ),
+      decoration: context.skin.surface(SurfaceRole.card, radius: 14) ??
+          BoxDecoration(
+            color: t.panel,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: t.outline),
+          ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(13),
         child: Column(
@@ -235,11 +237,13 @@ class Glyph extends StatelessWidget {
         width: size,
         height: size,
         alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: tint.withValues(alpha: 0.14),
-          borderRadius: BorderRadius.circular(size * 0.3),
-        ),
-        child: Icon(icon, size: inner, color: tint),
+        decoration: context.skin
+                .control(active: true, tint: tint, radius: size * 0.3) ??
+            BoxDecoration(
+              color: tint.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(size * 0.3),
+            ),
+        child: Icon(context.skin.icon(icon), size: inner, color: tint),
       );
 }
 
@@ -560,11 +564,12 @@ class _Figure extends StatelessWidget {
         child: Container(
           constraints: const BoxConstraints(minHeight: 76),
           padding: const EdgeInsets.all(13),
-          decoration: BoxDecoration(
-            color: tint.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(11),
-            border: Border.all(color: tint.withValues(alpha: 0.22)),
-          ),
+          decoration: context.skin.surface(SurfaceRole.card, radius: 11) ??
+              BoxDecoration(
+                color: tint.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(11),
+                border: Border.all(color: tint.withValues(alpha: 0.22)),
+              ),
           child: Row(
             children: [
               Glyph(icon: icon, tint: tint, size: 36, inner: 17),
@@ -609,11 +614,12 @@ class _LibraryCard extends StatelessWidget {
     final t = context.tokens;
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: t.panel2,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: t.outline),
-      ),
+      decoration: context.skin.surface(SurfaceRole.card, radius: 12) ??
+          BoxDecoration(
+            color: t.panel2,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: t.outline),
+          ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,

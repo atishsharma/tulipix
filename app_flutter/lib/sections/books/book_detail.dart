@@ -7,6 +7,8 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/skin.dart';
+
 import '../../design/pick.dart';
 import '../../src/rust/api/books.dart';
 import 'book_theme.dart';
@@ -231,11 +233,13 @@ class _MetaPill extends StatelessWidget {
 
     return Container(
       padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: b.pillBg.withValues(alpha: 0.6),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: BookTheme.accent.withValues(alpha: 0.3)),
-      ),
+      decoration: context.skin.surface(SurfaceRole.card, radius: 14) ??
+          BoxDecoration(
+            color: b.pillBg.withValues(alpha: 0.6),
+            borderRadius: BorderRadius.circular(14),
+            border:
+                Border.all(color: BookTheme.accent.withValues(alpha: 0.3)),
+          ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -348,27 +352,36 @@ class _Toggle extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap: onTap,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: Container(
-            height: 26,
-            padding: const EdgeInsets.symmetric(horizontal: 10),
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: on ? hue : hue.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(13),
-              border: Border.all(color: hue.withValues(alpha: 0.5)),
-            ),
-            child: Text(label,
-                style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: on ? Colors.white : hue)),
-          ),
+  Widget build(BuildContext context) {
+    final skin = context.skin;
+    final skinned = skin.control(active: on, tint: hue, radius: 13);
+    return GestureDetector(
+      onTap: onTap,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          height: 26,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          alignment: Alignment.center,
+          decoration: skinned ??
+              BoxDecoration(
+                color: on ? hue : hue.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(13),
+                border: Border.all(color: hue.withValues(alpha: 0.5)),
+              ),
+          child: Text(label,
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: !on
+                      ? hue
+                      : skinned == null
+                          ? Colors.white
+                          : (skin.activeInk ?? hue))),
         ),
-      );
+      ),
+    );
+  }
 }
 
 /// Full-width bar with the percentage at its right edge. The DB stores 0‥1
@@ -454,15 +467,24 @@ class _CollectionToggle extends StatelessWidget {
           constraints: const BoxConstraints(minWidth: 44),
           padding: const EdgeInsets.symmetric(horizontal: 10),
           alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: row.member ? BookTheme.accent : b.pillBg,
-            borderRadius: BorderRadius.circular(13),
-          ),
+          decoration: context.skin.control(
+                active: row.member,
+                tint: BookTheme.accent,
+                radius: 13,
+              ) ??
+              BoxDecoration(
+                color: row.member ? BookTheme.accent : b.pillBg,
+                borderRadius: BorderRadius.circular(13),
+              ),
           child: Text('${row.member ? "✓ " : "+ "}${row.name}',
               style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
-                  color: row.member ? Colors.white : b.ink)),
+                  color: !row.member
+                      ? b.ink
+                      : context.skin.isStandard
+                          ? Colors.white
+                          : (context.skin.activeInk ?? BookTheme.accent))),
         ),
       ),
     );
@@ -481,11 +503,13 @@ class _Summary extends StatelessWidget {
     final summary = controller.state?.detailSummary ?? '';
     final loading = controller.fetching == book.id;
     return Container(
-      decoration: BoxDecoration(
-        color: b.pillBg.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: BookTheme.accent.withValues(alpha: 0.35)),
-      ),
+      decoration: context.skin.surface(SurfaceRole.card, radius: 10) ??
+          BoxDecoration(
+            color: b.pillBg.withValues(alpha: 0.5),
+            borderRadius: BorderRadius.circular(10),
+            border:
+                Border.all(color: BookTheme.accent.withValues(alpha: 0.35)),
+          ),
       child: ListView(
         padding: const EdgeInsets.all(10),
         children: [
@@ -629,12 +653,14 @@ class _SquareBtn extends StatelessWidget {
             width: 46,
             height: 42,
             alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: fill ?? tint.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(11),
-              border: Border.all(color: tint.withValues(alpha: 0.4)),
-            ),
-            child: Icon(icon, size: 16, color: tint),
+            decoration: context.skin
+                    .control(active: false, tint: tint, radius: 11) ??
+                BoxDecoration(
+                  color: fill ?? tint.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(11),
+                  border: Border.all(color: tint.withValues(alpha: 0.4)),
+                ),
+            child: Icon(context.skin.icon(icon), size: 16, color: tint),
           ),
         ),
       );

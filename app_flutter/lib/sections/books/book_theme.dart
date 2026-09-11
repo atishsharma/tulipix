@@ -12,19 +12,30 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/skin.dart';
 import '../../design/tokens.dart';
 
 @immutable
 class BookTheme {
-  const BookTheme({required this.dark, required this.oled});
+  const BookTheme({required this.dark, required this.oled, this.tokens});
 
   factory BookTheme.of(BuildContext context) {
     final t = context.tokens;
-    return BookTheme(dark: t.dark, oled: t.dark && t.oled);
+    // Under a design language the page, the cards, the ink and the hairlines
+    // are the language's — the same retinted tokens every other section reads.
+    // The violet and the chip hues stay: they are Books', not the material's.
+    return BookTheme(
+      dark: t.dark,
+      oled: t.dark && t.oled,
+      tokens: context.skin.isStandard ? null : t,
+    );
   }
 
   final bool dark;
   final bool oled;
+
+  /// The language's tokens, or null under Standard.
+  final Tokens? tokens;
 
   static const Color accent = Color(0xFF6C4DF6);
 
@@ -51,13 +62,17 @@ class BookTheme {
 
   static const double radius = 18;
 
-  Color get canvas => dark
-      ? (oled ? const Color(0xFF000000) : const Color(0xFF14151A))
-      : const Color(0xFFF2F2F7);
+  Color get canvas =>
+      tokens?.bg ??
+      (dark
+          ? (oled ? const Color(0xFF000000) : const Color(0xFF14151A))
+          : const Color(0xFFF2F2F7));
 
-  Color get card => dark
-      ? (oled ? const Color(0xFF0A0A0A) : const Color(0xFF1E1F26))
-      : const Color(0xFFFFFFFF);
+  Color get card => tokens != null
+      ? Color.alphaBlend(tokens!.panel, tokens!.bg)
+      : dark
+          ? (oled ? const Color(0xFF0A0A0A) : const Color(0xFF1E1F26))
+          : const Color(0xFFFFFFFF);
 
   Color get tintViolet => dark
       ? (oled ? const Color(0xFF191331) : const Color(0xFF241D3D))
@@ -79,32 +94,45 @@ class BookTheme {
       ? (oled ? const Color(0xFF101A2B) : const Color(0xFF182338))
       : const Color(0xFFE7F0FF);
 
-  Color get ink => dark ? const Color(0xFFE8E8EE) : const Color(0xFF1B1B22);
-  Color get inkDim => dark ? const Color(0xFF8F8F9A) : const Color(0xFF8A8A94);
+  Color get ink =>
+      tokens?.text ??
+      (dark ? const Color(0xFFE8E8EE) : const Color(0xFF1B1B22));
+  Color get inkDim =>
+      tokens?.textDim ??
+      (dark ? const Color(0xFF8F8F9A) : const Color(0xFF8A8A94));
 
   /// A groove: something set *into* the card.
-  Color get track => dark
-      ? (oled ? const Color(0xFF161616) : const Color(0xFF2A2B33))
-      : const Color(0xFFECECF2);
+  Color get track => tokens != null
+      ? Color.alphaBlend(tokens!.glassStrong, card)
+      : dark
+          ? (oled ? const Color(0xFF161616) : const Color(0xFF2A2B33))
+          : const Color(0xFFECECF2);
 
-  Color get pillBg => dark
-      ? (oled ? const Color(0xFF131316) : const Color(0xFF24252D))
-      : const Color(0xFFF4F4F8);
+  Color get pillBg => tokens != null
+      ? Color.alphaBlend(tokens!.glassStrong, card)
+      : dark
+          ? (oled ? const Color(0xFF131316) : const Color(0xFF24252D))
+          : const Color(0xFFF4F4F8);
 
-  Color get hairline => dark
-      ? (oled ? const Color(0xFF1F1F1F) : const Color(0xFF2C2D36))
-      : const Color(0xFFECECF2);
+  Color get hairline => tokens != null
+      ? Color.alphaBlend(tokens!.outline, card)
+      : dark
+          ? (oled ? const Color(0xFF1F1F1F) : const Color(0xFF2C2D36))
+          : const Color(0xFFECECF2);
 
   /// Dark themes get a LIGHT shadow — a soft glow, because dark-on-dark is
   /// invisible. Light themes keep the classic drop.
   Color get shadowSoft =>
       dark ? const Color(0x22FFFFFF) : const Color(0x141B1B3A);
 
-  /// The soft diffuse card shadow every surface on the page carries.
-  List<BoxShadow> get cardShadow => [
-        BoxShadow(
-            color: shadowSoft, blurRadius: 16, offset: const Offset(0, 6)),
-      ];
+  /// The soft diffuse card shadow every surface on the page carries. None
+  /// under a design language: the language draws its own depth.
+  List<BoxShadow> get cardShadow => tokens != null
+      ? const []
+      : [
+          BoxShadow(
+              color: shadowSoft, blurRadius: 16, offset: const Offset(0, 6)),
+        ];
 }
 
 extension BookThemeContext on BuildContext {
