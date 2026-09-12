@@ -148,9 +148,8 @@ class MusicController extends ChangeNotifier {
   final List<MusicCmd> _trail = [];
 
   /// Human labels for the pushed entries, so a page can be named before it has
-  /// been fetched. Same length as [_trail]. Kept now that the breadcrumb strip
-  /// is gone because the labels are what a future "back to X" tooltip would
-  /// read; nothing else reads them today.
+  /// been fetched. Same length as [_trail]. The detail hero draws them as its
+  /// breadcrumb.
   final List<String> _trailLabels = [];
 
   /// True while `goBack` is re-issuing an entry, so the push in [send] does not
@@ -158,6 +157,23 @@ class MusicController extends ChangeNotifier {
   bool _restoring = false;
 
   bool get canGoBack => _trail.isNotEmpty;
+
+  /// The pages behind this one and this one, oldest first.
+  List<String> get trail => List.unmodifiable(_trailLabels);
+
+  /// Straight back to the entry at [index] in [trail], however many pages
+  /// that skips.
+  Future<void> goBackTo(int index) async {
+    if (index < 0 || index >= _trail.length - 1) return;
+    _trail.removeRange(index + 1, _trail.length);
+    _trailLabels.removeRange(index + 1, _trailLabels.length);
+    _restoring = true;
+    try {
+      await send(_trail.last);
+    } finally {
+      _restoring = false;
+    }
+  }
 
   /// One step back: drop the current page and re-open the one beneath it, or
   /// close the detail entirely when that was the last of them.

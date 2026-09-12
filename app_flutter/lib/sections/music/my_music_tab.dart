@@ -1133,11 +1133,9 @@ class _StatsStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final skin = context.skin;
-    // 84, not 76, and less padding. An 11px caption over a 20px figure is a
-    // little over 53 points of line box in Sora, and 76 minus 28 of padding
-    // left 48 — so all four cards overflowed by five pixels on every visit to
-    // Home. Measured from the type rather than eyeballed: two line boxes plus
-    // the four-pixel gap, plus ten of breathing room top and bottom.
+    // One line, caption and figure side by side, in a 44px card. The strip
+    // used to stack a caption over a 20px figure in 84px, which spent twice the
+    // height saying the same four things.
     // Four figures are a teaser for the summary behind them: the same play
     // history answers "when do you listen", "who to", and "what did you start
     // eleven times and never finish". Tapping any card opens all of it.
@@ -1152,41 +1150,43 @@ class _StatsStrip extends StatelessWidget {
               borderRadius: BorderRadius.circular(14),
               onTap: () => listeningSummary(context, controller),
               child: Container(
-                height: 84,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                height: 44,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
                 decoration: skin.control(
-                        active: true, tint: tint, radius: 24) ??
+                        active: true, tint: tint, radius: 22) ??
                     BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: t.nHair),
                 ),
-                child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontFamily: skin.fontFamily ?? Tokens.fontFamily,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.6,
-                    color: skin.inkDim ?? t.nInk3,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  value.isEmpty ? '—' : value,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontFamily: skin.fontFamily ??
-                        Tokens.fontFamily,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                    color: skin.ink ?? t.nInk,
-                  ),
+                child: Row(
+                  children: [
+                    Text(
+                      label,
+                      maxLines: 1,
+                      style: TextStyle(
+                        fontFamily: skin.fontFamily ?? Tokens.fontFamily,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.6,
+                        color: skin.inkDim ?? t.nInk3,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    // The figure gives way first on a narrow window; the
+                    // caption is what says what the number is.
+                    Expanded(
+                      child: Text(
+                        value.isEmpty ? '—' : value,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                          fontFamily: skin.fontFamily ?? Tokens.fontFamily,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                          color: skin.ink ?? t.nInk,
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -1218,8 +1218,8 @@ class _StatsStrip extends StatelessWidget {
                 borderRadius: BorderRadius.circular(14),
                 onTap: () => duplicateFinder(context, controller),
                 child: Container(
-                  width: 56,
-                  height: 84,
+                  width: 44,
+                  height: 44,
                   decoration: skin.surface(SurfaceRole.card, radius: 14) ??
                       BoxDecoration(
                     borderRadius: BorderRadius.circular(14),
@@ -1623,24 +1623,12 @@ class _Playlists extends StatelessWidget {
               label: '+ New',
               onTap: () => createPlaylist(context, controller),
             ),
-            BrowseChip(
-              icon: Icons.auto_awesome,
-              label: 'Loved',
-              onTap: () => controller
-                  .send(const MusicCmd.playlistCreateSmart(kind: 'loved')),
-            ),
-            BrowseChip(
-              icon: Icons.auto_awesome,
-              label: 'Recent',
-              onTap: () => controller
-                  .send(const MusicCmd.playlistCreateSmart(kind: 'recent')),
-            ),
           ],
         ),
         const SizedBox(height: 16),
         if (st.cards.isEmpty)
           Text(
-            'No playlists yet — create one, or add a smart playlist.',
+            'No playlists yet — create one.',
             style: TextStyle(fontSize: 13, color: t.nInk2),
           )
         else

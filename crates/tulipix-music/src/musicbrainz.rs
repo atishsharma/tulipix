@@ -238,6 +238,112 @@ pub async fn lookup_artist(client: &reqwest::Client, artist: &str) -> Result<Art
     Ok(res.json::<ArtistSearch>().await?)
 }
 
+/// One artist by MBID, with the URL relations MusicBrainz keeps for it --
+/// which is where its Wikidata and Wikipedia links live.
+#[derive(Debug, Deserialize, Default)]
+pub struct ArtistLinks {
+    #[serde(default)]
+    pub relations: Vec<Relation>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct Relation {
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub url: Option<RelationUrl>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct RelationUrl {
+    #[serde(default)]
+    pub resource: String,
+}
+
+impl ArtistLinks {
+    /// The English article's title as it sits in its URL, when MusicBrainz
+    /// links the article directly.
+    fn enwiki(&self) -> Option<String> {
+        self.relations
+            .iter()
+            .filter(|r| r.kind == "wikipedia")
+            .filter_map(|r| r.url.as_ref())
+            .find_map(|u| u.resource.strip_prefix("https://en.wikipedia.org/wiki/"))
+            .map(str::to_string)
+    }
+
+    /// The Wikidata item, "Q44190".
+    fn wikidata(&self) -> Option<String> {
+        self.relations
+            .iter()
+            .filter(|r| r.kind == "wikidata")
+            .filter_map(|r| r.url.as_ref())
+            .filter_map(|u| u.resource.rsplit('/').next())
+            .find(|q| q.len() > 1 && q.starts_with('Q') && q[1..].bytes().all(|b| b.is_ascii_digit()))
+            .map(str::to_string)
+    }
+}
+
+/// An artist's biography: the opening of their English Wikipedia article.
+///
+/// MusicBrainz keeps no prose of its own, only facts. What it does keep, for
+/// most artists anyone has heard of, is a link to Wikidata, and Wikidata names
+/// the article. Wikipedia's summary endpoint then returns the article's lead as
+/// plain text -- no markup to strip, no key to hold. `None` when any step has
+/// nothing, or when the article is a disambiguation page.
+pub async fn wikipedia_bio(client: &reqwest::Client, mbid: &str) -> Result<Option<String>> {
+    // An MBID is a UUID; anything else does not go into a URL.
+    if mbid.is_empty() || !mbid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return Ok(None);
+    }
+    let links: ArtistLinks = client
+        .get(format!("{MB_BASE}/artist/{mbid}?fmt=json&inc=url-rels"))
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let title = match links.enwiki() {
+        Some(t) => t,
+        None => {
+            let Some(q) = links.wikidata() else { return Ok(None) };
+            let v: serde_json::Value = client
+                .get(format!(
+                    "https://www.wikidata.org/w/api.php?action=wbgetentities&ids={q}\
+                     &props=sitelinks&sitefilter=enwiki&format=json"
+                ))
+                .header(reqwest::header::USER_AGENT, USER_AGENT)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            let Some(t) = v["entities"][q.as_str()]["sitelinks"]["enwiki"]["title"].as_str() else {
+                return Ok(None);
+            };
+            // "AC/DC" has to reach the endpoint as one path segment.
+            urlencode(&t.replace(' ', "_"))
+        }
+    };
+    let v: serde_json::Value = client
+        .get(format!("https://en.wikipedia.org/api/rest_v1/page/summary/{title}"))
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    if v["type"].as_str() == Some("disambiguation") {
+        return Ok(None);
+    }
+    Ok(v["extract"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

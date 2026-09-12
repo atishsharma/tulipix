@@ -676,6 +676,25 @@ pub struct MusicState {
     pub detail_collage: Vec<String>,
     /// A playlist's description. Empty everywhere else.
     pub detail_note: String,
+    /// When anything on the page was last played -- "3 days ago" -- or empty
+    /// when nothing on it ever has been.
+    pub detail_last_played: String,
+    /// The track after the last one played from this album, or 0 when the
+    /// album was finished, never started, or is on the deck now. The same
+    /// resume point Home's shelf offers, for the one album that is open.
+    pub detail_resume_item: i64,
+    /// Every track in the library, so a smart playlist can say "48 of 3,912".
+    /// Smart playlist pages only.
+    pub detail_library_total: i64,
+    /// A smart playlist's rule, one sentence per condition: "Rating is at
+    /// least 4". Empty for every other page.
+    pub detail_rules: Vec<String>,
+    /// What the folder's files take on disk, in bytes. Folder pages only.
+    pub detail_disk_bytes: i64,
+    /// The watched folder this one sits under, and when it (or this folder on
+    /// its own) was last scanned. Folder pages only; empty when unknown.
+    pub detail_root: String,
+    pub detail_scanned: String,
 
     // --- Podcasts ---
     /// home | subscribed | downloads
@@ -898,6 +917,11 @@ pub enum MusicCmd {
     AddFolder { path: String },
     RemoveRoot { path: String },
     Scan,
+    /// Walk one folder page's folder rather than every root. Only a folder
+    /// inside a watched root: this is a rescan, not a way to add one.
+    RescanFolder { path: String },
+    /// Open a folder page's folder in the desktop file manager. Same rule.
+    RevealFolder { path: String },
     /// Read tags for every music item that has none yet. Separate from `Scan`
     /// because the walk is cheap and the ffprobe pass is not.
     ReadTags,
@@ -1009,6 +1033,11 @@ pub enum MusicCmd {
     PlaylistAdd { playlist_id: i64, item_ids: Vec<i64> },
     PlaylistRemove { playlist_id: i64, item_id: i64 },
     PlaylistMove { playlist_id: i64, from: i64, to: i64 },
+    /// Write the playlist, in its order, as an `#EXTM3U` file at `path`, which
+    /// comes from a save dialog on the Dart side.
+    PlaylistExport { playlist_id: i64, path: String },
+    /// A copy with the same tracks, rule and description, named "… copy".
+    PlaylistDuplicate { playlist_id: i64 },
     SetEqPreset { name: String },
     SetEqBand { index: i64, gain_db: f64 },
     ToggleEq,
@@ -2345,6 +2374,43 @@ fn from_rule(rule: &tulipix_music::playlists::SmartRule) -> SmartRuleView {
             .collect(),
         limit: rule.limit.unwrap_or(0),
     }
+}
+
+/// A rule as a person would say it, one sentence per condition: "Rating is at
+/// least 4", "Added in the last 365 days". The labels are the engine's own, so
+/// the page and the editor name a field the same way.
+fn rule_sentences(rule: &tulipix_music::playlists::SmartRule) -> Vec<String> {
+    use tulipix_music::playlists::{Combine, Field, Op};
+    let field = |f: &Field| {
+        Field::all().iter().find(|(x, _, _)| x == f).map(|(_, _, l)| *l).unwrap_or("")
+    };
+    let op = |o: &Op| Op::all().iter().find(|(x, _, _)| x == o).map(|(_, _, l)| *l).unwrap_or("");
+    let mut out: Vec<String> = rule
+        .conditions
+        .iter()
+        .map(|c| {
+            let v = c.value.trim();
+            match (&c.field, &c.op) {
+                (Field::Loved, o) => {
+                    let yes = matches!(v, "1" | "true" | "yes");
+                    if yes == matches!(o, Op::Ne) { "Not loved".into() } else { "Loved".into() }
+                }
+                // "Added (days ago) is less than 90" is the editor's wording
+                // for a field that is a count of days; said plainly it is this.
+                (Field::Added, Op::Lt | Op::Lte) => format!("Added in the last {v} days"),
+                (Field::Added, Op::Gt | Op::Gte) => format!("Added more than {v} days ago"),
+                (f, o) => format!("{} {} {v}", field(f), op(o)),
+            }
+        })
+        .collect();
+    if matches!(rule.combine, Combine::Any) && out.len() > 1 {
+        out.insert(0, "Any one of these".into());
+    }
+    // `evaluate` orders newest-added first before it limits.
+    if let Some(n) = rule.limit.filter(|n| *n > 0) {
+        out.push(format!("The newest {n}"));
+    }
+    out
 }
 
 /// How many tracks a rule matches right now.
@@ -3912,6 +3978,72 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             save_watched_folders(&keep);
         }
         MusicCmd::Scan => scan_watched().await?,
+        MusicCmd::RescanFolder { path } => {
+            let dir = watched_dir(&path)?;
+            let pool = music_pool().await?;
+            let (inserted, updated, missing) = scan_folder(pool, &dir).await?;
+            finish_scan(pool, inserted, updated, missing).await?;
+        }
+        MusicCmd::RevealFolder { path } => {
+            tulipix_platform::fm::open_default(&watched_dir(&path)?)?;
+        }
+        MusicCmd::PlaylistExport { playlist_id, path } => {
+            let pool = music_pool().await?;
+            let mut paths = Vec::new();
+            for id in tulipix_music::playlists::items(pool, playlist_id).await? {
+                // A track deleted since it was added is a gap in the file, not
+                // a failed export.
+                if let Ok(p) = track_path(pool, id).await {
+                    paths.push(PathBuf::from(p));
+                }
+            }
+            let mut out = PathBuf::from(&path);
+            if out.extension().is_none() {
+                out.set_extension("m3u");
+            }
+            std::fs::write(&out, tulipix_music::playlists::write_m3u(&paths))?;
+            lock().status = format!("Saved {} tracks to {}.", paths.len(), out.display());
+        }
+        MusicCmd::PlaylistDuplicate { playlist_id } => {
+            let pool = music_pool().await?;
+            let Some(name) = sqlx::query_scalar::<_, String>("SELECT name FROM playlists WHERE id = ?")
+                .bind(playlist_id)
+                .fetch_optional(pool)
+                .await?
+            else {
+                anyhow::bail!("that playlist is not there any more");
+            };
+            // Names are matched exactly, so a second copy needs a name of its own.
+            let mut copy = format!("{name} copy");
+            let mut n = 2;
+            while tulipix_music::playlists::find_by_name(pool, &copy).await?.is_some() {
+                copy = format!("{name} copy {n}");
+                n += 1;
+            }
+            let rule = tulipix_music::playlists::rule_of(pool, playlist_id).await?;
+            let id = tulipix_music::playlists::create(pool, &copy, rule.as_ref()).await?;
+            for item in tulipix_music::playlists::items(pool, playlist_id).await? {
+                tulipix_music::playlists::append(pool, id, item).await?;
+            }
+            let note = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT description FROM playlists WHERE id = ?",
+            )
+            .bind(playlist_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten()
+            .unwrap_or_default();
+            if !note.trim().is_empty() {
+                sqlx::query("UPDATE playlists SET description = ? WHERE id = ?")
+                    .bind(note)
+                    .bind(id)
+                    .execute(pool)
+                    .await?;
+            }
+            lock().status = format!("Made \u{201c}{copy}\u{201d}.");
+        }
         MusicCmd::ReadTags => read_missing_tags().await?,
         MusicCmd::SaveTags {
             item_id,
@@ -6080,6 +6212,26 @@ fn is_audio(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Where a folder page's "last scanned" is kept: one setting per folder
+/// walked, so a rescan of the folder alone and a rescan of its root both count.
+fn scan_key(path: &str) -> String {
+    format!("music.scanned.{}", path.trim_end_matches('/'))
+}
+
+/// A folder the page named, if it is still a folder and sits inside a watched
+/// root. The path comes from the UI, and a string the UI holds does not become
+/// an argument to the scanner or the system opener without passing this.
+fn watched_dir(path: &str) -> Result<PathBuf> {
+    let dir = PathBuf::from(path);
+    if !dir.is_dir() {
+        anyhow::bail!("not a folder any more: {path}");
+    }
+    if !load_watched_folders().iter().any(|root| dir.starts_with(root)) {
+        anyhow::bail!("{path} is not inside a watched folder");
+    }
+    Ok(dir)
+}
+
 /// Walk every watched root as a music library, prune the non-audio rows the
 /// shared populator inserted, and seed a `track_meta` row for each survivor so
 /// the browse joins are cheap.
@@ -6096,63 +6248,86 @@ pub(crate) async fn scan_watched() -> Result<()> {
             done: i as i64,
             total,
         });
-        let lib = tulipix_core::libraries::Library {
-            id: dir.to_string_lossy().into_owned(),
-            path: dir.clone(),
-            section: tulipix_core::libraries::Section::Music,
-            last_scan: None,
-            item_count: 0,
-            size_bytes: 0,
-            exclude_globs: Vec::new(),
-            cadence_override: Some(tulipix_core::libraries::ScanCadence::Manual),
-            realtime_notify: false,
-        };
-        let stats = match tulipix_core::populator::populate(pool, &lib).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, root = %dir.display(), "music scan failed");
-                continue;
+        match scan_folder(pool, dir).await {
+            Ok((ins, upd, miss)) => {
+                inserted += ins;
+                updated += upd;
+                missing += miss;
             }
-        };
-        inserted += stats.inserted as i64;
-        updated += stats.updated as i64;
-        missing += stats.missing as i64;
-
-        let prefix = format!("{}%", dir.to_string_lossy());
-        let rows: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT id, abs_path FROM items WHERE section = 'music' AND abs_path LIKE ?",
-        )
-        .bind(&prefix)
-        .fetch_all(pool)
-        .await?;
-        for (id, p) in rows {
-            if is_audio(Path::new(&p)) {
-                sqlx::query("INSERT OR IGNORE INTO track_meta (item_id) VALUES (?)")
-                    .bind(id)
-                    .execute(pool)
-                    .await?;
-                // `folder` is what the Folders tab groups on, and it is only
-                // ever derived here.
-                let folder = Path::new(&p)
-                    .parent()
-                    .map(|f| f.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                sqlx::query("UPDATE track_meta SET folder = ? WHERE item_id = ? AND (folder IS NULL OR folder = '')")
-                    .bind(&folder)
-                    .bind(id)
-                    .execute(pool)
-                    .await?;
-            } else {
-                sqlx::query("DELETE FROM items WHERE id = ?")
-                    .bind(id)
-                    .execute(pool)
-                    .await?;
-            }
+            Err(e) => tracing::warn!(error = %e, root = %dir.display(), "music scan failed"),
         }
     }
+    finish_scan(pool, inserted, updated, missing).await
+}
+
+/// Walk one folder -- a watched root, or any folder inside one -- and seed
+/// `track_meta` for what it holds. Returns inserted, updated, missing.
+///
+/// A folder inside a root is safe to hand the populator on its own: it only
+/// marks missing what sits under the path it was given.
+async fn scan_folder(pool: &sqlx::SqlitePool, dir: &Path) -> Result<(i64, i64, i64)> {
+    let lib = tulipix_core::libraries::Library {
+        id: dir.to_string_lossy().into_owned(),
+        path: dir.to_path_buf(),
+        section: tulipix_core::libraries::Section::Music,
+        last_scan: None,
+        item_count: 0,
+        size_bytes: 0,
+        exclude_globs: Vec::new(),
+        cadence_override: Some(tulipix_core::libraries::ScanCadence::Manual),
+        realtime_notify: false,
+    };
+    let stats = tulipix_core::populator::populate(pool, &lib).await?;
+
+    let prefix = format!("{}%", dir.to_string_lossy());
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, abs_path FROM items WHERE section = 'music' AND abs_path LIKE ?",
+    )
+    .bind(&prefix)
+    .fetch_all(pool)
+    .await?;
+    for (id, p) in rows {
+        if is_audio(Path::new(&p)) {
+            sqlx::query("INSERT OR IGNORE INTO track_meta (item_id) VALUES (?)")
+                .bind(id)
+                .execute(pool)
+                .await?;
+            // `folder` is what the Folders tab groups on, and it is only
+            // ever derived here.
+            let folder = Path::new(&p)
+                .parent()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            sqlx::query("UPDATE track_meta SET folder = ? WHERE item_id = ? AND (folder IS NULL OR folder = '')")
+                .bind(&folder)
+                .bind(id)
+                .execute(pool)
+                .await?;
+        } else {
+            sqlx::query("DELETE FROM items WHERE id = ?")
+                .bind(id)
+                .execute(pool)
+                .await?;
+        }
+    }
+    // What a folder page's "last scanned" reads.
+    set_setting(&scan_key(&dir.to_string_lossy()), &now_secs().to_string());
+    Ok((stats.inserted as i64, stats.updated as i64, stats.missing as i64))
+}
+
+/// The end of any scan, whole-library or one folder.
+async fn finish_scan(
+    pool: &sqlx::SqlitePool,
+    inserted: i64,
+    updated: i64,
+    missing: i64,
+) -> Result<()> {
     // Before the finish event, because every My Music view the UI rebuilds on
     // it filters on `is_audiobook` and the rows to flag only exist now.
     apply_folder_sections(pool).await;
+    if let Err(e) = rebuild_fresh_playlist(pool).await {
+        tracing::warn!(error = %e, "recently added playlist");
+    }
     emit(MusicEvent::ScanFinished {
         inserted,
         updated,
@@ -6359,10 +6534,9 @@ fn write_file_tags(
     }
 }
 
-/// The two smart playlists the Slint build offers, built through the domain
-/// crate's rule evaluator rather than hand-written SQL.
-/// The newest hundred tracks in the library, as a playlist, rewritten from
-/// scratch every time it is opened.
+/// The newest hundred tracks in the library, as a playlist that is always
+/// there. Checked whenever the Playlists tab is drawn, after every scan, and
+/// when opened; written only when the newest hundred have actually changed.
 ///
 /// Rebuilt rather than appended to: "recently added" is a window that moves,
 /// and a playlist that only ever grows would be "everything ever added" within
@@ -6374,10 +6548,6 @@ async fn rebuild_fresh_playlist(pool: &sqlx::SqlitePool) -> Result<i64> {
         Some(id) => id,
         None => tulipix_music::playlists::create(pool, NAME, None).await?,
     };
-    sqlx::query("DELETE FROM playlist_items WHERE playlist_id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
     let ids: Vec<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT i.id FROM items i JOIN track_meta tm ON tm.item_id = i.id         {MUSIC_WHERE} ORDER BY i.added DESC LIMIT ?"
     )))
@@ -6385,6 +6555,14 @@ async fn rebuild_fresh_playlist(pool: &sqlx::SqlitePool) -> Result<i64> {
     .fetch_all(pool)
     .await
     .unwrap_or_default();
+    // The common case by far: nothing was added since the last look.
+    if tulipix_music::playlists::items(pool, id).await? == ids {
+        return Ok(id);
+    }
+    sqlx::query("DELETE FROM playlist_items WHERE playlist_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
     for item in ids {
         tulipix_music::playlists::append(pool, id, item).await?;
     }
@@ -7819,11 +7997,15 @@ async fn loved_cards(pool: &sqlx::SqlitePool, kind: &str) -> Vec<BrowseCard> {
 /// image and it is remembered under `music.playlist.cover.{id}`, which is where
 /// the Slint build keeps it too.
 async fn playlist_cards(pool: &sqlx::SqlitePool) -> Vec<BrowseCard> {
+    // Always there and always current, and first: it is the one playlist
+    // nobody made.
+    let fresh = rebuild_fresh_playlist(pool).await.unwrap_or(0);
     let rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(
         "SELECT p.id, p.name, p.is_smart, \
                 (SELECT COUNT(*) FROM playlist_items pi WHERE pi.playlist_id = p.id) \
-         FROM playlists p ORDER BY p.name COLLATE NOCASE",
+         FROM playlists p ORDER BY p.id = ? DESC, p.name COLLATE NOCASE",
     )
+    .bind(fresh)
     .fetch_all(pool)
     .await
     .unwrap_or_default();
@@ -7995,8 +8177,9 @@ fn browse_page_size(kind: &str) -> i64 {
     if kind == "folders" || kind == "genres" { FOLDER_PAGE } else { BROWSE_PAGE }
 }
 
-/// An artist's blurb, from `artists.bio` -- fetched once from MusicBrainz and
-/// written back, so the page is instant every time after the first.
+/// An artist's biography, from `artists.bio` -- the lead of their English
+/// Wikipedia article, found through MusicBrainz and Wikidata once and written
+/// back, so the page is instant every time after the first.
 ///
 /// The column is added the same way `loved` and `rating` are: with a bare
 /// `ALTER TABLE` whose "already there" error is the expected case. There is no
@@ -8018,27 +8201,36 @@ async fn artist_bio(
     let _ = sqlx::query("ALTER TABLE artists ADD COLUMN facts TEXT")
         .execute(pool)
         .await;
-    let cached: Option<(Option<String>, Option<String>, Option<String>)> =
-        sqlx::query_as("SELECT bio, facts, mbid FROM artists WHERE id = ?")
+    // Where the prose came from. Rows written before this held MusicBrainz's
+    // one-line description in `bio` -- a name, a country, a year: facts, not a
+    // biography -- and those are fetched again rather than shown.
+    let _ = sqlx::query("ALTER TABLE artists ADD COLUMN bio_src TEXT")
+        .execute(pool)
+        .await;
+    let cached: Option<(Option<String>, Option<String>, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT bio, facts, mbid, bio_src FROM artists WHERE id = ?")
             .bind(artist_id)
             .fetch_optional(pool)
             .await
             .ok()
             .flatten();
-    if let Some((bio, facts, mbid)) = cached {
-        let bio = bio.unwrap_or_default();
-        if !bio.trim().is_empty() {
-            return (bio, split_facts(facts), mbid.unwrap_or_default());
-        }
+    let (bio, facts, mbid, src) = cached.unwrap_or_default();
+    let bio = bio.unwrap_or_default();
+    let mbid = mbid.unwrap_or_default();
+    let has_facts = facts.as_deref().is_some_and(|f| !f.is_empty());
+    let facts_now = split_facts(facts);
+    if !bio.trim().is_empty() && src.as_deref() == Some("wikipedia") {
+        return (bio, facts_now, mbid);
     }
     if name.trim().is_empty() || !bio_first_try(artist_id) {
-        return (String::new(), Vec::new(), String::new());
+        return (String::new(), facts_now, mbid);
     }
     // Off the snapshot's thread. This runs on every refresh while the page is
-    // open -- a track change, a tick that finished a song -- and a request that
-    // has to reach MusicBrainz and back would freeze the page for as long as it
-    // took. It lands in the column and `Stale` brings the page back for it.
+    // open -- a track change, a tick that finished a song -- and three requests
+    // out and back would freeze the page for as long as they took. It lands in
+    // the columns and `Stale` brings the page back for it.
     let name = name.to_string();
+    let known = mbid.clone();
     tokio::spawn(async move {
         let Ok(pool) = music_pool().await else { return };
         let Ok(client) = reqwest::Client::builder()
@@ -8047,40 +8239,57 @@ async fn artist_bio(
         else {
             return;
         };
-        let Ok(search) = tulipix_music::musicbrainz::lookup_artist(&client, &name).await else {
-            return;
-        };
-        // Best hit only, and only if it is actually about this artist --
-        // MusicBrainz answers every query with something, and a low-scoring hit
-        // is a different band with a similar name.
-        let Some(hit) = search
-            .artists
-            .iter()
-            .max_by_key(|a| a.score)
-            .filter(|a| a.score >= 80)
-        else {
-            return;
-        };
-        let bio = tulipix_music::musicbrainz::artist_blurb(hit);
-        if bio.trim().is_empty() {
-            return;
+        let mut mbid = known;
+        let mut facts = String::new();
+        if mbid.is_empty() || !has_facts {
+            if let Ok(search) = tulipix_music::musicbrainz::lookup_artist(&client, &name).await {
+                // Best hit only, and only if it is actually about this artist --
+                // MusicBrainz answers every query with something, and a
+                // low-scoring hit is a different band with a similar name.
+                if let Some(hit) = search
+                    .artists
+                    .iter()
+                    .max_by_key(|a| a.score)
+                    .filter(|a| a.score >= 80)
+                {
+                    facts = tulipix_music::musicbrainz::artist_facts(hit).join(FACT_SEP);
+                    if mbid.is_empty() {
+                        mbid = hit.id.clone();
+                    }
+                }
+            }
+            // MusicBrainz allows one request a second, and the next one is
+            // theirs too.
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         }
-        let facts = tulipix_music::musicbrainz::artist_facts(hit).join(FACT_SEP);
-        // The mbid is only written when the row has none: a user or an earlier
-        // tagger may have set a better one, and this is a search hit.
+        let bio = tulipix_music::musicbrainz::wikipedia_bio(&client, &mbid)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        // No prose clears an old one-liner rather than leaving it in the
+        // column, and the source is only marked when there is prose -- so a
+        // miss, offline or not, is tried again next run. The mbid is only
+        // written when the row has none: a tagger may have set a better one,
+        // and this is a search hit.
         let _ = sqlx::query(
-            "UPDATE artists SET bio = ?, facts = ?, \
-             mbid = COALESCE(NULLIF(mbid, ''), ?) WHERE id = ?",
+            "UPDATE artists SET bio = NULLIF(?, ''), \
+             bio_src = CASE WHEN ? = '' THEN NULL ELSE 'wikipedia' END, \
+             facts = COALESCE(NULLIF(?, ''), facts), \
+             mbid = COALESCE(NULLIF(mbid, ''), NULLIF(?, '')) WHERE id = ?",
         )
         .bind(&bio)
+        .bind(&bio)
         .bind(&facts)
-        .bind(&hit.id)
+        .bind(&mbid)
         .bind(artist_id)
         .execute(pool)
         .await;
-        emit(MusicEvent::Stale);
+        if !bio.is_empty() || !facts.is_empty() {
+            emit(MusicEvent::Stale);
+        }
     });
-    (String::new(), Vec::new(), String::new())
+    (String::new(), facts_now, mbid)
 }
 
 /// Facts are stored as one string because there is no list column and this is
@@ -8818,6 +9027,13 @@ async fn snapshot() -> Result<MusicState> {
         detail_bars: Vec::new(),
         detail_collage: Vec::new(),
         detail_note: String::new(),
+        detail_last_played: String::new(),
+        detail_resume_item: 0,
+        detail_library_total: 0,
+        detail_rules: Vec::new(),
+        detail_disk_bytes: 0,
+        detail_root: String::new(),
+        detail_scanned: String::new(),
 
         pod_tab: s.pod_tab.clone(),
         pod_shows: Vec::new(),
@@ -9268,6 +9484,83 @@ async fn fill_mymusic(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState)
                     stars: 0,
                 })
                 .collect();
+        }
+        // What the hero's side card says about the page as a whole. The ids go
+        // in as one JSON array rather than a bind per track: a genre can be
+        // thousands of rows.
+        let ids = serde_json::to_string(&tracks.iter().map(|t| t.item_id).collect::<Vec<_>>())
+            .unwrap_or_else(|_| "[]".into());
+        st.detail_last_played = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(played_at) FROM play_history \
+             WHERE item_id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(&ids)
+        .fetch_one(pool)
+        .await
+        .ok()
+        .flatten()
+        .map(tulipix_music::dashboard::fmt_ago)
+        .unwrap_or_default();
+        // The next track after the last one heard. Not while any of the album
+        // is on the deck: that is listening, not having stopped.
+        if s.detail_kind == "album" {
+            let playing = mpv::now_playing().item_id;
+            let last: Option<i64> = sqlx::query_scalar(
+                "SELECT ph.item_id FROM play_history ph \
+                 JOIN track_meta tm ON tm.item_id = ph.item_id \
+                 WHERE tm.album_id = ? ORDER BY ph.played_at DESC LIMIT 1",
+            )
+            .bind(s.detail_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+            if !tracks.iter().any(|t| t.item_id == playing) {
+                st.detail_resume_item = last
+                    .and_then(|id| tracks.iter().position(|t| t.item_id == id))
+                    .and_then(|at| tracks.get(at + 1))
+                    .map(|t| t.item_id)
+                    .unwrap_or(0);
+            }
+        }
+        if s.detail_kind == "playlist" && st.detail_is_smart {
+            st.detail_library_total = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM track_meta tm JOIN items i ON i.id = tm.item_id \
+                 WHERE i.section = 'music' AND i.missing_since IS NULL \
+                   AND COALESCE(tm.is_audiobook, 0) = 0",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+            if let Ok(Some(rule)) = tulipix_music::playlists::rule_of(pool, s.detail_id).await {
+                st.detail_rules = rule_sentences(&rule);
+            }
+        }
+        if s.detail_kind == "folder" {
+            st.detail_disk_bytes = sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT SUM(size) FROM items WHERE id IN (SELECT value FROM json_each(?))",
+            )
+            .bind(&ids)
+            .fetch_one(pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+            // The deepest root it sits under, when roots nest.
+            let here = Path::new(&s.detail_key);
+            if let Some(root) = load_watched_folders()
+                .into_iter()
+                .filter(|r| here.starts_with(r))
+                .max_by_key(|r| r.as_os_str().len())
+            {
+                let root = root.to_string_lossy().into_owned();
+                let stamp = |p: &str| setting(&scan_key(p), "").parse::<i64>().ok();
+                st.detail_scanned = stamp(&s.detail_key)
+                    .max(stamp(&root))
+                    .map(tulipix_music::dashboard::fmt_ago)
+                    .unwrap_or_default();
+                st.detail_root = root;
+            }
         }
         st.detail_tracks = tracks;
         return;

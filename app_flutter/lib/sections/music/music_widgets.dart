@@ -1150,7 +1150,6 @@ class _TrackRowState extends State<TrackRow> {
                     style: TextStyle(fontSize: 12, color: t.nInk2),
                   ),
                 ),
-                if (widget.draggable) const SizedBox(width: 34),
                 // Not in the queue: the panel is 432px, this menu duplicates
                 // the right-click one exactly, and a column of three-dot
                 // buttons down the side of a queue is the widest thing in it
@@ -1176,6 +1175,10 @@ class _TrackRowState extends State<TrackRow> {
                           value: 'delete', child: Text('Delete from disk…')),
                     ],
                   ),
+                // The list's drag handle is drawn over the row's trailing edge,
+                // so the room for it has to be the last thing on the row -- in
+                // front of the three dots it sat right on top of them.
+                if (widget.draggable) const SizedBox(width: 44),
               ],
             ),
           ),

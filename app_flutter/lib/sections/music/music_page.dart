@@ -30,11 +30,11 @@ import 'youtube_tab.dart';
 
 /// Whether the keyboard is currently going into a text field.
 ///
-/// `CallbackShortcuts` sits above the whole section, and a shortcut bound there
-/// fires before a focused `TextField` ever sees the key -- so without this,
-/// typing "search" into the search box paused the deck on the space, toggled
-/// shuffle on the s, and loved the track on the l. The focus node a TextField
-/// installs lives inside `EditableText`, which is what this looks for.
+/// The section's key bindings sit above every field in it and see a key before
+/// a focused `TextField` does -- so without this, typing "search" into the
+/// search box paused the deck on the space, toggled shuffle on the s, and loved
+/// the track on the l. `_Keys` asks it before claiming a key. The focus node a
+/// TextField installs lives inside `EditableText`, which is what this looks for.
 bool _typing() {
   final ctx = FocusManager.instance.primaryFocus?.context;
   if (ctx == null) return false;
@@ -104,17 +104,15 @@ class _MusicPageState extends State<MusicPage> {
         final deckUp =
             now != null && (now.loaded || now.title.isNotEmpty);
 
-        // And nothing may be being typed into. The old comment here claimed a
-        // focused text field consumes these itself; it does not -- a
-        // CallbackShortcuts above the field sees the key first, so Space paused
-        // the music instead of typing a space, and L, S, R and Q never reached
-        // the search box at all.
+        // And nothing may be being typed into -- which `_Keys` sees to, not
+        // this: see there for why a check in the callback was not enough.
         VoidCallback guard(VoidCallback run) => () {
-              if (!deckUp || _typing()) return;
+              if (!deckUp) return;
               run();
             };
 
-        return CallbackShortcuts(
+        return _Keys(
+          typing: _typing,
           // Escape closes whatever the player has open — the docked panel or
           // the equalizer — before anything outside the section sees the key.
           // Slint's is a focus scope that exists only while one is open; this
@@ -812,4 +810,40 @@ class _StatusBanner extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Key bindings that step aside while something is being typed.
+///
+/// `CallbackShortcuts` cannot do that: a binding that matches consumes the key
+/// whether or not its callback does anything, so a "not while typing" check
+/// inside the callback still swallowed Space, the arrows and L, S, R and Q
+/// before the search box -- or any field on the page -- saw them. Here a key
+/// that finds a text field focused is left unhandled, and the field gets it.
+class _Keys extends StatelessWidget {
+  const _Keys({
+    required this.typing,
+    required this.bindings,
+    required this.child,
+  });
+
+  final bool Function() typing;
+  final Map<ShortcutActivator, VoidCallback> bindings;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        onKeyEvent: (node, event) {
+          if (event is KeyUpEvent || typing()) return KeyEventResult.ignored;
+          for (final binding in bindings.entries) {
+            if (binding.key.accepts(event, HardwareKeyboard.instance)) {
+              binding.value();
+              return KeyEventResult.handled;
+            }
+          }
+          return KeyEventResult.ignored;
+        },
+        child: child,
+      );
 }
