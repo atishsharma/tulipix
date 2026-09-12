@@ -118,6 +118,10 @@ class _MusicOverlayState extends State<MusicOverlay> {
     // screen -- Escape on the Photos page should not quietly close a queue
     // panel three sections away.
     if (ShellController.instance.section != Section.music) return false;
+    if (c.eqOpen) {
+      c.toggleEq();
+      return true;
+    }
     if (c.panel.isNotEmpty) {
       c.setPanel(c.panel);
       return true;
@@ -195,6 +199,15 @@ class _MusicOverlayState extends State<MusicOverlay> {
 /// Close the docked panel when the pointer lands outside it.
 void _dismissPanel(MusicController c, Offset at) {
   if (c.panel != 'queue' && c.panel != 'lyrics') return;
+  // The equalizer can be open beside it: tuning it is not a click away from
+  // the queue.
+  final eq =
+      MusicController.eqPanelKey.currentContext?.findRenderObject() as RenderBox?;
+  if (eq != null &&
+      eq.hasSize &&
+      (eq.localToGlobal(Offset.zero) & eq.size).contains(at)) {
+    return;
+  }
   final box = sidePanelKey.currentContext?.findRenderObject() as RenderBox?;
   if (box == null || !box.hasSize) return;
   if (!(box.localToGlobal(Offset.zero) & box.size).contains(at)) {

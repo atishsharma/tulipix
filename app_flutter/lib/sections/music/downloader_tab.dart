@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
 import '../../design/pick.dart';
+import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/mdl.dart';
 import '../../src/rust/api/music.dart';
@@ -378,23 +379,43 @@ class _DlPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    return Container(
+    final skin = context.skin;
+    final r = BorderRadius.circular(17);
+    // Standard draws it plainly. Any other language draws its own resting
+    // control as the track and its own latched one, tinted, as the fill —
+    // the way its stat cards and tabs are drawn. It used to paint Standard's
+    // flat panel and a half-alpha wash in every language, which under
+    // Neumorphism or Glass read as a broken control beside real ones.
+    final track = skin.isStandard ? null : skin.control(active: false, radius: 17);
+    final latched = skin.isStandard
+        ? null
+        : skin.control(active: true, tint: fill, radius: 17);
+    return SizedBox(
       width: 208,
       height: 34,
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        color: t.panel2,
-        borderRadius: BorderRadius.circular(17),
-        border: Border.all(color: active ? fill : t.outline),
-      ),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: FractionallySizedBox(
-              widthFactor: frac.clamp(0.0, 1.0),
-              child: ColoredBox(color: fill.withValues(alpha: 0.5)),
+          DecoratedBox(
+            decoration: track ??
+                BoxDecoration(
+                  color: t.panel2,
+                  borderRadius: r,
+                  border: Border.all(color: active ? fill : t.outline),
+                ),
+          ),
+          // Only the fill is clipped: a language's own decoration may not
+          // offer a clip path, and clipping the track would cut its shadows.
+          ClipRRect(
+            borderRadius: r,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: FractionallySizedBox(
+                widthFactor: frac.clamp(0.0, 1.0),
+                child: latched == null
+                    ? ColoredBox(color: fill.withValues(alpha: 0.5))
+                    : DecoratedBox(decoration: latched),
+              ),
             ),
           ),
           Center(
@@ -403,10 +424,10 @@ class _DlPill extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontFamily: Tokens.fontFamily,
+                fontFamily: skin.fontFamily ?? Tokens.fontFamily,
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
-                color: t.text,
+                color: skin.ink ?? t.text,
               ),
             ),
           ),
@@ -1860,14 +1881,18 @@ class _ArtistMenu extends StatelessWidget {
         borderRadius: BorderRadius.circular(9),
         border: Border.all(color: t.outline),
       ),
+      // Centred either way, so a column of these reads as one column. The
+      // arrow's width is mirrored on the left, or a menu's name would sit
+      // eight pixels left of a plain one's.
       child: Row(
         children: [
+          if (many) const SizedBox(width: 16),
           Expanded(
             child: Text(
               row.mainArtist.isEmpty ? '—' : row.mainArtist,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              textAlign: many ? TextAlign.start : TextAlign.center,
+              textAlign: TextAlign.center,
               style: TextStyle(fontSize: 12, color: t.text),
             ),
           ),

@@ -137,6 +137,16 @@ class MusicController extends ChangeNotifier {
   /// "" | queue | lyrics | eq — which side panel the player bar has open.
   String panel = '';
 
+  /// The equalizer, open out of the top of the player bar. Its own flag, not
+  /// a value of [panel]: that holds one thing at a time, so opening the
+  /// equalizer used to fold the Queue or Lyrics panel it sits beside.
+  bool eqOpen = false;
+
+  void toggleEq() {
+    eqOpen = !eqOpen;
+    notifyListeners();
+  }
+
   // ── detail navigation ─────────────────────────────────────────────────────
   //
   // The bridge holds ONE open detail — a `detail_open` bool and a `detail_kind`,
@@ -853,6 +863,10 @@ class MusicController extends ChangeNotifier {
     error = null;
     notifyListeners();
   }
+
+  /// Where the equalizer is on screen, so a click inside it is not taken for a
+  /// click away from the Queue panel.
+  static final GlobalKey eqPanelKey = GlobalKey();
 
   void setPanel(String which) {
     panel = panel == which ? '' : which;

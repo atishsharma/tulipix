@@ -4632,6 +4632,11 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
         }
         MusicCmd::Stop => {
             mpv::stop();
+            // Stopped is nothing playing, so the bar goes: it shows while a
+            // track is loaded or named, and a stop used to leave the name. Here
+            // and not in `mpv::stop`, which also runs ahead of every new track
+            // and would race the name that track is about to set.
+            mpv::set_now_playing(Default::default());
             emit(MusicEvent::TrackChanged);
         }
         MusicCmd::Seek { secs } => mpv::seek_absolute(secs.max(0.0)),

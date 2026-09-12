@@ -183,7 +183,18 @@ class _MusicPageState extends State<MusicPage> {
                   child: st == null
                       ? FirstLoad(error: _c.error, onRetry: _c.refresh)
                       : Stack(
+                          fit: StackFit.expand,
                           children: [
+                            // The page stands on a strip the bar's own height,
+                            // and the bar floats over that strip. When the
+                            // equalizer opens out of the bar's top, the bar
+                            // grows up over the page, and the page — a queue,
+                            // a grid — keeps every pixel it had.
+                            Padding(
+                              padding: EdgeInsets.only(
+                                  bottom: PlayerBar.baseHeight(context, _c)),
+                              child: Stack(
+                                children: [
                             // IndexedStack, not a switch: each tab holds scroll
                             // positions and text fields, and rebuilding the whole
                             // subtree on every category change would throw both
@@ -219,24 +230,22 @@ class _MusicPageState extends State<MusicPage> {
                                       key: sidePanelKey, controller: _c),
                                 ),
                               ),
-                            // The equalizer opens over the page from the bar's
-                            // top edge, rather than inside the bar, where it
-                            // pushed everything above up by its own height.
-                            if (_c.panel == 'eq')
-                              Positioned(
-                                left: 0,
-                                right: 0,
-                                bottom: 0,
-                                height: 260,
-                                child: PlayerEqPanel(controller: _c),
+                                ],
                               ),
+                            ),
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              bottom: 0,
+                              // A position tick rebuilds only the bar's lyric
+                              // and seek rows, inside it; this builder listens
+                              // to the controller, which a tick that moves
+                              // nothing but the position does not fire.
+                              child: PlayerBar(controller: _c),
+                            ),
                           ],
                         ),
                 ),
-                // A position tick rebuilds only the bar's lyric and seek rows,
-                // inside it; this builder listens to the controller, which a
-                // tick that moves nothing but the position does not fire.
-                PlayerBar(controller: _c),
               ],
             ),
           ),

@@ -37,12 +37,31 @@ class PlayerBar extends StatelessWidget {
 
   final MusicController controller;
 
+  /// Whether there is anything for the bar to show.
+  static bool visible(MusicController c) {
+    final now = c.state?.now;
+    return now != null && (now.loaded || now.title.isNotEmpty);
+  }
+
+  /// How much of the page the bar stands on: its own height with the
+  /// equalizer shut, or nothing while it is hidden. The page pads its foot by
+  /// this and the bar floats over that strip, so the equalizer opening on top
+  /// of the bar grows it up over the page rather than taking height from it.
+  static double baseHeight(BuildContext context, MusicController c) {
+    if (!visible(c)) return 0;
+    // Standard: 124 and its 1px top border. A skin's slab floats clear of
+    // the edges, 4 above it and 22 below.
+    return context.skin.surface(SurfaceRole.bar, radius: 30) == null
+        ? 125
+        : 150;
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
     final st = controller.state;
     final now = st?.now;
-    if (st == null || now == null || !now.loaded && now.title.isEmpty) {
+    if (st == null || now == null || !visible(controller)) {
       return const SizedBox.shrink();
     }
 
@@ -67,9 +86,17 @@ class PlayerBar extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Nothing opens inside the bar: the equalizer is drawn by the page
-          // over its content (`PlayerEqPanel`), and Queue and Lyrics dock to
-          // its right — see side_panel.dart.
+          // The equalizer opens out of the top of the bar, as part of it. The
+          // page keeps room for the bar's own height only ([baseHeight]) and
+          // the bar floats over its foot, so opening this grows the bar up
+          // over the page instead of shrinking the page under it. Queue and
+          // Lyrics dock to the right of the page — see side_panel.dart.
+          if (controller.eqOpen)
+            SizedBox(
+              height: 260,
+              child: _Panel(
+                  key: MusicController.eqPanelKey, controller: controller),
+            ),
           SizedBox(
             height: 124,
             // Animated, not decorated: the palette should arrive with the next
@@ -115,10 +142,21 @@ class PlayerBar extends StatelessWidget {
         ],
       ),
     );
-    if (slab == null) return bar;
+    // The bar floats over the page's foot now, so it needs a ground of its
+    // own: a translucent panel (light Standard is 81%) or a glassy slab let
+    // the page show through the equalizer. The canvas it used to stand on,
+    // painted behind it, so it reads exactly as it did.
+    final backed = DecoratedBox(
+      decoration: BoxDecoration(
+        color: (skin.canvas ?? t.nCanvas).withValues(alpha: 1),
+        borderRadius: slab == null ? null : BorderRadius.circular(30),
+      ),
+      child: bar,
+    );
+    if (slab == null) return backed;
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 4, 22, 22),
-      child: bar,
+      child: backed,
     );
   }
 }
@@ -256,9 +294,9 @@ class _SeekRow extends StatelessWidget {
             tip: 'Equalizer',
             size: 26,
             iconSize: 15,
-            active: controller.panel == 'eq',
+            active: controller.eqOpen,
             accent: controller.accent,
-            onTap: () => controller.setPanel('eq'),
+            onTap: controller.toggleEq,
           ),
           const SizedBox(width: 6),
           VolPill(
@@ -737,31 +775,32 @@ class _SleepButton extends StatelessWidget {
   }
 }
 
-/// The equalizer, opened from the bar's EQ button.
-///
-/// The page draws this over its own content, standing on the bar's top edge.
-/// It used to open inside the bar, which made the bar 260px taller — and the
-/// page above it, the Downloader's queue included, shrank by as much every
-/// time it opened. Its own opaque fill now, since there is no bar slab behind
-/// it any more.
-class PlayerEqPanel extends StatelessWidget {
-  const PlayerEqPanel({super.key, required this.controller});
+class _Panel extends StatelessWidget {
+  const _Panel({super.key, required this.controller});
 
   final MusicController controller;
 
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    return Material(
-      color: t.panel,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          border: Border(top: BorderSide(color: t.outline)),
-          boxShadow: const [
-            BoxShadow(
-                color: Color(0x55000000), blurRadius: 24, offset: Offset(0, -6)),
-          ],
-        ),
+    // The bar's own material, not a second one laid over it, so the two read
+    // as one panel opened upward. Under a skin the slab already paints behind
+    // this, rounded at its top corners as it is at its bottom ones, and a fill
+    // here squared them off. Standard's bar is `t.panel` too.
+    final washed = context.skin.surface(SurfaceRole.bar, radius: 30) == null;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: context.skin.isStandard ? t.panel : null,
+        border: Border(bottom: BorderSide(color: t.outline)),
+      ),
+      // The same cover wash as the bar's own strip under it, so the two read
+      // as one surface rather than a plain panel stacked on a coloured one.
+      child: AnimatedContainer(
+        duration: Motion.wash,
+        curve: Motion.ease,
+        decoration: washed
+            ? artWash(controller.accent, alt: controller.accentAlt)
+            : const BoxDecoration(),
         child: _EqPanel(controller: controller),
       ),
     );

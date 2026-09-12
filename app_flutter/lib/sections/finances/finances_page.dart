@@ -156,19 +156,16 @@ class _Header extends StatelessWidget {
                 ),
               ],
               const Spacer(),
-              if (st != null && st!.demo)
+              // Always here, as Slint's is: "Sample data" in the warning
+              // colour while invented money is on screen, "Add sample data"
+              // otherwise. Either opens the sheet that adds it back or clears
+              // the section, as many times as you like. It used to show only
+              // while samples were present, so after one clear the way back
+              // was gone.
+              if (st != null)
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
-                  child: Tooltip(
-                    message: 'Some of what is on screen is sample data.',
-                    child: Chip(
-                      visualDensity: VisualDensity.compact,
-                      avatar: const Icon(Icons.science_outlined, size: 14),
-                      label: Text(
-                          c.demoBusy.isEmpty ? 'Sample data' : c.demoBusy,
-                          style: const TextStyle(fontSize: 11)),
-                    ),
-                  ),
+                  child: _SampleDataBtn(c: c, demo: st!.demo),
                 ),
               IconButton(
                 tooltip: 'Exchange rates',
@@ -207,6 +204,188 @@ class _Header extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The header's way into sample data: a warning while invented money is on
+/// screen, a quiet offer when none is.
+class _SampleDataBtn extends StatelessWidget {
+  const _SampleDataBtn({required this.c, required this.demo});
+
+  final FinancesController c;
+  final bool demo;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final busy = c.demoBusy.isNotEmpty;
+    final ink = demo ? Tokens.warn : t.nInk2;
+    return Material(
+      color: demo ? Tokens.warn.withValues(alpha: 0.12) : Colors.transparent,
+      shape: StadiumBorder(
+        side: BorderSide(
+            color: demo ? Tokens.warn.withValues(alpha: 0.45) : t.nHair),
+      ),
+      child: InkWell(
+        customBorder: const StadiumBorder(),
+        onTap: busy ? null : () => _sampleData(context, c, demo: demo),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (busy)
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else
+                Icon(demo ? Icons.warning_amber_rounded : Icons.add,
+                    size: 15, color: ink),
+              const SizedBox(width: 7),
+              Text(
+                busy
+                    ? c.demoBusy
+                    : demo
+                        ? 'Sample data'
+                        : 'Add sample data',
+                style: TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w700, color: ink),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// What the sample data is and the two things to do about it — Slint's
+/// explainer, word for word where the words still hold.
+///
+/// Offered whether or not any is left: adding puts a year of invented money
+/// back beside your own, and "Remove all of it" is the section's reset, so
+/// both can be done as many times as you like.
+Future<void> _sampleData(
+  BuildContext context,
+  FinancesController c, {
+  required bool demo,
+}) {
+  return showDialog<void>(
+    context: context,
+    builder: (ctx) {
+      final t = ctx.tokens;
+      final tint = demo ? Tokens.warn : Tokens.secFinances;
+      final body = TextStyle(fontSize: 12.5, height: 1.5, color: t.nInk2);
+      return AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          // Warn-edged only while there is invented money on screen. With
+          // none left this is an offer, not an alert.
+          side: BorderSide(
+              color: demo ? Tokens.warn.withValues(alpha: 0.35) : t.nHair),
+        ),
+        title: Row(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: tint.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(11),
+              ),
+              child: Icon(
+                  demo
+                      ? Icons.warning_amber_rounded
+                      : Icons.account_balance_wallet_outlined,
+                  size: 18,
+                  color: tint),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                demo
+                    ? 'This is sample data, not your money.'
+                    : 'Sample data, if you want it back.',
+                style: TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.w800, color: t.nInk),
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 480,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'The section can seed a plausible year of accounts, spending, '
+                'bills, subscriptions, loans, dues and budgets, because nine '
+                'empty tabs look exactly like nine broken ones. None of it came '
+                'from a bank and none of it is yours.',
+                style: body,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                demo
+                    ? 'It gets out of your way by itself, one part at a time: '
+                        'your first real account clears the sample accounts, '
+                        'your first real bill clears the sample bills. Nothing '
+                        'you enter is ever removed with it.'
+                    : 'There is none of it left. Adding it back puts the '
+                        'sample accounts, bills, subscriptions, loans, dues and '
+                        'budgets in again, and leaves everything you entered '
+                        'yourself untouched.',
+                style: body,
+              ),
+              const SizedBox(height: 14),
+              // The remove button empties the section outright, so this says
+              // so rather than leaving it to be discovered.
+              Text(
+                'Remove all of it empties the section — every account, '
+                'posting, bill and budget, yours as well as the sample\'s.',
+                style: TextStyle(
+                    fontSize: 11.5,
+                    height: 1.45,
+                    color: demo ? Tokens.warn : t.nInk2),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+          // Offered whenever the sheet is: after the samples have gone it is
+          // the section's reset, and hiding it then made it look as though
+          // only invented money could be removed.
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Tokens.error,
+              side: BorderSide(color: Tokens.error.withValues(alpha: 0.5)),
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              c.demo(add: false);
+            },
+            icon: const Icon(Icons.delete_outline, size: 17),
+            label: const Text('Remove all of it'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: Tokens.secFinances),
+            onPressed: () {
+              Navigator.pop(ctx);
+              c.demo(add: true);
+            },
+            icon: const Icon(Icons.add, size: 17),
+            label: const Text('Add sample data'),
+          ),
+        ],
+      );
+    },
+  );
 }
 
 class _TabButton extends StatelessWidget {
