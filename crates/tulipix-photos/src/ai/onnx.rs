@@ -16,9 +16,10 @@ use std::sync::Mutex;
 use crate::editor::colorize::Coloriser;
 use crate::editor::upscale::Upscaler;
 
-/// `ort::Error` doesn't implement `std::error::Error`, so `?`/anyhow can't
-/// convert it directly — funnel every ORT call through this.
-fn oe(e: ort::Error) -> anyhow::Error {
+/// Funnel every ORT error through this. Generic, because from rc.13 the
+/// builder's errors carry the builder back (`Error<SessionBuilder>`), which
+/// `?` cannot hand to anyhow.
+fn oe<R>(e: ort::Error<R>) -> anyhow::Error {
     anyhow::anyhow!("ort: {e}")
 }
 
@@ -28,7 +29,7 @@ fn build_session(model: &Path) -> Result<Session> {
     let s = Session::builder()
         .map_err(oe)?
         .with_execution_providers([
-            ort::execution_providers::CPUExecutionProvider::default().build(),
+            ort::ep::CPU::default().build(),
         ])
         .map_err(oe)?
         .commit_from_file(model)
@@ -136,8 +137,8 @@ pub struct OrtUpscaler {
 impl OrtUpscaler {
     pub fn load(model: &Path) -> Result<Self> {
         let session = build_session(model)?;
-        let in_name = session.inputs.first().context("model has no input")?.name.clone();
-        let out_name = session.outputs.first().context("model has no output")?.name.clone();
+        let in_name = session.inputs().first().context("model has no input")?.name().to_owned();
+        let out_name = session.outputs().first().context("model has no output")?.name().to_owned();
         Ok(Self { session: Mutex::new(session), in_name, out_name, max_in_side: 1024 })
     }
 
@@ -205,8 +206,8 @@ pub struct OrtColoriser {
 impl OrtColoriser {
     pub fn load(model: &Path) -> Result<Self> {
         let session = build_session(model)?;
-        let in_name = session.inputs.first().context("model has no input")?.name.clone();
-        let out_name = session.outputs.first().context("model has no output")?.name.clone();
+        let in_name = session.inputs().first().context("model has no input")?.name().to_owned();
+        let out_name = session.outputs().first().context("model has no output")?.name().to_owned();
         Ok(Self { session: Mutex::new(session), in_name, out_name, size: 256 })
     }
 
@@ -294,9 +295,9 @@ pub struct OrtTagger {
 impl OrtTagger {
     pub fn load(model: &Path) -> Result<Self> {
         let session = build_session(model)?;
-        let input = session.inputs.first().context("model has no input")?;
-        let in_name = input.name.clone();
-        let out_name = session.outputs.first().context("model has no output")?.name.clone();
+        let input = session.inputs().first().context("model has no input")?;
+        let in_name = input.name().to_owned();
+        let out_name = session.outputs().first().context("model has no output")?.name().to_owned();
         Ok(Self {
             session: Mutex::new(session),
             in_name,
@@ -429,8 +430,8 @@ const SCRFD_ANCHORS: usize = 2;
 impl OrtFaceDetector {
     pub fn load(model: &Path) -> Result<Self> {
         let session = build_session(model)?;
-        let in_name = session.inputs.first().context("model has no input")?.name.clone();
-        let out_names: Vec<String> = session.outputs.iter().map(|o| o.name.clone()).collect();
+        let in_name = session.inputs().first().context("model has no input")?.name().to_owned();
+        let out_names: Vec<String> = session.outputs().iter().map(|o| o.name().to_owned()).collect();
         anyhow::ensure!(
             out_names.len() >= 6,
             "SCRFD expects >=6 outputs (scores+bbox per stride), got {}",
@@ -543,8 +544,8 @@ pub struct OrtFaceEmbedder {
 impl OrtFaceEmbedder {
     pub fn load(model: &Path) -> Result<Self> {
         let session = build_session(model)?;
-        let in_name = session.inputs.first().context("model has no input")?.name.clone();
-        let out_name = session.outputs.first().context("model has no output")?.name.clone();
+        let in_name = session.inputs().first().context("model has no input")?.name().to_owned();
+        let out_name = session.outputs().first().context("model has no output")?.name().to_owned();
         Ok(Self {
             session: Mutex::new(session),
             in_name,
@@ -704,11 +705,11 @@ mod tests {
     fn inspect_model_io() {
         let Ok(path) = std::env::var("TULIPIX_INSPECT") else { return; };
         let s = build_session(std::path::Path::new(&path)).expect("load");
-        for i in &s.inputs {
-            eprintln!("IN  {} :: {:?}", i.name, i.input_type);
+        for i in s.inputs() {
+            eprintln!("IN  {} :: {:?}", i.name(), i.dtype());
         }
-        for o in &s.outputs {
-            eprintln!("OUT {} :: {:?}", o.name, o.output_type);
+        for o in s.outputs() {
+            eprintln!("OUT {} :: {:?}", o.name(), o.dtype());
         }
     }
 

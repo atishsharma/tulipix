@@ -148,7 +148,9 @@ mod engine {
     use anyhow::{Context, Result};
     use std::sync::{Mutex, OnceLock};
 
-    fn oe(e: ort::Error) -> anyhow::Error {
+    /// Generic, because from rc.13 the builder's errors carry the builder back
+    /// (`Error<SessionBuilder>`), which `?` cannot hand to anyhow.
+    fn oe<R>(e: ort::Error<R>) -> anyhow::Error {
         anyhow::anyhow!("ort: {e}")
     }
 
@@ -167,15 +169,14 @@ mod engine {
             let model = model_file().context("kokoro model not installed")?;
             let session = ort::session::Session::builder()
                 .map_err(oe)?
-                .with_execution_providers([
-                    ort::execution_providers::CPUExecutionProvider::default().build(),
-                ])
+                .with_execution_providers([ort::ep::CPU::default().build()])
                 .map_err(oe)?
                 .commit_from_file(&model)
                 .map_err(oe)
                 .with_context(|| format!("load kokoro model {}", model.display()))?;
             // Resolve input names: match by substring, fall back to position.
-            let names: Vec<String> = session.inputs.iter().map(|i| i.name.clone()).collect();
+            let names: Vec<String> =
+                session.inputs().iter().map(|i| i.name().to_owned()).collect();
             let pick = |want: &str, idx: usize| -> String {
                 names
                     .iter()
@@ -193,7 +194,12 @@ mod engine {
                 .unwrap_or_else(|| names.first().cloned().unwrap_or_default());
             let style_name = pick("style", 1);
             let speed_name = pick("speed", 2);
-            let out_name = session.outputs.first().context("kokoro model has no output")?.name.clone();
+            let out_name = session
+                .outputs()
+                .first()
+                .context("kokoro model has no output")?
+                .name()
+                .to_owned();
             Ok(Self {
                 session,
                 ids_name,

@@ -36,8 +36,12 @@ lopdf = { version = "0.45", default-features = false }
 reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
 urlencoding = "2"
-# Kokoro TTS (feature `kokoro`) — same ORT pin as tulipix-photos.
-ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["std", "download-binaries"] }
+# Kokoro TTS (feature `kokoro`) — same ORT pin as tulipix-photos. From rc.13
+# `download-binaries` needs a TLS feature named, and the one it had came with
+# the defaults switched off above; rustls, because the tree already carries it
+# and no OpenSSL. Without it every build with `books-tts` on -- the Flutter
+# profile and release builds, via cargokit.yaml -- fails in ort-sys's build.rs.
+ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
 
 [dev-dependencies]
 tempfile = "3"
