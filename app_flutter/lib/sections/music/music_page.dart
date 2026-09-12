@@ -10,6 +10,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../design/design_language.dart';
 import '../../design/first_load.dart';
 import '../../design/pick.dart';
 import '../../design/skin.dart';
@@ -88,9 +89,6 @@ class _MusicPageState extends State<MusicPage> {
     final skin = context.skin;
     return DefaultTextStyle.merge(
       style: TextStyle(fontFamily: skin.fontFamily),
-      // And its fill axis to every icon, for the glyph fonts that have one.
-      child: IconTheme.merge(
-      data: IconThemeData(fill: skin.iconFill),
       child: AnimatedBuilder(
       animation: _c,
       builder: (context, _) {
@@ -155,12 +153,15 @@ class _MusicPageState extends State<MusicPage> {
                 _c.goBack();
               },
           },
-          child: ColoredBox(
-            color: skin.canvas ?? t.nCanvas,
-            // One blur pass for every frosted pane on the page, not one each.
-            child: BackdropGroup(
-            child: _withBackdrop(
-            skin.pageBackdrop(accent: _c.accent, alt: _c.accentAlt),
+          // Under a language with a backdrop the page is the shell's card over
+          // that backdrop, as every other section is, and the shell lights it
+          // with this record while Music is up. Painting a canvas and a second
+          // backdrop here drew the window twice: four window-sized gradients a
+          // frame under Glass.
+          child: _canvas(
+            skin.pageBackdrop(accent: _c.accent) == null
+                ? skin.canvas ?? t.nCanvas
+                : null,
             Column(
               children: [
                 _Header(controller: _c, search: _search),
@@ -218,34 +219,23 @@ class _MusicPageState extends State<MusicPage> {
                           ],
                         ),
                 ),
-                // The only part of the page a position tick changes: this
-                // builder listens to the controller, which a tick that moves
-                // nothing but the position does not fire.
-                ListenableBuilder(
-                  listenable: _c.ticks,
-                  builder: (_, __) => PlayerBar(controller: _c),
-                ),
+                // A position tick rebuilds only the bar's lyric and seek rows,
+                // inside it; this builder listens to the controller, which a
+                // tick that moves nothing but the position does not fire.
+                PlayerBar(controller: _c),
               ],
-            ),
-            ),
             ),
           ),
         );
       },
       ),
-      ),
     );
   }
 }
 
-/// [backdrop] behind [child], or [child] alone — so a skin without one lays
-/// out exactly as the page always did.
-Widget _withBackdrop(Widget? backdrop, Widget child) => backdrop == null
-    ? child
-    : Stack(
-        fit: StackFit.expand,
-        children: [Positioned.fill(child: backdrop), child],
-      );
+/// [child] on [colour], or on nothing when the shell's backdrop shows through.
+Widget _canvas(Color? colour, Widget child) =>
+    colour == null ? child : ColoredBox(color: colour, child: child);
 
 class _Header extends StatelessWidget {
   const _Header({required this.controller, required this.search});
@@ -503,23 +493,54 @@ class _Wordmark extends StatelessWidget {
 /// The one search box for the section, as a 44px pill inside a 1.5px gradient
 /// ring over a white interior — both themes, which is deliberate in Slint: the
 /// ring is the section's identity and the field under it has to stay a field.
-class _SearchPill extends StatelessWidget {
+///
+/// The whole pill is the field: a click anywhere on it puts the cursor in the
+/// text, and while the cursor is there the pill itself lights — the skin's
+/// active control, or Standard's ring glowing — rather than a box being drawn
+/// inside it.
+class _SearchPill extends StatefulWidget {
   const _SearchPill({required this.controller, required this.search});
 
   final MusicController controller;
   final TextEditingController search;
 
   @override
+  State<_SearchPill> createState() => _SearchPillState();
+}
+
+class _SearchPillState extends State<_SearchPill> {
+  final FocusNode _focus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(_onFocus);
+  }
+
+  void _onFocus() => setState(() {});
+
+  @override
+  void dispose() {
+    _focus.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final search = widget.search;
     final radio = controller.view == 'radio';
     final skin = context.skin;
+    final focused = _focus.hasFocus;
     // Search holds a value, so a skin sinks it into the page: its own well in
-    // place of the gradient ring and the white field.
-    final well = skin.surface(SurfaceRole.well, radius: 22);
-    return skin.frame(
-      SurfaceRole.well,
-      radius: 22,
-      Container(
+    // place of the gradient ring and the white field, and its lit control
+    // while the cursor is in it.
+    final well = focused
+        ? skin.control(active: true, radius: 22)
+        : skin.surface(SurfaceRole.well, radius: 22);
+    return GestureDetector(
+      onTap: _focus.requestFocus,
+      child: Container(
       width: 340,
       height: 44,
       decoration: well ?? BoxDecoration(
@@ -530,6 +551,9 @@ class _SearchPill extends StatelessWidget {
           stops: [0.0, 0.5, 1.0],
           colors: [Color(0xFFEC4899), Color(0xFF8B5CF6), Color(0xFF06B6D4)],
         ),
+        boxShadow: focused
+            ? const [BoxShadow(color: Color(0x66EC4899), blurRadius: 14)]
+            : null,
       ),
       padding: const EdgeInsets.all(1.5),
       child: Container(
@@ -544,18 +568,18 @@ class _SearchPill extends StatelessWidget {
           children: [
             Icon(skin.icon(Icons.search),
                 size: 15,
-                color: skin.wellInkDim ??
-                    skin.inkDim ??
+                color: skin.inkDim ??
                     const Color(0xFF6B6B74)),
             const SizedBox(width: 8),
             Expanded(
               child: TextField(
                 controller: search,
+                focusNode: _focus,
                 style: TextStyle(
                   fontFamily: skin.fontFamily ?? Tokens.fontFamily,
                   fontSize: 14,
                   color:
-                      skin.wellInk ?? skin.ink ?? const Color(0xFF16161B),
+                      skin.ink ?? const Color(0xFF16161B),
                 ),
                 cursorColor: skin.accent ?? const Color(0xFFEC4899),
                 // Radio is not in the library, so the library filter cannot
@@ -580,8 +604,7 @@ class _SearchPill extends StatelessWidget {
                   hintStyle: TextStyle(
                     fontFamily: skin.fontFamily ?? Tokens.fontFamily,
                     fontSize: 14,
-                    color: skin.wellInkDim ??
-                        skin.inkDim ??
+                    color: skin.inkDim ??
                         const Color(0xFF8A8A92),
                   ),
                 ),
@@ -653,51 +676,59 @@ class _CountPill extends StatelessWidget {
   final String label;
 
   @override
-  Widget build(BuildContext context) => Container(
-        height: 44,
-        constraints: const BoxConstraints(minWidth: 150),
-        padding: const EdgeInsets.only(left: 20, right: 22),
-        // A skin raises the count out of its material and inks it in the
-        // accent, rather than a gradient pill with white type.
-        decoration: context.skin.control(active: false, radius: 22) ??
-            BoxDecoration(
-          borderRadius: BorderRadius.circular(22),
-          gradient: const LinearGradient(
-            begin: Alignment(-1, -0.58),
-            end: Alignment(1, 0.58),
-            colors: [Color(0xFFEC4899), Color(0xFF8B5CF6)],
+  Widget build(BuildContext context) {
+    final skin = context.skin;
+    // The gradient pill with white type, under Standard and under Glass. Glass
+    // draws a control at rest as bare glyphs on the pane, which is right for a
+    // button and left a figure in no pill at all. The other skins raise the
+    // count out of their material and ink it in the accent.
+    final pill =
+        skin.isStandard || skin.language == DesignLanguage.glassmorphism;
+    return Container(
+      height: 44,
+      constraints: const BoxConstraints(minWidth: 150),
+      padding: const EdgeInsets.only(left: 20, right: 22),
+      decoration: pill
+          ? const BoxDecoration(
+              borderRadius: BorderRadius.all(Radius.circular(22)),
+              gradient: LinearGradient(
+                begin: Alignment(-1, -0.58),
+                end: Alignment(1, 0.58),
+                colors: [Color(0xFFEC4899), Color(0xFF8B5CF6)],
+              ),
+              boxShadow: [
+                BoxShadow(color: Color(0x55EC4899), blurRadius: 16),
+              ],
+            )
+          : skin.control(active: false, radius: 22),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            '$count',
+            style: TextStyle(
+              fontFamily: skin.fontFamily ?? Tokens.fontFamily,
+              fontSize: 23,
+              fontWeight: FontWeight.w800,
+              color: pill ? Colors.white : skin.accent,
+            ),
           ),
-          boxShadow: const [
-            BoxShadow(color: Color(0x55EC4899), blurRadius: 16),
-          ],
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              '$count',
-              style: TextStyle(
-                fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
-                fontSize: 23,
-                fontWeight: FontWeight.w800,
-                color: context.skin.accent ?? Colors.white,
-              ),
+          const SizedBox(width: 9),
+          Text(
+            label,
+            style: TextStyle(
+              fontFamily: skin.fontFamily ?? Tokens.fontFamily,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.5,
+              color: pill ? const Color(0xDDFFFFFF) : skin.inkDim,
             ),
-            const SizedBox(width: 9),
-            Text(
-              label,
-              style: TextStyle(
-                fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.5,
-                color: context.skin.inkDim ?? const Color(0xDDFFFFFF),
-              ),
-            ),
-          ],
-        ),
-      );
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _ProgressBar extends StatelessWidget {

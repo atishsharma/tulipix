@@ -1,9 +1,10 @@
 // Design languages — which material the Music section is drawn in.
 //
-// Stored as `ui.design-language`, the key the Slint build already reads, and
-// in its spellings: `standard`, `clay` and `skeuo` mean the same thing in both
-// builds. The other three are Flutter's own; Slint maps any name it does not
-// know to Standard, so picking one here leaves the Slint build as it was.
+// Stored as `ui.design-language`, the key the Slint build already reads.
+// `standard` means the same thing in both builds and the rest are Flutter's
+// own: Slint maps any name it does not know to Standard, so picking one here
+// leaves the Slint build as it was. The other way round too — Slint's `clay`
+// and `skeuo` are Standard here, since Flutter dropped both.
 //
 // The language is orthogonal to the theme. One picks the material, the other
 // the lighting, and every language carries Light, Dark and OLED values.
@@ -20,18 +21,6 @@ enum DesignLanguage {
     'Neumorphism',
     'Soft Console',
     'Every control pressed out of one soft sheet.',
-  ),
-  claymorphism(
-    'clay',
-    'Claymorphism',
-    'Clay Studio',
-    'Puffy, glazed and brightly coloured; buttons squash when pressed.',
-  ),
-  skeuomorphism(
-    'skeuo',
-    'Skeuomorphism',
-    'Unibody',
-    'Machined aluminium, latching keys and black-glass screens.',
   ),
   glassmorphism(
     'glass',

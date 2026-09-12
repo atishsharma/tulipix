@@ -622,8 +622,6 @@ class _LanguageTile extends StatelessWidget {
   static const Map<DesignLanguage, (Color, Color)> _swatch = {
     DesignLanguage.standard: (Tokens.brand, Tokens.brand2),
     DesignLanguage.neumorphism: (Color(0xFFE4E6EE), Color(0xFFBCC0D1)),
-    DesignLanguage.claymorphism: (Color(0xFFFFC8DF), Color(0xFFEE4F9B)),
-    DesignLanguage.skeuomorphism: (Color(0xFFDADAD6), Color(0xFF0B0B0D)),
     DesignLanguage.glassmorphism: (Color(0xFFF472B6), Color(0xFF8B5CF6)),
     DesignLanguage.expressive: (Color(0xFFFFD9E4), Color(0xFFA3175E)),
   };

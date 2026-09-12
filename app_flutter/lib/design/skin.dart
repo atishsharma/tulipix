@@ -6,18 +6,15 @@
 // `skin.x ?? <what it drew before>`. A language overrides only what its look
 // actually changes.
 //
-// Signature pieces that are more than paint — a jog wheel, a wavy seek bar, a
-// backdrop blur — are added here by the plan that first needs them, not ahead
-// of it.
+// Signature pieces that are more than paint — Expressive's wavy seek bar —
+// are added here by the plan that first needs them, not ahead of it.
 
 import 'package:flutter/material.dart';
 
 import 'design_language.dart';
-import 'languages/claymorphism.dart';
 import 'languages/expressive.dart';
 import 'languages/glassmorphism.dart';
 import 'languages/neumorphism.dart';
-import 'languages/skeuomorphism.dart';
 import 'tokens.dart';
 
 /// What kind of surface is being drawn.
@@ -71,9 +68,6 @@ abstract class AppSkin extends ThemeExtension<AppSkin> {
   /// Ink on an active control. Null: the accent.
   Color? get activeInk => null;
 
-  /// How far a control shrinks while pressed. 1: it does not.
-  double get pressScale => 1;
-
   /// The app's tokens in this language — every section's page, panels, ink
   /// and hairlines. Standard: [base] itself, untouched.
   Tokens retint(Tokens base) => base;
@@ -87,33 +81,13 @@ abstract class AppSkin extends ThemeExtension<AppSkin> {
   /// whose play button is not itself filled with the accent.
   Color? get onProminent => null;
 
-  /// Text inside a [SurfaceRole.well], where a well is another material from
-  /// the page — the black glass of a machined screen. Null: [ink], [inkDim].
-  Color? get wellInk => null;
-  Color? get wellInkDim => null;
+  /// The fill of a panel docked over the page — the queue, the lyrics. Null:
+  /// the tokens' second panel colour.
+  Color? get sheet => null;
 
-  /// A face for figures at 16px and up — totals, counts. Null: [fontFamily].
-  String? get numberFamily => null;
-
-  /// The fill axis for every icon in the section, for the glyph fonts that
-  /// have one. Null: each icon's own.
-  double? get iconFill => null;
-
-  /// The player bar's height. Null: the bar's own 124.
-  double? get barHeight => null;
-
-  /// Painted behind the whole section, over the canvas colour — an aura, a
-  /// brushed plate. [accent] and [alt] are the playing cover's colours.
+  /// Painted behind the whole window, over the canvas colour — Glass's aura.
+  /// [accent] and [alt] are the colours it is lit by.
   Widget? pageBackdrop({required Color accent, Color? alt}) => null;
-
-  /// Wraps a surface's widget — a backdrop blur, say. Identity by default.
-  Widget frame(SurfaceRole role, Widget child, {double radius = 16}) => child;
-
-  /// The bar's whole transport row. Null: `Transport` as it is.
-  Widget? transport(TransportSlot s) => null;
-
-  /// The bar's volume control. Null: the volume pill.
-  Widget? volume(VolumeSlot s) => null;
 
   /// The bar's seek control. Null: the seek pill.
   Widget? seekBar(SeekSlot slot) => null;
@@ -136,63 +110,6 @@ class StandardSkin extends AppSkin {
 
   @override
   DesignLanguage get language => DesignLanguage.standard;
-}
-
-/// What a replacement transport is given: the row's state and its actions,
-/// with the section's rules already applied — what previous and next mean in
-/// a podcast or an audiobook, whether there is an order to shuffle. Values
-/// and callbacks, not the controller: a skin lives in lib/design, and has no
-/// business reaching into a section to work those out.
-class TransportSlot {
-  const TransportSlot({
-    required this.playing,
-    required this.onPlayPause,
-    required this.onPrev,
-    required this.onNext,
-    required this.compact,
-    this.prevTip = 'Previous',
-    this.nextTip = 'Next',
-    this.shuffleOn = false,
-    this.repeatOn = false,
-    this.onShuffle,
-    this.onRepeat,
-    this.loved,
-    this.onFav,
-  });
-
-  final bool playing;
-  final VoidCallback onPlayPause;
-  final VoidCallback onPrev;
-  final VoidCallback onNext;
-  final bool compact;
-  final String prevTip;
-  final String nextTip;
-  final bool shuffleOn;
-  final bool repeatOn;
-
-  /// Null where there is no order to disturb: a live stream, an audiobook.
-  final VoidCallback? onShuffle;
-  final VoidCallback? onRepeat;
-
-  /// Null where there is nothing to love.
-  final bool? loved;
-  final VoidCallback? onFav;
-}
-
-/// What a replacement volume control is given: what the volume pill takes.
-class VolumeSlot {
-  const VolumeSlot({
-    required this.volume,
-    required this.muted,
-    required this.onVolume,
-    required this.onMute,
-  });
-
-  /// 0..130 — mpv's softvol headroom.
-  final double volume;
-  final bool muted;
-  final ValueChanged<double> onVolume;
-  final VoidCallback onMute;
 }
 
 /// What a replacement seek bar is given.
@@ -225,8 +142,6 @@ AppSkin skinFor(DesignLanguage language, Tokens t) =>
     _skins[(language, t.dark, t.oled, t.reduceMotion)] ??= switch (language) {
       DesignLanguage.standard => const StandardSkin(),
       DesignLanguage.neumorphism => NeuSkin(t),
-      DesignLanguage.claymorphism => ClaySkin(t),
-      DesignLanguage.skeuomorphism => UnibodySkin(t),
       DesignLanguage.glassmorphism => GlassSkin(t),
       DesignLanguage.expressive => ExpressiveSkin(t),
     };
@@ -298,7 +213,7 @@ extension SkinOf on BuildContext {
 
 /// Something pressable that a skin draws: rest, hover, focus and pressed all
 /// come from [AppSkin.control], so the language decides what pressing looks
-/// like — sinking into the sheet, squashing, a key travelling down.
+/// like — sinking into the sheet, a pane lighting, a shape morphing.
 ///
 /// Only used while a skin is on. Standard keeps each widget's own Material
 /// button, ripple and all, which is what makes it a true no-op.
@@ -370,27 +285,20 @@ class _SkinButtonState extends State<SkinButton> {
           onTapUp: enabled ? (_) => _press(false) : null,
           onTapCancel: enabled ? () => _press(false) : null,
           onTap: widget.onTap,
-          child: AnimatedScale(
-            scale: _pressed ? context.skin.pressScale : 1,
-            duration: context.tokens.reduceMotion
-                ? Duration.zero
-                : const Duration(milliseconds: 180),
-            curve: Curves.easeOutBack,
-            child: Container(
-              width: widget.width,
-              height: widget.height,
-              padding: widget.padding,
-              alignment: Alignment.center,
-              decoration: context.skin.control(
-                active: widget.active,
-                hovered: enabled && (_hovered || _focused),
-                pressed: _pressed,
-                prominent: widget.prominent,
-                radius: widget.radius,
-                tint: widget.tint,
-              ),
-              child: widget.child,
+          child: Container(
+            width: widget.width,
+            height: widget.height,
+            padding: widget.padding,
+            alignment: Alignment.center,
+            decoration: context.skin.control(
+              active: widget.active,
+              hovered: enabled && (_hovered || _focused),
+              pressed: _pressed,
+              prominent: widget.prominent,
+              radius: widget.radius,
+              tint: widget.tint,
             ),
+            child: widget.child,
           ),
         ),
       ),

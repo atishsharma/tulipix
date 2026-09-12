@@ -529,12 +529,12 @@ class _ZenControls extends StatelessWidget {
           ),
         Transport(controller: c, mode: now.mode, live: live, scale: 1.3),
         VolPill(
-          volume: now.volume,
-          muted: now.muted,
+          volume: c.volume,
+          muted: c.muted,
           accent: accent,
           width: 172,
           scale: 1.2,
-          onVolume: (v) => c.send(MusicCmd.setVolume(volume: v)),
+          onVolume: (v) => c.setVolume(v),
           onMute: () => c.send(const MusicCmd.toggleMute()),
         ),
         PlayerBtn(

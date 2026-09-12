@@ -88,6 +88,28 @@ void main() {
     await tester.pumpAndSettle();
   });
 
+  test('volume and mute are what the deck holds, and move only their readers',
+      () {
+    // The snapshot lagged a press by a whole re-read; the deck knows at once.
+    final c = MusicController.instance;
+    var all = 0, pos = 0;
+    void onAll() => all++;
+    void onPos() => pos++;
+    c.addListener(onAll);
+    c.ticks.addListener(onPos);
+    addTearDown(() {
+      c.removeListener(onAll);
+      c.ticks.removeListener(onPos);
+      audioLevel.value = null;
+    });
+    audioLevel.value = (volume: 40, muted: true);
+    expect((c.volume, c.muted), (40.0, true));
+    expect((all, pos), (0, 1));
+    audioLevel.value = (volume: 40, muted: false);
+    expect(c.muted, isFalse);
+    expect((all, pos), (0, 2));
+  });
+
   testWidgets('a tick that only moves the position rebuilds only its readers',
       (tester) async {
     // Once a second while playing. It used to fire the whole controller, and

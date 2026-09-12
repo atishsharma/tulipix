@@ -13,6 +13,8 @@
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show ValueNotifier;
+
 import 'package:media_kit/media_kit.dart';
 
 import '../src/rust/api/music.dart';
@@ -35,6 +37,17 @@ double audioLoudness = 0.0;
 /// scrubber only move that often; a spectrum column is a tenth of a second, so
 /// it needs the unthrottled value.
 double audioPositionS = 0.0;
+
+/// Volume and mute as this deck holds them, or null until Rust has set either.
+///
+/// What every player's volume control and mute glyph draws. The snapshot's
+/// `now.volume` and `now.muted` are this deck's last report as Rust held it
+/// when it answered: a press was answered with the values from before the deck
+/// had applied it, and the report that followed moved only the clock, so the
+/// glyph kept the old state until something unrelated re-read the snapshot.
+/// This is set the moment a value is applied, in this process.
+final ValueNotifier<({double volume, bool muted})?> audioLevel =
+    ValueNotifier(null);
 
 /// mpv's `ebur128` momentary loudness in LUFS, mapped to 0..1.
 ///
@@ -111,6 +124,7 @@ class AudioDeck {
     _subs.add(_player.stream.volume.listen((v) {
       // Rust set it, or mpv did; either way the bar should show what is true.
       if (!_muted) _volume = v;
+      _publish();
       _report();
     }));
     _subs.add(_player.stream.completed.listen((done) {
@@ -140,6 +154,10 @@ class AudioDeck {
     _subs.clear();
     await _player.dispose();
   }
+
+  /// Before the player has it: the control under the pointer moves in this
+  /// frame, and mpv follows a moment later.
+  void _publish() => audioLevel.value = (volume: _volume, muted: _muted);
 
   // ------------------------------------------------------------- inbound ---
 
@@ -203,9 +221,11 @@ class AudioDeck {
         }
       case 'volume':
         _volume = double.tryParse(v) ?? _volume;
+        _publish();
         if (!_muted) await _player.setVolume(_volume);
       case 'mute':
         _muted = v == 'true' || v == 'yes';
+        _publish();
         await _player.setVolume(_muted ? 0.0 : _volume);
       case 'speed':
         await _player.setRate(double.tryParse(v) ?? 1.0);
@@ -276,9 +296,11 @@ class AudioDeck {
       switch (name) {
         case 'volume':
           _volume = double.tryParse(value) ?? _volume;
+          _publish();
           await _player.setVolume(_muted ? 0.0 : _volume);
         case 'mute':
           _muted = value == 'yes' || value == 'true';
+          _publish();
           await _player.setVolume(_muted ? 0.0 : _volume);
         default:
           await _native.setProperty(name, value);

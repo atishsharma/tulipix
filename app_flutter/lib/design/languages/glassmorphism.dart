@@ -136,6 +136,12 @@ class GlassSkin extends AppSkin {
         fill: _g.glass,
         fillStrong: _g.strong,
       );
+  /// The docked queue and lyrics: the pane as it looks over the bare page, at
+  /// 80%. At the pane's own tint the list sat on the aura and on whatever the
+  /// page drew under it.
+  @override
+  Color get sheet => Color.alphaBlend(_g.glass, _g.base).withValues(alpha: 0.8);
+
   @override
   double get controlRadius => 14;
   @override

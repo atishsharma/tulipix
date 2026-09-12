@@ -1,13 +1,14 @@
 // Soft shadows that fall inside a shape as well as outside it.
 //
-// Flutter's BoxShadow only casts outward, and the sunk wells that neumorphism,
-// clay and the machined skins are built from need the shadow *inside* the
-// edge. This is the one Decoration they share: a fill, the outer casts, then
-// the inner ones clipped to the shape, and an optional hairline for the OLED
-// tier, where no shadow shows against black.
+// Flutter's BoxShadow only casts outward, and the sunk wells neumorphism is
+// built from need the shadow *inside* the edge. This is the Decoration it and
+// Glass's panes draw with: a fill, the outer casts, then the inner ones clipped
+// to the shape, and an optional hairline for the OLED tier, where no shadow
+// shows against black.
 //
-// Blurred shadows are not painted where they are drawn: each is rendered once
-// into a small image and stretched to fit. See [_ShadowCache] for why.
+// Inner shades and blurred casts are not painted where they are drawn: each is
+// rendered once into a small image and stretched to fit. See [_ShadowCache]
+// for why.
 
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -114,16 +115,14 @@ class _SoftPainter extends BoxPainter {
               ..color = d.border!
               ..style = PaintingStyle.stroke
               ..strokeWidth = 1) {
-    for (final (all, blurred, hard) in [
-      (d.outer, _outerBlur, _outerHard),
-      (d.inner, _innerBlur, _innerHard),
-    ]) {
-      for (final s in all) {
-        // A shadow in a transparent colour is dropped: Unibody's OLED shade
-        // is 0x00000000, and blurring nothing still cost the pass.
-        if (s.color.a == 0) continue;
-        (s.blur > 0 ? blurred : hard).add((s, _shadow(s)));
-      }
+    // A shadow in a transparent colour is dropped: blurring nothing still cost
+    // the pass.
+    for (final s in d.outer) {
+      if (s.color.a == 0) continue;
+      (s.blur > 0 ? _outerBlur : _outerHard).add((s, _shadow(s)));
+    }
+    for (final s in d.inner) {
+      if (s.color.a != 0) _inner.add((s, _shadow(s)));
     }
   }
 
@@ -133,18 +132,20 @@ class _SoftPainter extends BoxPainter {
   /// decoration, and a Paint and a MaskFilter per shadow per paint was garbage
   /// for every surface on every frame.
   ///
-  /// Split by kind. A blurred one goes through the cache; a hard rim is a
-  /// plain fill, cheap to draw where it is, and stays pixel-sharp that way —
-  /// a 1px rim stretched from an image would soften on a half-pixel offset.
+  /// A blurred cast goes through the cache; a hard one is the shape filled
+  /// again, one draw, and stays where it is. Every inner shade goes through
+  /// the cache, hard ones too: each was a clip and a path to tessellate, per
+  /// surface, per frame — the sheen on every Glass pane, the rims of every
+  /// Neumorphism surface on OLED. The cache lands on whole device pixels, so a 1px rim stays
+  /// one row rather than softening across two.
   final List<_Shadow> _outerBlur = [];
   final List<_Shadow> _outerHard = [];
-  final List<_Shadow> _innerBlur = [];
-  final List<_Shadow> _innerHard = [];
+  final List<_Shadow> _inner = [];
 
   late final List<SoftShadow> _outerId = [for (final (s, _) in _outerBlur) s];
-  late final List<SoftShadow> _innerId = [for (final (s, _) in _innerBlur) s];
+  late final List<SoftShadow> _innerId = [for (final (s, _) in _inner) s];
   late final double _outerReach = _reach(_outerBlur);
-  late final double _innerReach = _reach(_innerBlur);
+  late final double _innerReach = _reach(_inner);
 
   /// Whether the casts have to be cut out of the shape. Only a fill you can
   /// see through shows the cast behind it; an opaque one covers it anyway,
@@ -242,29 +243,29 @@ class _SoftPainter extends BoxPainter {
     if (d.gradient != null) fill.shader = d.gradient!.createShader(rect);
     canvas.drawRRect(shape, fill);
 
-    if (_innerBlur.isNotEmpty) {
+    if (_inner.isNotEmpty) {
       if (direct) {
-        _inside(canvas, shape, _innerBlur);
+        _inside(canvas, shape, _inner);
       } else {
-        _ShadowCache.draw(canvas, shape, _innerBlur, _innerId,
+        _ShadowCache.draw(canvas, shape, _inner, _innerId,
             inner: true, clip: false, reach: _innerReach, dpr: dpr);
       }
     }
-    if (_innerHard.isNotEmpty) _inside(canvas, shape, _innerHard);
 
     final border = _border;
     if (border != null) canvas.drawRRect(shape.deflate(0.5), border);
   }
 }
 
-/// Blurred shadows, rendered once and stretched to fit.
+/// Inner shades and blurred casts, rendered once and stretched to fit.
 ///
 /// Impeller — the Linux default — draws a blurred rounded rect analytically,
 /// but a blurred path goes through an offscreen texture and a two-pass
 /// Gaussian, and Impeller keeps no raster cache to hold on to the result.
 /// Every inner shadow is such a path, so each one on screen cost that pass on
-/// every frame; in Clay and Unibody the content card and the sidebar are two
-/// of them, the size of the window.
+/// every frame; under Neumorphism every sunk well is one. A hard inner rim
+/// skips the blur but not the path: a clip set and cleared and a frame
+/// tessellated, per surface, per frame, on every Glass pane.
 ///
 /// Past its corners, though, a rounded rect's shadow is the same all along
 /// each edge. So a small image of the shadow — the shape just long enough
@@ -325,13 +326,21 @@ abstract final class _ShadowCache {
       1,
       1,
     );
-    // In device pixels, so the corners land at the size they were baked.
+    // In whole device pixels, so the corners land at the size they were baked
+    // and a hard 1px rim stays one row instead of softening across two.
     canvas
       ..save()
-      ..translate(dst.left, dst.top)
       ..scale(1 / dpr)
-      ..drawImageNine(image, mid,
-          Rect.fromLTWH(0, 0, dst.width * dpr, dst.height * dpr), _stretch)
+      ..drawImageNine(
+          image,
+          mid,
+          Rect.fromLTRB(
+            (dst.left * dpr).roundToDouble(),
+            (dst.top * dpr).roundToDouble(),
+            (dst.right * dpr).roundToDouble(),
+            (dst.bottom * dpr).roundToDouble(),
+          ),
+          _stretch)
       ..restore();
   }
 

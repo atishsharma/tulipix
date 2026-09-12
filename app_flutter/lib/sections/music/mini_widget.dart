@@ -1348,15 +1348,15 @@ class _Vol extends StatelessWidget {
       height: height,
       // Muted reads as zero rather than as the level it will come back to —
       // the icon is the thing that says why.
-      frac: now.muted ? 0 : (now.volume / 130).clamp(0.0, 1.0),
+      frac: controller.muted ? 0 : (controller.volume / 130).clamp(0.0, 1.0),
       leading: Icon(
-        now.muted ? Icons.volume_off : Icons.volume_up,
+        controller.muted ? Icons.volume_off : Icons.volume_up,
         size: (full ? 16.0 : 14.0) * s,
-        color: now.muted ? tone.ink : t.nInk,
+        color: controller.muted ? tone.ink : t.nInk,
       ),
       onLeading: () => controller.send(const MusicCmd.toggleMute()),
-      trailing: now.volume.round().toString(),
-      onScrub: (f) => controller.send(MusicCmd.setVolume(volume: f * 130)),
+      trailing: controller.volume.round().toString(),
+      onScrub: (f) => controller.setVolume(f * 130),
     );
   }
 }

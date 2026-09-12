@@ -10,7 +10,7 @@
 // it on the event stream would make it by far the loudest thing on it. It used
 // to be an atomic in Rust behind a sync bridge symbol; now that the deck is
 // media_kit in this process, the r128 meter is observed there and left in a
-// plain variable, which the visualizer reads ten times a second on the
+// plain variable, which the visualizer reads five times a second on the
 // shared motion clock.
 
 import 'dart:math' as math;
@@ -95,10 +95,13 @@ class VizView extends StatefulWidget {
   State<VizView> createState() => _VizViewState();
 }
 
-/// Every third beat of the [MotionClock]: ten a second, about the eleven the
-/// Slint timer ran. Anything faster is invisible on bars this wide, and the
-/// bars move on nearly every step they take, so each one is a frame.
-const int _kVizEvery = 3;
+/// Every second [MotionClock.step]: five a second, half the eleven the Slint
+/// timer ran. The bars move on nearly every step they take, so each step is a
+/// frame, and on this renderer every frame redraws the whole window --
+/// measured on an HD 5500, the visualizer was most of the GPU while playing.
+/// Five still reads as moving to the music, and on the step it shares its
+/// frames with everything else that moves.
+const int _kVizEvery = 2 * MotionClock.step;
 
 class _VizViewState extends State<VizView> {
   /// The bars, as something the painter can subscribe to rather than something
@@ -136,6 +139,8 @@ class _VizViewState extends State<VizView> {
     _sync();
   }
 
+  /// Out of focus the bars hold still with everything else: the clock itself
+  /// stops while the window is inactive, so nothing on it has to listen.
   void _sync() {
     final run = widget.playing && _visible;
     if (run == _joined) return;

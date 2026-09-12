@@ -174,12 +174,25 @@ class _TulipixAppState extends State<TulipixApp> {
                       // aura, the plate. Always a child, empty under Standard:
                       // a child that comes and goes moves its siblings, and
                       // that costs every page its State (see the resize edges).
+                      //
+                      // The window's only one. While Music is up it is lit by
+                      // the record, which is what Music's own backdrop was for:
+                      // that one sat over this one, and under Glass the two
+                      // were four window-sized gradients in every frame.
                       Positioned.fill(
-                        child: skin.pageBackdrop(
-                              accent: Tokens.accentOf(at),
-                              alt: Tokens.brand2,
-                            ) ??
-                            const SizedBox.shrink(),
+                        child: ListenableBuilder(
+                          listenable: MusicController.instance,
+                          builder: (context, _) {
+                            final music = at == Section.music
+                                ? MusicController.instance
+                                : null;
+                            return skin.pageBackdrop(
+                                  accent: music?.accent ?? Tokens.accentOf(at),
+                                  alt: music?.accentAlt ?? Tokens.brand2,
+                                ) ??
+                                const SizedBox.shrink();
+                          },
+                        ),
                       ),
                       Column(children: [
                         // Above the rail and the page both, the way the caption row
@@ -226,7 +239,7 @@ class _TulipixAppState extends State<TulipixApp> {
                                   margin:
                                       const EdgeInsets.fromLTRB(14, 14, 14, 14),
                                   // The language's card: a raised sheet, a
-                                  // slab of clay, a pane, a milled pocket.
+                                  // pane, a tonal card.
                                   decoration: skin.surface(SurfaceRole.card,
                                           radius: Tokens.radiusLg) ??
                                       BoxDecoration(

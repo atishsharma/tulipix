@@ -24,12 +24,9 @@ Color _idleHi(Tokens t) =>
 Color _idleInk(Tokens t) =>
     t.dark ? const Color(0xFFECEEF8) : const Color(0xFF241D5E);
 
-/// Ink in the stepper: its well's under a skin (Unibody's is black glass), the
-/// idle ink otherwise.
-Color _stepInk(BuildContext context, Tokens t) {
-  final skin = context.skin;
-  return skin.wellInk ?? (skin.isStandard ? _idleInk(t) : t.text);
-}
+/// Ink in the stepper: the idle ink, or the language's text under a skin.
+Color _stepInk(BuildContext context, Tokens t) =>
+    context.skin.isStandard ? _idleInk(t) : t.text;
 
 /// The tinted lettering an inactive coloured pill uses — its own hue, darkened
 /// on the pale canvas so it is still legible.
@@ -497,7 +494,7 @@ class Artwork extends StatelessWidget {
     return Container(
       width: width,
       height: height,
-      // A poster's mat in the skin — raised, clay, black glass, a pane edge.
+      // A poster's mat in the skin — raised, a pane edge, a tonal frame.
       decoration: context.skin.surface(SurfaceRole.art, radius: radius) ??
           BoxDecoration(
             color: posterWell(t),

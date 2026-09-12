@@ -272,13 +272,13 @@ class _SearchPillState extends State<_SearchPill> {
         child: Row(
           children: [
             Icon(skin.icon(Icons.search),
-                size: 17, color: skin.wellInkDim ?? t.nInk3),
+                size: 17, color: t.nInk3),
             const SizedBox(width: 8),
             Expanded(
               child: TextField(
                 controller: widget.search,
                 style:
-                    TextStyle(fontSize: 15, color: skin.wellInk ?? t.nInk),
+                    TextStyle(fontSize: 15, color: t.nInk),
                 cursorColor: Tokens.secTools,
                 onChanged: (v) =>
                     widget.controller.send(ToolsCmd.search(text: v.trim())),

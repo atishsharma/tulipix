@@ -5,11 +5,9 @@
 // the sections use — buttons, fields, sliders, switches, chips, cards,
 // dialogs, menus, tooltips — in its own face, colours and corners.
 //
-// A theme cannot draw an inner shadow, a squash on press or a backdrop blur.
-// Neumorphism's and Clay's stock buttons are flat here, Glass's dialogs are
-// strong glass without the blur; the hand-tuning phase closes those gaps where
-// a section needs it. Unibody's fields are pockets, not black glass: the theme
-// cannot change the typed text's colour without changing all body text.
+// A theme cannot draw an inner shadow or a backdrop blur. Neumorphism's stock
+// buttons are flat here and Glass's dialogs are strong glass without the blur;
+// the hand-tuning phase closes those gaps where a section needs it.
 
 import 'package:flutter/material.dart';
 
@@ -60,7 +58,7 @@ ThemeData appTheme(Tokens t, AppSkin skin) {
       bodyColor: t.text,
       displayColor: t.text,
     ),
-    iconTheme: base.iconTheme.copyWith(color: t.text, fill: skin.iconFill),
+    iconTheme: base.iconTheme.copyWith(color: t.text),
     // Filled buttons keep `primary` — Tulipix violet, or the section colour
     // a call site passes. The language supplies the shape, never the hue.
     filledButtonTheme: FilledButtonThemeData(
@@ -86,23 +84,15 @@ ThemeData appTheme(Tokens t, AppSkin skin) {
     textButtonTheme: TextButtonThemeData(
       style: TextButton.styleFrom(shape: shape, textStyle: label),
     ),
-    // Corners and hairlines, not a fill: a theme fill reaches every field,
-    // including the borderless ones sunk inside a search pill, and paints a
-    // box behind their text. A field that wants a fill says so itself.
+    // Corners only, not a fill and not per-state borders. A theme fill, or an
+    // enabled and a focused border, reaches every field, the borderless ones
+    // sunk inside a search pill too, and drew a box inside the pill. Now a
+    // field that says `border: InputBorder.none` gets none, and one that says
+    // nothing gets this outline, in the scheme's outline colour at rest and
+    // its primary when focused.
     inputDecorationTheme: InputDecorationTheme(
       hintStyle: TextStyle(fontFamily: face, color: t.textDim),
-      border: OutlineInputBorder(
-        borderRadius: control,
-        borderSide: BorderSide.none,
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: control,
-        borderSide: BorderSide(color: t.outline),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: control,
-        borderSide: const BorderSide(color: Tokens.brand, width: 1.5),
-      ),
+      border: OutlineInputBorder(borderRadius: control),
     ),
     sliderTheme: base.sliderTheme.copyWith(inactiveTrackColor: t.glassStrong),
     switchTheme: SwitchThemeData(

@@ -4,9 +4,9 @@
 // Pure values — nothing here touches the bridge. What it pins, in order of how
 // quietly each would break:
 //
-//  - The spellings shared with the Slint build. `clay` and `skeuo` are what
-//    `design_lang_index` in tulipix-app matches; a rename here would leave the
-//    two builds disagreeing about the same settings file.
+//  - The spelling shared with the Slint build, and the names only Slint still
+//    writes reading as Standard; a rename would leave the two builds
+//    disagreeing about the same settings file.
 //  - Standard answering nothing. That is the whole guarantee that choosing it
 //    changes no pixel of the section.
 //  - OLED drawing edges with a rim rather than a cast, which is the one tier
@@ -20,14 +20,11 @@ import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
-import 'package:material_symbols_icons/symbols.dart';
 
 import 'package:tulipix/design/design_language.dart';
-import 'package:tulipix/design/languages/claymorphism.dart';
 import 'package:tulipix/design/languages/expressive.dart';
 import 'package:tulipix/design/languages/glassmorphism.dart';
 import 'package:tulipix/design/languages/neumorphism.dart';
-import 'package:tulipix/design/languages/skeuomorphism.dart';
 import 'package:tulipix/design/motion_clock.dart';
 import 'package:tulipix/design/skin.dart';
 import 'package:tulipix/design/soft_decoration.dart';
@@ -35,11 +32,12 @@ import 'package:tulipix/design/tokens.dart';
 
 void main() {
   group('DesignLanguage', () {
-    test('the three it shares with Slint are spelled the way Slint spells them',
-        () {
+    test('Standard is spelled as Slint spells it, and Slint-only names are '
+        'Standard', () {
       expect(DesignLanguage.standard.id, 'standard');
-      expect(DesignLanguage.claymorphism.id, 'clay');
-      expect(DesignLanguage.skeuomorphism.id, 'skeuo');
+      // What the Slint build still writes for the two Flutter dropped.
+      expect(DesignLanguage.fromId('clay'), DesignLanguage.standard);
+      expect(DesignLanguage.fromId('skeuo'), DesignLanguage.standard);
     });
 
     test('every id round-trips', () {
@@ -54,8 +52,8 @@ void main() {
       expect(DesignLanguage.fromId('brutalism'), DesignLanguage.standard);
     });
 
-    test('six options, Standard first', () {
-      expect(DesignLanguage.values, hasLength(6));
+    test('four options, Standard first', () {
+      expect(DesignLanguage.values, hasLength(4));
       expect(DesignLanguage.values.first, DesignLanguage.standard);
     });
   });
@@ -98,25 +96,6 @@ void main() {
     }
 
     for (final e in tiers.entries) {
-      test('Clay answers every question on ${e.key}', () {
-        final s = skinFor(DesignLanguage.claymorphism, e.value);
-        expect(s, isA<ClaySkin>());
-        expect(s.fontFamily, 'Fredoka');
-        expect(s.pressScale, lessThan(1));
-        for (final r in SurfaceRole.values) {
-          expect(s.surface(r), isA<SoftDecoration>(), reason: '$r');
-        }
-        // Two tabs with two tints are two clays.
-        final pink = s.control(active: true, tint: const Color(0xFFEC4899))!
-            as SoftDecoration;
-        final teal = s.control(active: true, tint: const Color(0xFF14B8A6))!
-            as SoftDecoration;
-        expect(pink.color, isNot(teal.color));
-        expect(s.icon(Icons.play_arrow).fontFamily, 'PhosphorFill');
-      });
-    }
-
-    for (final e in tiers.entries) {
       test('Glass answers every question on ${e.key}', () {
         final s = skinFor(DesignLanguage.glassmorphism, e.value);
         expect(s, isA<GlassSkin>());
@@ -128,18 +107,6 @@ void main() {
         expect(s.control(active: false), isNotNull);
         expect(s.icon(Icons.play_arrow), LucideIcons.play);
         expect(s.pageBackdrop(accent: const Color(0xFFEC4899)), isNotNull);
-      });
-
-      test('Unibody answers every question on ${e.key}', () {
-        final s = skinFor(DesignLanguage.skeuomorphism, e.value);
-        expect(s, isA<UnibodySkin>());
-        expect(s.fontFamily, 'Geist');
-        expect(s.numberFamily, 'Doto');
-        expect(s.iconFill, 1);
-        // Screens are black on every tier.
-        final well = s.surface(SurfaceRole.well)! as SoftDecoration;
-        expect(well.color.toARGB32() & 0xFFFFFF, lessThan(0x111111));
-        expect(s.icon(Icons.play_arrow), Symbols.play_arrow_rounded);
       });
 
       test('Expressive answers every question on ${e.key}', () {
@@ -159,13 +126,8 @@ void main() {
 
       test('a play button filled with the accent has its own ink on ${e.key}',
           () {
-        for (final l in [
-          DesignLanguage.claymorphism,
-          DesignLanguage.skeuomorphism,
-          DesignLanguage.expressive,
-        ]) {
-          expect(skinFor(l, e.value).onProminent, isNotNull, reason: l.id);
-        }
+        expect(
+            skinFor(DesignLanguage.expressive, e.value).onProminent, isNotNull);
       });
     }
 
@@ -180,11 +142,10 @@ void main() {
           s.control(active: false, prominent: true));
     });
 
-    test('Neumorphism ignores a tint and does not squash', () {
+    test('Neumorphism ignores a tint', () {
       final s = NeuSkin(Tokens.light());
       expect(s.control(active: true, tint: const Color(0xFFEC4899)),
           s.control(active: true));
-      expect(s.pressScale, 1);
     });
 
     test('OLED keeps the page black and draws edges with a rim, not a cast', () {
@@ -266,8 +227,6 @@ void main() {
     final t = Tokens.dark();
     for (final l in [
       DesignLanguage.neumorphism,
-      DesignLanguage.claymorphism,
-      DesignLanguage.skeuomorphism,
       DesignLanguage.glassmorphism,
     ]) {
       testWidgets(l.id, (tester) async {
@@ -340,8 +299,8 @@ void main() {
   });
 
   testWidgets('a shadow in a transparent colour costs nothing', (tester) async {
-    // Unibody's shade on OLED: a blur of nothing, three casts and two inner
-    // passes of it, on every key and pocket.
+    // A shade in a fully transparent colour: a blur of nothing, and the cost
+    // of one all the same.
     const d = SoftDecoration(
       color: Color(0xFF000000),
       radius: 12,
@@ -359,29 +318,6 @@ void main() {
     // The fill, and nothing else.
     expect(box, paintsExactlyCountTimes(#drawRRect, 1));
     expect(box, paintsExactlyCountTimes(#drawPath, 0));
-  });
-
-  testWidgets('the jog wheel plays, and steps both ways', (tester) async {
-    var played = 0, prev = 0, next = 0;
-    final s = UnibodySkin(Tokens.light());
-    await tester.pumpWidget(MaterialApp(
-      theme: ThemeData(extensions: [Tokens.light(), s]),
-      home: Scaffold(
-        body: Center(
-          child: JogWheel(
-            skin: s,
-            playing: false,
-            onPlay: () => played++,
-            onPrev: () => prev++,
-            onNext: () => next++,
-          ),
-        ),
-      ),
-    ));
-    await tester.tap(find.byTooltip('Play'));
-    await tester.tap(find.byTooltip('Previous'));
-    await tester.tap(find.byTooltip('Next'));
-    expect([played, prev, next], [1, 1, 1]);
   });
 
   testWidgets('the wave lies flat when paused', (tester) async {
@@ -416,26 +352,13 @@ void main() {
         .painter! as WavePainter;
     final before = painter();
     final phase = before.live!.value.$1;
-    await tester.pump(MotionClock.beat);
+    // A whole step of beats: the wave moves on one of them.
+    for (var i = 0; i < MotionClock.step; i++) {
+      await tester.pump(MotionClock.beat);
+    }
     // The same painter, and the wave moved under it.
     expect(painter(), same(before));
     expect(before.live!.value.$1, isNot(phase));
     await tester.pumpWidget(const SizedBox());
-  });
-
-  testWidgets('a Glass pane blurs nothing behind it', (tester) async {
-    // Each blur was an offscreen layer and its passes on every frame, for a
-    // smooth gradient that came back looking the same.
-    final s = GlassSkin(Tokens.dark());
-    await tester.pumpWidget(Directionality(
-      textDirection: TextDirection.ltr,
-      child: Column(
-        children: [
-          for (final r in SurfaceRole.values)
-            s.frame(r, const SizedBox(width: 80, height: 40)),
-        ],
-      ),
-    ));
-    expect(find.byType(BackdropFilter), findsNothing);
   });
 }

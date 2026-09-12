@@ -117,6 +117,10 @@ class MusicController extends ChangeNotifier {
     // without the native library.
     try {
       AudioDeck.instance.start();
+      // Volume and mute move the players' controls the moment the deck
+      // applies them, and only those: every volume control already rebuilds
+      // on [ticks], as the position readers do.
+      audioLevel.addListener(_tickOnly);
       _events = musicEvents().listen(_onEvent, onError: (Object e) {
         error = e;
         notifyListeners();
@@ -224,6 +228,26 @@ class MusicController extends ChangeNotifier {
   late final Listenable live = Listenable.merge([this, ticks]);
 
   void _tickOnly() => ticks.value++;
+
+  /// Volume and mute as the deck holds them: what every player's volume
+  /// control and mute glyph shows. See [audioLevel] for why not the snapshot,
+  /// which is only the fallback until Rust has handed the deck a value.
+  double get volume => audioLevel.value?.volume ?? now?.volume ?? 100;
+  bool get muted => audioLevel.value?.muted ?? now?.muted ?? false;
+
+  Timer? _volumeSend;
+
+  /// Moves the volume now, on the deck, and tells Rust -- which clamps it,
+  /// stores it and hands the deck the same value back -- once the pointer has
+  /// been still for a moment. Each drag step used to be a bridge round trip
+  /// and a whole snapshot, and the bar moved only when that came back.
+  void setVolume(double volume) {
+    final v = volume.clamp(0.0, 130.0).toDouble();
+    AudioDeck.instance.setProperty('volume', v.toString());
+    _volumeSend?.cancel();
+    _volumeSend = Timer(const Duration(milliseconds: 150),
+        () => send(MusicCmd.setVolume(volume: v)));
+  }
 
   @visibleForTesting
   void debugEvent(MusicEvent event) => _onEvent(event);
@@ -465,7 +489,7 @@ class MusicController extends ChangeNotifier {
       case 'seekby':
         send(MusicCmd.seek(secs: (tickPos + value).clamp(0, tickDur)));
       case 'volume':
-        send(MusicCmd.setVolume(volume: value.clamp(0, 130)));
+        setVolume(value);
       case 'raise':
         presentWindow();
       case 'mini':

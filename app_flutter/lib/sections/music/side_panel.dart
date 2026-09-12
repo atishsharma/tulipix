@@ -12,6 +12,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'meta_manager.dart';
@@ -75,7 +76,9 @@ class SidePanel extends StatelessWidget {
             width: kSidePanelWidth,
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: t.panel2,
+                // Glass fills it to 80% so the page does not show through the
+                // list; every other language keeps its second panel colour.
+                color: context.skin.sheet ?? t.panel2,
                 // No cast shadow: it bled onto the player bar in Slint too.
                 border: Border(left: BorderSide(color: t.outline)),
               ),

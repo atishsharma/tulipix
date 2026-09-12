@@ -204,8 +204,9 @@ class _WavySeekState extends State<WavySeek> {
   double? _drag;
 
   /// On the [MotionClock], with everything else that moves. The wave drifts
-  /// all the time it plays, so it takes every beat — where the Ticker it
-  /// replaced drew at the display's rate.
+  /// all the time it plays, and nothing gates a drift to a pixel, so it moves
+  /// on the [MotionClock.step]: ten a second. On every beat it held the
+  /// window at thirty whole frames a second by itself, only in this language.
   bool _joined = false;
 
   /// The clock does not hear TickerMode by itself: this is it, asked for.
@@ -231,13 +232,17 @@ class _WavySeekState extends State<WavySeek> {
     if (run) {
       MotionClock.instance.join(_onBeat);
       // Seeded now, or the first frame draws the playhead at zero.
-      _onBeat();
+      _move();
     } else {
       MotionClock.instance.leave(_onBeat);
     }
   }
 
   void _onBeat() {
+    if (MotionClock.instance.onStep) _move();
+  }
+
+  void _move() {
     final dur = widget.slot.dur <= 0 ? 1.0 : widget.slot.dur;
     _live.value = (
       MotionClock.instance.seconds * 2 * math.pi,

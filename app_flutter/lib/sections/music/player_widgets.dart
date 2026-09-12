@@ -57,8 +57,7 @@ class PlayerBtn extends StatelessWidget {
           skin.icon(icon),
           size: iconSize,
           color: active ? skin.accent : (onTap == null ? t.nInk2 : skin.inkDim),
-          // On fills the glyph, for the fonts with a fill axis. Off leaves it
-          // to the section's IconTheme, so a skin that fills everything can.
+          // On fills the glyph, for the fonts with a fill axis.
           fill: active ? 1 : null,
         ),
       );
@@ -295,6 +294,10 @@ class _SeekPillState extends State<SeekPill> {
   }
 
   void _onBeat() {
+    // On the step, with everything else that moves: an edge that crosses a
+    // pixel between steps waits for the next, a tenth of a second at most,
+    // rather than taking a frame of its own.
+    if (!MotionClock.instance.onStep) return;
     final dur = widget.dur <= 0 ? 1.0 : widget.dur;
     final next = _dragging != null
         ? _fromSnapshot()
@@ -328,7 +331,7 @@ class _SeekPillState extends State<SeekPill> {
     final label = TextStyle(
       fontSize: 11 * s,
       fontWeight: FontWeight.w600,
-      color: skin.wellInkDim ?? skin.inkDim ?? t.nInk2,
+      color: skin.inkDim ?? t.nInk2,
       fontFeatures: const [FontFeature.tabularFigures()],
     );
 
@@ -742,7 +745,7 @@ class VolPill extends StatelessWidget {
               textAlign: TextAlign.right,
               style: TextStyle(
                 fontSize: 10 * s,
-                color: skin.wellInkDim ?? skin.inkDim ?? t.nInk2,
+                color: skin.inkDim ?? t.nInk2,
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
@@ -861,7 +864,14 @@ class _NowPlayingLinesState extends State<NowPlayingLines> {
         cursor: SystemMouseCursors.click,
         onEnter: (_) => onHover(true),
         onExit: (_) => onHover(false),
-        child: GestureDetector(onTap: onTap, child: box),
+        // Opaque, as the mini's links are: the whole line is the target. A
+        // deferring detector only heard the glyphs the marquee painted, and
+        // the bar's title missed most clicks aimed at it.
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: box,
+        ),
       );
     }
 
@@ -928,6 +938,12 @@ class _MarqueeState extends State<Marquee> {
   bool _visible = true;
   bool _joined = false;
 
+  /// One pass per title, then it rests at the start until the title changes
+  /// or the pointer comes over it. It used to loop for the whole song, and at
+  /// 34 px/s it crosses a device pixel on every beat, so every beat of a
+  /// long title was a whole-window frame.
+  bool _rested = false;
+
   /// Null until the first beat. The gap since the last travel would otherwise
   /// be the whole time the line sat still, and taken as a delta it would
   /// fling the text off in one step.
@@ -946,10 +962,14 @@ class _MarqueeState extends State<Marquee> {
     final last = _last;
     _last = now;
     if (last == null || _overflow <= 0) return;
-    // A pause at each end: text that never stops moving is unreadable.
+    // A pause at the far end, then home to rest.
     final span = _overflow + 64;
-    var next = _offset + widget.speed * (now - last);
-    if (next > span) next = -32;
+    final next = _offset + widget.speed * (now - last);
+    if (next > span) {
+      _rested = true;
+      _sync();
+      return;
+    }
     _offset = next;
     _place();
   }
@@ -967,7 +987,7 @@ class _MarqueeState extends State<Marquee> {
   void _sync() {
     // And only while the deck plays and this line is on screen: a paused song
     // with a long title used to travel for as long as the app stayed open.
-    final on = _overflow > 0 && _music.tickPlaying && _visible;
+    final on = _overflow > 0 && !_rested && _music.tickPlaying && _visible;
     if (on && !_joined) {
       _joined = true;
       _last = null;
@@ -1026,9 +1046,19 @@ class _MarqueeState extends State<Marquee> {
   void didUpdateWidget(Marquee old) {
     super.didUpdateWidget(old);
     if (old.text != widget.text) {
+      // A new title gets its pass. The measure that follows a new text joins
+      // the clock again, after this frame.
+      _rested = false;
       _offset = -32;
       _place();
     }
+  }
+
+  /// The pointer asks for the rest of the line again.
+  void _wake() {
+    if (!_rested) return;
+    _rested = false;
+    _sync();
   }
 
   @override
@@ -1047,19 +1077,23 @@ class _MarqueeState extends State<Marquee> {
         // ShiftedPaint is a boundary of its own: while the text travels it
         // repaints alone, and what it sits on — the glass bar, the cover
         // wash — does not.
-        return ClipRect(
-          child: Align(
-            alignment: _overflow > 0
-                ? Alignment.centerLeft
-                : (widget.centred ? Alignment.center : Alignment.centerLeft),
-            child: ShiftedPaint(
-              shift: _shift,
-              child: Text(
-                widget.text,
-                maxLines: 1,
-                softWrap: false,
-                overflow: TextOverflow.visible,
-                style: widget.style,
+        return MouseRegion(
+          opaque: false,
+          onEnter: (_) => _wake(),
+          child: ClipRect(
+            child: Align(
+              alignment: _overflow > 0
+                  ? Alignment.centerLeft
+                  : (widget.centred ? Alignment.center : Alignment.centerLeft),
+              child: ShiftedPaint(
+                shift: _shift,
+                child: Text(
+                  widget.text,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.visible,
+                  style: widget.style,
+                ),
               ),
             ),
           ),

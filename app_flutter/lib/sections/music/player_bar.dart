@@ -72,7 +72,7 @@ class PlayerBar extends StatelessWidget {
           if (controller.panel == 'eq')
             SizedBox(height: 260, child: _Panel(controller: controller)),
           SizedBox(
-            height: skin.barHeight ?? 124,
+            height: 124,
             // Animated, not decorated: the palette should arrive with the next
             // record rather than snap to it, and a DecoratedBox cannot tween.
             child: AnimatedContainer(
@@ -86,9 +86,19 @@ class PlayerBar extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(22, 6, 22, 9),
                 child: Column(
                   children: [
-                    _LyricLine(controller: controller),
+                    // The two rows a position tick changes, and the only two
+                    // it rebuilds. It used to rebuild the whole bar once a
+                    // second: under a skin, twenty-odd SkinButtons.
+                    ListenableBuilder(
+                      listenable: controller.ticks,
+                      builder: (_, __) => _LyricLine(controller: controller),
+                    ),
                     const SizedBox(height: 5),
-                    _SeekRow(controller: controller, live: live),
+                    ListenableBuilder(
+                      listenable: controller.ticks,
+                      builder: (_, __) =>
+                          _SeekRow(controller: controller, live: live),
+                    ),
                     const SizedBox(height: 5),
                     Expanded(
                       child: _Controls(
@@ -107,10 +117,9 @@ class PlayerBar extends StatelessWidget {
       ),
     );
     if (slab == null) return bar;
-    // Framed inside the margin, so a blur behind the slab stops at its edge.
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 4, 22, 22),
-      child: skin.frame(SurfaceRole.bar, bar, radius: 30),
+      child: bar,
     );
   }
 }
@@ -177,8 +186,7 @@ class _SeekRow extends StatelessWidget {
     final st = controller.state!;
     final now = st.now;
     final skin = context.skin;
-    // The live pill is a well, which in some skins is a black screen.
-    final label = skin.wellInkDim ?? skin.inkDim ?? t.nInk2;
+    final label = skin.inkDim ?? t.nInk2;
     return SizedBox(
       height: 26,
       child: Row(
@@ -254,18 +262,11 @@ class _SeekRow extends StatelessWidget {
             onTap: () => controller.setPanel('eq'),
           ),
           const SizedBox(width: 6),
-          skin.volume(VolumeSlot(
-                volume: now.volume,
-                muted: now.muted,
-                onVolume: (v) =>
-                    controller.send(MusicCmd.setVolume(volume: v)),
-                onMute: () => controller.send(const MusicCmd.toggleMute()),
-              )) ??
-              VolPill(
-            volume: now.volume,
-            muted: now.muted,
+          VolPill(
+            volume: controller.volume,
+            muted: controller.muted,
             accent: controller.accent,
-            onVolume: (v) => controller.send(MusicCmd.setVolume(volume: v)),
+            onVolume: (v) => controller.setVolume(v),
             onMute: () => controller.send(const MusicCmd.toggleMute()),
           ),
         ],
@@ -396,15 +397,7 @@ class _ControlsState extends State<_Controls> {
           ),
         ),
         const SizedBox(width: 12),
-        context.skin.transport(_transportSlot(
-              c,
-              mode: now.mode,
-              live: widget.live,
-              compact: !wide,
-              loved: widget.library ? now.loved : null,
-              onFav: () => c.send(MusicCmd.love(itemId: now.itemId)),
-            )) ??
-            Transport(
+        Transport(
           controller: c,
           mode: now.mode,
           live: widget.live,
@@ -648,55 +641,6 @@ class Transport extends StatelessWidget {
   }
 }
 
-/// [Transport]'s rules, for a skin that draws its own transport: previous and
-/// next step thirty seconds in a podcast and a chapter in an audiobook, and
-/// shuffle and repeat only exist where there is an order to disturb. Worked
-/// out here and handed over as values, so the skin never needs the controller.
-TransportSlot _transportSlot(
-  MusicController c, {
-  required String mode,
-  required bool live,
-  required bool compact,
-  bool? loved,
-  VoidCallback? onFav,
-}) {
-  final st = c.state;
-  final podcast = mode == 'podcast';
-  final book = mode == 'book';
-  final ordered = !live && !book;
-  return TransportSlot(
-    playing: c.tickPlaying,
-    onPlayPause: () => c.send(const MusicCmd.playPause()),
-    prevTip: book
-        ? 'Previous chapter'
-        : podcast
-            ? 'Back 30s'
-            : 'Previous',
-    nextTip: book
-        ? 'Next chapter'
-        : podcast
-            ? 'Forward 30s'
-            : 'Next',
-    onPrev: () => c.send(podcast
-        ? const MusicCmd.podSkip(secs: -30)
-        : book
-            ? const MusicCmd.bookChapter(delta: -1)
-            : const MusicCmd.prev()),
-    onNext: () => c.send(podcast
-        ? const MusicCmd.podSkip(secs: 30)
-        : book
-            ? const MusicCmd.bookChapter(delta: 1)
-            : const MusicCmd.next()),
-    compact: compact,
-    shuffleOn: (st?.shuffle ?? false) && ordered,
-    repeatOn: (st?.repeat ?? 'off') != 'off' && ordered,
-    onShuffle: ordered ? () => c.send(const MusicCmd.toggleShuffle()) : null,
-    onRepeat: ordered ? () => c.send(const MusicCmd.cycleRepeat()) : null,
-    loved: loved,
-    onFav: onFav,
-  );
-}
-
 class _SpeedButton extends StatelessWidget {
   const _SpeedButton({required this.controller, required this.book});
 
@@ -802,9 +746,13 @@ class _Panel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    // The bar's own material, not a second one laid over it, so the two read
+    // as one panel opened upward. Under a skin the slab already paints behind
+    // this, rounded at its top corners as it is at its bottom ones, and a fill
+    // here squared them off. Standard's bar is `t.panel` too.
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: t.panel2,
+        color: context.skin.isStandard ? t.panel : null,
         border: Border(bottom: BorderSide(color: t.outline)),
       ),
       child: switch (controller.panel) {

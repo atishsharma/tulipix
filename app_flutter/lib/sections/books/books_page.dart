@@ -380,8 +380,7 @@ class _SearchBox extends StatelessWidget {
     final b = context.book;
     final st = controller.state;
     final inside = st?.searchContents ?? false;
-    // Search holds a value, so a skin sinks it into its well — black glass
-    // under Unibody, which is why the ink comes from the well.
+    // Search holds a value, so a skin sinks it into its well.
     final skin = context.skin;
     return SizedBox(
       width: 340,
@@ -397,12 +396,12 @@ class _SearchBox extends StatelessWidget {
         child: Row(
           children: [
             Icon(skin.icon(Icons.search),
-                size: 18, color: skin.wellInkDim ?? b.inkDim),
+                size: 18, color: b.inkDim),
             const SizedBox(width: 10),
             Expanded(
               child: TextField(
                 controller: search,
-                style: TextStyle(fontSize: 14, color: skin.wellInk ?? b.ink),
+                style: TextStyle(fontSize: 14, color: b.ink),
                 decoration: InputDecoration(
                   border: InputBorder.none,
                   isCollapsed: true,
@@ -413,7 +412,7 @@ class _SearchBox extends StatelessWidget {
                       ? 'Search inside books…'
                       : 'Search by title, author, genre…',
                   hintStyle: TextStyle(
-                      fontSize: 14, color: skin.wellInkDim ?? b.inkDim),
+                      fontSize: 14, color: b.inkDim),
                 ),
                 onSubmitted: (v) =>
                     controller.send(BooksCmd.search(text: v.trim())),

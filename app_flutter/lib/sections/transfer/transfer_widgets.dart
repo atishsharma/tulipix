@@ -479,7 +479,7 @@ class ValueField extends StatelessWidget {
             style: TextStyle(
               fontSize: size,
               fontWeight: weight,
-              color: tone ?? context.skin.wellInk ?? t.text,
+              color: tone ?? t.text,
             ),
           );
           final act = action;

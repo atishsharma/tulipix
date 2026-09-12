@@ -551,18 +551,18 @@ class HomePlayerBar extends StatelessWidget {
         ),
         const SizedBox(width: 8),
         CineBtn(
-          icon: (now?.muted ?? false) ? Icons.volume_off : Icons.volume_up,
+          icon: (MusicController.instance.muted) ? Icons.volume_off : Icons.volume_up,
           accent: accent,
           onTap: () => controller.send(const MusicCmd.toggleMute()),
         ),
         const SizedBox(width: 8),
         Expanded(
           child: HomeVolume(
-            volume: now?.volume ?? 100,
-            muted: now?.muted ?? false,
+            volume: MusicController.instance.volume,
+            muted: MusicController.instance.muted,
             accent: accent,
             ink: ink,
-            onVolume: (v) => controller.send(MusicCmd.setVolume(volume: v)),
+            onVolume: (v) => controller.setVolume(v),
           ),
         ),
         const SizedBox(width: 8),
@@ -659,7 +659,10 @@ class _CinemaPlayerState extends State<CinemaPlayer>
                 top: -8,
                 right: -8,
                 bottom: -8,
-                child: AnimatedBuilder(
+                // Its own boundary: the ring repaints ten times a second, and
+                // without one each of those re-recorded the page under it.
+                child: RepaintBoundary(
+                  child: AnimatedBuilder(
                   animation: _pulse,
                   builder: (context, _) => DecoratedBox(
                     decoration: BoxDecoration(
@@ -674,6 +677,7 @@ class _CinemaPlayerState extends State<CinemaPlayer>
                       ),
                     ),
                   ),
+                ),
                 ),
               ),
             Container(
@@ -935,25 +939,32 @@ class _StreamRailPlayerState extends State<StreamRailPlayer> {
                   children: [
                     // The slot is the ring's box; the cover sits 7px inside it,
                     // so the breathing outline stands OFF the artwork.
-                    AnimatedBuilder(
-                      animation: _pulse,
-                      builder: (context, _) => Container(
-                        width: art,
-                        height: art,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(18),
-                          border: Border.all(
-                            width: c.tickPlaying ? 3 : 0,
-                            color: c.tickPlaying
-                                ? mix(
-                                        accent,
-                                        t.dark ? Colors.white : Tokens.brand2,
-                                        1 - _pulse.value)
-                                    .withValues(alpha: 0.4 + 0.6 * _pulse.value)
-                                : Colors.transparent,
+                    // Its own boundary, and the cover built once rather than
+                    // on every breath: the ring repaints ten times a second and
+                    // used to re-record the rail around it each time.
+                    RepaintBoundary(
+                      child: AnimatedBuilder(
+                        animation: _pulse,
+                        builder: (context, cover) => Container(
+                          width: art,
+                          height: art,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(
+                              width: c.tickPlaying ? 3 : 0,
+                              color: c.tickPlaying
+                                  ? mix(
+                                          accent,
+                                          t.dark ? Colors.white : Tokens.brand2,
+                                          1 - _pulse.value)
+                                      .withValues(
+                                          alpha: 0.4 + 0.6 * _pulse.value)
+                                  : Colors.transparent,
+                            ),
                           ),
+                          padding: const EdgeInsets.all(7),
+                          child: cover,
                         ),
-                        padding: const EdgeInsets.all(7),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(12),
                           child: ColoredBox(
@@ -1126,7 +1137,12 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
             : const Color(0xFF17121F).withValues(alpha: 0.60);
         final accent = t.dark ? Tokens.secMusic : c.accent;
         final live = (now?.title ?? '').isEmpty;
-        return AnimatedBuilder(
+        // Two boundaries. The ring is this Container's own border, and a
+        // border that repaints repaints everything inside it and everything
+        // above it up to a boundary: the outer one keeps a breath off the
+        // page, the inner one keeps it off the bar's contents.
+        return RepaintBoundary(
+          child: AnimatedBuilder(
           animation: _pulse,
           builder: (context, child) => Container(
             width: widget.width,
@@ -1147,7 +1163,8 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
             ),
             child: child,
           ),
-          child: Padding(
+          child: RepaintBoundary(
+            child: Padding(
             padding: const EdgeInsets.fromLTRB(14, 0, 16, 0),
             child: Row(
               children: [
@@ -1240,7 +1257,7 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
                       ),
                       const SizedBox(width: 6),
                       CineBtn(
-                        icon: (now?.muted ?? false)
+                        icon: (MusicController.instance.muted)
                             ? Icons.volume_off
                             : Icons.volume_up,
                         accent: accent,
@@ -1250,12 +1267,12 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
                       SizedBox(
                         width: 126,
                         child: HomeVolume(
-                          volume: now?.volume ?? 100,
-                          muted: now?.muted ?? false,
+                          volume: MusicController.instance.volume,
+                          muted: MusicController.instance.muted,
                           accent: accent,
                           ink: ink,
                           onVolume: (v) =>
-                              c.send(MusicCmd.setVolume(volume: v)),
+                              c.setVolume(v),
                         ),
                       ),
                       const SizedBox(width: 6),
@@ -1269,6 +1286,8 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
                 ),
               ],
             ),
+          ),
+          ),
           ),
         );
       },

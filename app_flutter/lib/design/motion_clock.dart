@@ -21,7 +21,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
-class MotionClock {
+class MotionClock with WidgetsBindingObserver {
   MotionClock._();
 
   static final MotionClock instance = MotionClock._();
@@ -30,11 +30,22 @@ class MotionClock {
   /// a pixel-at-a-time move reads as motion rather than as steps.
   static const Duration beat = Duration(microseconds: 33333);
 
+  /// Every third beat: ten a second. What everything that moves on its own
+  /// steps on -- the rings, the bubble, the wave, the seek edge, the bars on
+  /// every second one -- so they share frames and a second holds ten at most.
+  /// Each of them used to take every beat, and on this renderer every beat
+  /// that moved a pixel was the whole window drawn again. The marquee alone
+  /// keeps the beat, for its one pass per title: at ten a second a line of
+  /// text travelling sideways stutters.
+  static const int step = 3;
+
   final Stopwatch _elapsed = Stopwatch()..start();
   final Set<VoidCallback> _subscribers = {};
   final Set<VoidCallback> _once = {};
   Timer? _timer;
   int _count = 0;
+  bool _observing = false;
+  bool _focused = true;
 
   /// Seconds on the clock, for shapes that are a function of time.
   double get seconds => _elapsed.elapsedMicroseconds / 1e6;
@@ -42,17 +53,47 @@ class MotionClock {
   /// Beats so far, for a subscriber that moves on every nth.
   int get count => _count;
 
+  /// Whether this beat is a [step].
+  bool get onStep => _count % step == 0;
+
   bool get running => _timer != null;
 
   void join(VoidCallback onBeat) {
     _subscribers.add(onBeat);
-    _timer ??= Timer.periodic(beat, _tick);
+    if (!_observing) {
+      _observing = true;
+      WidgetsBinding.instance.addObserver(this);
+      _focused = _isFocused(WidgetsBinding.instance.lifecycleState);
+    }
+    _run();
   }
 
   void leave(VoidCallback onBeat) {
     _subscribers.remove(onBeat);
-    if (_subscribers.isNotEmpty) return;
-    _timer?.cancel();
+    _run();
+  }
+
+  /// Out of focus, nothing moves: the window is behind whatever the person is
+  /// working in, and every beat there was a whole-window frame nobody saw.
+  /// The Linux embedder reports a window that lost focus as `inactive`. Every
+  /// subscriber stays joined and moves again when the window comes back, so
+  /// none of them has to listen for this itself.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _focused = _isFocused(state);
+    _run();
+  }
+
+  static bool _isFocused(AppLifecycleState? s) =>
+      s == null || s == AppLifecycleState.resumed;
+
+  void _run() {
+    if (_subscribers.isNotEmpty && _focused) {
+      _timer ??= Timer.periodic(beat, _tick);
+      return;
+    }
+    if (_timer == null) return;
+    _timer!.cancel();
     _timer = null;
     // Not now: a leave is often a widget stopping mid-build, and what waits
     // here is a notify that would set state under it.
@@ -93,9 +134,11 @@ class MotionClock {
 /// [ValueNotifier] given an equal value notifies nobody.
 double snapToPixel(double v, double dpr) => (v * dpr).roundToDouble() / dpr;
 
-/// 0 up to 1 and back over [period], on the beat, while [sync] says so; 0 at
-/// rest. The breathing rings on Home and a busy device's chip in Transfer — a
-/// repeating AnimationController did the same at the display's rate.
+/// 0 up to 1 and back over [period], on the [MotionClock.step], while [sync]
+/// says so; 0 at rest. The breathing rings on Home and a busy device's chip in
+/// Transfer — a repeating AnimationController did the same at the display's
+/// rate. A colour that breathes changes on every beat it is given, so it is
+/// given ten a second: over 2.5 s it reads the same.
 class Breath extends ValueNotifier<double> {
   Breath({this.period = const Duration(milliseconds: 2480)}) : super(0);
 
@@ -114,6 +157,7 @@ class Breath extends ValueNotifier<double> {
   }
 
   void _beat() {
+    if (!MotionClock.instance.onStep) return;
     final half = period.inMicroseconds / 2e6;
     final p = MotionClock.instance.seconds % (2 * half) / half;
     value = p <= 1 ? p : 2 - p;

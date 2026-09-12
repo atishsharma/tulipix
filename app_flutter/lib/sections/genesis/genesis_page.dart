@@ -308,8 +308,7 @@ class _SearchRow extends StatelessWidget {
           child: Container(
             height: 52,
             padding: const EdgeInsets.symmetric(horizontal: 18),
-            // The search box is the skin's well; Unibody's is black glass,
-            // hence the well's ink below.
+            // The search box is the skin's well.
             decoration:
                 context.skin.surface(SurfaceRole.well, radius: 26) ??
                     BoxDecoration(
@@ -321,14 +320,14 @@ class _SearchRow extends StatelessWidget {
             child: Row(
               children: [
                 Icon(context.skin.icon(Icons.search),
-                    size: 19, color: context.skin.wellInkDim ?? t.inkDim),
+                    size: 19, color: t.inkDim),
                 const SizedBox(width: 12),
                 Expanded(
                   child: TextField(
                     controller: terms,
                     onSubmitted: (_) => _go(),
                     style: TextStyle(
-                        fontSize: 15, color: context.skin.wellInk ?? t.ink),
+                        fontSize: 15, color: t.ink),
                     decoration: InputDecoration(
                       border: InputBorder.none,
                       isCollapsed: true,

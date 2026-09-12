@@ -7989,9 +7989,10 @@ async fn browse_cards(
 
 /// How many tiles a browse grid pages by. Folders are three rows of seven, not
 /// four: the tile carries a path under the name and is a third taller than an
-/// album's, so four rows of them do not fit above the fold.
+/// album's, so four rows of them do not fit above the fold. Genres are three
+/// rows of seven as well.
 fn browse_page_size(kind: &str) -> i64 {
-    if kind == "folders" { FOLDER_PAGE } else { BROWSE_PAGE }
+    if kind == "folders" || kind == "genres" { FOLDER_PAGE } else { BROWSE_PAGE }
 }
 
 /// An artist's blurb, from `artists.bio` -- fetched once from MusicBrainz and

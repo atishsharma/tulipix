@@ -110,11 +110,6 @@ void main() {
     for (final l in languages) {
       final s = skinFor(l, Tokens.light());
       for (final g in shellGlyphs) {
-        // Phosphor Fill has no picture-in-picture; Clay keeps Material's.
-        if (l == DesignLanguage.claymorphism &&
-            g == Icons.picture_in_picture_alt) {
-          continue;
-        }
         expect(s.icon(g), isNot(g), reason: '${l.id} ${g.codePoint}');
       }
     }
@@ -141,7 +136,7 @@ void main() {
 
   test('a retint survives the theme cross-fade', () {
     final base = Tokens.light();
-    final t = skinFor(DesignLanguage.claymorphism, base).retint(base);
+    final t = skinFor(DesignLanguage.neumorphism, base).retint(base);
     expect(t.lerp(Tokens.dark(), 0.3), same(t));
     expect(Tokens.dark().lerp(t, 0.7), same(t));
   });

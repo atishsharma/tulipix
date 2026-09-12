@@ -467,12 +467,12 @@ class _MiniBar extends StatelessWidget {
           ),
         Expanded(
           child: VolPill(
-            volume: now.volume,
-            muted: now.muted,
+            volume: controller.volume,
+            muted: controller.muted,
             accent: accent,
             width: double.infinity,
             scale: s,
-            onVolume: (v) => controller.send(MusicCmd.setVolume(volume: v)),
+            onVolume: (v) => controller.setVolume(v),
             onMute: () => controller.send(const MusicCmd.toggleMute()),
           ),
         ),
@@ -1360,7 +1360,13 @@ class _MiniBubbleState extends State<MiniBubble> {
     }
   }
 
-  void _onBeat() => _t.value = MotionClock.instance.seconds * 1000;
+  /// On the step, not the beat: over every section, every beat was a
+  /// whole-window frame to turn a 60px disc.
+  void _onBeat() {
+    if (MotionClock.instance.onStep) {
+      _t.value = MotionClock.instance.seconds * 1000;
+    }
+  }
 
   @override
   void dispose() {

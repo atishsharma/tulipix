@@ -334,9 +334,7 @@ class ProgressPill extends StatelessWidget {
     // Progress holds a value, so a skin sinks it into its well.
     final skin = context.skin;
     final well = skin.surface(SurfaceRole.well, radius: 9);
-    final ink = well != null
-        ? (skin.wellInk ?? t.text)
-        : (t.dark ? Colors.white : t.text);
+    final ink = well != null || !t.dark ? t.text : Colors.white;
     return Container(
       padding: const EdgeInsets.fromLTRB(9, 4, 9, 5),
       decoration: well ??
@@ -557,7 +555,7 @@ class HubTile extends StatelessWidget {
                   width: disc,
                   height: disc,
                   // A skin's disc is its latched control in the section's
-                  // colour — pressed in, a pastel clay, a pocket, a pane.
+                  // colour — pressed in, a lit pane, a tonal chip.
                   decoration: context.skin
                           .control(active: true, tint: accent, radius: 15) ??
                       BoxDecoration(

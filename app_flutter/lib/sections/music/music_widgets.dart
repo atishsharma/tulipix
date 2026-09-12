@@ -159,9 +159,8 @@ class _MusicChipState extends State<MusicChip> {
     final active = widget.active;
     final shown = !widget.collapsible || active || _hovered;
     final skin = context.skin;
-    // A skin draws the chip in its own material — pressed in, or in its own
-    // clay, when active — and inks it itself, in place of the tint wash and
-    // the gradient.
+    // A skin draws the chip in its own material — pressed in, or lit, when
+    // active — and inks it itself, in place of the tint wash and the gradient.
     final skinned = skin.control(
       active: active,
       hovered: _hovered,
@@ -189,13 +188,7 @@ class _MusicChipState extends State<MusicChip> {
         onTapUp: (_) => _press(false),
         onTapCancel: () => _press(false),
         onTap: widget.onTap,
-        child: AnimatedScale(
-          scale: _pressed ? skin.pressScale : 1,
-          duration: t.reduceMotion
-              ? Duration.zero
-              : const Duration(milliseconds: 180),
-          curve: Curves.easeOutBack,
-          child: AnimatedContainer(
+        child: AnimatedContainer(
           duration: t.reduceMotion
               ? Duration.zero
               : const Duration(milliseconds: 140),
@@ -286,7 +279,6 @@ class _MusicChipState extends State<MusicChip> {
               ],
             ],
           ),
-        ),
         ),
       ),
     );

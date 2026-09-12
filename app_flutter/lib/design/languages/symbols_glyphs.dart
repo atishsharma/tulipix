@@ -1,7 +1,5 @@
-// Material Symbols Rounded, for every Material icon the skinned Music widgets
-// draw. Unibody and Expressive both speak Symbols and differ only in how they
-// fill them — Unibody all the time, Expressive when a control is on — so they
-// share one map.
+// Material Symbols Rounded, for every Material icon the skinned widgets draw
+// under Expressive, which fills a glyph when its control is on.
 
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';

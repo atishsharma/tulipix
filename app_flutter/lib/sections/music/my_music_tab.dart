@@ -214,9 +214,7 @@ class _SubTabs extends StatelessWidget {
   List<Widget> _browseControls(MusicController c, String tab) {
     final st = c.state;
     return [
-      // Genres have one order and it is alphabetical; there is nothing to
-      // sort them by that the name does not already do.
-      if (tab != 'genres') _BrowseSort(controller: c),
+      _BrowseSort(controller: c),
       if ((st?.browsePages ?? 1) > 1) ...[
         const SizedBox(width: 12),
         Pager(
@@ -514,6 +512,7 @@ class _HomeState extends State<_Home> {
               cards: st.railAlbums,
               controller: c,
               onTap: (a) => c.send(MusicCmd.openAlbum(albumId: a.id)),
+              onViewAll: () => c.send(const MusicCmd.setLibTab(name: 'albums')),
             ),
             if (st.railMost.isNotEmpty) ...[
               const SizedBox(height: 28),
@@ -522,6 +521,8 @@ class _HomeState extends State<_Home> {
                 tracks: st.railMost,
                 controller: c,
                 source: 'most',
+                onViewAll: () =>
+                    c.send(const MusicCmd.setLibTab(name: 'history')),
               ),
             ],
             if (st.railLoved.isNotEmpty) ...[
@@ -531,6 +532,8 @@ class _HomeState extends State<_Home> {
                 tracks: st.railLoved,
                 controller: c,
                 source: 'loved',
+                onViewAll: () =>
+                    c.send(const MusicCmd.setLibTab(name: 'favorites')),
               ),
             ],
             if (st.railFresh.isNotEmpty) ...[
@@ -753,7 +756,13 @@ class _TopArtists extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _Heading('Top artists'),
+        _Heading(
+          'Top artists',
+          trailing: _ViewAll(
+            onTap: () =>
+                controller.send(const MusicCmd.setLibTab(name: 'artists')),
+          ),
+        ),
         const SizedBox(height: 10),
         LayoutBuilder(
           builder: (context, box) {
@@ -800,12 +809,16 @@ class _CardRow extends StatelessWidget {
     required this.cards,
     required this.controller,
     required this.onTap,
+    this.onViewAll,
   });
 
   final String title;
   final List<BrowseCard> cards;
   final MusicController controller;
   final void Function(BrowseCard) onTap;
+
+  /// The tab the whole of this lives on.
+  final VoidCallback? onViewAll;
 
   @override
   Widget build(BuildContext context) {
@@ -815,7 +828,10 @@ class _CardRow extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _Heading(title),
+          _Heading(
+            title,
+            trailing: onViewAll == null ? null : _ViewAll(onTap: onViewAll!),
+          ),
           const SizedBox(height: 12),
           LayoutBuilder(
             builder: (context, box) {
@@ -965,8 +981,10 @@ class _ResumeRailState extends State<_ResumeRail> {
         // Nothing abandoned is the good case, and an empty "Pick up where you
         // stopped" heading is a reproach.
         if (cards.isEmpty) return const SizedBox.shrink();
+        // The rows around it keep the dashboard's one 28px gap. It used to
+        // bring 22 of its own on top of the 28 above it, and nothing below.
         return Padding(
-          padding: const EdgeInsets.fromLTRB(36, 22, 36, 0),
+          padding: const EdgeInsets.fromLTRB(36, 0, 36, 28),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1027,10 +1045,7 @@ class _ResumeCardTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final skin = context.skin;
-    return skin.frame(
-        SurfaceRole.card,
-        radius: 14,
-        Material(
+    return Material(
         // Clear under a skin: the card is the skin's raised surface below.
         color: skin.isStandard ? t.nCard : Colors.transparent,
         borderRadius: BorderRadius.circular(14),
@@ -1101,7 +1116,7 @@ class _ResumeCardTile extends StatelessWidget {
             ),
           ),
         ),
-    ));
+    );
   }
 }
 
@@ -1126,14 +1141,11 @@ class _StatsStrip extends StatelessWidget {
     // Four figures are a teaser for the summary behind them: the same play
     // history answers "when do you listen", "who to", and "what did you start
     // eleven times and never finish". Tapping any card opens all of it.
-    // A skin draws each figure as a control in a library tab's colour, so under
-    // Clay the four are four clays; under Neumorphism they are wells, which is
-    // what that sheet does with a thing that holds a value.
+    // A skin draws each figure as its latched control in a library tab's
+    // colour: under Neumorphism they are wells, which is what that sheet does
+    // with a thing that holds a value.
     Widget card(String label, String value, Color tint) => Expanded(
-          child: skin.frame(
-          SurfaceRole.card,
-          radius: 24,
-          Material(
+          child: Material(
             color: skin.isStandard ? t.nCard : Colors.transparent,
             borderRadius: BorderRadius.circular(14),
             child: InkWell(
@@ -1169,8 +1181,7 @@ class _StatsStrip extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontFamily: skin.numberFamily ??
-                        skin.fontFamily ??
+                    fontFamily: skin.fontFamily ??
                         Tokens.fontFamily,
                     fontSize: 20,
                     fontWeight: FontWeight.w800,
@@ -1181,7 +1192,6 @@ class _StatsStrip extends StatelessWidget {
                 ),
               ),
             ),
-          ),
           ),
         );
     return Padding(
@@ -1201,10 +1211,7 @@ class _StatsStrip extends StatelessWidget {
           // rather than reporting on them.
           Tooltip(
             message: 'Find duplicate recordings',
-            child: skin.frame(
-              SurfaceRole.card,
-              radius: 14,
-              Material(
+            child: Material(
               color: skin.isStandard ? t.nCard : Colors.transparent,
               borderRadius: BorderRadius.circular(14),
               child: InkWell(
@@ -1222,7 +1229,7 @@ class _StatsStrip extends StatelessWidget {
                       size: 20, color: t.nInk3),
                 ),
               ),
-            )),
+            ),
           ),
         ],
       ),
@@ -1517,8 +1524,9 @@ class _Browse extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(36, 12, 36, 24),
       children: [
-        // Seven across and four down — twenty-eight, which is what the bridge
-        // pages by. The sort and the pager that used to sit above this grid in
+        // Seven across: four down for albums and artists, twenty-eight, and
+        // three for genres, twenty-one -- what the bridge pages each by. The
+        // sort and the pager that used to sit above this grid in
         // a row of their own are on row 2 now, with the tabs.
         MusicGrid(
           count: st.cards.length,

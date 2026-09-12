@@ -65,6 +65,37 @@ void main() {
     expect(notified, 1);
   });
 
+  testWidgets('a breath moves on the step, not the beat', (tester) async {
+    // Ten a second rather than thirty: six beats hold exactly two steps,
+    // wherever the count happens to be.
+    final breath = Breath();
+    addTearDown(breath.dispose);
+    var moves = 0;
+    breath.addListener(() => moves++);
+    breath.sync(true);
+    for (var i = 0; i < 6; i++) {
+      await tester.pump(MotionClock.beat);
+    }
+    expect(moves, 2);
+    breath.sync(false);
+    expect(clock.running, isFalse);
+  });
+
+  testWidgets('nothing moves while the window is out of focus',
+      (tester) async {
+    // One gate in the clock, not one per mover: the marquee, the seek edge,
+    // the wave, the rings, the bubble and the bars all stop together.
+    void mover() {}
+    clock.join(mover);
+    expect(clock.running, isTrue);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    expect(clock.running, isFalse);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    expect(clock.running, isTrue);
+    clock.leave(mover);
+    expect(clock.running, isFalse);
+  });
+
   testWidgets('a painted shift moves its child and repaints nothing else',
       (tester) async {
     // Transform.translate here would repaint the sibling on every step: both
