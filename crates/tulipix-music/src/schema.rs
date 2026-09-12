@@ -192,6 +192,14 @@ CREATE TABLE IF NOT EXISTS dl_searches (
     searched_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS dl_searches_at_idx ON dl_searches(searched_at DESC);
+
+-- Duplicate groups the user said are not one recording. The key is the group's
+-- item ids, sorted and comma-joined: a copy added later makes a new key, so the
+-- group comes back with the new evidence rather than staying hidden.
+CREATE TABLE IF NOT EXISTS dupe_dismissed (
+    key TEXT    PRIMARY KEY,
+    at  INTEGER NOT NULL
+);
 "#;
 
 /// Columns added after a library was first created.

@@ -620,13 +620,16 @@ async fn accept(pl: Playlist, source: String, yt_warn: bool) {
         s.ui.kind = kind.clone();
         s.ui.title = pl.title.clone();
         s.ui.yt_warn = yt_warn;
-        s.ui.sort.clear();
-        s.ui.sort_dir = 1;
         s.ui.done = 0;
         s.ui.skipped = 0;
         s.ui.failed = 0;
         s.playlist = Some(pl.clone());
         s.resolved_url = source.clone();
+        // A fresh queue opens sorted by artist, A to Z. Through `sort_queue`,
+        // after the playlist is seated, so the cached tracks are reordered by
+        // the same permutation and every row index still names its own track.
+        s.ui.sort.clear();
+        sort_queue(s, "artist");
         recount(s);
     });
     set_status("resolved");

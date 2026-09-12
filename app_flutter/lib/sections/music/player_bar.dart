@@ -67,10 +67,9 @@ class PlayerBar extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Only the equalizer pushes up out of the bar now. Queue and Lyrics
-          // dock to the right of the page — see side_panel.dart.
-          if (controller.panel == 'eq')
-            SizedBox(height: 260, child: _Panel(controller: controller)),
+          // Nothing opens inside the bar: the equalizer is drawn by the page
+          // over its content (`PlayerEqPanel`), and Queue and Lyrics dock to
+          // its right — see side_panel.dart.
           SizedBox(
             height: 124,
             // Animated, not decorated: the palette should arrive with the next
@@ -738,27 +737,33 @@ class _SleepButton extends StatelessWidget {
   }
 }
 
-class _Panel extends StatelessWidget {
-  const _Panel({required this.controller});
+/// The equalizer, opened from the bar's EQ button.
+///
+/// The page draws this over its own content, standing on the bar's top edge.
+/// It used to open inside the bar, which made the bar 260px taller — and the
+/// page above it, the Downloader's queue included, shrank by as much every
+/// time it opened. Its own opaque fill now, since there is no bar slab behind
+/// it any more.
+class PlayerEqPanel extends StatelessWidget {
+  const PlayerEqPanel({super.key, required this.controller});
 
   final MusicController controller;
 
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    // The bar's own material, not a second one laid over it, so the two read
-    // as one panel opened upward. Under a skin the slab already paints behind
-    // this, rounded at its top corners as it is at its bottom ones, and a fill
-    // here squared them off. Standard's bar is `t.panel` too.
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: context.skin.isStandard ? t.panel : null,
-        border: Border(bottom: BorderSide(color: t.outline)),
+    return Material(
+      color: t.panel,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: t.outline)),
+          boxShadow: const [
+            BoxShadow(
+                color: Color(0x55000000), blurRadius: 24, offset: Offset(0, -6)),
+          ],
+        ),
+        child: _EqPanel(controller: controller),
       ),
-      child: switch (controller.panel) {
-        'eq' => _EqPanel(controller: controller),
-        _ => const SizedBox.shrink(),
-      },
     );
   }
 }

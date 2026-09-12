@@ -76,9 +76,10 @@ class SidePanel extends StatelessWidget {
             width: kSidePanelWidth,
             child: DecoratedBox(
               decoration: BoxDecoration(
-                // Glass fills it to 80% so the page does not show through the
-                // list; every other language keeps its second panel colour.
-                color: context.skin.sheet ?? t.panel2,
+                // Fully opaque in every language. Glass's sheet is 80% and a
+                // glass `panel2` is see-through too, and the page showing
+                // through a queue is a second list fighting the first.
+                color: (context.skin.sheet ?? t.panel2).withValues(alpha: 1),
                 // No cast shadow: it bled onto the player bar in Slint too.
                 border: Border(left: BorderSide(color: t.outline)),
               ),

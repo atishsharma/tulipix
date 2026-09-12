@@ -262,6 +262,128 @@ pub async fn abandoned(pool: &SqlitePool, limit: i64) -> Result<Vec<Tally>> {
         .collect())
 }
 
+/// The headline figures for one window, beside the breakdowns above.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Figures {
+    pub plays: i64,
+    pub ms: i64,
+    /// Listening in the same length of time just before the window. 0 for all
+    /// time, which has nothing before it.
+    pub prev_ms: i64,
+    /// Plays that got past [`ABANDON_FRACTION`] of their track, out of the
+    /// plays whose track has a length to judge by.
+    pub finished: i64,
+    pub judged: i64,
+    /// Artists whose first play ever falls inside the window.
+    pub new_artists: i64,
+}
+
+/// [`Figures`] for the last `days` days, or all time when `days` is 0.
+pub async fn figures(pool: &SqlitePool, days: i64) -> Result<Figures> {
+    let since = (days > 0).then(|| now() - days * 86_400);
+
+    let sql = format!(
+        "SELECT COUNT(*), COALESCE(SUM(ph.ms_played), 0) FROM play_history ph {MUSIC}{}",
+        window(since));
+    let mut q = sqlx::query_as::<_, (i64, i64)>(sqlx::AssertSqlSafe(&*sql));
+    if let Some(s) = since {
+        q = q.bind(s);
+    }
+    let (plays, ms) = q.fetch_one(pool).await.unwrap_or((0, 0));
+
+    let prev_ms = match since {
+        Some(s) => sqlx::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(format!(
+            "SELECT COALESCE(SUM(ph.ms_played), 0) FROM play_history ph {MUSIC} \
+             AND ph.played_at >= ? AND ph.played_at < ?")))
+            .bind(s - days * 86_400)
+            .bind(s)
+            .fetch_one(pool)
+            .await
+            .map(|(v,)| v)
+            .unwrap_or(0),
+        None => 0,
+    };
+
+    // Placeholders bind in the order they appear: the fraction, then the window.
+    let sql = format!(
+        "SELECT COALESCE(SUM(ph.ms_played >= tm.duration_s * 1000 * ?), 0), COUNT(*) \
+         FROM play_history ph {MUSIC} AND tm.duration_s > 0{}",
+        window(since));
+    let mut q = sqlx::query_as::<_, (i64, i64)>(sqlx::AssertSqlSafe(&*sql)).bind(ABANDON_FRACTION);
+    if let Some(s) = since {
+        q = q.bind(s);
+    }
+    let (finished, judged) = q.fetch_one(pool).await.unwrap_or((0, 0));
+
+    let (new_artists,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) FROM ( \
+           SELECT MIN(ph.played_at) AS first FROM play_history ph {MUSIC} \
+             AND tm.artist_id IS NOT NULL GROUP BY tm.artist_id) \
+         WHERE first >= ?")))
+        .bind(since.unwrap_or(0))
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
+
+    Ok(Figures { plays, ms, prev_ms, finished, judged, new_artists })
+}
+
+/// Listening per local day for the last `days` days, oldest first and today
+/// last. Local days for the reason [`by_hour`] uses local hours: a calendar that
+/// files your Sunday evening under Monday is wrong where it shows.
+pub async fn by_day(pool: &SqlitePool, days: i64) -> Result<Vec<i64>> {
+    let days = days.max(1);
+    let rows: Vec<(i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT CAST(julianday(date('now', 'localtime')) \
+                   - julianday(date(ph.played_at, 'unixepoch', 'localtime')) AS INTEGER), \
+                COALESCE(SUM(ph.ms_played), 0) \
+         FROM play_history ph {MUSIC} AND ph.played_at >= ? GROUP BY 1")))
+        .bind(now() - (days + 1) * 86_400)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    let mut out = vec![0i64; days as usize];
+    for (ago, ms) in rows {
+        if (0..days).contains(&ago) {
+            out[(days - 1 - ago) as usize] += ms;
+        }
+    }
+    Ok(out)
+}
+
+/// What the shelves hold, for the Stats Center's library panel.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Shelf {
+    pub tracks: i64,
+    pub albums: i64,
+    pub artists: i64,
+    pub bytes: i64,
+    pub secs: f64,
+    /// Codec and how many tracks use it, most first. Every PCM flavour is one
+    /// "WAV": pcm_s16le and pcm_s24le are the same answer to "what format".
+    pub formats: Vec<(String, i64)>,
+}
+
+pub async fn shelf(pool: &SqlitePool) -> Result<Shelf> {
+    const LIVE: &str = "FROM track_meta tm JOIN items i ON i.id = tm.item_id \
+         WHERE i.missing_since IS NULL AND COALESCE(tm.is_audiobook, 0) = 0";
+    let (tracks, albums, artists, bytes, secs): (i64, i64, i64, i64, f64) =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT COUNT(*), COUNT(DISTINCT tm.album_id), COUNT(DISTINCT tm.artist_id), \
+                    COALESCE(SUM(i.size), 0), COALESCE(SUM(tm.duration_s), 0.0) {LIVE}")))
+            .fetch_one(pool)
+            .await
+            .unwrap_or_default();
+    let formats: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT CASE WHEN LOWER(tm.codec) LIKE 'pcm%' THEN 'WAV' \
+                     ELSE UPPER(COALESCE(NULLIF(TRIM(tm.codec), ''), '?')) END, COUNT(*) \
+         {LIVE} GROUP BY 1 ORDER BY 2 DESC")))
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    Ok(Shelf { tracks, albums, artists, bytes, secs, formats })
+}
+
 
 /// An album that was started and never finished.
 #[derive(Debug, Clone, PartialEq)]
@@ -455,6 +577,45 @@ mod tests {
 
         let hours = by_hour(&pool, None).await.unwrap();
         assert_eq!(hours.iter().sum::<i64>(), 280_000, "every play lands in some hour");
+    }
+
+    #[tokio::test]
+    async fn a_window_counts_its_plays_its_finishes_and_its_new_artists() {
+        let (_t, pool) = open_pool().await;
+        sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Burial'), (2, 'Tycho')")
+            .execute(&pool).await.unwrap();
+        let a = add_track(&pool, "/m/a.flac").await;
+        let b = add_track(&pool, "/m/b.flac").await;
+        sqlx::query("UPDATE track_meta SET artist_id = 1, duration_s = 100 WHERE item_id = ?")
+            .bind(a).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE track_meta SET artist_id = 2, duration_s = 100 WHERE item_id = ?")
+            .bind(b).execute(&pool).await.unwrap();
+        let n = now();
+        for (id, at, ms) in [
+            (a, n, 90_000i64),            // past 60% of 100s: finished
+            (a, n, 10_000),               // abandoned
+            (b, n - 10 * 86_400, 50_000), // the week before, so Tycho is not new
+            (b, n, 50_000),
+        ] {
+            sqlx::query("INSERT INTO play_history (item_id, played_at, ms_played) VALUES (?,?,?)")
+                .bind(id).bind(at).bind(ms).execute(&pool).await.unwrap();
+        }
+
+        let f = figures(&pool, 7).await.unwrap();
+        assert_eq!((f.plays, f.ms), (3, 150_000));
+        assert_eq!(f.prev_ms, 50_000, "the play ten days ago is in the week before");
+        assert_eq!((f.finished, f.judged), (1, 3));
+        assert_eq!(f.new_artists, 1, "Tycho was first played before the window");
+        assert_eq!(figures(&pool, 0).await.unwrap().prev_ms, 0, "all time has no before");
+
+        let days = by_day(&pool, 14).await.unwrap();
+        assert_eq!(days.len(), 14);
+        assert_eq!(days[13], 150_000, "today is the last day");
+        assert_eq!(days.iter().sum::<i64>(), 200_000);
+
+        let s = shelf(&pool).await.unwrap();
+        assert_eq!((s.tracks, s.artists), (2, 2));
+        assert!((s.secs - 200.0).abs() < 1e-6);
     }
 
     #[tokio::test]

@@ -394,9 +394,10 @@ class _DetailPageState extends State<DetailPage> {
         },
       );
     } else {
-      // A playlist is paged: it is the one list here that can run to
-      // thousands. Playing a row still hands the whole list to the queue.
-      final paged = st.detailKind == 'playlist';
+      // A playlist and a folder are paged, 25 rows at a time: they are the
+      // lists here that can run to thousands. Playing a row still hands the
+      // whole list to the queue.
+      final paged = st.detailKind == 'playlist' || st.detailKind == 'folder';
       final pages = paged ? (tracks.length / _kPlaylistPage).ceil() : 1;
       final page = _page.clamp(0, pages - 1);
       final from = paged ? page * _kPlaylistPage : 0;
@@ -1217,19 +1218,32 @@ class _CoverState extends State<_Cover> {
                   ? Duration.zero
                   : const Duration(milliseconds: 140),
               opacity: _hovered ? 1 : 0,
+              // A small dark label, not a 40px disc of the section's pink:
+              // that sat on top of the picture it offers to change and read
+              // as part of the cover.
               child: Material(
-                color: Tokens.secMusic,
-                shape: const CircleBorder(),
+                color: Colors.black.withValues(alpha: 0.55),
+                borderRadius: BorderRadius.circular(8),
                 clipBehavior: Clip.antiAlias,
                 child: InkWell(
                   onTap: _pick,
-                  child: const SizedBox(
-                    width: 40,
-                    height: 40,
-                    child: Tooltip(
-                      message: 'Change cover…',
-                      child: Icon(Icons.image_outlined,
-                          size: 19, color: Colors.white),
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.image_outlined,
+                            size: 14, color: Colors.white),
+                        SizedBox(width: 6),
+                        Text(
+                          'Change cover',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -1499,10 +1513,13 @@ class _Hero extends StatelessWidget {
                 similar: similar,
               );
               return Padding(
-                // Headroom over an album's sleeve for the record, which
-                // rises out of the top of it.
-                padding: EdgeInsets.only(
-                    top: st.detailKind == 'album' ? 56 : 18, bottom: 22),
+                // The same for every kind. An album used to get 38px more
+                // here as headroom for the record rising out of its sleeve,
+                // which left a gap under the back row that no other page has
+                // and made the hero taller than the side card beside it. The
+                // record paints outside its box, so it rises into the space
+                // that is already there.
+                padding: const EdgeInsets.only(top: 18, bottom: 22),
                 child: wide
                     ? Row(
                         crossAxisAlignment: CrossAxisAlignment.end,
@@ -1885,10 +1902,12 @@ class _AlbumThumbState extends State<_AlbumThumb> {
     final disc = side * 0.92;
     // Out of the top of the sleeve, not its side: the side is where the title
     // starts, and a record sliding out there covered the words. Resting and
-    // risen both stay inside the headroom `_Hero` leaves an album, clear of
-    // the back button and the trail.
-    final rest = side * 0.12;
-    final lift = side * 0.14;
+    // risen both stay inside the 18px every hero leaves above its thumb — 13
+    // and 18 on a 212 sleeve — so the record never reaches the back button or
+    // the trail. It used to rise 55px into 38px of headroom only albums got,
+    // which made the album hero taller than every other page's.
+    final rest = side * 0.06;
+    final lift = side * 0.025;
     return MouseRegion(
       onEnter: (_) => setState(() => _out = true),
       onExit: (_) => setState(() => _out = false),

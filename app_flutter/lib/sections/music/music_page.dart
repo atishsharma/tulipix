@@ -7,6 +7,8 @@
 // keeps playing while you browse podcasts, and the transport at the bottom is
 // still driving it.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -173,7 +175,10 @@ class _MusicPageState extends State<MusicPage> {
                 if (_c.error != null)
                   _ErrorBanner(controller: _c)
                 else if (st != null && st.status.isNotEmpty)
-                  _StatusBanner(message: st.status),
+                  // Keyed, so the progress bar coming and going above it does
+                  // not rebuild it into a fresh five seconds.
+                  _StatusBanner(
+                      key: const ValueKey('status'), message: st.status),
                 Expanded(
                   child: st == null
                       ? FirstLoad(error: _c.error, onRetry: _c.refresh)
@@ -213,6 +218,17 @@ class _MusicPageState extends State<MusicPage> {
                                   builder: (_, __) => SidePanel(
                                       key: sidePanelKey, controller: _c),
                                 ),
+                              ),
+                            // The equalizer opens over the page from the bar's
+                            // top edge, rather than inside the bar, where it
+                            // pushed everything above up by its own height.
+                            if (_c.panel == 'eq')
+                              Positioned(
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                height: 260,
+                                child: PlayerEqPanel(controller: _c),
                               ),
                           ],
                         ),
@@ -787,24 +803,76 @@ class _ErrorBanner extends StatelessWidget {
       );
 }
 
-class _StatusBanner extends StatelessWidget {
-  const _StatusBanner({required this.message});
+/// The note from the last command, under the second header. It closes itself
+/// after five seconds, or on its close button; a different note brings it
+/// back. It used to stay up until the next command replaced it, which on a
+/// quiet page meant for good.
+class _StatusBanner extends StatefulWidget {
+  const _StatusBanner({super.key, required this.message});
 
   final String message;
 
   @override
+  State<_StatusBanner> createState() => _StatusBannerState();
+}
+
+class _StatusBannerState extends State<_StatusBanner> {
+  static const Duration _life = Duration(seconds: 5);
+
+  Timer? _timer;
+  bool _shut = false;
+
+  void _arm() {
+    _timer?.cancel();
+    _shut = false;
+    _timer = Timer(_life, _close);
+  }
+
+  void _close() {
+    _timer?.cancel();
+    if (mounted) setState(() => _shut = true);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _arm();
+  }
+
+  @override
+  void didUpdateWidget(_StatusBanner old) {
+    super.didUpdateWidget(old);
+    if (old.message != widget.message) _arm();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (_shut) return const SizedBox.shrink();
     final t = context.tokens;
     return Container(
       width: double.infinity,
       color: Tokens.warn.withValues(alpha: 0.12),
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+      padding: const EdgeInsets.only(left: 24, right: 12, top: 4, bottom: 4),
       child: Row(
         children: [
           const Icon(Icons.info_outline, size: 16, color: Tokens.warn),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(message, style: TextStyle(fontSize: 12, color: t.nInk)),
+            child: Text(widget.message,
+                style: TextStyle(fontSize: 12, color: t.nInk)),
+          ),
+          IconButton(
+            tooltip: 'Close',
+            onPressed: _close,
+            icon: const Icon(Icons.close, size: 16),
+            color: t.nInk2,
+            visualDensity: VisualDensity.compact,
           ),
         ],
       ),

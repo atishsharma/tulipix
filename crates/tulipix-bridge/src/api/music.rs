@@ -38,12 +38,15 @@ const SONGS_PAGE: i64 = 32;
 /// arithmetic the Songs grid uses, against the seven columns Slint pins these
 /// to.
 const BROWSE_PAGE: i64 = 28;
-/// The Folders grid. Seven across, three down -- a folder tile is taller than
-/// an album's, and the fourth row would be under the fold.
-const FOLDER_PAGE: i64 = 21;
+/// The Folders grid: six across, three down.
+const FOLDER_PAGE: i64 = 18;
+/// The Genres grid: seven across, three down.
+const GENRE_PAGE: i64 = 21;
 /// Loved and History, which are lists rather than grids: twenty-five rows is
 /// about a screen of them.
 const LIST_ROWS: i64 = 25;
+/// Loved's songs, under its two shelves: twenty to a page.
+const LOVED_ROWS: i64 = 20;
 /// Podcast episode lists, YouTube download lists, radio station lists.
 const LIST_PAGE: i64 = 30;
 /// Home rails. Two rows of seven on a wide window, and nothing below the fold
@@ -103,7 +106,8 @@ pub struct Track {
 
 /// An album, artist, genre, playlist or folder tile. `key` carries the
 /// identity for the ones that have no integer id: a genre is its name, a
-/// folder is its absolute path.
+/// folder is its absolute path. A folder's `id` is its most-played track,
+/// whose cover the tile wears.
 #[derive(Debug, Clone)]
 pub struct BrowseCard {
     pub id: i64,
@@ -161,6 +165,35 @@ pub struct Listening {
     pub abandoned: Vec<Tally>,
 }
 
+/// Everything the Stats Center shows for one window. One struct, so opening the
+/// popup and switching its range are one round trip each.
+#[derive(Debug, Clone, Default)]
+pub struct StatsCenter {
+    pub listening: Listening,
+    /// Against the same length of time just before: "+12%" / "−4%", or empty
+    /// for all time and for a window with nothing before it.
+    pub delta: String,
+    pub plays: i64,
+    pub streak: String,
+    pub new_artists: i64,
+    /// "87%", or "—" when no play in the window had a length to judge by.
+    pub finished: String,
+    /// Listening per day for the last 22 weeks, oldest first and today last,
+    /// each 0..1 against the busiest day.
+    pub days: Vec<f64>,
+    pub tracks: i64,
+    pub albums: i64,
+    pub artists: i64,
+    pub bytes: i64,
+    /// "14 days 6 h" of music on the shelves.
+    pub length: String,
+    /// Codec shares, most first: `label` "FLAC", `value` "58%", `plays` the
+    /// track count, `frac` 0..1 of the library. Four, then "Other".
+    pub formats: Vec<Tally>,
+    /// Tracks the analysis pass has not measured yet.
+    pub pending: i64,
+}
+
 /// One copy of a recording the library holds more than once.
 #[derive(Debug, Clone)]
 pub struct DupeCopy {
@@ -172,6 +205,11 @@ pub struct DupeCopy {
     pub confidence: i64,
     /// The best copy on quality. Never more than one per group.
     pub keep: bool,
+    /// The file's size, for "space to free".
+    pub bytes: i64,
+    /// How many playlists hold this copy -- the places a delete would empty if
+    /// they were not moved to the kept copy first.
+    pub playlists: i64,
 }
 
 /// Copies of one recording, keeper first.
@@ -937,6 +975,16 @@ pub enum MusicCmd {
         disc_no: i64,
     },
     DeleteTrack { item_id: i64 },
+    /// Keep one copy of a recording and delete the others. Each dropped copy's
+    /// plays, loved state, rating and playlist places move to the kept copy
+    /// first -- `play_history` and `playlist_items` cascade on the item row, so
+    /// a plain delete would take the history with the worse rip. The files go
+    /// to the recycle bin, as `DeleteTrack`'s do.
+    DupeMerge { keep_id: i64, drop_ids: Vec<i64> },
+    /// "Not duplicates": the finder stops showing this exact group.
+    DupeDismiss { item_ids: Vec<i64> },
+    /// Show one track's file in the desktop file manager, selected.
+    RevealTrack { item_id: i64 },
     /// Set one tag field across many tracks at once.
     ///
     /// `field` is artist | album_artist | album | genre | year. Not title or
@@ -2070,6 +2118,76 @@ pub async fn music_listening(days: i64) -> Result<Listening> {
     })
 }
 
+/// The Stats Center for one window: `days` back from now, or 0 for all time.
+///
+/// The listening summary plus the figures around it -- the change against the
+/// window before, plays, finished, new artists, a 22-week calendar -- and what
+/// the shelves hold. All of it is play history and `track_meta`; nothing new is
+/// recorded to answer it.
+pub async fn music_stats_center(days: i64) -> Result<StatsCenter> {
+    use tulipix_music::dashboard as d;
+    const CALENDAR_DAYS: i64 = 22 * 7;
+    let pool = music_pool().await?;
+    let listening = music_listening(days).await?;
+    let f = d::figures(pool, days).await.unwrap_or_default();
+    let streak = d::stats(pool).await.unwrap_or_default().streak_days;
+    let cal = d::by_day(pool, CALENDAR_DAYS).await.unwrap_or_default();
+    let busiest = cal.iter().copied().max().unwrap_or(0).max(1) as f64;
+    let shelf = d::shelf(pool).await.unwrap_or_default();
+
+    let whole = shelf.tracks.max(1) as f64;
+    let share = |label: String, n: i64| Tally {
+        label,
+        key: 0,
+        value: format!("{:.0}%", n as f64 / whole * 100.0),
+        plays: n,
+        frac: n as f64 / whole,
+    };
+    let mut formats: Vec<Tally> =
+        shelf.formats.iter().take(4).map(|(c, n)| share(c.clone(), *n)).collect();
+    let rest: i64 = shelf.formats.iter().skip(4).map(|(_, n)| n).sum();
+    if rest > 0 {
+        formats.push(share("Other".into(), rest));
+    }
+
+    let hours = (shelf.secs / 3600.0).round() as i64;
+    let length = match (hours / 24, hours % 24) {
+        (0, h) => format!("{h} h"),
+        (1, h) => format!("1 day {h} h"),
+        (n, h) => format!("{n} days {h} h"),
+    };
+
+    Ok(StatsCenter {
+        delta: if f.prev_ms > 0 {
+            let pct = ((f.ms - f.prev_ms) as f64 / f.prev_ms as f64 * 100.0).round() as i64;
+            if pct >= 0 { format!("+{pct}%") } else { format!("\u{2212}{}%", -pct) }
+        } else {
+            String::new()
+        },
+        plays: f.plays,
+        streak: match streak {
+            0 => "—".into(),
+            1 => "1 day".into(),
+            n => format!("{n} days"),
+        },
+        new_artists: f.new_artists,
+        finished: if f.judged > 0 {
+            format!("{}%", (f.finished * 100 + f.judged / 2) / f.judged)
+        } else {
+            "—".into()
+        },
+        days: cal.iter().map(|v| *v as f64 / busiest).collect(),
+        tracks: shelf.tracks,
+        albums: shelf.albums,
+        artists: shelf.artists,
+        bytes: shelf.bytes,
+        length,
+        formats,
+        pending: music_analyse_pending().await.unwrap_or(0),
+        listening,
+    })
+}
+
 // --------------------------------------------------------------- duplicates --
 
 /// Every recording the library holds more than once, biggest group first.
@@ -2079,7 +2197,18 @@ pub async fn music_listening(days: i64) -> Result<Listening> {
 /// library correctly reports none rather than guessing from filenames.
 pub async fn music_duplicates() -> Result<Vec<DupeGroup>> {
     let pool = music_pool().await?;
-    let groups = tulipix_music::similar::duplicates(pool).await?;
+    let dismissed: std::collections::HashSet<String> =
+        sqlx::query_scalar("SELECT key FROM dupe_dismissed")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+    let groups: Vec<_> = tulipix_music::similar::duplicates(pool)
+        .await?
+        .into_iter()
+        .filter(|g| !dismissed.contains(&dupe_key(g.iter().map(|d| d.item_id))))
+        .collect();
     if groups.is_empty() {
         return Ok(Vec::new());
     }
@@ -2094,6 +2223,23 @@ pub async fn music_duplicates() -> Result<Vec<DupeGroup>> {
         .map(|t| (t.item_id, t))
         .collect();
     let quality = quality_labels(pool, &ids).await;
+    let holes = vec!["?"; ids.len()].join(",");
+    let sql = format!(
+        "SELECT i.id, i.size, \
+                (SELECT COUNT(DISTINCT pi.playlist_id) FROM playlist_items pi WHERE pi.item_id = i.id) \
+         FROM items i WHERE i.id IN ({holes})"
+    );
+    let mut q = sqlx::query_as::<_, (i64, i64, i64)>(sqlx::AssertSqlSafe(&*sql));
+    for id in &ids {
+        q = q.bind(id);
+    }
+    let files: std::collections::HashMap<i64, (i64, i64)> = q
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, bytes, lists)| (id, (bytes, lists)))
+        .collect();
 
     Ok(groups
         .into_iter()
@@ -2101,11 +2247,14 @@ pub async fn music_duplicates() -> Result<Vec<DupeGroup>> {
             let mut copies: Vec<DupeCopy> = g
                 .into_iter()
                 .filter_map(|d| {
+                    let (bytes, playlists) = files.get(&d.item_id).copied().unwrap_or((0, 0));
                     Some(DupeCopy {
                         track: tracks.get(&d.item_id)?.clone(),
                         quality: quality.get(&d.item_id).cloned().unwrap_or_default(),
                         confidence: (d.confidence * 100.0).round() as i64,
                         keep: d.keep,
+                        bytes,
+                        playlists,
                     })
                 })
                 .collect();
@@ -2118,6 +2267,14 @@ pub async fn music_duplicates() -> Result<Vec<DupeGroup>> {
         // queries; one surviving copy is not a duplicate of anything.
         .filter(|g| g.copies.len() > 1)
         .collect())
+}
+
+/// A duplicate group's identity in `dupe_dismissed`: its item ids, sorted and
+/// comma-joined.
+fn dupe_key(ids: impl Iterator<Item = i64>) -> String {
+    let mut v: Vec<i64> = ids.collect();
+    v.sort_unstable();
+    v.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")
 }
 
 /// "FLAC - 44.1 kHz" / "MP3 - 320 kbps" for each of `ids`.
@@ -4173,6 +4330,73 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                 }
             }
             tulipix_core::populator::remove(pool, item_id).await?;
+        }
+        MusicCmd::DupeMerge { keep_id, drop_ids } => {
+            let pool = music_pool().await?;
+            let mut gone = 0;
+            for drop in drop_ids.into_iter().filter(|d| *d != keep_id) {
+                let path: Option<String> =
+                    sqlx::query_scalar("SELECT abs_path FROM items WHERE id = ?")
+                        .bind(drop)
+                        .fetch_optional(pool)
+                        .await?;
+                let Some(p) = path else { continue };
+                // History before the file: both tables cascade on the item
+                // row, so whatever is not moved first is deleted with it.
+                let mut tx = pool.begin().await?;
+                sqlx::query("UPDATE play_history SET item_id = ? WHERE item_id = ?")
+                    .bind(keep_id)
+                    .bind(drop)
+                    .execute(&mut *tx)
+                    .await?;
+                // A playlist that held both copies now holds the kept one twice,
+                // which is what it played before: its length and order stay.
+                sqlx::query("UPDATE playlist_items SET item_id = ? WHERE item_id = ?")
+                    .bind(keep_id)
+                    .bind(drop)
+                    .execute(&mut *tx)
+                    .await?;
+                sqlx::query(
+                    "UPDATE track_meta SET \
+                       play_count  = COALESCE(play_count, 0) \
+                                   + COALESCE((SELECT play_count FROM track_meta WHERE item_id = ?), 0), \
+                       loved       = MAX(loved, COALESCE((SELECT loved FROM track_meta WHERE item_id = ?), 0)), \
+                       rating      = MAX(rating, COALESCE((SELECT rating FROM track_meta WHERE item_id = ?), 0)), \
+                       last_played = MAX(COALESCE(last_played, 0), \
+                                         COALESCE((SELECT last_played FROM track_meta WHERE item_id = ?), 0)) \
+                     WHERE item_id = ?",
+                )
+                .bind(drop)
+                .bind(drop)
+                .bind(drop)
+                .bind(drop)
+                .bind(keep_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                if let Err(e) = tulipix_platform::fm::move_to_trash(Path::new(&p)) {
+                    anyhow::bail!("could not delete {p}: {e}");
+                }
+                tulipix_core::populator::remove(pool, drop).await?;
+                gone += 1;
+            }
+            lock().status = format!(
+                "Deleted {gone} cop{}; the kept one has their plays and playlist places.",
+                if gone == 1 { "y" } else { "ies" }
+            );
+        }
+        MusicCmd::DupeDismiss { item_ids } => {
+            let pool = music_pool().await?;
+            sqlx::query("INSERT OR REPLACE INTO dupe_dismissed (key, at) VALUES (?, ?)")
+                .bind(dupe_key(item_ids.into_iter()))
+                .bind(now_secs())
+                .execute(pool)
+                .await?;
+        }
+        MusicCmd::RevealTrack { item_id } => {
+            let pool = music_pool().await?;
+            let path = track_path(pool, item_id).await?;
+            tulipix_platform::fm::reveal_in_file_manager(Path::new(&path))?;
         }
 
         MusicCmd::SongPlayDefault { item_id } => {
@@ -8117,6 +8341,29 @@ async fn browse_cards(
         "playlists" => playlist_cards(pool).await,
         "folders" => {
             let excluded = folder_sections();
+            // Each folder wears its most-played track's cover: the album's
+            // when it is on disk, and otherwise `id` carries the track so the
+            // tile can ask `music_ensure_art` for the picture inside the file.
+            // Ties go to the newest file, so a folder nobody has played yet
+            // shows what arrived last rather than whatever sorts first.
+            let tops: HashMap<String, (i64, String)> =
+                sqlx::query_as::<_, (String, i64, Option<String>)>(
+                    "SELECT tm.folder, tm.item_id, al.cover_path FROM track_meta tm \
+                     JOIN items i ON i.id = tm.item_id AND i.missing_since IS NULL \
+                     LEFT JOIN albums al ON al.id = tm.album_id \
+                     WHERE tm.folder IS NOT NULL AND COALESCE(tm.is_audiobook, 0) = 0 \
+                     ORDER BY tm.folder, COALESCE(tm.play_count, 0) DESC, i.added DESC",
+                )
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .fold(HashMap::new(), |mut m, (folder, id, cover)| {
+                    m.entry(folder).or_insert_with(|| {
+                        (id, cover.filter(|c| Path::new(c).exists()).unwrap_or_default())
+                    });
+                    m
+                });
             tulipix_music::folders::list(pool)
                 .await
                 .unwrap_or_default()
@@ -8129,18 +8376,21 @@ async fn browse_cards(
                         .map(|sec| sec == "mymusic")
                         .unwrap_or(true)
                 })
-                .map(|(folder, count)| BrowseCard {
-                    id: 0,
-                    title: Path::new(&folder)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| folder.clone()),
-                    subtitle: folder.clone(),
-                    key: folder,
-                    count,
-                    art: String::new(),
-                    loved: false,
-                    stars: 0,
+                .map(|(folder, count)| {
+                    let (top, art) = tops.get(&folder).cloned().unwrap_or_default();
+                    BrowseCard {
+                        id: top,
+                        title: Path::new(&folder)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| folder.clone()),
+                        subtitle: folder.clone(),
+                        key: folder,
+                        count,
+                        art,
+                        loved: false,
+                        stars: 0,
+                    }
                 })
                 .collect()
         }
@@ -8169,12 +8419,14 @@ async fn browse_cards(
     (cards[start..end].to_vec(), total, page)
 }
 
-/// How many tiles a browse grid pages by. Folders are three rows of seven, not
-/// four: the tile carries a path under the name and is a third taller than an
-/// album's, so four rows of them do not fit above the fold. Genres are three
-/// rows of seven as well.
+/// How many tiles a browse grid pages by. Folders and genres are three rows,
+/// not four: four rows of those tiles do not fit above the fold.
 fn browse_page_size(kind: &str) -> i64 {
-    if kind == "folders" || kind == "genres" { FOLDER_PAGE } else { BROWSE_PAGE }
+    match kind {
+        "folders" => FOLDER_PAGE,
+        "genres" => GENRE_PAGE,
+        _ => BROWSE_PAGE,
+    }
 }
 
 /// An artist's biography, from `artists.bio` -- the lead of their English
@@ -9608,15 +9860,31 @@ async fn fill_mymusic(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState)
             set_song_page(st, page);
         }
         "favorites" => {
-            let ids = tulipix_music::rating::loved(pool, 5_000).await.unwrap_or_default();
-            let all = tracks_by_ids(pool, &ids).await;
-            st.song_total = all.len() as i64;
-            st.song_pages = page_count(st.song_total, LIST_ROWS);
-            let page = clamp_page(s.song_page, st.song_total, LIST_ROWS);
+            // Twenty to a page, in the Songs tab's order: one "how do songs
+            // sort" setting rather than a second one for the same tracks. In
+            // SQL, because a sort applied to one page of twenty sorts nothing.
+            let loved = format!("{MUSIC_WHERE} AND COALESCE(tm.loved, 0) <> 0");
+            st.song_total = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM items i JOIN track_meta tm ON tm.item_id = i.id{loved}"
+            )))
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+            st.song_pages = page_count(st.song_total, LOVED_ROWS);
+            let page = clamp_page(s.song_page, st.song_total, LOVED_ROWS);
             set_song_page(st, page);
-            let start = ((page * LIST_ROWS) as usize).min(all.len());
-            let end = (((page + 1) * LIST_ROWS) as usize).min(all.len());
-            st.songs = all[start..end].to_vec();
+            st.songs = sqlx::query_as::<_, TrackRow>(sqlx::AssertSqlSafe(format!(
+                "{TRACK_SELECT}{loved}{} LIMIT ? OFFSET ?",
+                song_order(&s.song_sort, &s.song_dir)
+            )))
+            .bind(LOVED_ROWS)
+            .bind(page * LOVED_ROWS)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(into_track)
+            .collect();
             // Loved is three things, the way search is: the artists you loved,
             // the albums you loved, and the tracks. A heart on an album is
             // stored on the album row and is NOT the same claim as a heart on

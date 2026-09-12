@@ -1956,6 +1956,7 @@ class TileCard extends StatefulWidget {
     this.artKind = '',
     this.artKey = '',
     this.onMenu,
+    this.onMenuAt,
     this.hint,
     this.footer,
     this.strong = true,
@@ -1969,6 +1970,10 @@ class TileCard extends StatefulWidget {
   final String artKind;
   final String artKey;
   final VoidCallback? onMenu;
+
+  /// A right-click, with where it landed, for a menu that opens under the
+  /// pointer. Takes the place of [onMenu] when both are given.
+  final void Function(Offset global)? onMenuAt;
 
   /// Small white line revealed over the tile on hover.
   final String? hint;
@@ -2006,7 +2011,10 @@ class _TileCardState extends State<TileCard> {
       onExit: (_) => setState(() => _hovered = false),
       child: GestureDetector(
         onTap: w.onTap,
-        onSecondaryTap: w.onMenu,
+        onSecondaryTap: w.onMenuAt == null ? w.onMenu : null,
+        onSecondaryTapUp: w.onMenuAt == null
+            ? null
+            : (d) => w.onMenuAt!(d.globalPosition),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.center,
           mainAxisSize: MainAxisSize.min,

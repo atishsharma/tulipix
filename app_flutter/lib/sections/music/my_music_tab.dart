@@ -293,7 +293,8 @@ class _SubTabs extends StatelessWidget {
           ),
         ),
       ],
-      if ((st?.songPages ?? 1) > 1) ...[
+      // Loved pages its songs under the list, beside the shelves' own pagers.
+      if (tab == 'history' && (st?.songPages ?? 1) > 1) ...[
         const SizedBox(width: 12),
         Pager(
           page: st!.songPage,
@@ -1390,15 +1391,15 @@ class _TrackPage extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(36, 12, 36, 24),
       children: [
+        // One row each, paged from its title row: eight artists, six albums.
+        // The songs under them are paged by the bridge, twenty at a time.
         if (artists.isNotEmpty) ...[
-          const _SubHeading('Artists'),
-          const SizedBox(height: 12),
-          MusicGrid(
+          _LovedShelf(
+            title: 'Artists',
             count: artists.length,
-            target: 150,
-            maxCols: 9,
+            perPage: 8,
             labelHeight: 26,
-            builder: (context, i) => MusicCard(
+            builder: (i) => MusicCard(
               controller: controller,
               title: artists[i].title,
               subtitle: artists[i].subtitle,
@@ -1424,13 +1425,11 @@ class _TrackPage extends StatelessWidget {
           const SizedBox(height: 22),
         ],
         if (albums.isNotEmpty) ...[
-          const _SubHeading('Albums'),
-          const SizedBox(height: 12),
-          MusicGrid(
+          _LovedShelf(
+            title: 'Albums',
             count: albums.length,
-            minCols: 7,
-            maxCols: 7,
-            builder: (context, i) => MusicCard(
+            perPage: 6,
+            builder: (i) => MusicCard(
               controller: controller,
               title: albums[i].title,
               subtitle: albums[i].subtitle,
@@ -1451,8 +1450,16 @@ class _TrackPage extends StatelessWidget {
           const SizedBox(height: 22),
         ],
         if (songs.isNotEmpty) ...[
-          if (loved && (artists.isNotEmpty || albums.isNotEmpty)) ...[
-            const _SubHeading('Songs'),
+          // The sort sits on the title's right edge, where the shelves above
+          // keep their pagers. It is the Songs tab's own setting.
+          if (loved) ...[
+            Row(
+              children: [
+                const _SubHeading('Songs'),
+                const Spacer(),
+                _SongSort(controller: controller),
+              ],
+            ),
             const SizedBox(height: 12),
           ],
           // Play all, Shuffle and Clear are on row 2 with the tabs — there is
@@ -1462,12 +1469,93 @@ class _TrackPage extends StatelessWidget {
             TrackRow(
               controller: controller,
               track: songs[i],
-              index: i + st.songPage * kListRows,
+              index: i + st.songPage * (loved ? kLovedRows : kListRows),
               onPlay: () => controller.playFrom(songs, i, st.libTab),
               onQueue: () => controller.queueAll([songs[i]]),
             ),
           ],
+          if (loved && st.songPages > 1) ...[
+            const SizedBox(height: 14),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Pager(
+                page: st.songPage,
+                pages: st.songPages,
+                onGo: (p) => controller.send(MusicCmd.setSongPage(page: p)),
+              ),
+            ),
+          ],
         ],
+      ],
+    );
+  }
+}
+
+/// Loved's songs per page — `LOVED_ROWS` in the bridge.
+const int kLovedRows = 20;
+
+/// One of Loved's shelves: its title with a pager on the right edge, and one
+/// row of cards. Paged here rather than in the bridge: the loved artists and
+/// albums arrive whole, and there are rarely more than a few pages of them.
+class _LovedShelf extends StatefulWidget {
+  const _LovedShelf({
+    required this.title,
+    required this.count,
+    required this.perPage,
+    required this.builder,
+    this.labelHeight = kCardLabelTwo,
+  });
+
+  final String title;
+  final int count;
+  final int perPage;
+
+  /// The card for one item, by its index in the whole list.
+  final Widget Function(int index) builder;
+  final double labelHeight;
+
+  @override
+  State<_LovedShelf> createState() => _LovedShelfState();
+}
+
+class _LovedShelfState extends State<_LovedShelf> {
+  int _page = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final w = widget;
+    final pages = (w.count / w.perPage).ceil();
+    // min/max rather than clamp: clamp answers `num`, and every use below
+    // wants an int.
+    final page = math.min(_page, math.max(0, pages - 1));
+    final start = page * w.perPage;
+    final shown = math.min(w.perPage, w.count - start);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            _SubHeading(w.title),
+            const Spacer(),
+            if (pages > 1)
+              Pager(
+                page: page,
+                pages: pages,
+                compact: true,
+                onGo: (p) => setState(() => _page = p),
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        // The column count is the page size, so a short last page keeps its
+        // tiles the same size instead of stretching them across the row.
+        MusicGrid(
+          count: shown,
+          minCols: w.perPage,
+          maxCols: w.perPage,
+          labelHeight: w.labelHeight,
+          builder: (context, i) => w.builder(start + i),
+        ),
       ],
     );
   }
@@ -1679,258 +1767,52 @@ class _Folders extends StatelessWidget {
         action: ('Add a folder', controller.addFolder),
       );
     }
-    // A tree beside the grid. The grid is every folder that holds tracks, flat
-    // and searchable; the tree is the shape of the disk, which is the one thing
-    // a flat list of folders cannot show. Under 1100px there is no room for
-    // both and the grid keeps the page.
-    return LayoutBuilder(
-      builder: (context, box) => box.maxWidth < 1100
-          ? _folderGrid(context)
-          : Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(
-                  width: 320,
-                  child: _FolderTree(controller: controller),
-                ),
-                Expanded(child: _folderGrid(context)),
-              ],
-            ),
-    );
+    // Just the grid. The tree of the disk that sat beside it named the same
+    // folders a second time.
+    return _folderGrid(context);
   }
 
   Widget _folderGrid(BuildContext context) {
-    // Just the grid, seven across and three down — a folder tile carries a
-    // path under its name and is taller than an album's, so 7x4 put the last
-    // row under the fold. There was a row of four chips and, under it, a list
-    // of every watched root with its path and its track count, which is the
-    // same set of folders the grid was already drawing, printed twice.
+    // Six across and three down, eighteen to a page (`FOLDER_PAGE`). Each
+    // folder wears its most-played track's cover: the album's when the
+    // bridge found one, and otherwise the card's `id` is that track, so a
+    // picture that only lives inside the file is still found.
     return ListView(
       padding: const EdgeInsets.fromLTRB(36, 12, 36, 24),
       children: [
         MusicGrid(
           count: st.cards.length,
-          minCols: 7,
-          maxCols: 7,
+          minCols: 6,
+          maxCols: 6,
           labelHeight: 34,
-          builder: (context, i) => TileCard(
-            label: st.cards[i].title,
-            icon: Icons.folder,
-            strong: false,
-            hint: 'Open  ·  right-click for options',
-            onTap: () =>
-                controller.send(MusicCmd.openFolder(path: st.cards[i].key)),
-            onMenu: () => _folderMenu(
-              context,
-              controller,
-              st.cards[i],
-              watched: st.roots.any((r) => r.key == st.cards[i].key),
-            ),
-            footer: _CountChip(count: st.cards[i].count),
-          ),
+          builder: (context, i) {
+            final f = st.cards[i];
+            return TileCard(
+              controller: controller,
+              label: f.title,
+              icon: Icons.folder,
+              strong: false,
+              art: f.art,
+              artKind: f.id > 0 ? 'track' : '',
+              artKey: '${f.id}',
+              hint: 'Open  ·  right-click for options',
+              onTap: () => controller.send(MusicCmd.openFolder(path: f.key)),
+              onMenuAt: (at) => _folderMenu(
+                context,
+                controller,
+                f,
+                at: at,
+                watched: st.roots.any((r) => r.key == f.key),
+              ),
+              footer: _CountChip(count: f.count),
+            );
+          },
         ),
       ],
     );
   }
 }
 
-
-/// The disk, as a tree you can walk into.
-///
-/// One level per fetch: a library on a slow disk should not pay for branches
-/// nobody opened. Expanded paths are held here rather than on the snapshot,
-/// because which folders you have open is a property of looking at the page,
-/// not of the library.
-class _FolderTree extends StatefulWidget {
-  const _FolderTree({required this.controller});
-
-  final MusicController controller;
-
-  @override
-  State<_FolderTree> createState() => _FolderTreeState();
-}
-
-class _FolderTreeState extends State<_FolderTree> {
-  /// Children by parent path; "" is the root. A key present with an empty list
-  /// is a folder that was opened and had nothing under it.
-  final Map<String, List<FolderNode>> _kids = {};
-  final Set<String> _open = {};
-  final Set<String> _loading = {};
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(_load(''));
-  }
-
-  Future<void> _load(String under) async {
-    if (_kids.containsKey(under) || _loading.contains(under)) return;
-    _loading.add(under);
-    List<FolderNode> got;
-    try {
-      got = await musicFolderChildren(under: under);
-    } catch (_) {
-      got = const [];
-    }
-    if (!mounted) return;
-    setState(() {
-      _kids[under] = got;
-      _loading.remove(under);
-    });
-  }
-
-  void _toggle(FolderNode node) {
-    setState(() {
-      if (!_open.remove(node.path)) _open.add(node.path);
-    });
-    if (_open.contains(node.path)) unawaited(_load(node.path));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    final roots = _kids[''];
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 12, 6, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'ON DISK',
-            style: TextStyle(
-              fontFamily: Tokens.fontFamily,
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.7,
-              color: t.nInk3,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: roots == null
-                ? const Center(child: CircularProgressIndicator())
-                : ListView(
-                    padding: EdgeInsets.zero,
-                    children: _rows(roots, 0),
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Flattened, because a ListView of nested Columns loses its scrolling and a
-  /// deep tree is exactly where that starts to matter.
-  List<Widget> _rows(List<FolderNode> nodes, int depth) {
-    final out = <Widget>[];
-    for (final node in nodes) {
-      out.add(_FolderRow(
-        controller: widget.controller,
-        node: node,
-        depth: depth,
-        open: _open.contains(node.path),
-        onToggle: () => _toggle(node),
-      ));
-      if (_open.contains(node.path)) {
-        final kids = _kids[node.path];
-        if (kids == null) {
-          out.add(Padding(
-            padding: EdgeInsets.only(left: 18.0 * (depth + 1) + 8, top: 2),
-            child: const SizedBox(
-              width: 12,
-              height: 12,
-              child: CircularProgressIndicator(strokeWidth: 1.5),
-            ),
-          ));
-        } else {
-          out.addAll(_rows(kids, depth + 1));
-        }
-      }
-    }
-    return out;
-  }
-}
-
-class _FolderRow extends StatelessWidget {
-  const _FolderRow({
-    required this.controller,
-    required this.node,
-    required this.depth,
-    required this.open,
-    required this.onToggle,
-  });
-
-  final MusicController controller;
-  final FolderNode node;
-  final int depth;
-  final bool open;
-  final VoidCallback onToggle;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return InkWell(
-      borderRadius: BorderRadius.circular(6),
-      // Tapping the row opens the folder's page; the arrow expands it. Two
-      // targets because they are two questions — what is in here, and what is
-      // under here.
-      onTap: node.direct > 0
-          ? () => controller.send(MusicCmd.openFolder(path: node.path))
-          : onToggle,
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(18.0 * depth, 3, 4, 3),
-        child: Row(
-          children: [
-            SizedBox(
-              width: 18,
-              child: node.hasChildren
-                  ? InkWell(
-                      onTap: onToggle,
-                      child: Icon(
-                        open
-                            ? Icons.keyboard_arrow_down
-                            : Icons.keyboard_arrow_right,
-                        size: 16,
-                        color: t.nInk3,
-                      ),
-                    )
-                  : null,
-            ),
-            Icon(open ? Icons.folder_open : Icons.folder,
-                size: 15, color: t.nInk3),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                node.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12.5, color: t.nInk),
-              ),
-            ),
-            Text(
-              '${node.total}',
-              style: TextStyle(
-                fontFamily: Tokens.fontFamily,
-                fontSize: 11,
-                color: t.nInk3,
-              ),
-            ),
-            // The whole discography directory to the queue in one action,
-            // rather than one album at a time.
-            IconButton(
-              iconSize: 15,
-              visualDensity: VisualDensity.compact,
-              tooltip: 'Play this folder and everything below it',
-              icon: const Icon(Icons.playlist_play),
-              onPressed: () =>
-                  controller.send(MusicCmd.playFolderTree(path: node.path)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 /// The pink pill along the foot of a folder tile. Slint puts the folder's
 /// section assignment here; the port shows how much is in it, which is the
@@ -1968,15 +1850,22 @@ Future<void> _folderMenu(
   BuildContext context,
   MusicController c,
   BrowseCard f, {
+  required Offset at,
   bool watched = false,
 }) async {
-  final box = context.findRenderObject() as RenderBox?;
-  final at = box == null
-      ? Offset.zero
-      : box.localToGlobal(box.size.center(Offset.zero));
+  // At the pointer. It used to be the centre of `context`, which is the whole
+  // Folders page, so the menu opened in the middle of the grid rather than on
+  // the tile that was clicked.
+  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+  if (overlay == null) return;
   final choice = await showMenu<String>(
     context: context,
-    position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+    position: RelativeRect.fromLTRB(
+      at.dx,
+      at.dy,
+      overlay.size.width - at.dx,
+      overlay.size.height - at.dy,
+    ),
     items: [
       const PopupMenuItem(value: 'open', child: Text('Open')),
       // Flagging is a column update, not a move: unflagging puts the tracks
