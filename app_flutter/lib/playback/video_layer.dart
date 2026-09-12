@@ -194,11 +194,49 @@ VideoDockSpot dockSpotFor(Offset topLeft, Size area) {
   );
 }
 
+/// Whether the full-window stage hides the app beneath it.
+///
+/// It does once a picture is playing in the window and has finished arriving
+/// there. A new source opens straight onto the full rect, but a move between
+/// the corner card and the window slides for 240 ms, and the app has to show
+/// around the card while it does. Asked on every build of [VideoLayer]; told
+/// by [settle] when a slide ends.
+class StageCover {
+  int? _token;
+  bool _docked = false;
+  bool _settled = false;
+
+  bool covers({required int? token, required bool docked}) {
+    if (token != _token) {
+      _token = token;
+      _settled = token != null && !docked;
+    } else if (docked != _docked) {
+      _settled = false;
+    }
+    _docked = docked;
+    return token != null && !docked && _settled;
+  }
+
+  /// A slide ended. True when that changes what [covers] answers.
+  bool settle() {
+    if (_settled) return false;
+    _settled = true;
+    return _token != null && !_docked;
+  }
+}
+
 /// Wraps the app. Draws nothing until something is playing.
-class VideoLayer extends StatelessWidget {
+class VideoLayer extends StatefulWidget {
   const VideoLayer({super.key, required this.child});
 
   final Widget child;
+
+  @override
+  State<VideoLayer> createState() => _VideoLayerState();
+}
+
+class _VideoLayerState extends State<VideoLayer> {
+  final StageCover _cover = StageCover();
 
   @override
   Widget build(BuildContext context) {
@@ -226,15 +264,35 @@ class VideoLayer extends StatelessWidget {
         // Animating a drag would make the card lag the pointer by a quarter
         // of a second, which reads as the drag not having taken.
         final at = drag != null && docked ? drag & rect.size : rect;
+        // Under a picture that fills the window, the app is not drawn at all.
+        // Every video frame is a frame of the whole scene -- this renderer has
+        // no partial repaint -- so the app beneath was laid out, painted and
+        // rasterised at the film's frame rate, design language and all, behind
+        // an opaque black stage. Offstage keeps every page's State; TickerMode
+        // stops what animates down there, which would ask for frames of its
+        // own; ExcludeFocus keeps the keyboard with the film. Flags only, so the
+        // tree's shape never changes and nothing underneath is rebuilt.
+        final covered = _cover.covers(token: request?.token, docked: docked);
         return Stack(
           children: [
-            child,
+            ExcludeFocus(
+              excluding: covered,
+              child: TickerMode(
+                enabled: !covered,
+                child: Offstage(offstage: covered, child: widget.child),
+              ),
+            ),
             if (request != null)
               AnimatedPositioned(
                 duration: drag != null
                     ? Duration.zero
                     : const Duration(milliseconds: 240),
                 curve: Curves.easeOutCubic,
+                // The app shows around the card while it slides; it goes once
+                // the picture has arrived in the window.
+                onEnd: () {
+                  if (_cover.settle()) setState(() {});
+                },
                 left: at.left,
                 top: at.top,
                 width: at.width,

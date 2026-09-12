@@ -107,6 +107,53 @@ void main() {
     expect(videoDockDrag.value, isNull);
   });
 
+  // A picture that fills the window hides the app under it, which then is not
+  // drawn at all: every video frame was redrawing the whole app, for nobody.
+  // Never while the stage slides between the corner and the window, when the
+  // app shows around it.
+  group('the app under a playing picture', () {
+    test('a film that opens full hides the app at once', () {
+      final c = StageCover();
+      expect(c.covers(token: null, docked: false), isFalse);
+      expect(c.covers(token: 1, docked: false), isTrue);
+    });
+
+    test('a film in the corner leaves the app showing', () {
+      final c = StageCover();
+      expect(c.covers(token: 1, docked: true), isFalse);
+      expect(c.settle(), isFalse);
+      expect(c.covers(token: 1, docked: true), isFalse);
+    });
+
+    test('restoring from the corner shows the app until the slide ends', () {
+      final c = StageCover();
+      c.covers(token: 1, docked: true);
+      expect(c.covers(token: 1, docked: false), isFalse);
+      // Rebuilt mid-slide: still sliding.
+      expect(c.covers(token: 1, docked: false), isFalse);
+      expect(c.settle(), isTrue);
+      expect(c.covers(token: 1, docked: false), isTrue);
+    });
+
+    test('docking shows the app the moment the slide starts', () {
+      final c = StageCover();
+      expect(c.covers(token: 1, docked: false), isTrue);
+      expect(c.covers(token: 1, docked: true), isFalse);
+    });
+
+    test('closing the film shows the app', () {
+      final c = StageCover();
+      c.covers(token: 1, docked: false);
+      expect(c.covers(token: null, docked: false), isFalse);
+    });
+
+    test('a new film replaces the old one without waiting for a slide', () {
+      final c = StageCover();
+      c.covers(token: 1, docked: true);
+      expect(c.covers(token: 2, docked: false), isTrue);
+    });
+  });
+
   testWidgets('the layer draws only its child until something plays',
       (tester) async {
     await tester.pumpWidget(
