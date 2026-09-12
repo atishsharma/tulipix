@@ -120,6 +120,25 @@ void main() {
     }
   });
 
+  test('a skin, and a cached theme, are built once per language and tier', () {
+    // Zen asks for its theme on every music update; a fresh one each time
+    // rebuilt every widget on the page that reads it.
+    for (final l in DesignLanguage.values) {
+      for (final e in tiers.entries) {
+        final fresh = switch (e.key) {
+          'light' => Tokens.light(),
+          'dark' => Tokens.dark(),
+          _ => Tokens.dark(oled: true),
+        };
+        expect(skinFor(l, fresh), same(skinFor(l, e.value)), reason: l.id);
+        expect(themeFor(l, fresh), same(themeFor(l, e.value)), reason: l.id);
+      }
+    }
+    // A tier is still its own skin.
+    expect(skinFor(DesignLanguage.expressive, Tokens.light()),
+        isNot(same(skinFor(DesignLanguage.expressive, Tokens.dark()))));
+  });
+
   test('a retint survives the theme cross-fade', () {
     final base = Tokens.light();
     final t = skinFor(DesignLanguage.claymorphism, base).retint(base);

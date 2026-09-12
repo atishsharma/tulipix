@@ -7,6 +7,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/motion_clock.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/transfer.dart';
 import 'qr_view.dart';
@@ -401,16 +402,18 @@ class _DeviceChip extends StatefulWidget {
   State<_DeviceChip> createState() => _DeviceChipState();
 }
 
-class _DeviceChipState extends State<_DeviceChip>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _beat = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1100),
-  );
+class _DeviceChipState extends State<_DeviceChip> {
+  /// Breathes on the motion clock, in step with everything else that moves,
+  /// where a repeating controller drew at the display's rate.
+  final Breath _beat = Breath(period: const Duration(milliseconds: 2200));
+
+  /// The clock does not hear TickerMode by itself: this is it, asked for.
+  bool _visible = true;
 
   @override
-  void initState() {
-    super.initState();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _visible = TickerMode.valuesOf(context).enabled;
     _sync();
   }
 
@@ -420,16 +423,9 @@ class _DeviceChipState extends State<_DeviceChip>
     _sync();
   }
 
-  /// Only animates while busy, so an idle list is not asking for a repaint on
-  /// every frame.
-  void _sync() {
-    if (widget.device.busy) {
-      if (!_beat.isAnimating) _beat.repeat(reverse: true);
-    } else {
-      _beat.stop();
-      _beat.value = 0;
-    }
-  }
+  /// Only animates while busy and on screen, so an idle list is not asking
+  /// for a repaint on every beat.
+  void _sync() => _beat.sync(widget.device.busy && _visible);
 
   @override
   void dispose() {

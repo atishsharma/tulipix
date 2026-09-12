@@ -12,8 +12,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../playback/audio_deck.dart' show audioPositionS;
-import 'package:flutter/scheduler.dart' show Ticker;
 
+import '../../design/motion_clock.dart';
 import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
@@ -190,11 +190,16 @@ class SeekPill extends StatefulWidget {
     this.accent = Tokens.secMusic,
     this.scale = 1.0,
     this.smooth = false,
+    this.playing = false,
   });
 
   final double pos;
   final double dur;
   final ValueChanged<double> onSeek;
+
+  /// Whether the deck is running. [smooth] only follows it while it is: a
+  /// paused deck has nowhere to go.
+  final bool playing;
 
   /// The track's loudness envelope, 0..255 per column, or null while it is
   /// still being computed or on a file ffmpeg could not read. The bar falls
@@ -216,57 +221,93 @@ class SeekPill extends StatefulWidget {
   State<SeekPill> createState() => _SeekPillState();
 }
 
-class _SeekPillState extends State<SeekPill>
-    with SingleTickerProviderStateMixin {
+class _SeekPillState extends State<SeekPill> {
   double? _dragging;
 
-  /// The playhead, 0..1, sampled per frame. A notifier rather than state: the
-  /// painter subscribes to it, so a moving edge repaints one
-  /// `RenderCustomPaint` and leaves the pill, its clock and the row around it
-  /// alone. Rebuilding all of that sixty times a second to move a line two
-  /// pixels is the cost this avoids.
+  /// The playhead, 0..1. A notifier rather than state: the painter subscribes
+  /// to it, so a moving edge repaints one `RenderCustomPaint` and leaves the
+  /// pill, its clock and the row around it alone.
   final ValueNotifier<double> _frac = ValueNotifier<double>(0);
-  Ticker? _ticker;
+
+  /// Moves the playhead in smooth mode, on the [MotionClock].
+  ///
+  /// Not a Ticker. A running Ticker asks for a frame at every vsync whatever
+  /// its callback does, and on this renderer every frame is the whole window:
+  /// on My Music, 30 ms of raster work a frame, 90 under Glass, at the
+  /// display's rate, to move a line two pixels a second. On the beat, and only
+  /// when the edge has crossed a device pixel since the last one it drew: the
+  /// same motion in a few frames a second, and each of them one the rest of
+  /// what moves is drawing anyway.
+  bool _joined = false;
+
+  /// The device pixel the edge was last drawn on.
+  int _px = -1;
+
+  /// The bar's width, written by its LayoutBuilder, and the density, so a step
+  /// can be one device pixel long.
+  double _barWidth = 0;
+  double _dpr = 1;
+
+  /// A timer does not hear TickerMode by itself: this is it, asked for.
+  bool _visible = true;
+
+  bool get _running => widget.smooth && widget.playing && _visible;
 
   @override
   void initState() {
     super.initState();
-    _retime();
+    _frac.value = _fromSnapshot();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _visible = TickerMode.valuesOf(context).enabled;
+    _dpr = MediaQuery.devicePixelRatioOf(context);
+    _sync();
   }
 
   @override
   void didUpdateWidget(covariant SeekPill old) {
     super.didUpdateWidget(old);
-    _frac.value = _fromSnapshot();
-    if (old.smooth != widget.smooth) _retime();
+    // Not while the timer runs: the snapshot is up to a second behind the
+    // deck, and snapping to it between steps would pull the edge backwards.
+    if (!_running) _frac.value = _fromSnapshot();
+    _sync();
   }
 
   @override
   void dispose() {
-    _ticker?.dispose();
+    if (_joined) MotionClock.instance.leave(_onBeat);
     _frac.dispose();
     super.dispose();
   }
 
-  /// `createTicker`, so `TickerMode` silences it when Music is behind another
-  /// section -- an off-screen scrubber should not be asking for frames.
-  void _retime() {
-    _ticker?.dispose();
-    _ticker = null;
-    if (!widget.smooth) {
-      _frac.value = _fromSnapshot();
-      return;
+  void _sync() {
+    if (_running == _joined) return;
+    _joined = _running;
+    if (_joined) {
+      _px = -1;
+      MotionClock.instance.join(_onBeat);
+    } else {
+      MotionClock.instance.leave(_onBeat);
     }
-    _ticker = createTicker((_) {
-      final next = _dragging != null
-          ? _fromSnapshot()
-          : (audioPositionS / (widget.dur <= 0 ? 1.0 : widget.dur))
-              .clamp(0.0, 1.0);
-      // Paused, or between two identical samples: assigning the same value
-      // notifies nobody, so a still deck costs one comparison a frame.
-      if ((next - _frac.value).abs() > 1e-5) _frac.value = next;
-    })
-      ..start();
+  }
+
+  void _onBeat() {
+    final dur = widget.dur <= 0 ? 1.0 : widget.dur;
+    final next = _dragging != null
+        ? _fromSnapshot()
+        : (audioPositionS / dur).clamp(0.0, 1.0);
+    // Same pixel, same picture: no frame. Before the bar is measured every
+    // change counts, and assigning an equal value still notifies nobody.
+    final pixels = _barWidth * _dpr;
+    if (pixels > 0) {
+      final px = (next * pixels).round();
+      if (px == _px) return;
+      _px = px;
+    }
+    _frac.value = next;
   }
 
   double _fromSnapshot() {
@@ -310,6 +351,8 @@ class _SeekPillState extends State<SeekPill>
           Expanded(
             child: LayoutBuilder(
               builder: (context, box) {
+                // For the smooth step: how long one pixel of travel takes.
+                _barWidth = box.maxWidth;
                 void to(double dx) {
                   final v = (dx / box.maxWidth).clamp(0.0, 1.0) * dur;
                   setState(() => _dragging = v);
@@ -872,15 +915,23 @@ class Marquee extends StatefulWidget {
   State<Marquee> createState() => _MarqueeState();
 }
 
-class _MarqueeState extends State<Marquee> with SingleTickerProviderStateMixin {
-  late final Ticker _ticker = createTicker(_tick);
+class _MarqueeState extends State<Marquee> {
+  /// Where the text is drawn: painted there, not laid out there — see
+  /// [ShiftedPaint] — and snapped to device pixels, so a beat that has not
+  /// carried it a whole pixel asks for no frame.
+  final ValueNotifier<Offset> _shift = ValueNotifier<Offset>(Offset.zero);
   double _offset = 0;
   double _overflow = 0;
+  double _dpr = 1;
 
-  /// Null until the first tick. `Ticker` counts from when it started, so the
-  /// first callback's elapsed time is the whole gap since then — taken as a
-  /// delta it would fling the text off in one frame.
-  Duration? _last;
+  /// A timer does not hear TickerMode by itself: this is it, asked for.
+  bool _visible = true;
+  bool _joined = false;
+
+  /// Null until the first beat. The gap since the last travel would otherwise
+  /// be the whole time the line sat still, and taken as a delta it would
+  /// fling the text off in one step.
+  double? _last;
 
   /// What [_overflow] was measured against. Laying out a string is one of the
   /// more expensive things in a frame and this one does not change between
@@ -890,33 +941,43 @@ class _MarqueeState extends State<Marquee> with SingleTickerProviderStateMixin {
   TextStyle? _forStyle;
   double _forWidth = -1;
 
-  void _tick(Duration now) {
+  void _onBeat() {
+    final now = MotionClock.instance.seconds;
     final last = _last;
     _last = now;
     if (last == null || _overflow <= 0) return;
-    final dt = (now - last).inMicroseconds / 1e6;
     // A pause at each end: text that never stops moving is unreadable.
     final span = _overflow + 64;
-    var next = _offset + widget.speed * dt;
+    var next = _offset + widget.speed * (now - last);
     if (next > span) next = -32;
-    setState(() => _offset = next);
+    _offset = next;
+    _place();
   }
 
-  /// Run the ticker only while there is something to scroll. A title that fits
-  /// its box has nothing to move, and a Ticker that is merely *running* asks
-  /// the engine for a frame at every vsync regardless — which is what kept the
-  /// whole window rebuilding at the display's rate whenever the player bar was
-  /// on screen, whether or not either line was long enough to travel.
+  /// The travel as a shift: none during the pause at either end.
+  void _place() {
+    final x = _overflow <= 0 ? 0.0 : -_offset.clamp(0.0, _overflow);
+    _shift.value = Offset(snapToPixel(x, _dpr), 0);
+  }
+
+  /// On the clock only while there is something to scroll. A title that fits
+  /// its box has nothing to move — and a Ticker that was merely *running* used
+  /// to ask for a frame at every vsync regardless, which kept the whole window
+  /// drawing at the display's rate whenever the player bar was on screen.
   void _sync() {
-    if (_overflow > 0) {
-      if (!_ticker.isActive) {
-        _last = null;
-        _ticker.start();
-      }
-    } else if (_ticker.isActive) {
-      _ticker.stop();
+    // And only while the deck plays and this line is on screen: a paused song
+    // with a long title used to travel for as long as the app stayed open.
+    final on = _overflow > 0 && _music.tickPlaying && _visible;
+    if (on && !_joined) {
+      _joined = true;
       _last = null;
-      if (_offset != 0) setState(() => _offset = 0);
+      MotionClock.instance.join(_onBeat);
+    } else if (!on && _joined) {
+      _joined = false;
+      MotionClock.instance.leave(_onBeat);
+      _last = null;
+      _offset = 0;
+      _place();
     }
   }
 
@@ -938,19 +999,43 @@ class _MarqueeState extends State<Marquee> with SingleTickerProviderStateMixin {
     // Not during the build this was called from — starting a ticker schedules
     // a frame and stopping one can want a setState.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _sync();
+      if (!mounted) return;
+      _sync();
+      _place();
     });
+  }
+
+  /// Every marquee is a now-playing line, so it follows the one deck.
+  final MusicController _music = MusicController.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    _music.addListener(_sync);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _visible = TickerMode.valuesOf(context).enabled;
+    _dpr = MediaQuery.devicePixelRatioOf(context);
+    _sync();
   }
 
   @override
   void didUpdateWidget(Marquee old) {
     super.didUpdateWidget(old);
-    if (old.text != widget.text) _offset = -32;
+    if (old.text != widget.text) {
+      _offset = -32;
+      _place();
+    }
   }
 
   @override
   void dispose() {
-    _ticker.dispose();
+    _music.removeListener(_sync);
+    if (_joined) MotionClock.instance.leave(_onBeat);
+    _shift.dispose();
     super.dispose();
   }
 
@@ -959,25 +1044,22 @@ class _MarqueeState extends State<Marquee> with SingleTickerProviderStateMixin {
     return LayoutBuilder(
       builder: (context, box) {
         _measure(box.maxWidth);
-        final shift = _overflow <= 0 ? 0.0 : -_offset.clamp(0.0, _overflow);
-        // RepaintBoundary: while the text is travelling this repaints every
-        // frame, and what it sits on is the glass bar's blur and the cover
-        // wash. Confine it.
-        return RepaintBoundary(
-          child: ClipRect(
-            child: Align(
-              alignment: _overflow > 0
-                  ? Alignment.centerLeft
-                  : (widget.centred ? Alignment.center : Alignment.centerLeft),
-              child: Transform.translate(
-                offset: Offset(shift, 0),
-                child: Text(
-                  widget.text,
-                  maxLines: 1,
-                  softWrap: false,
-                  overflow: TextOverflow.visible,
-                  style: widget.style,
-                ),
+        // ShiftedPaint is a boundary of its own: while the text travels it
+        // repaints alone, and what it sits on — the glass bar, the cover
+        // wash — does not.
+        return ClipRect(
+          child: Align(
+            alignment: _overflow > 0
+                ? Alignment.centerLeft
+                : (widget.centred ? Alignment.center : Alignment.centerLeft),
+            child: ShiftedPaint(
+              shift: _shift,
+              child: Text(
+                widget.text,
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.visible,
+                style: widget.style,
               ),
             ),
           ),

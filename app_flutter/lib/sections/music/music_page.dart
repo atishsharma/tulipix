@@ -18,7 +18,6 @@ import '../../shell/shell_controller.dart';
 import '../../src/rust/api/music.dart';
 import 'audiobooks_tab.dart';
 import 'music_controller.dart';
-import 'music_viz.dart';
 import 'music_widgets.dart';
 import 'my_music_tab.dart';
 import 'player_bar.dart';
@@ -209,13 +208,23 @@ class _MusicPageState extends State<MusicPage> {
                                 left: 0,
                                 right: 0,
                                 bottom: 0,
-                                child: SidePanel(
-                                    key: sidePanelKey, controller: _c),
+                                // The lyric line follows the position.
+                                child: ListenableBuilder(
+                                  listenable: _c.ticks,
+                                  builder: (_, __) => SidePanel(
+                                      key: sidePanelKey, controller: _c),
+                                ),
                               ),
                           ],
                         ),
                 ),
-                PlayerBar(controller: _c),
+                // The only part of the page a position tick changes: this
+                // builder listens to the controller, which a tick that moves
+                // nothing but the position does not fire.
+                ListenableBuilder(
+                  listenable: _c.ticks,
+                  builder: (_, __) => PlayerBar(controller: _c),
+                ),
               ],
             ),
             ),
@@ -311,7 +320,7 @@ class _Header extends StatelessWidget {
               child: Row(
                 children: [
                   const SizedBox(width: 28),
-                  _Wordmark(accent: accent, playing: controller.tickPlaying),
+                  _Wordmark(accent: accent),
                   const SizedBox(width: 18),
                   // The five fill whatever is left between the title and the
                   // search pill, equally — `horizontal-stretch: 1` on each.
@@ -443,15 +452,13 @@ Widget _countPill(MusicState? st, String view) {
 /// on light covers; the offset copy gives it one in the cover's own colour
 /// rather than in grey.
 ///
-/// Both ride the beat. In Slint the glyph and the wordmark carry the same
-/// `- 5px * vis-bars[0]` offset, so they rise and fall together with the bass —
-/// see [BeatBounce], which runs the strip's own shape and envelope rather than
-/// a second clock of its own.
+/// It stands still. Slint bounces the glyph and the wordmark on the bass
+/// (`- 5px * vis-bars[0]`); that was dropped on purpose, as a frame source
+/// that told the listener nothing the visualizer beside it does not.
 class _Wordmark extends StatelessWidget {
-  const _Wordmark({required this.accent, required this.playing});
+  const _Wordmark({required this.accent});
 
   final Color accent;
-  final bool playing;
 
   @override
   Widget build(BuildContext context) {
@@ -462,36 +469,33 @@ class _Wordmark extends StatelessWidget {
       fontSize: 22,
       fontWeight: FontWeight.w700,
     );
-    return BeatBounce(
-      playing: playing,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            // A note, not a record crate. `Icons.music` in Slint, tinted
-            // `np-accent.mix(fg, 0.45)` — the cover's colour pulled most of the
-            // way to the page's ink, so it reads as text and not as a badge.
-            skin.icon(Icons.music_note),
-            size: 22,
-            color: Color.lerp(t.nInk, accent, 0.45),
-          ),
-          const SizedBox(width: 8),
-          Stack(
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(left: 1.5, top: 2.5),
-                child: Text(
-                  'Music',
-                  style: style.copyWith(
-                    color: accent.withValues(alpha: 0.55),
-                  ),
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          // A note, not a record crate. `Icons.music` in Slint, tinted
+          // `np-accent.mix(fg, 0.45)` — the cover's colour pulled most of the
+          // way to the page's ink, so it reads as text and not as a badge.
+          skin.icon(Icons.music_note),
+          size: 22,
+          color: Color.lerp(t.nInk, accent, 0.45),
+        ),
+        const SizedBox(width: 8),
+        Stack(
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(left: 1.5, top: 2.5),
+              child: Text(
+                'Music',
+                style: style.copyWith(
+                  color: accent.withValues(alpha: 0.55),
                 ),
               ),
-              Text('Music', style: style.copyWith(color: t.nInk)),
-            ],
-          ),
-        ],
-      ),
+            ),
+            Text('Music', style: style.copyWith(color: t.nInk)),
+          ],
+        ),
+      ],
     );
   }
 }

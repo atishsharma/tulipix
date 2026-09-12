@@ -15,6 +15,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
+import '../../design/motion_clock.dart';
 import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../playback/audio_deck.dart';
@@ -27,6 +28,10 @@ import 'mini_widget.dart' show MiniStyle, kPillCluster, kPillLyrics;
 import 'music_accent.dart';
 import 'spectrum.dart';
 import 'music_viz.dart' show visStyleNames;
+
+// It lives in the design kit now, whose seek bar shows a clock too; every
+// caller here still finds it through this file.
+export '../../design/clock.dart' show fmtClock;
 
 /// One of the five top-level categories. `view` on the Slint page.
 class MusicView {
@@ -209,6 +214,20 @@ class MusicController extends ChangeNotifier {
   double tickDur = 0;
   bool tickPlaying = false;
 
+  /// Fires on a tick that moved only the position. The controller itself fires
+  /// only when a tick changes play/pause or the duration: the whole section
+  /// and the shell listen to it, and only the clock, the scrubber and the lyric
+  /// line read the position, so once a second everything rebuilt for them.
+  final ValueNotifier<int> ticks = ValueNotifier<int>(0);
+
+  /// The controller and [ticks] together, for a widget that shows position.
+  late final Listenable live = Listenable.merge([this, ticks]);
+
+  void _tickOnly() => ticks.value++;
+
+  @visibleForTesting
+  void debugEvent(MusicEvent event) => _onEvent(event);
+
   // --- the two players that live above the section --------------------------
 
   /// Zen: the full-window player. Mini: the draggable card that keeps playing
@@ -327,10 +346,14 @@ class MusicController extends ChangeNotifier {
   void _onEvent(MusicEvent event) {
     switch (event) {
       case MusicEvent_Tick(:final pos, :final dur, :final playing):
+        final changed = playing != tickPlaying || dur != tickDur;
         tickPos = pos;
         tickDur = dur;
         tickPlaying = playing;
-        notifyListeners();
+        // On the beat, while anything is moving: the clock and the scrubber
+        // then land in a frame the motion is drawing anyway, rather than in
+        // one of their own between two beats.
+        MotionClock.instance.onNextBeat(changed ? notifyListeners : _tickOnly);
       case MusicEvent_TrackChanged():
         // The track changed under us — the loved state, the artwork and the
         // queue position are all now wrong in the held snapshot.
@@ -590,7 +613,7 @@ class MusicController extends ChangeNotifier {
     if (!want) return;
     // The scale grip and the pill's two toggles change the box while the window
     // is already the widget. Only when it actually moved: this runs on every
-    // tick, which is once a second while something plays.
+    // change to the controller.
     final box = widgetWindow;
     if (box != _widgetSize) {
       _widgetSize = box;
@@ -970,18 +993,6 @@ class MusicController extends ChangeNotifier {
     _events?.cancel();
     super.dispose();
   }
-}
-
-/// Seconds as m:ss, or h:mm:ss once there is an hour. Used by every duration
-/// the section shows.
-String fmtClock(double secs) {
-  if (secs.isNaN || secs.isInfinite || secs <= 0) return '0:00';
-  final s = secs.round();
-  final m = (s ~/ 60) % 60;
-  final h = s ~/ 3600;
-  final ss = (s % 60).toString().padLeft(2, '0');
-  if (h > 0) return '$h:${m.toString().padLeft(2, '0')}:$ss';
-  return '$m:$ss';
 }
 
 /// Unix seconds as "12 Mar 2026". Episode and release dates only — nothing

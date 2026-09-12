@@ -10,14 +10,15 @@
 // it on the event stream would make it by far the loudest thing on it. It used
 // to be an atomic in Rust behind a sync bridge symbol; now that the deck is
 // media_kit in this process, the r128 meter is observed there and left in a
-// plain variable, which the timer here reads at ~11 fps.
+// plain variable, which the visualizer reads ten times a second on the
+// shared motion clock.
 
-import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../design/motion_clock.dart';
 import '../../playback/audio_deck.dart' show audioLoudness, audioPositionS;
 import 'spectrum.dart';
 import 'music_controller.dart';
@@ -74,90 +75,8 @@ List<double> syntheticBars(int n, double t) => List<double>.generate(n, (i) {
       return (0.5 + 0.30 * a + 0.18 * b).clamp(0.0, 1.0);
     });
 
-/// Rides the bass band, so a thing sitting on it moves with the music.
-///
-/// `y: ... - 5px * vis-bars[0]` in ui/page_music.slint, on both the note glyph
-/// and the "Music" wordmark in the section header. Both use the same
-/// expression, so they move together and one wrapper does for the pair.
-///
-/// It runs the same 90 ms timer the visualizer does, and for the same reason:
-/// a Ticker would ask the engine for a frame at every vsync to move a title by
-/// three pixels eleven times a second. The offset goes through a notifier so
-/// the child is built once and only the transform is rebuilt.
-class BeatBounce extends StatefulWidget {
-  const BeatBounce({
-    super.key,
-    required this.playing,
-    required this.child,
-    this.travel = 5,
-  });
-
-  final bool playing;
-  final Widget child;
-
-  /// Peak displacement, upward.
-  final double travel;
-
-  @override
-  State<BeatBounce> createState() => _BeatBounceState();
-}
-
-class _BeatBounceState extends State<BeatBounce> {
-  final Stopwatch _clock = Stopwatch()..start();
-  final ValueNotifier<double> _lift = ValueNotifier<double>(0);
-  Timer? _timer;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _retime(TickerMode.valuesOf(context).enabled);
-  }
-
-  @override
-  void didUpdateWidget(BeatBounce old) {
-    super.didUpdateWidget(old);
-    if (!widget.playing && _lift.value != 0) _lift.value = 0;
-  }
-
-  void _retime(bool on) {
-    _timer?.cancel();
-    _timer = on ? Timer.periodic(_kFrame, (_) => _onFrame()) : null;
-  }
-
-  void _onFrame() {
-    if (!widget.playing) {
-      if (_lift.value != 0) _lift.value = 0;
-      return;
-    }
-    // Band 0 of the same shape the strip draws, scaled by the same envelope —
-    // so the title and the bars are moving to one signal, not to two clocks
-    // that drift apart.
-    final env = 0.18 + 0.82 * audioLoudness;
-    final t = _clock.elapsedMicroseconds / 1e6;
-    _lift.value = (syntheticBars(1, t).first * env).clamp(0.0, 1.0);
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    _lift.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => ValueListenableBuilder<double>(
-        valueListenable: _lift,
-        // Built once. Only the translation re-runs.
-        child: widget.child,
-        builder: (context, lift, child) => Transform.translate(
-          offset: Offset(0, -widget.travel * lift),
-          child: child,
-        ),
-      );
-}
-
-/// A live visualizer. Owns its own ticker so the rest of the section is not
-/// rebuilt eleven times a second on its behalf.
+/// A live visualizer. Moves on its own notifier so the rest of the section is
+/// not rebuilt on its behalf.
 class VizView extends StatefulWidget {
   const VizView({
     super.key,
@@ -176,13 +95,12 @@ class VizView extends StatefulWidget {
   State<VizView> createState() => _VizViewState();
 }
 
-/// ~11 fps, matching the Slint timer. Anything faster is invisible on bars
-/// this wide.
-const Duration _kFrame = Duration(milliseconds: 90);
+/// Every third beat of the [MotionClock]: ten a second, about the eleven the
+/// Slint timer ran. Anything faster is invisible on bars this wide, and the
+/// bars move on nearly every step they take, so each one is a frame.
+const int _kVizEvery = 3;
 
 class _VizViewState extends State<VizView> {
-  final Stopwatch _clock = Stopwatch()..start();
-
   /// The bars, as something the painter can subscribe to rather than something
   /// a rebuild carries down to it. This is the difference between eleven
   /// repaints a second and eleven full frames a second: `setState` marks the
@@ -193,36 +111,45 @@ class _VizViewState extends State<VizView> {
   /// more.
   final ValueNotifier<List<double>> _bars = ValueNotifier<List<double>>(_idle);
 
-  /// A Timer, not a Ticker, and that is the whole point of this widget's cost.
-  /// A running Ticker asks the engine for a frame at *every* vsync for as long
-  /// as it runs — the throttle that used to sit at the top of this callback
-  /// dropped four frames in five, but the app had already built, laid out,
-  /// painted and re-walked its semantics for all five. The bars want eleven
-  /// frames a second; a Timer asks for exactly those eleven, and for none at
-  /// all while the deck is paused.
-  Timer? _timer;
+  /// The motion clock, not a Ticker, and that is the whole point of this
+  /// widget's cost. A running Ticker asks the engine for a frame at *every*
+  /// vsync for as long as it runs; on the clock the bars step in the frames
+  /// everything else that moves is already drawing, and take none at all while
+  /// the deck is paused — the subscription goes with it.
+  bool _joined = false;
 
-  /// The cost of the Timer is that it does not know about [TickerMode], which
-  /// is what silences this widget when Music is behind another section. Read it
-  /// here instead: `didChangeDependencies` runs again whenever it flips.
+  /// The clock does not know about [TickerMode], which is what silences this
+  /// widget when Music is behind another section. Read it here instead:
+  /// `didChangeDependencies` runs again whenever it flips.
+  bool _visible = true;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _retime(TickerMode.valuesOf(context).enabled);
+    _visible = TickerMode.valuesOf(context).enabled;
+    _sync();
   }
 
-  void _retime(bool on) {
-    _timer?.cancel();
-    _timer = on ? Timer.periodic(_kFrame, (_) => _onFrame()) : null;
+  @override
+  void didUpdateWidget(VizView old) {
+    super.didUpdateWidget(old);
+    _sync();
   }
 
-  void _onFrame() {
-    if (!widget.playing) {
-      // No setState once the bars are already at rest, so a paused deck asks
-      // for no frames at all rather than eleven identical ones a second.
-      if (!identical(_bars.value, _idle)) _bars.value = _idle;
-      return;
+  void _sync() {
+    final run = widget.playing && _visible;
+    if (run == _joined) return;
+    _joined = run;
+    if (run) {
+      MotionClock.instance.join(_onBeat);
+    } else {
+      MotionClock.instance.leave(_onBeat);
+      _bars.value = _idle;
     }
+  }
+
+  void _onBeat() {
+    if (MotionClock.instance.count % _kVizEvery != 0) return;
     // The real thing when the analysis pass has seen this track, and the shape
     // derived from the clock when it has not. Both are scaled by the live
     // loudness meter: the spectrum is a decode of the file and knows nothing
@@ -232,15 +159,14 @@ class _VizViewState extends State<VizView> {
     // passage looks like playback stopped.
     final env = 0.18 + 0.82 * audioLoudness;
     final real = nowSpectrum?.at(audioPositionS, _kBars);
-    final source =
-        real ?? syntheticBars(_kBars, _clock.elapsedMicroseconds / 1e6);
+    final source = real ?? syntheticBars(_kBars, MotionClock.instance.seconds);
     _bars.value =
         source.map((b) => (b * env).clamp(0.0, 1.0)).toList(growable: false);
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    if (_joined) MotionClock.instance.leave(_onBeat);
     _bars.dispose();
     super.dispose();
   }

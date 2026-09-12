@@ -24,6 +24,7 @@ import 'package:flutter/material.dart';
 import '../../design/pick.dart';
 import '../../design/skin.dart';
 import '../../design/tokens.dart';
+import '../../playback/audio_deck.dart' show audioPositionS;
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
 import 'music_motion.dart';
@@ -223,6 +224,7 @@ class _SeekRow extends StatelessWidget {
                       dur: controller.tickDur,
                       playing: controller.tickPlaying,
                       onSeek: (v) => controller.send(MusicCmd.seek(secs: v)),
+                      deck: () => audioPositionS,
                     )) ??
                     SeekPill(
                     pos: controller.tickPos,
@@ -231,6 +233,7 @@ class _SeekRow extends StatelessWidget {
                     // This one is the live deck, so the bar follows the
                     // unthrottled position rather than the once-a-second tick.
                     smooth: true,
+                    playing: controller.tickPlaying,
                     // Only a library track gets one -- the same rule the bar
                     // uses for the heart. A stream has no file to decode and no
                     // end to draw a shape against.
@@ -393,8 +396,8 @@ class _ControlsState extends State<_Controls> {
           ),
         ),
         const SizedBox(width: 12),
-        context.skin.transport(TransportSlot(
-              controller: c,
+        context.skin.transport(_transportSlot(
+              c,
               mode: now.mode,
               live: widget.live,
               compact: !wide,
@@ -643,6 +646,55 @@ class Transport extends StatelessWidget {
       ],
     );
   }
+}
+
+/// [Transport]'s rules, for a skin that draws its own transport: previous and
+/// next step thirty seconds in a podcast and a chapter in an audiobook, and
+/// shuffle and repeat only exist where there is an order to disturb. Worked
+/// out here and handed over as values, so the skin never needs the controller.
+TransportSlot _transportSlot(
+  MusicController c, {
+  required String mode,
+  required bool live,
+  required bool compact,
+  bool? loved,
+  VoidCallback? onFav,
+}) {
+  final st = c.state;
+  final podcast = mode == 'podcast';
+  final book = mode == 'book';
+  final ordered = !live && !book;
+  return TransportSlot(
+    playing: c.tickPlaying,
+    onPlayPause: () => c.send(const MusicCmd.playPause()),
+    prevTip: book
+        ? 'Previous chapter'
+        : podcast
+            ? 'Back 30s'
+            : 'Previous',
+    nextTip: book
+        ? 'Next chapter'
+        : podcast
+            ? 'Forward 30s'
+            : 'Next',
+    onPrev: () => c.send(podcast
+        ? const MusicCmd.podSkip(secs: -30)
+        : book
+            ? const MusicCmd.bookChapter(delta: -1)
+            : const MusicCmd.prev()),
+    onNext: () => c.send(podcast
+        ? const MusicCmd.podSkip(secs: 30)
+        : book
+            ? const MusicCmd.bookChapter(delta: 1)
+            : const MusicCmd.next()),
+    compact: compact,
+    shuffleOn: (st?.shuffle ?? false) && ordered,
+    repeatOn: (st?.repeat ?? 'off') != 'off' && ordered,
+    onShuffle: ordered ? () => c.send(const MusicCmd.toggleShuffle()) : null,
+    onRepeat: ordered ? () => c.send(const MusicCmd.cycleRepeat()) : null,
+    loved: loved,
+    onFav: onFav,
+  );
 }
 
 class _SpeedButton extends StatelessWidget {

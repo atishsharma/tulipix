@@ -13,8 +13,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart' show Ticker;
 
+import '../../design/motion_clock.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
@@ -1317,16 +1317,16 @@ class MiniBubble extends StatefulWidget {
   State<MiniBubble> createState() => _MiniBubbleState();
 }
 
-class _MiniBubbleState extends State<MiniBubble>
-    with SingleTickerProviderStateMixin {
-  /// Elapsed milliseconds, as something the painter subscribes to. Same reason
-  /// as the visualizer: a rebuild for this would re-run build, layout and
-  /// semantics across the whole app to turn a 60px disc, where a repaint of one
-  /// boundary is the entire job.
-  final ValueNotifier<double> _t = ValueNotifier<double>(0);
-  late final Ticker _ticker = createTicker((d) {
-    _t.value = d.inMilliseconds.toDouble();
-  });
+class _MiniBubbleState extends State<MiniBubble> {
+  /// Milliseconds on the [MotionClock], as something the painter subscribes
+  /// to. Same reason as the visualizer: a rebuild for this would re-run build,
+  /// layout and semantics across the whole app to turn a 60px disc, where a
+  /// repaint of one boundary is the entire job.
+  final ValueNotifier<double> _t = ValueNotifier<double>(_kRingRest);
+  bool _joined = false;
+
+  /// A clock reading where `|sin(t / 280)|` peaks: the ring at full strength.
+  static const double _kRingRest = 280 * math.pi / 2;
 
   @override
   void didChangeDependencies() {
@@ -1340,21 +1340,31 @@ class _MiniBubbleState extends State<MiniBubble>
     _sync();
   }
 
-  /// The ring pulses whether or not anything is playing — it is what says the
-  /// bubble is a control and not a sticker — but a muted TickerMode still
-  /// stops it, and so does the app losing this widget.
+  /// The ring pulses while the deck plays and rests at full strength when it
+  /// does not. It used to pulse regardless, as what says the bubble is a
+  /// control and not a sticker — but it sits above every section, where no
+  /// section's TickerMode reaches, and it drew the whole window at every vsync.
+  /// A still, full ring says "control" as well. A muted TickerMode stops it
+  /// too, and so does the app losing this widget. While it runs it turns on
+  /// the motion clock, in step with everything else that moves.
   void _sync() {
-    final on = TickerMode.valuesOf(context).enabled;
-    if (on && !_ticker.isActive) {
-      _ticker.start();
-    } else if (!on && _ticker.isActive) {
-      _ticker.stop();
+    final on =
+        TickerMode.valuesOf(context).enabled && widget.controller.tickPlaying;
+    if (on == _joined) return;
+    _joined = on;
+    if (on) {
+      MotionClock.instance.join(_onBeat);
+    } else {
+      MotionClock.instance.leave(_onBeat);
+      _t.value = _kRingRest;
     }
   }
 
+  void _onBeat() => _t.value = MotionClock.instance.seconds * 1000;
+
   @override
   void dispose() {
-    _ticker.dispose();
+    if (_joined) MotionClock.instance.leave(_onBeat);
     _t.dispose();
     super.dispose();
   }
@@ -1379,7 +1389,7 @@ class _MiniBubbleState extends State<MiniBubble>
           child: Stack(
             children: [
               // The ring, painted rather than built: it is the thing that
-              // changes 60 times a second.
+              // changes on every beat.
               Positioned.fill(
                 child: CustomPaint(
                   painter: _BubbleRing(tick: _t, accent: c.accent),

@@ -15,7 +15,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../design/app_theme.dart';
-import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/music.dart';
@@ -50,10 +49,10 @@ class ZenPlayer extends StatelessWidget {
             _ => Tokens.dark(reduceMotion: rm),
           };
     // The language too. Without it the skin never reached inside zen: the
-    // bare tulipixTheme carried the tokens and nothing else.
-    final skin = skinFor(ShellController.instance.designLanguage, tokens);
+    // bare tulipixTheme carried the tokens and nothing else. Cached, because
+    // this runs on every music update — see [themeFor].
     return Theme(
-      data: appTheme(skin.retint(tokens), skin),
+      data: themeFor(ShellController.instance.designLanguage, tokens),
       child: Builder(builder: _body),
     );
   }

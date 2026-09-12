@@ -13,7 +13,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../../src/rust/api/music.dart' show MusicCmd;
 import '../design_language.dart';
 import '../skin.dart';
 import '../soft_decoration.dart';
@@ -291,43 +290,21 @@ class UnibodySkin extends AppSkin {
 
   @override
   Widget transport(TransportSlot s) {
-    final st = s.controller.state;
-    final c = s.controller;
-    // The rules `Transport` keeps: previous/next step 30 seconds in a podcast
-    // and a chapter in an audiobook, and shuffle/repeat only exist where there
-    // is an order to disturb.
-    final podcast = s.mode == 'podcast';
-    final book = s.mode == 'book';
-    final ordered = !s.live && !book;
+    // The slot arrives with Music's rules applied — what previous and next
+    // mean here, whether shuffle and repeat exist — so the wheel only draws.
     final wheel = JogWheel(
       skin: this,
       size: s.compact ? 104 : 132,
-      playing: c.tickPlaying,
-      onPlay: () => c.send(const MusicCmd.playPause()),
-      prevTip: book
-          ? 'Previous chapter'
-          : podcast
-              ? 'Back 30s'
-              : 'Previous',
-      nextTip: book
-          ? 'Next chapter'
-          : podcast
-              ? 'Forward 30s'
-              : 'Next',
-      onPrev: () => c.send(podcast
-          ? const MusicCmd.podSkip(secs: -30)
-          : book
-              ? const MusicCmd.bookChapter(delta: -1)
-              : const MusicCmd.prev()),
-      onNext: () => c.send(podcast
-          ? const MusicCmd.podSkip(secs: 30)
-          : book
-              ? const MusicCmd.bookChapter(delta: 1)
-              : const MusicCmd.next()),
-      shuffleOn: (st?.shuffle ?? false) && ordered,
-      repeatOn: (st?.repeat ?? 'off') != 'off' && ordered,
-      onShuffle: ordered ? () => c.send(const MusicCmd.toggleShuffle()) : null,
-      onRepeat: ordered ? () => c.send(const MusicCmd.cycleRepeat()) : null,
+      playing: s.playing,
+      onPlay: s.onPlayPause,
+      prevTip: s.prevTip,
+      nextTip: s.nextTip,
+      onPrev: s.onPrev,
+      onNext: s.onNext,
+      shuffleOn: s.shuffleOn,
+      repeatOn: s.repeatOn,
+      onShuffle: s.onShuffle,
+      onRepeat: s.onRepeat,
     );
     // The heart leads the transport in every skin. The wheel replaces the
     // whole row, so it carries the heart too: a latching key beside the dish.

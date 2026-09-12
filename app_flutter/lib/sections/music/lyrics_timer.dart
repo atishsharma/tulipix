@@ -246,7 +246,7 @@ class _TimerState extends State<_Timer> {
           // The playhead, live. The whole job is matching this number to a
           // line, so it is the biggest thing in the header.
           AnimatedBuilder(
-            animation: c,
+            animation: c.live,
             builder: (_, __) => Text(
               fmtStamp(_nowMs),
               style: const TextStyle(

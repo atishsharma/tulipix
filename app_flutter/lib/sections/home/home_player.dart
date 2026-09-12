@@ -11,6 +11,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../../design/motion_clock.dart';
 import '../../design/tokens.dart';
 import '../../design/skin.dart';
 import '../../shell/shell_controller.dart';
@@ -590,9 +591,14 @@ class CinemaPlayer extends StatefulWidget {
   State<CinemaPlayer> createState() => _CinemaPlayerState();
 }
 
-// Two controllers — the flip and the breathing ring — so `Ticker*s*`, plural.
+// The three players' breathing rings: a [Breath] each, on the motion clock,
+// breathing while the deck plays and Home is the page on screen, and resting
+// at the bottom of the breath otherwise. They were repeating controllers once,
+// and a repeating controller draws the whole window at the display's rate
+// whether or not anything shows it.
+
 class _CinemaPlayerState extends State<CinemaPlayer>
-    with TickerProviderStateMixin {
+    with SingleTickerProviderStateMixin {
   /// The queue lives on the BACK of the artwork: the button turns the square
   /// over rather than dropping a dialog on top of the card.
   bool _flipped = false;
@@ -602,13 +608,28 @@ class _CinemaPlayerState extends State<CinemaPlayer>
   );
 
   /// The breathing ring, while something plays.
-  late final AnimationController _pulse = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1240),
-  )..repeat(reverse: true);
+  final Breath _pulse = Breath();
+  bool _visible = true;
+
+  @override
+  void initState() {
+    super.initState();
+    MusicController.instance.addListener(_syncPulse);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _visible = TickerMode.valuesOf(context).enabled;
+    _syncPulse();
+  }
+
+  void _syncPulse() =>
+      _pulse.sync(_visible && MusicController.instance.tickPlaying);
 
   @override
   void dispose() {
+    MusicController.instance.removeListener(_syncPulse);
     _turn.dispose();
     _pulse.dispose();
     super.dispose();
@@ -619,7 +640,7 @@ class _CinemaPlayerState extends State<CinemaPlayer>
     final t = context.tokens;
     final c = MusicController.instance;
     return AnimatedBuilder(
-      animation: c,
+      animation: c.live,
       builder: (context, _) {
         final now = c.now;
         final accent = c.accent;
@@ -834,16 +855,30 @@ class StreamRailPlayer extends StatefulWidget {
   State<StreamRailPlayer> createState() => _StreamRailPlayerState();
 }
 
-class _StreamRailPlayerState extends State<StreamRailPlayer>
-    with SingleTickerProviderStateMixin {
+class _StreamRailPlayerState extends State<StreamRailPlayer> {
   bool _queue = false;
-  late final AnimationController _pulse = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1240),
-  )..repeat(reverse: true);
+  final Breath _pulse = Breath();
+  bool _visible = true;
+
+  @override
+  void initState() {
+    super.initState();
+    MusicController.instance.addListener(_syncPulse);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _visible = TickerMode.valuesOf(context).enabled;
+    _syncPulse();
+  }
+
+  void _syncPulse() =>
+      _pulse.sync(_visible && MusicController.instance.tickPlaying);
 
   @override
   void dispose() {
+    MusicController.instance.removeListener(_syncPulse);
     _pulse.dispose();
     super.dispose();
   }
@@ -857,7 +892,7 @@ class _StreamRailPlayerState extends State<StreamRailPlayer>
     final art = (widget.railWidth * 0.3).roundToDouble();
     final pad = widget.railWidth * 0.03;
     return AnimatedBuilder(
-      animation: c,
+      animation: c.live,
       builder: (context, _) {
         final now = c.now;
         final accent = c.accent;
@@ -1047,16 +1082,30 @@ class WelcomePlayerBar extends StatefulWidget {
   State<WelcomePlayerBar> createState() => _WelcomePlayerBarState();
 }
 
-class _WelcomePlayerBarState extends State<WelcomePlayerBar>
-    with SingleTickerProviderStateMixin {
+class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
   bool _queue = false;
-  late final AnimationController _pulse = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1240),
-  )..repeat(reverse: true);
+  final Breath _pulse = Breath();
+  bool _visible = true;
+
+  @override
+  void initState() {
+    super.initState();
+    MusicController.instance.addListener(_syncPulse);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _visible = TickerMode.valuesOf(context).enabled;
+    _syncPulse();
+  }
+
+  void _syncPulse() =>
+      _pulse.sync(_visible && MusicController.instance.tickPlaying);
 
   @override
   void dispose() {
+    MusicController.instance.removeListener(_syncPulse);
     _pulse.dispose();
     super.dispose();
   }
@@ -1066,7 +1115,7 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar>
     final t = context.tokens;
     final c = MusicController.instance;
     return AnimatedBuilder(
-      animation: c,
+      animation: c.live,
       builder: (context, _) {
         final now = c.now;
         // The bar carries its own ink so it reads on every theme: dark ink over
@@ -1251,7 +1300,7 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar>
                 border: Border.all(color: t.outline),
               ),
               child: AnimatedBuilder(
-                animation: c,
+                animation: c.live,
                 builder: (context, _) =>
                     HomeQueue(controller: c, accent: accent, dense: false),
               ),
@@ -1283,7 +1332,7 @@ class ClassicMusicCard extends StatelessWidget {
     final t = context.tokens;
     final c = MusicController.instance;
     return AnimatedBuilder(
-      animation: c,
+      animation: c.live,
       builder: (context, _) {
         final mode = c.now?.mode ?? 'idle';
         final tab = switch (mode) {

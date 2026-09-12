@@ -136,8 +136,9 @@ class _MusicOverlayState extends State<MusicOverlay> {
   @override
   Widget build(BuildContext context) {
     final c = MusicController.instance;
+    // `live`: the mini, the zen player and the widget all show the position.
     return AnimatedBuilder(
-      animation: c,
+      animation: c.live,
       builder: (context, _) {
         final now = c.state?.now;
         final anything = now != null && (now.loaded || now.title.isNotEmpty);

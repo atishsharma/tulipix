@@ -13,8 +13,24 @@
 
 import 'package:flutter/material.dart';
 
+import 'design_language.dart';
 import 'skin.dart';
 import 'tokens.dart';
+
+/// [appTheme] for [language] over [base], built once per language and tier.
+///
+/// For a theme asked for on every rebuild — zen's, which rebuilds on every
+/// music update. A ThemeData built fresh each time is never `==` the last
+/// (`Tokens` and `AppSkin` carry no value equality), so `Theme` told every
+/// widget on the page that reads it to rebuild too. The same object tells
+/// nobody anything.
+ThemeData themeFor(DesignLanguage language, Tokens base) =>
+    _themes[(language, base.dark, base.oled, base.reduceMotion)] ??= () {
+      final skin = skinFor(language, base);
+      return appTheme(skin.retint(base), skin);
+    }();
+
+final _themes = <(DesignLanguage, bool, bool, bool), ThemeData>{};
 
 ThemeData appTheme(Tokens t, AppSkin skin) {
   final base = tulipixTheme(t).copyWith(extensions: [t, skin]);

@@ -10,8 +10,6 @@
 // the aura to the bottom-left corner and leaves the rest of the screen off; the
 // glass is drawn by its 1px edge and top sheen there.
 
-import 'dart:ui' as ui;
-
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
@@ -222,28 +220,13 @@ class GlassSkin extends AppSkin {
     );
   }
 
-  /// The blur sits behind the pane rather than around it: a clip around the
-  /// pane would cut off its own drop shadow. Grouped, so every pane on the
-  /// page shares the one pass the Music page's `BackdropGroup` sets up.
-  @override
-  Widget frame(SurfaceRole role, Widget child, {double radius = 16}) {
-    if (role == SurfaceRole.art) return child;
-    return Stack(
-      fit: StackFit.passthrough,
-      children: [
-        Positioned.fill(
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(radius),
-            child: BackdropFilter.grouped(
-              filter: ui.ImageFilter.blur(sigmaX: 26, sigmaY: 26),
-              child: const SizedBox.expand(),
-            ),
-          ),
-        ),
-        child,
-      ],
-    );
-  }
+  // No backdrop blur behind the panes, so `frame` is the base's. Every pane
+  // sits on the aura — two radial gradients — and nothing scrolls beneath
+  // one, so a blur of it drew the same smooth gradient back. It was invisible,
+  // and on Impeller's GL backend each pane cost an offscreen layer and its
+  // blur passes on every frame: twenty-four of them held My Music under 10 fps,
+  // and the raster thread near 100%, whenever music played. A pane is its tint,
+  // its edge and its sheen.
 
   /// Lucide's 2px outlines for each Material icon the skinned widgets draw.
   /// The ±30 skips keep Material's, which carry the numeral.

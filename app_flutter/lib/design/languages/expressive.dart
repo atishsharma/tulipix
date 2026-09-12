@@ -11,12 +11,12 @@
 
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart' show Ticker;
 
-import '../../playback/audio_deck.dart' show audioPositionS;
-import '../../sections/music/music_controller.dart' show fmtClock;
+import '../clock.dart';
 import '../design_language.dart';
+import '../motion_clock.dart';
 import '../skin.dart';
 import '../tokens.dart';
 import 'symbols_glyphs.dart';
@@ -189,17 +189,32 @@ class WavySeek extends StatefulWidget {
   State<WavySeek> createState() => _WavySeekState();
 }
 
-class _WavySeekState extends State<WavySeek>
-    with SingleTickerProviderStateMixin {
-  late final Ticker _ticker = createTicker((e) {
-    setState(() => _phase = e.inMicroseconds / 1e6 * 2 * math.pi);
-  });
-  double _phase = 0;
+class _WavySeekState extends State<WavySeek> {
+  /// The wave's phase and the playhead, per frame, as something the painter
+  /// subscribes to. It used to be `setState`, which rebuilt the row, both
+  /// clocks and the layout around them at the display's rate to move one
+  /// line: now a frame repaints the one `RenderCustomPaint` behind its own
+  /// boundary, as the seek pill's does.
+  ///
+  /// The playhead is the deck's own position rather than the snapshot's, which
+  /// moves once a second and lurches — the source the seek pill's `smooth`
+  /// mode uses.
+  final ValueNotifier<(double, double)> _live =
+      ValueNotifier<(double, double)>((0, 0));
   double? _drag;
 
+  /// On the [MotionClock], with everything else that moves. The wave drifts
+  /// all the time it plays, so it takes every beat — where the Ticker it
+  /// replaced drew at the display's rate.
+  bool _joined = false;
+
+  /// The clock does not hear TickerMode by itself: this is it, asked for.
+  bool _visible = true;
+
   @override
-  void initState() {
-    super.initState();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _visible = TickerMode.valuesOf(context).enabled;
     _sync();
   }
 
@@ -210,28 +225,42 @@ class _WavySeekState extends State<WavySeek>
   }
 
   void _sync() {
-    final run = widget.slot.playing && !widget.still;
-    if (run && !_ticker.isActive) _ticker.start();
-    if (!run && _ticker.isActive) _ticker.stop();
+    final run = widget.slot.playing && !widget.still && _visible;
+    if (run == _joined) return;
+    _joined = run;
+    if (run) {
+      MotionClock.instance.join(_onBeat);
+      // Seeded now, or the first frame draws the playhead at zero.
+      _onBeat();
+    } else {
+      MotionClock.instance.leave(_onBeat);
+    }
+  }
+
+  void _onBeat() {
+    final dur = widget.slot.dur <= 0 ? 1.0 : widget.slot.dur;
+    _live.value = (
+      MotionClock.instance.seconds * 2 * math.pi,
+      ((widget.slot.deck?.call() ?? widget.slot.pos) / dur).clamp(0.0, 1.0),
+    );
   }
 
   @override
   void dispose() {
-    _ticker.dispose();
+    if (_joined) MotionClock.instance.leave(_onBeat);
+    _live.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final dur = widget.slot.dur <= 0 ? 1.0 : widget.slot.dur;
-    // The snapshot's position moves once a second, which lurches. While the
-    // wave drifts it repaints every frame anyway, so it reads the deck's own
-    // position — the source the seek pill's `smooth` mode uses.
-    final pos = _drag ??
-        (widget.slot.playing && _ticker.isActive
-            ? audioPositionS
-            : widget.slot.pos);
+    // The clock moves with the once-a-second snapshot; only the wave follows
+    // the deck frame by frame.
+    final pos = _drag ?? widget.slot.pos;
     final frac = (pos / dur).clamp(0.0, 1.0);
+    // A finger on the bar wins over the deck.
+    final live = _joined && _drag == null ? _live : null;
     final clock = TextStyle(
       fontSize: 11,
       fontWeight: FontWeight.w600,
@@ -262,15 +291,20 @@ class _WavySeekState extends State<WavySeek>
                       ? Duration.zero
                       : const Duration(milliseconds: 600),
                   curve: Curves.easeOutBack,
-                  builder: (context, amp, _) => CustomPaint(
-                    key: WavySeek.paintKey,
-                    size: Size(box.maxWidth, 30),
-                    painter: WavePainter(
-                      frac: frac,
-                      amplitude: amp,
-                      phase: _phase,
-                      color: widget.color,
-                      track: widget.track,
+                  // Its own boundary: the wave repaints every frame while it
+                  // drifts, and what it sits on is the bar.
+                  builder: (context, amp, _) => RepaintBoundary(
+                    child: CustomPaint(
+                      key: WavySeek.paintKey,
+                      size: Size(box.maxWidth, 30),
+                      painter: WavePainter(
+                        frac: frac,
+                        amplitude: amp,
+                        phase: _live.value.$1,
+                        color: widget.color,
+                        track: widget.track,
+                        live: live,
+                      ),
                     ),
                   ),
                 ),
@@ -292,7 +326,8 @@ class WavePainter extends CustomPainter {
     required this.phase,
     required this.color,
     required this.track,
-  });
+    this.live,
+  }) : super(repaint: live);
 
   final double frac;
   final double amplitude;
@@ -300,8 +335,14 @@ class WavePainter extends CustomPainter {
   final Color color;
   final Color track;
 
+  /// Phase and playhead, per frame, while the wave drifts. Read at paint time,
+  /// so a moving wave repaints without a rebuild; [phase] and [frac] are what
+  /// it shows the rest of the time.
+  final ValueListenable<(double, double)>? live;
+
   @override
   void paint(Canvas canvas, Size size) {
+    final (phase, frac) = live?.value ?? (this.phase, this.frac);
     final mid = size.height / 2;
     final x = size.width * frac;
     final stroke = Paint()
@@ -341,5 +382,6 @@ class WavePainter extends CustomPainter {
       o.amplitude != amplitude ||
       o.phase != phase ||
       o.color != color ||
-      o.track != track;
+      o.track != track ||
+      o.live != live;
 }

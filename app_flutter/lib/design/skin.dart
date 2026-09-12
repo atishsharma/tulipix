@@ -12,7 +12,6 @@
 
 import 'package:flutter/material.dart';
 
-import '../sections/music/music_controller.dart' show MusicController;
 import 'design_language.dart';
 import 'languages/claymorphism.dart';
 import 'languages/expressive.dart';
@@ -139,21 +138,41 @@ class StandardSkin extends AppSkin {
   DesignLanguage get language => DesignLanguage.standard;
 }
 
-/// What a replacement transport is given: what `Transport` takes.
+/// What a replacement transport is given: the row's state and its actions,
+/// with the section's rules already applied — what previous and next mean in
+/// a podcast or an audiobook, whether there is an order to shuffle. Values
+/// and callbacks, not the controller: a skin lives in lib/design, and has no
+/// business reaching into a section to work those out.
 class TransportSlot {
   const TransportSlot({
-    required this.controller,
-    required this.mode,
-    required this.live,
+    required this.playing,
+    required this.onPlayPause,
+    required this.onPrev,
+    required this.onNext,
     required this.compact,
+    this.prevTip = 'Previous',
+    this.nextTip = 'Next',
+    this.shuffleOn = false,
+    this.repeatOn = false,
+    this.onShuffle,
+    this.onRepeat,
     this.loved,
     this.onFav,
   });
 
-  final MusicController controller;
-  final String mode;
-  final bool live;
+  final bool playing;
+  final VoidCallback onPlayPause;
+  final VoidCallback onPrev;
+  final VoidCallback onNext;
   final bool compact;
+  final String prevTip;
+  final String nextTip;
+  final bool shuffleOn;
+  final bool repeatOn;
+
+  /// Null where there is no order to disturb: a live stream, an audiobook.
+  final VoidCallback? onShuffle;
+  final VoidCallback? onRepeat;
 
   /// Null where there is nothing to love.
   final bool? loved;
@@ -183,6 +202,7 @@ class SeekSlot {
     required this.dur,
     required this.playing,
     required this.onSeek,
+    this.deck,
   });
 
   /// Seconds, from the once-a-second snapshot.
@@ -190,10 +210,19 @@ class SeekSlot {
   final double dur;
   final bool playing;
   final ValueChanged<double> onSeek;
+
+  /// The deck's own position in seconds, for a bar that moves every frame —
+  /// [pos] moves once a second and lurches. Null: [pos].
+  final double Function()? deck;
 }
 
 /// The skin for [language] under the theme [t] describes.
-AppSkin skinFor(DesignLanguage language, Tokens t) => switch (language) {
+///
+/// Built once per language and tier. Only a handful can exist, and a skin
+/// constructor is not free: Expressive works out a whole tonal scheme in its.
+/// No skin reads anything from [t] but these four.
+AppSkin skinFor(DesignLanguage language, Tokens t) =>
+    _skins[(language, t.dark, t.oled, t.reduceMotion)] ??= switch (language) {
       DesignLanguage.standard => const StandardSkin(),
       DesignLanguage.neumorphism => NeuSkin(t),
       DesignLanguage.claymorphism => ClaySkin(t),
@@ -201,6 +230,8 @@ AppSkin skinFor(DesignLanguage language, Tokens t) => switch (language) {
       DesignLanguage.glassmorphism => GlassSkin(t),
       DesignLanguage.expressive => ExpressiveSkin(t),
     };
+
+final _skins = <(DesignLanguage, bool, bool, bool), AppSkin>{};
 
 /// A language's tokens from a handful of roles. Section accents are not among
 /// them: a section keeps its colour in every language.
