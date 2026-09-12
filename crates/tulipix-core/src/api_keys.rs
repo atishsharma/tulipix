@@ -40,6 +40,23 @@ fn entry(service: &str) -> Result<Entry> {
     Ok(Entry::new(&format!("tulipix.api.{service}"), "default")?)
 }
 
+/// Runs a keyring call on a thread of its own.
+///
+/// The Linux store speaks to the Secret Service through zbus, which this tree
+/// builds with its tokio feature, and zbus's blocking calls start a runtime of
+/// their own and `block_on` it. On a thread already driving tokio -- any async
+/// bridge call, which is where the TMDB and OpenSubtitles keys are read from --
+/// that panics with "Cannot start a runtime from within a runtime", and with
+/// `panic = "abort"` it closes the app. A plain thread has no runtime to
+/// collide with. It is one D-Bus round trip, so the thread costs nothing that
+/// matters; the entry is built on it too, since opening the store may already
+/// reach the bus.
+fn off_runtime<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::spawn(f)
+        .join()
+        .unwrap_or_else(|p| std::panic::resume_unwind(p))
+}
+
 /// Never written to settings.json — explicit guard.
 pub fn assert_never_in_settings_json(key: &str) -> Result<()> {
     if key.starts_with("api.") || key.contains("token") || key.contains("secret") {
@@ -49,23 +66,28 @@ pub fn assert_never_in_settings_json(key: &str) -> Result<()> {
 }
 
 pub fn store(service: &str, value: &str) -> Result<()> {
-    entry(service)?.set_password(value)?;
-    Ok(())
+    let (service, value) = (service.to_owned(), value.to_owned());
+    off_runtime(move || {
+        entry(&service)?.set_password(&value)?;
+        Ok(())
+    })
 }
 
 pub fn fetch(service: &str) -> Result<Option<String>> {
-    match entry(service)?.get_password() {
+    let service = service.to_owned();
+    off_runtime(move || match entry(&service)?.get_password() {
         Ok(v) => Ok(Some(v)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => Err(e.into()),
-    }
+    })
 }
 
 pub fn delete(service: &str) -> Result<()> {
-    match entry(service)?.delete_credential() {
+    let service = service.to_owned();
+    off_runtime(move || match entry(&service)?.delete_credential() {
         Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(e.into()),
-    }
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -154,4 +176,31 @@ pub fn account_usage(service: &str, source: KeySource) -> Result<QuotaState> {
     }
     c.used.insert(service.to_string(), used + 1);
     Ok(next_state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::off_runtime;
+
+    /// What zbus's blocking calls do under its tokio feature: a runtime of
+    /// their own, blocked on. No D-Bus needed to reproduce the crash.
+    fn nested_block_on() -> u8 {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async { 7 })
+    }
+
+    // The crash a video's TMDB key lookup hit: the keyring's blocking call on a
+    // thread already driving tokio.
+    #[tokio::test(flavor = "multi_thread")]
+    #[should_panic(expected = "Cannot start a runtime from within a runtime")]
+    async fn a_blocking_keyring_call_on_the_runtime_is_the_crash() {
+        nested_block_on();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn off_runtime_takes_the_same_call_somewhere_it_can_block() {
+        assert_eq!(off_runtime(nested_block_on), 7);
+    }
 }
