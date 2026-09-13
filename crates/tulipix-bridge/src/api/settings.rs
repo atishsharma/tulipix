@@ -719,7 +719,7 @@ fn advanced(s: &S) -> Vec<SettingItem> {
         act("clear-thumbs", "Clear the thumbnail cache", "Every thumbnail is redrawn the next time it is needed", "Clear"),
         hdr("BUNDLED TOOLS"),
         txt(s, "tools.bin-dir", "Tools directory",
-            "Folder holding mpv, yt-dlp, ffmpeg… — checked before bundled + PATH (blank = off)"),
+            "Folder holding yt-dlp, ffmpeg… — checked before bundled + PATH (blank = off)"),
         tool_row("ffmpeg"),
         tool_row("ffprobe"),
         tool_row("rclone"),
@@ -730,14 +730,17 @@ fn advanced(s: &S) -> Vec<SettingItem> {
         txt(s, "ytdlp.player-clients", "yt-dlp player clients",
             "Advanced, blank = yt-dlp's own defaults. Only set this if a yt-dlp \
              issue tells you to, e.g. default,tv,android"),
-        tool_row("mpv"),
+        // Not a program to find: libmpv is loaded into the app by media_kit.
+        // It ships inside the app on Windows and macOS; Linux links the
+        // system's libmpv.
+        stat("mpv", if cfg!(target_os = "linux") { "System library" } else { "Bundled" }, "ok"),
         tool_row("exiftool"),
         hdr("PLATFORM"),
         tog(s, "notifications", true, "Actionable notifications", "Snooze / mark-played / open-version actions"),
         tog(s, "crash-upload", false, "Opt-in crash uploader", "Send minidumps to the configured Sentry DSN"),
         hdr("BUILD"),
         stat("Renderer", "Flutter", "ok"),
-        stat("Player embedding", "Out-of-process mpv — isolation by design", "ok"),
+        stat("Player embedding", "libmpv inside the app, through media_kit", "ok"),
         stat("Audio formats", &tulipix_music::formats::FORMATS
             .iter()
             .map(|f| f.ext)

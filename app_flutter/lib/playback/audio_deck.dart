@@ -49,6 +49,18 @@ double audioPositionS = 0.0;
 final ValueNotifier<({double volume, bool muted})?> audioLevel =
     ValueNotifier(null);
 
+/// The output devices libmpv can see: `id` is what `--audio-device` takes and
+/// what `music.device` stores, `name` is what a person reads. Filled from the
+/// deck's own `audio-device-list`, so it is the libmpv that plays that answers,
+/// and it follows a headset being plugged in.
+final ValueNotifier<List<({String id, String name})>> audioOutputs =
+    ValueNotifier(const []);
+
+List<({String id, String name})> _outputs(List<AudioDevice> d) => [
+      for (final x in d)
+        (id: x.name, name: x.description.isEmpty ? x.name : x.description),
+    ];
+
 /// mpv's `ebur128` momentary loudness in LUFS, mapped to 0..1.
 ///
 /// −45 LUFS is about the floor of anything audible and −6 is about as loud as
@@ -133,6 +145,9 @@ class AudioDeck {
     _subs.add(_player.stream.error.listen((e) {
       if (_token >= 0) musicAudioFailed(token: _token, message: e.toString());
     }));
+    audioOutputs.value = _outputs(_player.state.audioDevices);
+    _subs.add(_player.stream.audioDevices
+        .listen((d) => audioOutputs.value = _outputs(d)));
 
     // Two properties media_kit does not surface on its own. `media-title` is
     // the radio ICY title; the r128 meter is the visualizer's energy, and it

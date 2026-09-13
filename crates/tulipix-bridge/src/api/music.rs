@@ -3258,28 +3258,12 @@ fn audio_args(repeat_one: bool) -> Vec<String> {
     args
 }
 
-/// Enumerate output devices through mpv, exactly as the Slint build does.
-/// Cached for the session: it is a process spawn, and the answer only changes
-/// when hardware is plugged in.
+/// Only mpv's "let it decide" device. The real list is libmpv's own
+/// `audio-device-list`, read by the Dart deck -- the libmpv that plays. This
+/// used to spawn an `mpv` program to ask, which this build does not ship, so
+/// without one the picker only ever offered the default.
 fn output_devices() -> Vec<String> {
-    static D: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    D.get_or_init(|| {
-        let out = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"))
-            .arg("--audio-device=help")
-            .no_window_compat()
-            .output();
-        let mut devs = match out {
-            Ok(o) => tulipix_music::output_device::parse_device_list(&String::from_utf8_lossy(
-                &o.stdout,
-            )),
-            Err(_) => Vec::new(),
-        };
-        if devs.is_empty() {
-            devs.push(tulipix_music::output_device::default_device());
-        }
-        devs.into_iter().map(|d| d.id).collect()
-    })
-    .clone()
+    vec![tulipix_music::output_device::default_device().id]
 }
 
 // ------------------------------------------------------------- playback ----

@@ -21,7 +21,9 @@ dependencies:
   # Audiobooks, Radio, YouTube) and the video layer are two `Player`s over the
   # same engine — which is why doing both at once cost less than either alone.
   # `media_kit_libs_video` is what bundles libmpv rather than borrowing the
-  # distro's; it covers audio-only playback too.
+  # distro's -- on Windows and macOS. On Linux it links the system's libmpv
+  # (libmpv2 on Debian/Ubuntu, mpv on Arch), which a package has to depend on.
+  # It covers audio-only playback too. No `mpv` program is used anywhere.
   media_kit: ^1.2.6
   media_kit_video: ^2.0.1
   media_kit_libs_video: ^1.0.7

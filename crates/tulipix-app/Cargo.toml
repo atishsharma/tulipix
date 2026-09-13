@@ -146,8 +146,12 @@ tikv-jemallocator = { version = "0.7", optional = true }
 # own ashpd 0.10, which enables `zbus/async-io` and so pulled async-std +
 # async-io/-fs/-net/-global-executor into every Linux build: a second async
 # runtime for one boolean.
+#
+# ashpd 0.13 puts each portal behind its own feature. `settings` is the one
+# `detect_dark` reads; it used to arrive by feature unification from another
+# crate's ashpd, which is not something to lean on.
 [target.'cfg(target_os = "linux")'.dependencies]
-ashpd = { version = "0.13", default-features = false, features = ["tokio"] }
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "settings"] }
 
 # Off Linux, dark-light IS the value: the Windows registry read and the macOS
 # AppleInterfaceStyle lookup. Neither drags an extra runtime there.

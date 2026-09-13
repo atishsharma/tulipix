@@ -960,7 +960,7 @@ class AdvancedTab extends StatelessWidget {
     'ffmpeg': 'Converts and reads media',
     'ffprobe': 'Reads durations and streams',
     'yt-dlp': 'Downloads from video sites',
-    'mpv': 'Plays video',
+    'mpv': 'Plays music and video, inside the app',
     'rclone': 'Cloud sync',
     'exiftool': 'Photo metadata',
   };

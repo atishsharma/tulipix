@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
 import '../../design/tokens.dart';
+import '../../playback/audio_deck.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
 import 'smart_editor.dart';
@@ -446,19 +447,34 @@ Future<void> audioSettings(BuildContext context, MusicController c) async {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('Output device'),
-                DropdownButton<String>(
-                  value: st.devices.contains(st.device)
-                      ? st.device
-                      : (st.devices.isEmpty ? null : st.devices.first),
-                  isExpanded: true,
-                  items: [
-                    for (final d in st.devices)
-                      DropdownMenuItem(value: d, child: Text(d)),
-                  ],
-                  onChanged: (v) => v == null
-                      ? null
-                      : c.send(
-                          MusicCmd.setAudio(key: 'music.device', value: v)),
+                // libmpv's own list, from the deck; the snapshot's "auto"
+                // only until the deck has answered.
+                ValueListenableBuilder(
+                  valueListenable: audioOutputs,
+                  builder: (ctx, outs, _) {
+                    final list = outs.isNotEmpty
+                        ? outs
+                        : [for (final d in st.devices) (id: d, name: d)];
+                    final ids = [for (final d in list) d.id];
+                    return DropdownButton<String>(
+                      value: ids.contains(st.device)
+                          ? st.device
+                          : (ids.isEmpty ? null : ids.first),
+                      isExpanded: true,
+                      items: [
+                        for (final d in list)
+                          DropdownMenuItem(
+                            value: d.id,
+                            child: Text(d.name,
+                                overflow: TextOverflow.ellipsis),
+                          ),
+                      ],
+                      onChanged: (v) => v == null
+                          ? null
+                          : c.send(MusicCmd.setAudio(
+                              key: 'music.device', value: v)),
+                    );
+                  },
                 ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
