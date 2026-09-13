@@ -150,273 +150,300 @@ class SecurityTab extends StatelessWidget {
         ],
       ),
       children: [
-        TileGrid([
-          if (auto != null)
-            (
-              span: 2,
-              child: SettingsTile(
-                icon: Icons.lock_clock_outlined,
-                tint: Tokens.secBooks,
-                title: 'Lock when idle',
-                note: 'After a while without a key press or the pointer moving',
-                trailing: [
-                  SettingSwitch(on: auto.on_, onChanged: (v) => toggle(auto, v)),
+        // Two tiles stacked on the left; the PIN, the wallpapers and the
+        // protections down the right at their full height. TileGrid packs
+        // rows and has no tile two rows tall, so this tab lays itself out.
+        LayoutBuilder(builder: (context, box) {
+          Widget part(String label, Widget body) => Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(label.toUpperCase(),
+                      style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.6,
+                          color: t.textDim)),
+                  const SizedBox(height: 8),
+                  body,
                 ],
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (after != null)
-                      // Still settable while off, so it is ready when it is
-                      // switched on; dimmed, because it does nothing yet.
-                      // Wrapped rather than stretched: seven times in a third
-                      // of the page.
-                      Opacity(
-                        opacity: auto.on_ ? 1 : 0.5,
-                        child: Seg(
-                          options: after.options,
-                          labels: [for (final o in after.options) _short(o)],
-                          value: after.value,
-                          onPick: (v) => c.send(
-                              SettingsCmd.setText(key: 'lock.after', value: v)),
-                        ),
-                      ),
-                    const SizedBox(height: 10),
-                    _note(
-                        context,
-                        'It dims and counts down for ten seconds first. A '
-                        'playing video never locks, and music keeps playing.'),
+              );
+
+          final idle = auto == null
+              ? null
+              : SettingsTile(
+                  icon: Icons.lock_clock_outlined,
+                  tint: Tokens.secBooks,
+                  title: 'Lock when idle',
+                  note: 'After a while without a key press or the pointer '
+                      'moving',
+                  trailing: [
+                    SettingSwitch(
+                        on: auto.on_, onChanged: (v) => toggle(auto, v)),
                   ],
-                ),
-              ),
-            ),
-          if (face.isNotEmpty)
-            (
-              span: 4,
-              child: SettingsTile(
-                icon: Icons.wallpaper_outlined,
-                tint: Tokens.secMusic,
-                title: 'On the lock screen',
-                note: 'What shows, and what works, while it is locked',
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    SizedBox(
-                      width: 200,
-                      child: _LockPreview(
-                        music: on('lock.show-music'),
-                        smoke: on('lock.motion'),
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Lines([
-                        for (final r in face) RowLine(row: r, controller: c),
-                      ]),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          // The PIN, the wallpapers and the protections as one long block, a
-          // column each: alone, each was a tile with a lot of room.
-          if (pin != null ||
-              wall != null ||
-              passkey != null ||
-              enc != null ||
-              sandbox != null)
-            (
-              span: 6,
-              child: SettingsTile(
-                icon: Icons.shield_outlined,
-                tint: Tokens.secBooks,
-                title: 'PIN, wallpapers & protection',
-                note: 'What unlocks it, the picture when nothing plays, and '
-                    'the locks',
-                trailing: [
-                  if (pin != null)
-                    StateChip(hasPin ? 'PIN set' : 'No PIN',
-                        tint: hasPin ? Tokens.ok : null),
-                ],
-                child: Builder(builder: (context) {
-                  Widget part(String label, Widget body) => Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Text(label.toUpperCase(),
-                              style: TextStyle(
-                                  fontSize: 10.5,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: 0.6,
-                                  color: t.textDim)),
-                          const SizedBox(height: 8),
-                          body,
-                        ],
-                      );
-                  final parts = [
-                    if (pin != null)
-                      part(
-                        'PIN · four to eight digits',
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Container(
-                              padding:
-                                  const EdgeInsets.fromLTRB(14, 10, 10, 10),
-                              decoration: BoxDecoration(
-                                color: t.bg,
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(color: t.outline),
-                              ),
-                              child: Row(
-                                children: [
-                                  for (var i = 0; i < 4; i++)
-                                    Container(
-                                      width: 10,
-                                      height: 10,
-                                      margin: const EdgeInsets.only(right: 7),
-                                      decoration: BoxDecoration(
-                                        color: hasPin ? t.text : null,
-                                        shape: BoxShape.circle,
-                                        border: hasPin
-                                            ? null
-                                            : Border.all(color: t.textDim),
-                                      ),
-                                    ),
-                                  const Spacer(),
-                                  SmallBtn(
-                                    label: hasPin ? 'Change' : 'Set a PIN',
-                                    primary: !hasPin,
-                                    onTap: () => _setPin(context),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            if (hasPin)
-                              SmallBtn(
-                                label: 'Remove the PIN',
-                                ghost: true,
-                                onTap: () => c.sendAction('lock-pin-clear'),
-                              )
-                            else
-                              _note(context, 'Without one, a click unlocks.'),
-                          ],
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (after != null)
+                        // Still settable while off, so it is ready when it
+                        // is switched on; dimmed, because it does nothing yet.
+                        Opacity(
+                          opacity: auto.on_ ? 1 : 0.5,
+                          child: Seg(
+                            full: true,
+                            options: after.options,
+                            labels: [for (final o in after.options) _short(o)],
+                            value: after.value,
+                            onPick: (v) => c.send(SettingsCmd.setText(
+                                key: 'lock.after', value: v)),
+                          ),
+                        ),
+                      const SizedBox(height: 10),
+                      _note(
+                          context,
+                          'It dims and counts down for ten seconds first. A '
+                          'playing video never locks, and music keeps '
+                          'playing.'),
+                    ],
+                  ),
+                );
+
+          final screen = face.isEmpty
+              ? null
+              : SettingsTile(
+                  icon: Icons.wallpaper_outlined,
+                  tint: Tokens.secMusic,
+                  title: 'On the lock screen',
+                  note: 'What shows, and what works, while it is locked',
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 200,
+                        child: _LockPreview(
+                          music: on('lock.show-music'),
+                          smoke: on('lock.motion'),
                         ),
                       ),
-                    if (wall != null)
-                      part(
-                        'Wallpapers',
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Container(
-                              padding:
-                                  const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                              decoration: BoxDecoration(
-                                color: t.bg,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: t.outline),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text('Lock screen folder',
-                                      style: TextStyle(
-                                          fontSize: 12.5,
-                                          fontWeight: FontWeight.w600,
-                                          color: t.text)),
-                                  Text(
-                                      wall.value.isEmpty
-                                          ? 'None — the smoke gradient'
-                                          : tildePath(wall.value),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                          fontSize: 11, color: t.textDim)),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            Row(
-                              children: [
-                                SmallBtn(
-                                  label: 'Choose',
-                                  icon: Icons.folder_open_outlined,
-                                  onTap: _pickWallpapers,
-                                ),
-                                if (wall.value.isNotEmpty) ...[
-                                  const SizedBox(width: 6),
-                                  SmallBtn(
-                                    label: 'Clear',
-                                    ghost: true,
-                                    onTap: () => c.send(
-                                        const SettingsCmd.setText(
-                                            key: 'lock.wallpapers',
-                                            value: '')),
-                                  ),
-                                ],
-                              ],
-                            ),
-                            const SizedBox(height: 10),
-                            _note(
-                                context,
-                                'The first ten pictures, one every twelve '
-                                'seconds, with a slow zoom.'),
-                          ],
-                        ),
-                      ),
-                    if (passkey != null || enc != null || sandbox != null)
-                      part(
-                        'Protection',
-                        Lines([
-                          if (passkey != null)
-                            SettingLine(
-                              title: 'Unlock with a passkey',
-                              note: 'This lock screen does not use it yet; '
-                                  'it asks for the PIN',
-                              trailing: SettingSwitch(
-                                  on: passkey.on_,
-                                  onChanged: (v) => toggle(passkey, v)),
-                            ),
-                          if (enc != null)
-                            SettingLine(
-                              title: 'Encrypt the library database',
-                              note: 'From the next start. Protects the index '
-                                  'if the disk is stolen; your files are '
-                                  'never touched',
-                              trailing: SettingSwitch(
-                                  on: enc.on_,
-                                  onChanged: (v) => toggle(enc, v)),
-                            ),
-                          if (sandbox != null)
-                            SettingLine(
-                              title: 'OS sandbox',
-                              note: 'Whether the system walls this copy off. '
-                                  'A reading only',
-                              trailing: StateChip(sandbox.value,
-                                  tint: sandbox.state == 'ok'
-                                      ? Tokens.ok
-                                      : null),
-                            ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Lines([
+                          for (final r in face)
+                            RowLine(row: r, controller: c),
                         ]),
                       ),
-                  ];
-                  return IntrinsicHeight(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                    ],
+                  ),
+                );
+
+          final parts = [
+            if (pin != null)
+              part(
+                'PIN · four to eight digits',
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+                      decoration: BoxDecoration(
+                        color: t.bg,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: t.outline),
+                      ),
+                      child: Row(
+                        children: [
+                          for (var i = 0; i < 4; i++)
+                            Container(
+                              width: 10,
+                              height: 10,
+                              margin: const EdgeInsets.only(right: 7),
+                              decoration: BoxDecoration(
+                                color: hasPin ? t.text : null,
+                                shape: BoxShape.circle,
+                                border: hasPin
+                                    ? null
+                                    : Border.all(color: t.textDim),
+                              ),
+                            ),
+                          const Spacer(),
+                          SmallBtn(
+                            label: hasPin ? 'Change' : 'Set a PIN',
+                            primary: !hasPin,
+                            onTap: () => _setPin(context),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    if (hasPin)
+                      SmallBtn(
+                        label: 'Remove the PIN',
+                        ghost: true,
+                        onTap: () => c.sendAction('lock-pin-clear'),
+                      )
+                    else
+                      _note(context, 'Without one, a click unlocks.'),
+                  ],
+                ),
+              ),
+            if (wall != null)
+              part(
+                'Wallpapers',
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                      decoration: BoxDecoration(
+                        color: t.bg,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: t.outline),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Lock screen folder',
+                              style: TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: t.text)),
+                          Text(
+                              wall.value.isEmpty
+                                  ? 'None — the smoke gradient'
+                                  : tildePath(wall.value),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style:
+                                  TextStyle(fontSize: 11, color: t.textDim)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
                       children: [
-                        for (var i = 0; i < parts.length; i++) ...[
-                          if (i > 0)
-                            VerticalDivider(
-                                width: 29, thickness: 1, color: t.outline),
-                          Expanded(child: parts[i]),
+                        SmallBtn(
+                          label: 'Choose',
+                          icon: Icons.folder_open_outlined,
+                          onTap: _pickWallpapers,
+                        ),
+                        if (wall.value.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          SmallBtn(
+                            label: 'Clear',
+                            ghost: true,
+                            onTap: () => c.send(const SettingsCmd.setText(
+                                key: 'lock.wallpapers', value: '')),
+                          ),
                         ],
                       ],
                     ),
-                  );
-                }),
+                    const SizedBox(height: 10),
+                    _note(
+                        context,
+                        'The first ten pictures, one every twelve seconds, '
+                        'with a slow zoom.'),
+                  ],
+                ),
               ),
+            if (passkey != null || enc != null || sandbox != null)
+              part(
+                'Protection',
+                Lines([
+                  if (passkey != null)
+                    SettingLine(
+                      title: 'Unlock with a passkey',
+                      note: 'This lock screen does not use it yet; it asks '
+                          'for the PIN',
+                      trailing: SettingSwitch(
+                          on: passkey.on_,
+                          onChanged: (v) => toggle(passkey, v)),
+                    ),
+                  if (enc != null)
+                    SettingLine(
+                      title: 'Encrypt the library database',
+                      note: 'From the next start. Protects the index if the '
+                          'disk is stolen; your files are never touched',
+                      trailing: SettingSwitch(
+                          on: enc.on_, onChanged: (v) => toggle(enc, v)),
+                    ),
+                  if (sandbox != null)
+                    SettingLine(
+                      title: 'OS sandbox',
+                      note: 'Whether the system walls this copy off. A '
+                          'reading only',
+                      trailing: StateChip(sandbox.value,
+                          tint: sandbox.state == 'ok' ? Tokens.ok : null),
+                    ),
+                ]),
+              ),
+          ];
+
+          final side = parts.isEmpty
+              ? null
+              : SettingsTile(
+                  icon: Icons.shield_outlined,
+                  tint: Tokens.secTransfer,
+                  title: 'PIN, wallpapers & protection',
+                  note: 'What unlocks it, the picture when nothing plays, and '
+                      'the locks',
+                  trailing: [
+                    if (pin != null)
+                      StateChip(hasPin ? 'PIN set' : 'No PIN',
+                          tint: hasPin ? Tokens.ok : null),
+                  ],
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (var i = 0; i < parts.length; i++) ...[
+                        if (i > 0)
+                          Divider(height: 29, thickness: 1, color: t.outline),
+                        parts[i],
+                      ],
+                    ],
+                  ),
+                );
+
+          final left = [idle, screen].whereType<Widget>().toList();
+
+          // One column on a narrow window, as TileGrid does.
+          if (box.maxWidth < 760) {
+            final all = [...left, if (side != null) side];
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < all.length; i++) ...[
+                  if (i > 0) const SizedBox(height: TileGrid.gap),
+                  IntrinsicHeight(child: all[i]),
+                ],
+              ],
+            );
+          }
+          return IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  flex: 4,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (var i = 0; i < left.length; i++) ...[
+                        if (i > 0) const SizedBox(height: TileGrid.gap),
+                        // The last takes whatever height the right side
+                        // leaves, so both columns end on one line.
+                        if (i == left.length - 1)
+                          Expanded(child: left[i])
+                        else
+                          left[i],
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(width: TileGrid.gap),
+                Expanded(flex: 2, child: side ?? const SizedBox.shrink()),
+              ],
             ),
-        ]),
+          );
+        }),
         if (rest.isNotEmpty) MoreTile(rows: rest, controller: c),
       ],
     );
@@ -717,8 +744,10 @@ class DataTab extends StatelessWidget {
       ),
       children: [
         TileGrid([
+          // Three columns, as every tile under it: at four its edge sat past
+          // theirs.
           (
-            span: 4,
+            span: multi == null ? 6 : 3,
             child: SettingsTile(
               icon: Icons.archive_outlined,
               tint: Tokens.secCloud,
@@ -771,7 +800,7 @@ class DataTab extends StatelessWidget {
           ),
           if (multi != null)
             (
-              span: 2,
+              span: 3,
               child: SettingsTile(
                 icon: Icons.group_outlined,
                 tint: Tokens.secPhotos,
@@ -873,16 +902,17 @@ class DataTab extends StatelessWidget {
               title: 'Start over',
               note: 'Erase every index, setting and cached thumbnail',
               danger: true,
-              child: Column(
+              fill: true,
+              child: Spread(
+                gap: 12,
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+                [
                   _note(
                       context,
                       'Your files are never touched — only what Tulipix knows '
                       'about them. Back up first if you might want your '
                       'settings back. Close and reopen Tulipix when it '
                       'finishes.'),
-                  const SizedBox(height: 12),
                   SmallBtn(
                     label: 'Reset Tulipix…',
                     icon: Icons.delete_outline,
@@ -1621,9 +1651,10 @@ class _AdvancedTabState extends State<AdvancedTab> {
                 title: 'Tools folder',
                 note: 'Optional. A copy here wins over every other, and '
                     'applies at once',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
+                fill: true,
+                child: Spread(
+                  gap: 12,
+                  [
                     Row(
                       children: [
                         Expanded(
@@ -1645,7 +1676,6 @@ class _AdvancedTabState extends State<AdvancedTab> {
                         ],
                       ],
                     ),
-                    const SizedBox(height: 12),
                     _Lookup(dirSet: dirSet),
                   ],
                 ),
@@ -1659,7 +1689,8 @@ class _AdvancedTabState extends State<AdvancedTab> {
                 tint: Tokens.secTools,
                 title: 'yt-dlp options',
                 note: 'How the downloader keeps up as sites change',
-                child: Lines([
+                fill: true,
+                child: Lines(spread: true, [
                   if (ytAuto != null)
                     SettingLine(
                       title: 'Keep up to date',

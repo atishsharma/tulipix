@@ -1377,9 +1377,10 @@ class _ServicesTabState extends State<ServicesTab> {
         StateChip(k.saved ? 'Saved' : 'Not set',
             tint: k.saved ? Tokens.ok : null),
       ],
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
+      fill: true,
+      child: Spread(
+        gap: 8,
+        [
           FieldBox(
             key: ValueKey('key-${k.service}-$_keyEpoch'),
             value: '',
@@ -1390,8 +1391,7 @@ class _ServicesTabState extends State<ServicesTab> {
               _c.send(SettingsCmd.setText(key: 'key:${k.service}', value: v));
             },
           ),
-          if (k.saved) ...[
-            const SizedBox(height: 8),
+          if (k.saved)
             Row(
               children: [
                 SmallBtn(
@@ -1408,11 +1408,7 @@ class _ServicesTabState extends State<ServicesTab> {
                 ),
               ],
             ),
-          ],
-          if (m != null) ...[
-            const SizedBox(height: 8),
-            _linkLine(m.link),
-          ],
+          if (m != null) _linkLine(m.link),
         ],
       ),
     );
@@ -1548,9 +1544,10 @@ class _ServicesTabState extends State<ServicesTab> {
                   StateChip(_set(piped) ? 'Custom' : 'Default',
                       tint: _set(piped) ? Tokens.brand : null),
                 ],
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
+                fill: true,
+                child: Spread(
+                  gap: 8,
+                  [
                     FieldBox(
                       value: piped.value,
                       hint: 'Leave blank for the default',
@@ -1560,7 +1557,6 @@ class _ServicesTabState extends State<ServicesTab> {
                           SmallBtn(label: 'Reset', onTap: () => _save(piped, '')),
                       ],
                     ),
-                    const SizedBox(height: 8),
                     Text(
                         'Only change this if the default is slow or blocked '
                         'where you are.',
@@ -1584,9 +1580,10 @@ class _ServicesTabState extends State<ServicesTab> {
                       tint: _queued == 0 ? null : Tokens.warn,
                     ),
                 ],
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
+                fill: true,
+                child: Spread(
+                  gap: 6,
+                  [
                     if (lb != null)
                       SettingLine(
                         title: 'Send listens',
@@ -1594,7 +1591,6 @@ class _ServicesTabState extends State<ServicesTab> {
                         trailing: RowControl(row: lb, controller: _c),
                       ),
                     if (token != null) ...[
-                      const SizedBox(height: 4),
                       FieldBox(
                         value: token.value,
                         secret: true,
@@ -1612,7 +1608,6 @@ class _ServicesTabState extends State<ServicesTab> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 6),
                       Text(token.desc,
                           style: TextStyle(fontSize: 11.5, color: t.textDim)),
                     ],
@@ -1661,18 +1656,17 @@ class _ServicesTabState extends State<ServicesTab> {
       title: title,
       note: note,
       trailing: [StateChip(all ? 'Set' : 'Not set', tint: all ? Tokens.ok : null)],
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (final r in fields) ...[
+      fill: true,
+      child: Spread(
+        gap: 8,
+        [
+          for (final r in fields)
             FieldBox(
               value: r.value,
               secret: true,
               hint: fields.length > 1 ? r.label : 'Paste a key',
               onSubmit: (v) => _save(r, v),
             ),
-            const SizedBox(height: 8),
-          ],
           _linkLine(link),
         ],
       ),

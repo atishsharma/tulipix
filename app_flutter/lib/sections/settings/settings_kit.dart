@@ -438,13 +438,18 @@ class StatStrip extends StatelessWidget {
 
 /// Rows one under the other with a hairline between each.
 class Lines extends StatelessWidget {
-  const Lines(this.children, {super.key});
+  const Lines(this.children, {super.key, this.spread = false});
 
   final List<Widget> children;
+
+  /// Spread down the tile's height, as [Spread] does. Only under a tile with
+  /// `fill`.
+  final bool spread;
 
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    if (spread) return Spread(children, divided: true);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -452,6 +457,58 @@ class Lines extends StatelessWidget {
           if (i > 0) Divider(height: 1, thickness: 1, color: t.outline),
           children[i],
         ],
+      ],
+    );
+  }
+}
+
+/// Rows down a tile taller than they are, as one is beside a taller
+/// neighbour in a [TileGrid] row. Each row gets the same extra room above and
+/// below, so no empty band is left at the tile's foot. At its own height it is
+/// a plain column with [gap] between rows.
+///
+/// The room comes from spacers, so it needs a bounded height: the child of a
+/// [SettingsTile] with `fill`.
+class Spread extends StatelessWidget {
+  const Spread(
+    this.children, {
+    super.key,
+    this.gap = 0,
+    this.divided = false,
+    this.crossAxisAlignment = CrossAxisAlignment.stretch,
+  });
+
+  final List<Widget> children;
+
+  /// The least room between two rows.
+  final double gap;
+
+  /// A hairline midway between rows, as [Lines] draws.
+  final bool divided;
+
+  /// Start, for a button that should keep its own width.
+  final CrossAxisAlignment crossAxisAlignment;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Column(
+      crossAxisAlignment: crossAxisAlignment,
+      children: [
+        const Spacer(),
+        for (var i = 0; i < children.length; i++) ...[
+          if (i > 0) ...[
+            const Spacer(flex: 2),
+            if (divided)
+              Divider(
+                  height: gap < 1 ? 1 : gap, thickness: 1, color: t.outline)
+            else
+              SizedBox(height: gap),
+            const Spacer(flex: 2),
+          ],
+          children[i],
+        ],
+        const Spacer(),
       ],
     );
   }
