@@ -14,7 +14,6 @@ import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/settings.dart';
-import '../../src/rust/api/shell.dart' show Section;
 import '../status/status_page.dart';
 import 'settings_controller.dart';
 import 'settings_media.dart';
@@ -132,13 +131,23 @@ class _SettingsPageState extends State<SettingsPage> {
             'Watched folders',
             'Watch a folder',
             'Rescan all',
+            'Rescan',
+            'Thumbnails',
+            'Rebuild search index',
             'Stop watching',
+            'My Music',
+            'Podcasts',
+            'Audiobooks',
+            'Radio',
+            'YouTube',
             for (final l in st.libraries) l.path,
           ],
         'security' => [..._rowWords(st.security), 'Lock now'],
         // Scrobbling lives on Services; its token row is sent with AI's.
         'services' => [
             ..._rowWords(st.services),
+            for (final k in st.keys) '${k.label} key',
+            'API keys',
             'Scrobbling',
             'ListenBrainz token',
           ],
@@ -147,6 +156,7 @@ class _SettingsPageState extends State<SettingsPage> {
             'This build',
             'Version',
             'Credits',
+            'Supported file formats',
           ],
         'ai' => [..._rowWords(st.ai), 'Check for updates', 'Models'],
         'data' => [
@@ -154,6 +164,10 @@ class _SettingsPageState extends State<SettingsPage> {
             'Backups',
             'Back up now',
             'Restore',
+            'Export the library',
+            'Import from another app',
+            'Picasa',
+            'iTunes',
             'Start over',
             'Reset Tulipix',
             'Data folder',
@@ -364,7 +378,7 @@ class _Rail extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  Text('© 2026 — Developed by Atish Ak Sharma',
+                  Text('© 2026 — Developed by Atish',
                       style: TextStyle(fontSize: 10.5, color: t.textDim)),
                 ],
               ),

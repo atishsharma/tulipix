@@ -864,6 +864,10 @@ pub async fn tools_start_worker() -> Result<()> {
                         queue::complete(pool, id, ok.is_ok(), Some(&message))
                             .await
                             .ok();
+                        crate::api::maintenance::notify(
+                            &label_of(&kind),
+                            &if ok.is_ok() { message.clone() } else { format!("Failed: {message}") },
+                        );
                         stopped().lock().ok().map(|mut g| g.remove(&id));
                         emit(ToolsEvent::Finished {
                             id,
@@ -2132,7 +2136,7 @@ fn remember(id: i64, r: Report) {
     }
 }
 
-fn whisper_model() -> Option<std::path::PathBuf> {
+pub(crate) fn whisper_model() -> Option<std::path::PathBuf> {
     let dir = bin("whisper-cli").parent()?.to_path_buf();
     std::fs::read_dir(&dir)
         .ok()?

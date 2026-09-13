@@ -37,6 +37,7 @@ import 'shell/lock/lock_screen.dart';
 import 'shell/shell_controller.dart';
 import 'shell/sidebar.dart';
 import 'shell/title_row.dart';
+import 'shell/vitals.dart';
 import 'shell/window.dart';
 import 'src/rust/api/music.dart';
 import 'src/rust/api/transfer.dart';
@@ -45,6 +46,8 @@ import 'src/rust/frb_generated.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Startup time and slow frames, for Settings › Advanced › Performance.
+  Vitals.start();
   // libmpv, for both players. Must run before any `Player` is constructed, and
   // the music controller builds one the moment the Music section is touched.
   MediaKit.ensureInitialized();
@@ -73,6 +76,11 @@ class _TulipixAppState extends State<TulipixApp> {
   /// `ui.design-language`, from the same snapshot as the theme. Only Music
   /// reads it so far; see lib/design/skin.dart.
   DesignLanguage _language = DesignLanguage.standard;
+
+  /// "Follow system accent" (null: off, or none reported) and "Honour OS
+  /// font scale".
+  Color? _accent;
+  bool _fontScale = true;
 
   final ShellController _shell = ShellController.instance;
 
@@ -131,11 +139,24 @@ class _TulipixAppState extends State<TulipixApp> {
     // this file draws from the shell redraws through the AnimatedBuilder below.
     // The design language rides the same gate: it is part of the ThemeData too.
     final language = _shell.designLanguage;
-    if (dark == _dark && oled == _oled && language == _language) return;
+    // Settings › Advanced: the desktop's accent, and whether its text size
+    // counts. Same gate: both are baked into what MaterialApp draws.
+    final accent = _shell.systemAccent;
+    final fontScale = _shell.followOsFontScale;
+    if (dark == _dark &&
+        oled == _oled &&
+        language == _language &&
+        accent == _accent &&
+        fontScale == _fontScale) {
+      return;
+    }
+    Tokens.systemAccent = accent;
     setState(() {
       _dark = dark;
       _oled = oled;
       _language = language;
+      _accent = accent;
+      _fontScale = fontScale;
     });
   }
 
@@ -158,6 +179,14 @@ class _TulipixAppState extends State<TulipixApp> {
       title: 'Tulipix',
       debugShowCheckedModeBanner: false,
       theme: appTheme(tokens, skin),
+      // "Honour OS font scale" off: text at 100 % whatever the desktop asks.
+      builder: (context, child) => _fontScale
+          ? child!
+          : MediaQuery(
+              data: MediaQuery.of(context)
+                  .copyWith(textScaler: TextScaler.noScaling),
+              child: child!,
+            ),
       // The floating mini, the zen player and the video all wrap the whole
       // app: what is playing does not stop playing when you leave the section
       // that started it, and these are how it stays visible. Video covers the

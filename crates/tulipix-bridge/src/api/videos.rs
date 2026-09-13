@@ -1744,7 +1744,7 @@ async fn discover_cards(
     api_key: Option<&str>,
     cache_dir: Option<&Path>,
 ) -> Vec<DiscoverCard> {
-    let client = api_key.map(tulipix_videos::tmdb::TmdbClient::new);
+    let client = api_key.map(tmdb_client);
     let mut out = Vec::with_capacity(items.len());
     for it in items {
         let mut poster = String::new();
@@ -1777,9 +1777,30 @@ async fn discover_cards(
     out
 }
 
+/// TMDB's poster base, or the mirror set in Settings › Self-hosted servers.
+/// The setting names the image server (`…/t/p`, as TMDB's own is); the size
+/// is added here. The client downloads from it and the cache is named by a
+/// hash of the URL, so both must build it the same way -- which is why it is
+/// one function.
+fn tmdb_image_base() -> String {
+    let custom = crate::api::shell::load().text("api.tmdb-image-base");
+    let custom = custom.trim().trim_end_matches('/');
+    match custom {
+        "" => "https://image.tmdb.org/t/p/w500".into(),
+        c if c.ends_with("/w500") => c.into(),
+        c => format!("{c}/w500"),
+    }
+}
+
+fn tmdb_client(key: impl Into<String>) -> tulipix_videos::tmdb::TmdbClient {
+    let mut c = tulipix_videos::tmdb::TmdbClient::new(key);
+    c.image_base = tmdb_image_base();
+    c
+}
+
 fn cached_tmdb_poster(poster_path: &str, dir: &Path) -> Option<String> {
     use sha2::{Digest, Sha256};
-    let url = format!("https://image.tmdb.org/t/p/w500{poster_path}");
+    let url = format!("{}{poster_path}", tmdb_image_base());
     let mut h = Sha256::new();
     h.update(url.as_bytes());
     let p = dir.join(format!("{}.jpg", h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()));
@@ -1826,17 +1847,25 @@ pub(crate) fn poster_cache_dir() -> Option<PathBuf> {
 /// builds — and this is `tulipix_common::{load,add}_watched_folder` minus the
 /// slint dependency that crate carries.
 pub(crate) async fn scan_watched() {
-    let Ok(pool) = pool().await else { return };
     for dir in load_watched_folders() {
+        scan_one(&dir).await;
+    }
+}
+
+/// One folder, read on its own -- a watched root, from Settings' per-folder
+/// Rescan as well as from the loop above.
+pub(crate) async fn scan_one(dir: &std::path::Path) {
+    let Ok(pool) = pool().await else { return };
+    {
         emit(VideosEvent::ScanStarted { root: dir.to_string_lossy().into_owned() });
         let lib = tulipix_core::libraries::Library {
             id: dir.to_string_lossy().into_owned(),
-            path: dir.clone(),
+            path: dir.to_path_buf(),
             section: tulipix_core::libraries::Section::Videos,
             last_scan: None,
             item_count: 0,
             size_bytes: 0,
-            exclude_globs: Vec::new(),
+            exclude_globs: crate::api::maintenance::exclusions(),
             cadence_override: Some(tulipix_core::libraries::ScanCadence::Manual),
             realtime_notify: false,
         };
@@ -1969,7 +1998,7 @@ async fn scrape_tmdb(pool: &sqlx::SqlitePool, item_id: i64, path: &Path) {
     use tulipix_videos::tmdb::MetadataProvider as _;
     let Some(key) = tmdb_api_key() else { return };
     let Some(dir) = poster_cache_dir() else { return };
-    let client = tulipix_videos::tmdb::TmdbClient::new(key);
+    let client = tmdb_client(key);
 
     let show_id: Option<i64> = sqlx::query_scalar("SELECT show_id FROM episodes WHERE item_id = ?")
         .bind(item_id)

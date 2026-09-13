@@ -6490,6 +6490,14 @@ pub(crate) async fn scan_watched() -> Result<()> {
     finish_scan(pool, inserted, updated, missing).await
 }
 
+/// One watched folder read again on its own, from Settings: the walk, then
+/// everything the end of a whole-library scan does.
+pub(crate) async fn scan_one(dir: &Path) -> Result<()> {
+    let pool = music_pool().await?;
+    let (inserted, updated, missing) = scan_folder(pool, dir).await?;
+    finish_scan(pool, inserted, updated, missing).await
+}
+
 /// Walk one folder -- a watched root, or any folder inside one -- and seed
 /// `track_meta` for what it holds. Returns inserted, updated, missing.
 ///
@@ -6503,7 +6511,7 @@ async fn scan_folder(pool: &sqlx::SqlitePool, dir: &Path) -> Result<(i64, i64, i
         last_scan: None,
         item_count: 0,
         size_bytes: 0,
-        exclude_globs: Vec::new(),
+        exclude_globs: crate::api::maintenance::exclusions(),
         cadence_override: Some(tulipix_core::libraries::ScanCadence::Manual),
         realtime_notify: false,
     };
@@ -7113,9 +7121,22 @@ async fn open_radio_category(index: i64) -> Result<()> {
     Ok(())
 }
 
+/// A radio-browser URL pointed at the mirror set in Settings › Self-hosted
+/// servers, if there is one. The setting names the server (as the public
+/// `https://all.api.radio-browser.info`); the `/json` API root is added here.
+fn rb_mirror(url: &str) -> String {
+    let custom = setting("api.radio-browser", "");
+    let custom = custom.trim().trim_end_matches('/');
+    if custom.is_empty() {
+        return url.to_string();
+    }
+    let base = if custom.ends_with("/json") { custom.to_string() } else { format!("{custom}/json") };
+    url.replacen(tulipix_music::radio::RB_BASE, &base, 1)
+}
+
 async fn fetch_stations(url: &str) -> Result<Vec<tulipix_music::radio::Station>> {
     let list: Vec<tulipix_music::radio::Station> = tulipix_core::net::http()
-        .get(url)
+        .get(rb_mirror(url))
         // radio-browser asks callers to identify themselves, and unlike the
         // media hosts it is happier with a real name than a browser string.
         .header(reqwest::header::USER_AGENT, "Tulipix/1.0")

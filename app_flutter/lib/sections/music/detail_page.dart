@@ -2923,7 +2923,7 @@ class _Side extends StatelessWidget {
 
   Future<void> _history() async {
     await controller.closeDetail();
-    await controller.send(MusicCmd.setLibTab(name: 'history'));
+    await controller.send(const MusicCmd.setLibTab(name: 'history'));
   }
 
   /// How much of it you have heard, and where to pick it up.
@@ -3154,8 +3154,8 @@ class _Side extends StatelessWidget {
           'Missing tags',
           '$untagged ${untagged == 1 ? 'file' : 'files'} ›',
           () async {
-            await controller.send(MusicCmd.mgrOpen(tab: 'tags'));
-            await controller.send(MusicCmd.mgrSetFilter(key: 'missing'));
+            await controller.send(const MusicCmd.mgrOpen(tab: 'tags'));
+            await controller.send(const MusicCmd.mgrSetFilter(key: 'missing'));
           },
         ),
       if (st.detailRoot.isNotEmpty) ('Belongs to', _basename(st.detailRoot), null),

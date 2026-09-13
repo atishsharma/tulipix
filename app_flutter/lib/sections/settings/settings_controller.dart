@@ -160,7 +160,10 @@ class SettingsController extends ChangeNotifier {
   bool get aiBusy =>
       (state?.ai ?? const <SettingItem>[]).any((r) => r.state == 'busy');
 
-  bool get _working => aiBusy || (state?.analysing ?? false);
+  bool get _working =>
+      aiBusy ||
+      (state?.analysing ?? false) ||
+      (state?.taskKey.isNotEmpty ?? false);
 
   /// Checked after every snapshot. The last tick after the work ends is the
   /// one that clears its row, so stopping here, after it landed, never leaves

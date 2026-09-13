@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tulipix/design/motion_clock.dart';
 import 'package:tulipix/design/skin.dart';
 import 'package:tulipix/design/tokens.dart';
+import 'package:tulipix/playback/audio_deck.dart' show audioLevel;
 import 'package:tulipix/sections/home/home_player.dart';
 import 'package:tulipix/sections/music/mini_player.dart';
 import 'package:tulipix/sections/music/music_controller.dart';

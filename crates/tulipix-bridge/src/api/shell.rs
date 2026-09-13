@@ -47,6 +47,12 @@ pub struct ShellState {
     /// the Flutter build adds `neumorphism` | `glass` | `expressive`; each build
     /// treats a name it does not know as Standard. Empty means never chosen.
     pub design_language: String,
+    /// "Follow system accent": the desktop's accent as `#rrggbb`, or empty
+    /// when the switch is off or the desktop reports none. Every section
+    /// accent takes it.
+    pub system_accent: String,
+    /// "Honour OS font scale". Off pins text at 100 % whatever the OS asks.
+    pub follow_os_font_scale: bool,
 }
 
 pub enum ShellCmd {
@@ -84,8 +90,11 @@ pub async fn shell_dispatch(cmd: ShellCmd) -> Result<ShellState> {
 }
 
 async fn snapshot() -> Result<ShellState> {
+    // The first snapshot is taken at launch; the auto-rescan loop starts with it.
+    crate::api::maintenance::start_auto_rescan();
     let s = load();
     let (badge, overdue) = finances_badge().await;
+    remind_bills(&s, badge, overdue);
     Ok(ShellState {
         user: ShellUser {
             display_name: match s.text("profile.name") {
@@ -105,7 +114,35 @@ async fn snapshot() -> Result<ShellState> {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         mini_widget_style: s.text("ui.mini-widget.style"),
         design_language: s.text("ui.design-language"),
+        system_accent: if s.flag("follow-system-accent", false) {
+            tulipix_platform::accent::read_system_accent()
+                .map(|c| c.to_css())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        },
+        follow_os_font_scale: s.flag("follow-os-font-scale", true),
     })
+}
+
+/// Once a day at most, a notification when bills are coming due, so the badge
+/// is not the only thing that says so.
+fn remind_bills(s: &tulipix_core::settings::Settings, badge: i32, overdue: bool) {
+    if badge == 0 {
+        return;
+    }
+    let today = chrono::Local::now().date_naive().to_string();
+    if s.text("notify.bills-day") == today {
+        return;
+    }
+    put("notify.bills-day", &today);
+    let body = if overdue {
+        format!("{badge} due within {BADGE_LEAD_DAYS} days, and one is already late.")
+    } else {
+        format!("{badge} due within {BADGE_LEAD_DAYS} days.")
+    };
+    let title = if badge == 1 { "A bill is due soon" } else { "Bills are due soon" };
+    crate::api::maintenance::notify(title, &body);
 }
 
 /// Obligations due inside the lead, and whether any of them is already late.

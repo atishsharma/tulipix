@@ -831,8 +831,8 @@ async fn retry(row_id: i64) -> Result<()> {
 
 /// Hand a URL to the OS default browser. Best-effort: a machine with no browser
 /// registered is a machine where the address beside the button is still there
-/// to be copied.
-fn open_url(url: &str) {
+/// to be copied. Settings' tool Update buttons use it too.
+pub(crate) fn open_url(url: &str) {
     let prog = if cfg!(target_os = "macos") {
         "open"
     } else if cfg!(target_os = "windows") {

@@ -1118,6 +1118,12 @@ async fn run(
     ));
     set_status("done");
     emit(MdlEvent::Changed);
+    if summary.downloaded > 0 || !summary.failed.is_empty() {
+        crate::api::maintenance::notify(
+            "Downloads finished",
+            &format!("{} downloaded · {} failed", summary.downloaded, summary.failed.len()),
+        );
+    }
 }
 
 /// How much of a failure message rides in the row. The full text is in the log.

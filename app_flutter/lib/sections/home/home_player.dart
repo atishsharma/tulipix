@@ -540,7 +540,6 @@ class HomePlayerBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final now = controller.now;
     return Row(
       children: [
         CineBtn(

@@ -31,6 +31,17 @@ String _grouped(int n) {
   return b.toString();
 }
 
+/// "just now", "12 min ago", "3 h ago", "yesterday", "5 days ago".
+String _since(int secs) {
+  final d = DateTime.now()
+      .difference(DateTime.fromMillisecondsSinceEpoch(secs * 1000));
+  if (d.inMinutes < 1) return 'just now';
+  if (d.inHours < 1) return '${d.inMinutes} min ago';
+  if (d.inDays < 1) return '${d.inHours} h ago';
+  if (d.inDays == 1) return 'yesterday';
+  return '${d.inDays} days ago';
+}
+
 /// A small label on a quiet ground: a section under a folder, a measurement.
 class _Tag extends StatelessWidget {
   const _Tag(this.text, {this.tint});
@@ -76,6 +87,16 @@ class _Tag extends StatelessWidget {
 
 // ── libraries ───────────────────────────────────────────────────────────────
 
+/// The five places a music folder can go, by the key the shared
+/// `music_folder_sections.json` stores.
+const Map<String, String> _musicShelves = {
+  'mymusic': 'My Music',
+  'podcasts': 'Podcasts',
+  'audiobooks': 'Audiobooks',
+  'radio': 'Radio',
+  'youtube': 'YouTube',
+};
+
 Color _sectionTint(String name) {
   final n = name.toLowerCase();
   if (n.contains('photo')) return Tokens.secPhotos;
@@ -111,12 +132,27 @@ class _LibrariesTabState extends State<LibrariesTab> {
   int _page = 0;
   static const int _perPage = 10;
 
+  /// The long job Settings is running, by key -- `lib-rescan:<path>`,
+  /// `rebuild-search`, `rescan-all` -- or empty.
+  String get _job => widget.state.taskKey;
+
   SettingsController get _c => widget.controller;
 
   @override
   void initState() {
     super.initState();
     _load();
+    // What each folder holds, counted on arriving. Not straight: sending
+    // notifies, and initState runs inside a build.
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _c.sendAction('lib-counts'));
+  }
+
+  @override
+  void didUpdateWidget(LibrariesTab old) {
+    super.didUpdateWidget(old);
+    // A job just ended, so what the folders hold has changed.
+    if (old.state.taskKey.isNotEmpty && widget.state.taskKey.isEmpty) _load();
   }
 
   Future<void> _load() async {
@@ -168,6 +204,13 @@ class _LibrariesTabState extends State<LibrariesTab> {
             'using the app.');
   }
 
+  /// `lib-rescan` or `lib-thumbs` on one folder. A rescan runs detached in
+  /// Rust; the bar follows it, and the notice after says how it went.
+  Future<void> _folderAction(String action, String path) =>
+      _c.sendAction('$action:$path');
+
+  Future<void> _reindex() => _c.sendAction('rebuild-search');
+
   Future<void> _pick() async {
     final path = await pickDirectory();
     if (path != null && path.trim().isNotEmpty) await _add(path.trim());
@@ -211,6 +254,14 @@ class _LibrariesTabState extends State<LibrariesTab> {
             'moved or rewritten',
         actions: [
           SmallBtn(
+            label: _job == 'rebuild-search' ? 'Rebuilding…' : 'Rebuild search',
+            icon: Icons.manage_search,
+            large: true,
+            busy: _job == 'rebuild-search',
+            tooltip: 'Index every photo again, so search finds what changed',
+            onTap: libs.isEmpty || _job.isNotEmpty ? null : _reindex,
+          ),
+          SmallBtn(
             label: _scanning ? 'Rescanning…' : 'Rescan all',
             icon: Icons.refresh,
             large: true,
@@ -251,7 +302,18 @@ class _LibrariesTabState extends State<LibrariesTab> {
             note: lib == null ? '' : '${lib.libDatabases} databases',
           ),
         ]),
+        // What is running, named, with how far it has got: the Slint
+        // build's maintenance bar. A whole rescan is started from here and
+        // waited on, so it is named here too.
+        if (_scanning || _job.isNotEmpty)
+          _JobStrip(
+            label: _job.isEmpty
+                ? 'Rescanning every watched folder'
+                : widget.state.taskLabel,
+            frac: _job.isEmpty ? -1 : widget.state.taskFrac,
+          ),
         TileGrid([
+          (span: 6, child: _schedule()),
           for (final l in shown) (span: 3, child: _folder(l)),
           (span: shown.length.isOdd ? 3 : 6, child: _dropTile(libs.isEmpty)),
         ]),
@@ -267,9 +329,70 @@ class _LibrariesTabState extends State<LibrariesTab> {
     );
   }
 
+  /// The auto-rescan cadences, as `scan.cadence` stores them.
+  static const Map<String, String> _cadences = {
+    'manual': 'Never',
+    'hourly': 'Hourly',
+    'daily': 'Daily',
+    'weekly': 'Weekly',
+  };
+
+  /// When folders are read again by themselves, and what every scan skips.
+  Widget _schedule() {
+    final st = widget.state;
+    return SettingsTile(
+      icon: Icons.schedule,
+      tint: Tokens.warn,
+      title: 'Automatic rescans',
+      note: 'Each folder is read again this often, counted from when it was '
+          'last read. A low battery holds it back',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Seg(
+            full: true,
+            options: _cadences.keys.toList(),
+            labels: _cadences.values.toList(),
+            value: st.defaultCadence,
+            onPick: (v) =>
+                _c.send(SettingsCmd.setText(key: 'scan.cadence', value: v)),
+          ),
+          SettingLine(
+            title: 'Skip these',
+            note: 'Patterns every scan passes over, comma-separated',
+            below: true,
+            trailing: FieldBox(
+              value: st.exclusions,
+              hint: '*/Private/*, *.part',
+              onSubmit: (v) =>
+                  _c.send(SettingsCmd.setText(key: 'scan.exclude', value: v)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// "1,204 items · read 3 h ago". The count waits for the first count after
+  /// the tab opens; the time for the first scan since it was kept.
+  static String _folderLine(LibraryRow l) {
+    final n = l.items.toInt();
+    final last = l.lastScan.toInt();
+    return [
+      if (n >= 0) '${_grouped(n)} ${n == 1 ? 'item' : 'items'}',
+      last > 0 ? 'read ${_since(last)}' : 'last read not recorded yet',
+    ].join(' · ');
+  }
+
   Widget _folder(LibraryRow l) {
     final t = context.tokens;
     final secs = _sectionsOf(l.path);
+    // The shelf picker shows for a folder that holds music, or one already
+    // moved off My Music.
+    final music = l.exists &&
+        (secs.any((s) => s.toLowerCase().contains('music')) ||
+            l.musicSection != 'mymusic');
+    final busy = _job == 'lib-rescan:${l.path}';
     return SettingsTile(
       icon: l.exists ? Icons.folder_outlined : Icons.folder_off_outlined,
       tint: l.exists ? Tokens.warn : Tokens.error,
@@ -288,6 +411,11 @@ class _LibrariesTabState extends State<LibrariesTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (l.exists) ...[
+            Text(_folderLine(l),
+                style: TextStyle(fontSize: 11.5, color: t.textDim)),
+            const SizedBox(height: 10),
+          ],
           if (secs.isNotEmpty) ...[
             Wrap(
               spacing: 6,
@@ -301,15 +429,57 @@ class _LibrariesTabState extends State<LibrariesTab> {
                 style: TextStyle(fontSize: 11.5, color: t.textDim)),
             const SizedBox(height: 12),
           ],
+          if (music) ...[
+            Text('Its music goes to',
+                style: TextStyle(fontSize: 11.5, color: t.textDim)),
+            const SizedBox(height: 6),
+            Seg(
+              full: true,
+              options: _musicShelves.keys.toList(),
+              labels: _musicShelves.values.toList(),
+              value: l.musicSection,
+              onPick: (v) => _c.sendAction('lib-section:$v:${l.path}'),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (l.exists) ...[
+            Text('Read again automatically',
+                style: TextStyle(fontSize: 11.5, color: t.textDim)),
+            const SizedBox(height: 6),
+            Seg(
+              full: true,
+              options: ['', ..._cadences.keys],
+              labels: ['Default', ..._cadences.values],
+              value: l.cadence,
+              onPick: (v) => _c.send(
+                  SettingsCmd.setText(key: 'lib.cadence.${l.path}', value: v)),
+            ),
+            const SizedBox(height: 12),
+          ],
           Row(
             children: [
-              if (l.exists)
+              if (l.exists) ...[
                 SmallBtn(
                   label: 'Open',
                   icon: Icons.open_in_new,
                   onTap: () => _c.sendAction('lib-open:${l.path}'),
-                )
-              else
+                ),
+                const SizedBox(width: 6),
+                SmallBtn(
+                  label: busy ? 'Reading…' : 'Rescan',
+                  busy: busy,
+                  tooltip: 'Read this folder again',
+                  onTap: _job.isNotEmpty
+                      ? null
+                      : () => _folderAction('lib-rescan', l.path),
+                ),
+                const SizedBox(width: 6),
+                SmallBtn(
+                  label: 'Thumbnails',
+                  tooltip: 'Redraw this folder\'s thumbnails',
+                  onTap: busy ? null : () => _folderAction('lib-thumbs', l.path),
+                ),
+              ] else
                 SmallBtn(
                   label: 'Check again',
                   icon: Icons.refresh,
@@ -431,6 +601,62 @@ class _Pager extends StatelessWidget {
   }
 }
 
+/// The running job: what it is, and a bar -- filled to the fraction when
+/// there is one, sweeping when there is not.
+class _JobStrip extends StatelessWidget {
+  const _JobStrip({required this.label, required this.frac});
+
+  final String label;
+  final double frac;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final known = frac >= 0;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+      decoration: BoxDecoration(
+        color: t.panel2,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Tokens.brand.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: t.text)),
+              ),
+              Text(known ? '${(frac.clamp(0.0, 1.0) * 100).floor()}%' : 'Working…',
+                  style: TextStyle(
+                      fontSize: 11.5,
+                      color: t.textDim,
+                      fontFeatures: const [FontFeature.tabularFigures()])),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(3),
+            child: LinearProgressIndicator(
+              value: known ? frac.clamp(0.0, 1.0) : null,
+              minHeight: 6,
+              backgroundColor: t.outline,
+              color: Tokens.brand,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // ── playback ────────────────────────────────────────────────────────────────
 
 /// The ten bands of each preset, from `tulipix_music::eq::Equalizer::preset`.
@@ -475,6 +701,7 @@ class PlaybackTab extends StatelessWidget {
     final interp = rows.key('playback.interpolation');
     final upscale = rows.key('playback.upscale');
     final awake = rows.label('Keep display awake');
+    final shaders = rows.label('Upscale shader folder');
     final exclusive = rows.key('playback.audio-exclusive');
     final eqRow = rows.key('music.eq-preset');
     final autoplay = rows.key('music.autoplay');
@@ -561,7 +788,7 @@ class PlaybackTab extends StatelessWidget {
                     if (upscale != null) RowLine(row: upscale, controller: c),
                     SettingLine(
                       title: 'Shader folder',
-                      note: 'Where the upscale .glsl files go',
+                      note: shaders?.value ?? 'Where the upscale .glsl files go',
                       trailing: SmallBtn(
                         label: 'Open',
                         icon: Icons.open_in_new,
@@ -1079,6 +1306,137 @@ class _ServicesTabState extends State<ServicesTab> {
     _countQueued();
   }
 
+  /// Keys being tested, by service.
+  final Set<String> _testing = {};
+
+  /// Bumped on every save, so each key box comes back empty: a saved key is
+  /// never shown again, only whether there is one.
+  int _keyEpoch = 0;
+
+  static const Map<String,
+      ({IconData icon, Color tint, String note, (String, String) link})>
+      _keyMeta = {
+    'tmdb': (
+      icon: Icons.movie_outlined,
+      tint: Color(0xFF0EA5E9),
+      note: 'Film and show artwork, cast and summaries',
+      link: (
+        'Free key from themoviedb.org',
+        'https://www.themoviedb.org/settings/api'
+      ),
+    ),
+    'tvdb': (
+      icon: Icons.live_tv_outlined,
+      tint: Color(0xFF22C55E),
+      note: 'Series and episode details',
+      link: ('Key from thetvdb.com', 'https://thetvdb.com/api-information'),
+    ),
+    'opensubtitles': (
+      icon: Icons.closed_caption_outlined,
+      tint: Color(0xFFF59E0B),
+      note: 'Finds subtitles for your videos',
+      link: (
+        'Free key from opensubtitles.com',
+        'https://www.opensubtitles.com/en/consumers'
+      ),
+    ),
+    'lastfm': (
+      icon: Icons.album_outlined,
+      tint: Color(0xFFEF4444),
+      note: 'Artist details and similar music',
+      link: ('Key from last.fm', 'https://www.last.fm/api/account/create'),
+    ),
+    'libretranslate': (
+      icon: Icons.translate,
+      tint: Color(0xFF8B5CF6),
+      note: 'Translates subtitles and lyrics',
+      link: (
+        'Key from your LibreTranslate server',
+        'https://portal.libretranslate.com'
+      ),
+    ),
+  };
+
+  Future<void> _testKey(String service) async {
+    setState(() => _testing.add(service));
+    await _c.sendAction('key-test:$service');
+    if (mounted) setState(() => _testing.remove(service));
+  }
+
+  /// One keychain key. The box is always empty: a saved key stays in the
+  /// keychain, and pasting a new one replaces it.
+  Widget _serviceKeyTile(ServiceKeyRow k) {
+    final m = _keyMeta[k.service];
+    final testing = _testing.contains(k.service);
+    return SettingsTile(
+      icon: m?.icon ?? Icons.key_outlined,
+      tint: m?.tint ?? Tokens.brand,
+      title: k.label,
+      note: m?.note ?? '',
+      trailing: [
+        StateChip(k.saved ? 'Saved' : 'Not set',
+            tint: k.saved ? Tokens.ok : null),
+      ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          FieldBox(
+            key: ValueKey('key-${k.service}-$_keyEpoch'),
+            value: '',
+            secret: true,
+            hint: k.saved ? 'Saved. Paste a new key to replace it' : 'Paste a key',
+            onSubmit: (v) {
+              setState(() => _keyEpoch++);
+              _c.send(SettingsCmd.setText(key: 'key:${k.service}', value: v));
+            },
+          ),
+          if (k.saved) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                SmallBtn(
+                  label: testing ? 'Testing…' : 'Test',
+                  busy: testing,
+                  tooltip: 'Ask the service whether it takes this key',
+                  onTap: testing ? null : () => _testKey(k.service),
+                ),
+                const SizedBox(width: 6),
+                SmallBtn(
+                  label: 'Remove',
+                  ghost: true,
+                  onTap: () => _c.sendAction('key-remove:${k.service}'),
+                ),
+              ],
+            ),
+          ],
+          if (m != null) ...[
+            const SizedBox(height: 8),
+            _linkLine(m.link),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _linkLine((String, String) link) {
+    final t = context.tokens;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: () => openExternal(context, link.$2),
+          child: Text('${link.$1} ↗',
+              style: TextStyle(
+                  fontSize: 11.5,
+                  color: t.textDim,
+                  decoration: TextDecoration.underline,
+                  decorationColor: t.textDim)),
+        ),
+      ),
+    );
+  }
+
   Future<void> _countQueued() async {
     try {
       final n = await scrobblePendingCount();
@@ -1097,9 +1455,6 @@ class _ServicesTabState extends State<ServicesTab> {
     // Not 'api.listenbrainz': that switch is the Scrobbling tile's.
   ];
   static const _serverKeys = [
-    'api.update-channel',
-    'api.sentry',
-    'api.nominatim',
     'api.radio-browser',
     'api.autoeq',
     'api.tmdb-image-base',
@@ -1116,7 +1471,6 @@ class _ServicesTabState extends State<ServicesTab> {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final rows = Rows(widget.state.services);
-    final tmdb = rows.key('api.tmdb');
     final spId = rows.key('api.spotify-id');
     final spSecret = rows.key('api.spotify-secret');
     final yt = rows.key('api.youtube-data');
@@ -1133,8 +1487,8 @@ class _ServicesTabState extends State<ServicesTab> {
     }
     final rest = rows.rest;
 
-    final keysSet =
-        [_set(tmdb), _set(spId) && _set(spSecret), _set(yt)].where((x) => x).length;
+    final keys = widget.state.keys;
+    final keysSet = keys.where((k) => k.saved).length;
     final on = sources.where((r) => r.on_).length;
 
     return SettingsPageBody(
@@ -1143,30 +1497,18 @@ class _ServicesTabState extends State<ServicesTab> {
         note: 'All optional. Tulipix works without any of them; each adds '
             'something',
         actions: [
-          StateChip('$keysSet of 3 keys set',
+          StateChip('$keysSet of ${keys.length} keys saved',
               tint: keysSet > 0 ? Tokens.ok : null),
         ],
       ),
       children: [
         TileGrid([
-          if (tmdb != null)
-            (
-              span: 3,
-              child: _keyTile(
-                icon: Icons.movie_outlined,
-                tint: const Color(0xFF0EA5E9),
-                title: 'TMDB',
-                note: 'Film and show artwork, cast and summaries',
-                fields: [tmdb],
-                link: (
-                  'Free key from themoviedb.org',
-                  'https://www.themoviedb.org/settings/api'
-                ),
-              ),
-            ),
+          // The keychain keys -- TMDB, TheTVDB, OpenSubtitles, Last.fm and
+          // LibreTranslate -- three to a row.
+          for (final k in keys) (span: 2, child: _serviceKeyTile(k)),
           if (spId != null && spSecret != null)
             (
-              span: 3,
+              span: 2,
               child: _keyTile(
                 icon: Icons.graphic_eq,
                 tint: const Color(0xFF22C55E),
@@ -1312,7 +1654,6 @@ class _ServicesTabState extends State<ServicesTab> {
     required List<SettingItem> fields,
     required (String, String) link,
   }) {
-    final t = context.tokens;
     final all = fields.every(_set);
     return SettingsTile(
       icon: icon,
@@ -1332,21 +1673,7 @@ class _ServicesTabState extends State<ServicesTab> {
             ),
             const SizedBox(height: 8),
           ],
-          Align(
-            alignment: Alignment.centerLeft,
-            child: MouseRegion(
-              cursor: SystemMouseCursors.click,
-              child: GestureDetector(
-                onTap: () => openExternal(context, link.$2),
-                child: Text('${link.$1} ↗',
-                    style: TextStyle(
-                        fontSize: 11.5,
-                        color: t.textDim,
-                        decoration: TextDecoration.underline,
-                        decorationColor: t.textDim)),
-              ),
-            ),
-          ),
+          _linkLine(link),
         ],
       ),
     );
@@ -1539,6 +1866,7 @@ class _AiTabState extends State<AiTab> {
   static const _langs = {
     'en': 'English',
     'hi': 'हिन्दी',
+    'pa': 'ਪੰਜਾਬੀ',
     'de': 'Deutsch',
     'fr': 'Français',
     'es': 'Español',
@@ -1559,6 +1887,33 @@ class _AiTabState extends State<AiTab> {
   static String _size(SettingItem m) {
     final p = m.label.split(' · ');
     return p.length > 1 ? p.last : '';
+  }
+
+  /// Asks first: a model can be hundreds of megabytes to fetch again.
+  Future<void> _remove(SettingItem m) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Remove ${_name(m)}?'),
+        content: Text('Its ${_size(m)} is deleted from this computer. '
+            'Download brings it back.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Tokens.error),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await widget.controller
+          .sendAction('ai-rm-${m.key.substring('ai-dl-'.length)}');
+    }
   }
 
   @override
@@ -1681,6 +2036,8 @@ class _AiTabState extends State<AiTab> {
                                             need: _req(_name(models[j])),
                                             onTap: () =>
                                                 c.sendAction(models[j].key),
+                                            onRemove: () =>
+                                                _remove(models[j]),
                                           )
                                         : const SizedBox.shrink(),
                                   ),
@@ -1822,7 +2179,7 @@ class _Machine extends StatelessWidget {
 }
 
 /// One model: its size, what it is for, what it asks of this computer, and
-/// the one button — Download, or Verify once it is here.
+/// the one button — Download, or Verify once it is here, with Remove beside it.
 class _ModelCard extends StatelessWidget {
   const _ModelCard({
     required this.row,
@@ -1830,6 +2187,7 @@ class _ModelCard extends StatelessWidget {
     required this.size,
     required this.need,
     required this.onTap,
+    required this.onRemove,
   });
 
   final SettingItem row;
@@ -1839,6 +2197,9 @@ class _ModelCard extends StatelessWidget {
   /// Its row on the requirements list; null where there is none.
   final SettingItem? need;
   final VoidCallback onTap;
+
+  /// Asks, then deletes the download. Offered only once it is here.
+  final VoidCallback onRemove;
 
   @override
   Widget build(BuildContext context) {
@@ -1875,6 +2236,15 @@ class _ModelCard extends StatelessWidget {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(fontSize: 11.5, color: t.textDim)),
+          if (n != null) ...[
+            const SizedBox(height: 4),
+            Text('Needs ${n.value.split(' · ').first}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 11,
+                    color: n.state == 'warn' ? Tokens.warn : t.textDim)),
+          ],
           if (downloading) ...[
             const SizedBox(height: 8),
             ClipRRect(
@@ -1895,16 +2265,15 @@ class _ModelCard extends StatelessWidget {
                 downloading ? '${(row.frac * 100).round()}%' : row.value,
                 tint: stateTint(row.state, t),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                    n == null ? '' : 'needs ${n.value.split(' · ').first}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: 11,
-                        color: n?.state == 'warn' ? Tokens.warn : t.textDim)),
-              ),
+              const Spacer(),
+              if (!download && !downloading) ...[
+                SmallBtn(
+                  label: 'Remove',
+                  danger: true,
+                  onTap: onRemove,
+                ),
+                const SizedBox(width: 6),
+              ],
               SmallBtn(
                 label: row.btn,
                 icon: download ? Icons.download : null,

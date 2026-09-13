@@ -184,7 +184,10 @@ pub async fn status_dispatch(cmd: StatusCmd) -> Result<StatusState> {
             false => error = format!("{path} is already watched, or could not be saved."),
         },
         StatusCmd::ResetApp => match reset_app() {
-            Ok(()) => notice = "Everything erased. Restart Tulipix to finish.".into(),
+            Ok(()) => {
+                notice = "Everything erased. Tulipix is starting again…".into();
+                relaunch();
+            }
             Err(e) => error = e.to_string(),
         },
     }
@@ -478,6 +481,15 @@ fn parse(d: &Value) -> StatusState {
 /// is slower than four in a row, and each one emits its own progress events
 /// that its own section page is already listening for.
 async fn rescan() {
+    // Named on the Libraries tab's bar while it runs. A rescan started while
+    // another job holds the slot still runs; it is just not the one named.
+    let _job = crate::api::maintenance::begin("rescan-all", "Rescanning every watched folder");
+    rescan_sections().await;
+    crate::api::maintenance::stamp_scanned(&tulipix_common::load_watched_folders());
+    crate::api::maintenance::refresh_counts().await;
+}
+
+async fn rescan_sections() {
     if let Ok(pool) = crate::db::photos_pool().await {
         crate::api::photos::scan_watched(pool).await;
     }
@@ -535,6 +547,20 @@ fn add_folder(dir: &Path) -> bool {
 /// it can and the page asks for a restart. The pools already open in this
 /// process keep their unlinked files alive until then, which on Linux is
 /// harmless and on Windows leaves the databases to the next start.
+/// Start a fresh copy and leave, as the Slint build does after a reset: this
+/// process holds open the databases that were just deleted under it, and only
+/// a new one sees the empty library cleanly. A beat first, so the page can say
+/// what is happening.
+fn relaunch() {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::process::Command::new(exe).spawn();
+        }
+        std::process::exit(0);
+    });
+}
+
 fn reset_app() -> Result<()> {
     for dir in [
         tulipix_core::paths::data_dir(),

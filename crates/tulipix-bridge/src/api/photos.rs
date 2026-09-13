@@ -1137,15 +1137,23 @@ async fn folders(pool: &sqlx::SqlitePool) -> Result<Vec<FolderRow>> {
 /// only section this build has.
 pub(crate) async fn scan_watched(pool: &sqlx::SqlitePool) {
     for dir in load_watched_folders() {
+        scan_one(pool, &dir).await;
+    }
+}
+
+/// One folder, read on its own -- a watched root, from Settings' per-folder
+/// Rescan as well as from the loop above.
+pub(crate) async fn scan_one(pool: &sqlx::SqlitePool, dir: &std::path::Path) {
+    {
         emit(PhotosEvent::ScanStarted { root: dir.to_string_lossy().into_owned() });
         let lib = tulipix_core::libraries::Library {
             id: dir.to_string_lossy().into_owned(),
-            path: dir.clone(),
+            path: dir.to_path_buf(),
             section: tulipix_core::libraries::Section::Photos,
             last_scan: None,
             item_count: 0,
             size_bytes: 0,
-            exclude_globs: Vec::new(),
+            exclude_globs: crate::api::maintenance::exclusions(),
             cadence_override: Some(tulipix_core::libraries::ScanCadence::Manual),
             realtime_notify: false,
         };

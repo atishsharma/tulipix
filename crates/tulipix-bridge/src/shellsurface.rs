@@ -44,6 +44,14 @@ fn send(msg: Msg) {
     }
 }
 
+/// Whether the tray icon is up: Settings › Advanced reads it, as the Slint
+/// build's System row did.
+static TRAY_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn tray_active() -> bool {
+    TRAY_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Register with the desktop: media applet, tray, media keys.
 ///
 /// Idempotent, and safe to call before anything is playing — the applet wants
@@ -174,6 +182,7 @@ fn start_tray() {
         tracing::warn!("tray: no StatusNotifier host");
         return;
     }
+    TRAY_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     // ksni pushes menu clicks onto a channel and the platform crate exposes
     // them by polling, which is what the Slint build's UI timer does. There is
     // no such timer here, so this is a thread that does nothing but drain.

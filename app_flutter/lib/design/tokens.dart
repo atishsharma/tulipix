@@ -147,7 +147,11 @@ class Tokens extends ThemeExtension<Tokens> {
   static const int weightPress = 300;
   static const int weightLift = 600;
 
-  static Color accentOf(Section s) => switch (s) {
+  /// The desktop's accent while Settings › Advanced › "Follow system accent"
+  /// is on: every section takes it. main.dart sets it from the shell snapshot.
+  static Color? systemAccent;
+
+  static Color accentOf(Section s) => systemAccent ?? switch (s) {
         Section.home => secHome,
         Section.photos => secPhotos,
         Section.videos => secVideos,

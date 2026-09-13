@@ -145,6 +145,18 @@ class ShellController extends ChangeNotifier {
   DesignLanguage get designLanguage =>
       DesignLanguage.fromId(state?.designLanguage);
 
+  /// The desktop's accent while "Follow system accent" is on; null when off,
+  /// or when the desktop reports none.
+  Color? get systemAccent {
+    final hex = state?.systemAccent ?? '';
+    if (hex.length != 7 || !hex.startsWith('#')) return null;
+    final v = int.tryParse(hex.substring(1), radix: 16);
+    return v == null ? null : Color(0xFF000000 | v);
+  }
+
+  /// "Honour OS font scale". On until the first snapshot says otherwise.
+  bool get followOsFontScale => state?.followOsFontScale ?? true;
+
   void toggleCollapsed() {
     collapsed = !collapsed;
     notifyListeners();

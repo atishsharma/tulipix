@@ -47,6 +47,25 @@ pub struct LibraryRow {
     pub exists: bool,
     /// Which sections found something under it.
     pub sections: Vec<String>,
+    /// Where its music goes: "mymusic" | "podcasts" | "audiobooks" | "radio"
+    /// | "youtube". The shared `music_folder_sections.json`, which the Slint
+    /// build writes too.
+    pub music_section: String,
+    /// Items indexed under it in photos, videos and music. -1 until counted.
+    pub items: i64,
+    /// When it was last read, Unix seconds. 0: not since this was kept.
+    pub last_scan: i64,
+    /// Its own auto-rescan cadence, `lib.cadence.<path>`: "manual" | "hourly"
+    /// | "daily" | "weekly", or empty for the default.
+    pub cadence: String,
+}
+
+/// A service key's row. The key itself stays in the system keychain and never
+/// crosses the bridge -- only whether one is saved.
+pub struct ServiceKeyRow {
+    pub service: String,
+    pub label: String,
+    pub saved: bool,
 }
 
 /// The Home layout's card list — one switch per card.
@@ -87,6 +106,8 @@ pub struct SettingsState {
     // Libraries.
     pub libraries: Vec<LibraryRow>,
     pub default_cadence: String,
+    /// `scan.exclude`: the patterns every scan passes over, as typed.
+    pub exclusions: String,
     // The data-driven panels.
     pub playback: Vec<SettingItem>,
     /// Library analysis: tracks measured, tracks there are to measure, and
@@ -95,6 +116,9 @@ pub struct SettingsState {
     pub analysable: i64,
     pub analysing: bool,
     pub services: Vec<SettingItem>,
+    /// TMDB, TheTVDB, OpenSubtitles, Last.fm and LibreTranslate, in the
+    /// keychain.
+    pub keys: Vec<ServiceKeyRow>,
     pub ai: Vec<SettingItem>,
     /// The "Requirements" sheet behind the AI panel: what each model asks of
     /// this machine. Built off the same manifest as `ai`, so the two lists
@@ -106,6 +130,12 @@ pub struct SettingsState {
     pub backups: Vec<BackupRow>,
     pub data_path: String,
     pub advanced: Vec<SettingItem>,
+    /// The long job running now (`maintenance::job`): a folder read again,
+    /// the search index rebuilt, every folder rescanned. An empty key: none.
+    /// `task_frac` is 0..1, or -1 where there is no honest fraction.
+    pub task_key: String,
+    pub task_label: String,
+    pub task_frac: f64,
     /// What the last action did. Cleared by the next refresh.
     pub notice: String,
 }
@@ -168,6 +198,17 @@ pub async fn settings_dispatch(cmd: SettingsCmd) -> Result<SettingsState> {
                     "A PIN is four to eight digits.".into()
                 };
             }
+            // A service key: the system keychain, never settings.json.
+            k if k.starts_with("key:") => {
+                notice = crate::api::maintenance::store_key(&k["key:".len()..], &value);
+            }
+            // Applied at once, as the Slint build does: the resolver caches the
+            // folder, and a change it never heard of waits for a restart.
+            // Blank (Reset) falls back to bundled and PATH.
+            "tools.bin-dir" => {
+                put(&key, &value);
+                tulipix_core::thumbs::set_tool_dir(Some(&value));
+            }
             _ => put(&key, &value),
         },
         SettingsCmd::Action { key } => notice = action(&key).await,
@@ -218,7 +259,12 @@ pub async fn settings_dispatch(cmd: SettingsCmd) -> Result<SettingsState> {
         }
     }
     let mut state = snapshot().await;
-    state.notice = notice;
+    // A detached job that finished since says so on the next snapshot.
+    state.notice = if notice.is_empty() {
+        crate::api::maintenance::take_done().unwrap_or_default()
+    } else {
+        notice
+    };
     Ok(state)
 }
 
@@ -266,8 +312,12 @@ pub(crate) fn enabled_cards(s: &tulipix_core::settings::Settings) -> Vec<String>
 }
 
 async fn snapshot() -> SettingsState {
+    // A TMDB key typed into the old text row sat in settings.json, where
+    // nothing reads it; it moves to the keychain, where the videos do.
+    crate::api::maintenance::rescue_tmdb_key();
     let s = load();
     let (analysed, analysable, analysing) = crate::api::music::analyse_progress().await;
+    let (task_key, task_label, task_frac) = crate::api::maintenance::job();
     SettingsState {
         tab: tab_cell().lock().map(|g| g.clone()).unwrap_or_else(|_| "profile".into()),
         display_name: s.text("profile.name"),
@@ -291,16 +341,18 @@ async fn snapshot() -> SettingsState {
             .collect(),
         home_music_left: s.flag("home.music-left", false),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-        libraries: libraries(),
+        libraries: libraries(&s),
         default_cadence: match s.text("scan.cadence") {
             c if c.is_empty() => "manual".into(),
             c => c,
         },
+        exclusions: s.text("scan.exclude"),
         playback: playback(&s),
         analysed,
         analysable,
         analysing,
         services: services(&s),
+        keys: crate::api::maintenance::service_keys(),
         ai: ai(&s),
         ai_requirements: ai_requirement_rows(),
         security: security(&s),
@@ -310,6 +362,9 @@ async fn snapshot() -> SettingsState {
             .map(|d| d.display().to_string())
             .unwrap_or_default(),
         advanced: advanced(&s),
+        task_key,
+        task_label,
+        task_frac,
         notice: String::new(),
     }
 }
@@ -383,6 +438,7 @@ fn playback(s: &S) -> Vec<SettingItem> {
         hdr("VIDEO"),
         tog(s, "playback.interpolation", false, "Smoother motion", "Frame interpolation — can be heavy on laptop graphics"),
         tog(s, "playback.upscale", false, "Upscale shaders (Anime4K)", "Sharper upscaling — drop .glsl shader files in the folder below"),
+        shader_row(),
         stat("Keep display awake", "While a video plays", "ok"),
         hdr("AUDIO & MUSIC"),
         tog(s, "playback.audio-exclusive", false, "Exclusive audio output", "Bit-perfect output straight to the audio device — silences other apps"),
@@ -398,10 +454,30 @@ fn playback(s: &S) -> Vec<SettingItem> {
     ]
 }
 
+/// What is in the upscale shader folder (`vmpv::glsl_chain` reads it), so an
+/// empty folder with Upscale on is a reading rather than a mystery.
+fn shader_row() -> SettingItem {
+    let n = tulipix_core::paths::config_dir()
+        .and_then(|d| std::fs::read_dir(d.join("shaders")).ok())
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("glsl")))
+                .count()
+        })
+        .unwrap_or(0);
+    match n {
+        0 => stat("Upscale shader folder", "Empty. Put Anime4K .glsl files in it", "muted"),
+        1 => stat("Upscale shader folder", "1 shader in it", "ok"),
+        n => stat("Upscale shader folder", &format!("{n} shaders in it"), "ok"),
+    }
+}
+
 fn services(s: &S) -> Vec<SettingItem> {
     vec![
         hdr("OPTIONAL SERVICE KEYS"),
-        txt(s, "api.tmdb", "TMDB API key", "Movie and show artwork, cast and summaries. Free key from themoviedb.org"),
+        // TMDB is not a row: it is one of the keychain keys (`keys`), which is
+        // where the videos read it from. A text row here saved it to
+        // settings.json, which nothing reads.
         txt(s, "api.spotify-id", "Spotify client ID", "Better music search and recommendations. Free key from developer.spotify.com"),
         txt(s, "api.spotify-secret", "Spotify client secret", "Goes together with the client ID above"),
         txt(s, "api.youtube-data", "YouTube API key", "Richer YouTube search results and video details"),
@@ -414,9 +490,10 @@ fn services(s: &S) -> Vec<SettingItem> {
         tog(s, "api.trakt", false, "Trakt.tv", "Track what you watch with a Trakt account"),
         tog(s, "api.listenbrainz", false, "ListenBrainz", "Scrobble played music — the open Last.fm alternative"),
         hdr("SELF-HOSTED SERVERS (ADVANCED)"),
-        txt(s, "api.update-channel", "Update server", "Only needed for mirrors or offline networks"),
-        txt(s, "api.sentry", "Crash-report server", "Send crash reports to your own Sentry server"),
-        txt(s, "api.nominatim", "Place-name server", "Turns photo GPS coordinates into place names"),
+        // Not here: the update server, the crash-report server and the
+        // place-name server. This build has no app updater, no crash
+        // uploader and no place-name lookup to point at them, so a box for
+        // each was an address nothing would ever use.
         txt(s, "api.radio-browser", "Radio station server", "Mirror for the internet-radio directory"),
         txt(s, "api.autoeq", "Headphone EQ database", "Mirror for AutoEq headphone profiles"),
         txt(s, "api.tmdb-image-base", "Poster artwork server", "Mirror for movie and show artwork"),
@@ -458,7 +535,7 @@ fn ai(s: &S) -> Vec<SettingItem> {
         hdr("VOICE RECOGNITION"),
         choice(s, "ai.voice-lang", "Spoken language",
             "What the mic listens for — pinning a language beats auto-detect on short clips",
-            &["en", "hi", "de", "fr", "es", "ru", "it", "auto"]),
+            &["en", "hi", "pa", "de", "fr", "es", "ru", "it", "auto"]),
         choice(s, "ai.model.voice", "Voice search",
             "Used by the mic button in search fields — Tiny answers fastest",
             &["tiny", "base", "small", "turbo"]),
@@ -508,14 +585,38 @@ fn ai_manifest() -> &'static tulipix_core::ai_models::Manifest {
 /// Human name + purpose for a manifest model, keyed off its capability gate so
 /// the row says what the model DOES rather than naming its file.
 fn model_display<'a>(name: &'a str, cap: &str) -> (&'a str, &'static str) {
+    // By name first where one capability has two files: the face pair and
+    // CLIP with its tokenizer read as the same model twice otherwise.
+    match name {
+        "face-rec-500m" => return ("Face recognition", "Tells faces apart so each person is grouped once"),
+        "clip-vit-b32-tokenizer" => return ("Photo search words", "Turns what you type into something Photo search understands"),
+        _ => {}
+    }
     match cap {
         "photos.ai.faces" => ("Face detection", "Finds faces in photos so people can be grouped"),
+        "photos.ai.clip" => ("Photo search", "Finds photos by what is in them — type “beach at sunset”"),
+        "photos.ai.tags" => ("Object tags", "Names the things in your photos, for the Things tab"),
         "photos.ai.heal" => ("Magic eraser", "Removes unwanted objects in the photo editor"),
         "photos.ai.sky" => ("Smart select", "Selects sky / objects for one-tap edits"),
+        "photos.ai.upscale" => ("Upscale", "Enlarges a photo four times in the editor, keeping detail"),
         "voice.balanced" => ("Whisper Base (balanced)", "Good accuracy at near-instant speed — best all-rounder"),
         "voice.accurate" => ("Whisper Small (accurate)", "Catches names and accents — great for subtitles"),
         "voice.best" => ("Whisper Turbo (best)", "Top accuracy for dictation-grade transcription"),
-        _ => (name, ""),
+        "music.ai.embeddings" => ("Sounds like", "Finds songs that sound alike. Sonic Similar works without it"),
+        "music.ai.stems" => ("Vocal remover", "Separates the voice from the music, for Karaoke and stems"),
+        "books.ai.tts" => ("Natural voice", "Reads books aloud in a lifelike voice"),
+        // A model the manifest gains before this list does still says which
+        // section it serves, rather than showing no line at all.
+        _ => (
+            name,
+            match cap.split('.').next() {
+                Some("photos") => "Used by Photos",
+                Some("music") => "Used by Music",
+                Some("books") => "Used by Books",
+                Some("voice") => "Used for speech",
+                _ => "An on-device model",
+            },
+        ),
     }
 }
 
@@ -695,8 +796,35 @@ fn security(s: &S) -> Vec<SettingItem> {
         tog(s, "passkey", false, "Unlock with a passkey", "Use a security key or fingerprint instead of a password"),
         hdr("ENCRYPTION"),
         tog(s, "db-encrypt", false, "Encrypt the library database", "Protects your library index if the disk is stolen — applies on next launch"),
+        {
+            let (label, state) = sandbox();
+            stat("OS sandbox", label, state)
+        },
     ]);
     rows
+}
+
+/// Whether this copy runs inside an OS sandbox, read from what each one
+/// leaves in the environment. A reading only: nothing here changes with it.
+/// The Slint build printed a fixed "Not applicable on Linux".
+fn sandbox() -> (&'static str, &'static str) {
+    if cfg!(target_os = "linux") {
+        if std::env::var_os("FLATPAK_ID").is_some() || Path::new("/.flatpak-info").exists() {
+            ("Flatpak sandbox", "ok")
+        } else if std::env::var_os("SNAP").is_some() {
+            ("Snap sandbox", "ok")
+        } else {
+            ("None detected", "muted")
+        }
+    } else if cfg!(target_os = "macos") {
+        if std::env::var_os("APP_SANDBOX_CONTAINER_ID").is_some() {
+            ("App Sandbox", "ok")
+        } else {
+            ("None detected", "muted")
+        }
+    } else {
+        ("None detected", "muted")
+    }
 }
 
 fn data(s: &S) -> Vec<SettingItem> {
@@ -714,7 +842,26 @@ fn advanced(s: &S) -> Vec<SettingItem> {
     let cache_mb = tulipix_core::thumbs::cache_size().map(|b| b / (1024 * 1024)).unwrap_or(0);
     vec![
         hdr("PERFORMANCE"),
-        tog(s, "power-aware", true, "Battery / network aware", "Pause background scanning on battery or metered connections"),
+        // The Rust side's. The Flutter engine and the Dart VM keep their own,
+        // and startup, memory and slow frames are read on the Dart side.
+        stat("Allocator", "System malloc", "ok"),
+        tog(s, "power-aware", true, "Battery / network aware", "Hold automatic rescans back on a low battery"),
+        // What that switch is reading right now.
+        {
+            use tulipix_core::power_aware::{battery_percent, power_source, PowerSource};
+            match power_source() {
+                PowerSource::Ac => stat("Power source", "On mains", "ok"),
+                PowerSource::Battery => stat(
+                    "Power source",
+                    &match battery_percent() {
+                        Some(p) => format!("On battery · {p} %"),
+                        None => "On battery".into(),
+                    },
+                    "warn",
+                ),
+                PowerSource::Unknown => stat("Power source", "Not reported", "muted"),
+            }
+        },
         stat("Thumbnail cache", &format!("{cache_mb} MB"), "muted"),
         act("clear-thumbs", "Clear the thumbnail cache", "Every thumbnail is redrawn the next time it is needed", "Clear"),
         hdr("BUNDLED TOOLS"),
@@ -730,23 +877,96 @@ fn advanced(s: &S) -> Vec<SettingItem> {
         txt(s, "ytdlp.player-clients", "yt-dlp player clients",
             "Advanced, blank = yt-dlp's own defaults. Only set this if a yt-dlp \
              issue tells you to, e.g. default,tv,android"),
+        tool_row("whisper-cli"),
+        speech_model_row(),
         // Not a program to find: libmpv is loaded into the app by media_kit.
         // It ships inside the app on Windows and macOS; Linux links the
         // system's libmpv.
         stat("mpv", if cfg!(target_os = "linux") { "System library" } else { "Bundled" }, "ok"),
         tool_row("exiftool"),
         hdr("PLATFORM"),
-        tog(s, "notifications", true, "Actionable notifications", "Snooze / mark-played / open-version actions"),
+        tog(s, "notifications", true, "Notifications", "When downloads and Tools jobs finish, and when bills are due"),
+        // Read by the shell snapshot (`system_accent`, `follow_os_font_scale`).
+        tog(s, "follow-system-accent", false, "Follow system accent", "Every section takes your desktop's accent colour"),
+        tog(s, "follow-os-font-scale", true, "Honour OS font scale", "Text follows your desktop's text size; off keeps it at 100 %"),
         tog(s, "crash-upload", false, "Opt-in crash uploader", "Send minidumps to the configured Sentry DSN"),
+        // Readings only. The tray is a real probe; the other four say what this
+        // build has, which on Linux is none of them. The window frame and the
+        // OS sandbox are read elsewhere (Dart, and Security).
+        stat(
+            "System tray",
+            if crate::shellsurface::tray_active() { "Active" } else { "No tray host" },
+            if crate::shellsurface::tray_active() { "ok" } else { "warn" },
+        ),
+        stat("Share sheet", if cfg!(target_os = "linux") { "Not on Linux" } else { "Not in this build" }, "muted"),
+        stat("Shortcuts (AppIntents)", if cfg!(target_os = "macos") { "Not in this build" } else { "Not on this OS" }, "muted"),
+        stat("Desktop widgets", if cfg!(target_os = "linux") { "Not on Linux" } else { "Not in this build" }, "muted"),
+        stat("Live Activities", if cfg!(target_os = "macos") { "Not in this build" } else { "Not on this OS" }, "muted"),
         hdr("BUILD"),
         stat("Renderer", "Flutter", "ok"),
         stat("Player embedding", "libmpv inside the app, through media_kit", "ok"),
+        stat(
+            "ONNX editor ops",
+            if cfg!(feature = "ai-onnx") { "Compiled in" } else { "Not in this build" },
+            if cfg!(feature = "ai-onnx") { "ok" } else { "muted" },
+        ),
         stat("Audio formats", &tulipix_music::formats::FORMATS
             .iter()
             .map(|f| f.ext)
             .collect::<Vec<_>>()
             .join(" · "), "ok"),
+        // The formats whose gapless playback has not been checked, the Slint
+        // build's claim table's other half.
+        stat("Gapless unverified", &{
+            let g = tulipix_music::formats::gapless_gaps();
+            if g.is_empty() { "None".to_string() } else { g.join(" · ") }
+        }, "muted"),
+        stat("Video formats", &tulipix_videos::scan::VIDEO_EXTS.join(" · "), "ok"),
+        stat("Tools formats", &tools_formats(), "ok"),
+        stat("Book formats", &book_formats(), "ok"),
     ]
+}
+
+/// Every "Convert to" and "Save as" choice in the Tools catalog -- its
+/// `target_ext` and `format` picks -- in order and once each. Read from the
+/// catalog, so a new conversion shows up here by itself.
+fn tools_formats() -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for op in tulipix_tools::catalog::CATALOG {
+        for f in op.fields {
+            if matches!(f.key, "target_ext" | "format") {
+                for &o in f.options {
+                    if !out.contains(&o) {
+                        out.push(o);
+                    }
+                }
+            }
+        }
+    }
+    out.join(" · ")
+}
+
+/// What the Books section opens: each candidate put through `format_of`, the
+/// function its scanner asks, so a format it stops accepting drops out here.
+fn book_formats() -> String {
+    ["epub", "pdf", "djvu", "cbz", "cbr", "cb7", "cbt", "fb2", "mobi", "azw3"]
+        .into_iter()
+        .filter(|e| tulipix_books::format_of(Path::new(&format!("x.{e}"))).is_some())
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// The model whisper-cli listens with, found as Tools › Transcribe finds it:
+/// the first `.bin` beside the whisper-cli it runs.
+fn speech_model_row() -> SettingItem {
+    match crate::api::tools::whisper_model() {
+        Some(p) => stat(
+            "Speech model",
+            &p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            "ok",
+        ),
+        None => stat("Speech model", "Missing: put a ggml .bin beside whisper-cli", "warn"),
+    }
 }
 
 /// Where one external tool is coming from. The order is the one the app
@@ -810,6 +1030,70 @@ async fn action(key: &str) -> String {
         k if k.starts_with("lib-open:") => {
             let dir = PathBuf::from(&k["lib-open:".len()..]);
             if watched().contains(&dir) { open(Some(dir)) } else { "That folder is not watched.".into() }
+        }
+        // Advanced › Bundled tools: yt-dlp updates itself; the rest open
+        // their download page.
+        k if k.starts_with("tool-update:") => {
+            crate::api::maintenance::update_tool(&k["tool-update:".len()..])
+        }
+        k if k.starts_with("key-remove:") => {
+            crate::api::maintenance::remove_key(&k["key-remove:".len()..])
+        }
+        k if k.starts_with("key-test:") => {
+            crate::api::maintenance::test_key(&k["key-test:".len()..]).await
+        }
+        // One watched folder read again, or its thumbnails redrawn. Only a
+        // folder on the watched list, as with lib-open.
+        k if k.starts_with("lib-rescan:") => {
+            let dir = PathBuf::from(&k["lib-rescan:".len()..]);
+            if !watched().contains(&dir) {
+                return "That folder is not watched.".into();
+            }
+            crate::api::maintenance::start_rescan(dir)
+        }
+        // What each folder holds, counted when the Libraries tab opens. Says
+        // nothing: the figures on the cards are the answer.
+        "lib-counts" => {
+            crate::api::maintenance::refresh_counts().await;
+            String::new()
+        }
+        k if k.starts_with("lib-thumbs:") => {
+            let dir = PathBuf::from(&k["lib-thumbs:".len()..]);
+            if !watched().contains(&dir) {
+                return "That folder is not watched.".into();
+            }
+            match crate::api::maintenance::clear_folder_thumbs(&dir) {
+                0 => "That folder had no thumbnails cached.".into(),
+                n => format!(
+                    "Cleared {n} thumbnail{}. They are drawn again as they come into view.",
+                    if n == 1 { "" } else { "s" }
+                ),
+            }
+        }
+        "rebuild-search" => crate::api::maintenance::start_rebuild_search(),
+        // `lib-section:<key>:<folder>`. The key has no colon; the folder may
+        // (C:\Music), so the split is at the first one.
+        k if k.starts_with("lib-section:") => {
+            let Some((sec, folder)) = k["lib-section:".len()..].split_once(':') else {
+                return "Which folder?".into();
+            };
+            if !watched().iter().any(|w| Path::new(folder).starts_with(w)) {
+                return "That folder is not watched.".into();
+            }
+            match crate::api::maintenance::set_music_section(folder, sec).await {
+                Ok(label) => format!("Its music is in {label} now."),
+                Err(e) => format!("Could not move it: {e}"),
+            }
+        }
+        "export" => match crate::api::maintenance::export_library().await {
+            Ok(file) => {
+                open(file.parent().map(Path::to_path_buf));
+                format!("Exported to {}.", file.display())
+            }
+            Err(e) => format!("Export failed: {e}"),
+        },
+        k if k.starts_with("import:") => {
+            crate::api::maintenance::import_from(Path::new(&k["import:".len()..])).await
         }
         k if k.starts_with("backup-restore-") => {
             let id = &k["backup-restore-".len()..];
@@ -911,6 +1195,25 @@ async fn action(key: &str) -> String {
                 }
             });
             format!("Downloading {started}…")
+        }
+        // Remove: the model's whole folder, pinned digest included, so a later
+        // Download starts clean. Dart has already asked.
+        k if k.starts_with("ai-rm-") => {
+            let name = k.trim_start_matches("ai-rm-");
+            let Some(entry) = ai_manifest().find(name) else {
+                return format!("No model called “{name}” is in the manifest.");
+            };
+            if ai_dl_progress().lock().map(|g| g.contains_key(name)).unwrap_or(false) {
+                return format!("{name} is still downloading.");
+            }
+            let nice = model_display(&entry.name, &entry.cap).0;
+            match tulipix_photos::ai::models::install_dir(entry) {
+                Some(dir) if dir.exists() => match std::fs::remove_dir_all(&dir) {
+                    Ok(()) => format!("Removed {nice}."),
+                    Err(e) => format!("Could not remove {nice}: {e}"),
+                },
+                _ => format!("{nice} is not on this computer."),
+            }
         }
         // An unknown key is a row that has a button and no handler yet. Saying
         // so beats a button that silently does nothing.
@@ -1051,13 +1354,29 @@ fn remove_watched(dir: &Path) {
 /// The watched list, with whether each folder is still on disk. Removing a
 /// folder here does not delete anything indexed from it -- the next scan marks
 /// those rows missing, which is reversible; a delete is not.
-fn libraries() -> Vec<LibraryRow> {
+fn libraries(s: &S) -> Vec<LibraryRow> {
+    let sections = tulipix_common::load_folder_sections();
     watched()
         .into_iter()
-        .map(|p| LibraryRow {
-            exists: p.exists(),
-            path: p.to_string_lossy().into_owned(),
-            sections: Vec::new(),
+        .map(|p| {
+            let path = p.to_string_lossy().into_owned();
+            // Keys are stored without a trailing separator.
+            let music_section = sections
+                .get(path.trim_end_matches(['/', '\\']))
+                .cloned()
+                .unwrap_or_else(|| "mymusic".into());
+            let items = crate::api::maintenance::folder_items(&path).unwrap_or(-1);
+            let last_scan = s.text(&format!("lib.scanned.{path}")).parse().unwrap_or(0);
+            let cadence = s.text(&format!("lib.cadence.{path}"));
+            LibraryRow {
+                exists: p.exists(),
+                path,
+                sections: Vec::new(),
+                music_section,
+                items,
+                last_scan,
+                cadence,
+            }
         })
         .collect()
 }

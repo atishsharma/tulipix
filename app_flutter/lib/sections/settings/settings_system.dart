@@ -10,9 +10,12 @@ import 'package:flutter/services.dart';
 
 import '../../design/app_mark.dart';
 import '../../design/pick.dart';
+import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../shell/lock/lock_controller.dart';
 import '../../shell/shell_controller.dart';
+import '../../shell/vitals.dart';
+import '../../shell/window.dart' show WindowChrome;
 import '../../src/rust/api/settings.dart';
 import '../../src/rust/api/status.dart';
 import 'settings_controller.dart';
@@ -123,6 +126,7 @@ class SecurityTab extends StatelessWidget {
     final wall = rows.key('lock.wallpapers');
     final passkey = rows.key('passkey');
     final enc = rows.key('db-encrypt');
+    final sandbox = rows.label('OS sandbox');
     final face = _face.map(rows.key).whereType<SettingItem>().toList();
     final rest = rows.rest;
 
@@ -149,7 +153,7 @@ class SecurityTab extends StatelessWidget {
         TileGrid([
           if (auto != null)
             (
-              span: 4,
+              span: 2,
               child: SettingsTile(
                 icon: Icons.lock_clock_outlined,
                 tint: Tokens.secBooks,
@@ -164,10 +168,11 @@ class SecurityTab extends StatelessWidget {
                     if (after != null)
                       // Still settable while off, so it is ready when it is
                       // switched on; dimmed, because it does nothing yet.
+                      // Wrapped rather than stretched: seven times in a third
+                      // of the page.
                       Opacity(
                         opacity: auto.on_ ? 1 : 0.5,
                         child: Seg(
-                          full: true,
                           options: after.options,
                           labels: [for (final o in after.options) _short(o)],
                           value: after.value,
@@ -180,65 +185,6 @@ class SecurityTab extends StatelessWidget {
                         context,
                         'It dims and counts down for ten seconds first. A '
                         'playing video never locks, and music keeps playing.'),
-                  ],
-                ),
-              ),
-            ),
-          if (pin != null)
-            (
-              span: 2,
-              child: SettingsTile(
-                icon: Icons.key_outlined,
-                tint: Tokens.secBooks,
-                title: 'PIN',
-                note: 'Four to eight digits',
-                trailing: [
-                  StateChip(hasPin ? 'Set' : 'Not set',
-                      tint: hasPin ? Tokens.ok : null),
-                ],
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
-                      decoration: BoxDecoration(
-                        color: t.bg,
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: t.outline),
-                      ),
-                      child: Row(
-                        children: [
-                          for (var i = 0; i < 4; i++)
-                            Container(
-                              width: 10,
-                              height: 10,
-                              margin: const EdgeInsets.only(right: 7),
-                              decoration: BoxDecoration(
-                                color: hasPin ? t.text : null,
-                                shape: BoxShape.circle,
-                                border: hasPin
-                                    ? null
-                                    : Border.all(color: t.textDim),
-                              ),
-                            ),
-                          const Spacer(),
-                          SmallBtn(
-                            label: hasPin ? 'Change' : 'Set a PIN',
-                            primary: !hasPin,
-                            onTap: () => _setPin(context),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    if (hasPin)
-                      SmallBtn(
-                        label: 'Remove the PIN',
-                        ghost: true,
-                        onTap: () => c.sendAction('lock-pin-clear'),
-                      )
-                    else
-                      _note(context, 'Without one, a click unlocks.'),
                   ],
                 ),
               ),
@@ -271,95 +217,203 @@ class SecurityTab extends StatelessWidget {
                 ),
               ),
             ),
-          // The wallpapers, and under them the two protections: each alone
-          // was a tile with one switch and a lot of room.
-          if (wall != null || passkey != null || enc != null)
+          // The PIN, the wallpapers and the protections as one long block, a
+          // column each: alone, each was a tile with a lot of room.
+          if (pin != null ||
+              wall != null ||
+              passkey != null ||
+              enc != null ||
+              sandbox != null)
             (
-              span: 2,
+              span: 6,
               child: SettingsTile(
-                icon: Icons.photo_library_outlined,
-                tint: Tokens.secTransfer,
-                title: 'Wallpapers & protection',
-                note: 'The picture when nothing plays, and the locks',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (wall != null) ...[
-                    Container(
-                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                      decoration: BoxDecoration(
-                        color: t.bg,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: t.outline),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                icon: Icons.shield_outlined,
+                tint: Tokens.secBooks,
+                title: 'PIN, wallpapers & protection',
+                note: 'What unlocks it, the picture when nothing plays, and '
+                    'the locks',
+                trailing: [
+                  if (pin != null)
+                    StateChip(hasPin ? 'PIN set' : 'No PIN',
+                        tint: hasPin ? Tokens.ok : null),
+                ],
+                child: Builder(builder: (context) {
+                  Widget part(String label, Widget body) => Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          Text('Lock screen folder',
+                          Text(label.toUpperCase(),
                               style: TextStyle(
-                                  fontSize: 12.5,
+                                  fontSize: 10.5,
                                   fontWeight: FontWeight.w600,
-                                  color: t.text)),
-                          Text(
-                              wall.value.isEmpty
-                                  ? 'None — the smoke gradient'
-                                  : tildePath(wall.value),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style:
-                                  TextStyle(fontSize: 11, color: t.textDim)),
+                                  letterSpacing: 0.6,
+                                  color: t.textDim)),
+                          const SizedBox(height: 8),
+                          body,
                         ],
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        SmallBtn(
-                          label: 'Choose',
-                          icon: Icons.folder_open_outlined,
-                          onTap: _pickWallpapers,
+                      );
+                  final parts = [
+                    if (pin != null)
+                      part(
+                        'PIN · four to eight digits',
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              padding:
+                                  const EdgeInsets.fromLTRB(14, 10, 10, 10),
+                              decoration: BoxDecoration(
+                                color: t.bg,
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: t.outline),
+                              ),
+                              child: Row(
+                                children: [
+                                  for (var i = 0; i < 4; i++)
+                                    Container(
+                                      width: 10,
+                                      height: 10,
+                                      margin: const EdgeInsets.only(right: 7),
+                                      decoration: BoxDecoration(
+                                        color: hasPin ? t.text : null,
+                                        shape: BoxShape.circle,
+                                        border: hasPin
+                                            ? null
+                                            : Border.all(color: t.textDim),
+                                      ),
+                                    ),
+                                  const Spacer(),
+                                  SmallBtn(
+                                    label: hasPin ? 'Change' : 'Set a PIN',
+                                    primary: !hasPin,
+                                    onTap: () => _setPin(context),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            if (hasPin)
+                              SmallBtn(
+                                label: 'Remove the PIN',
+                                ghost: true,
+                                onTap: () => c.sendAction('lock-pin-clear'),
+                              )
+                            else
+                              _note(context, 'Without one, a click unlocks.'),
+                          ],
                         ),
-                        if (wall.value.isNotEmpty) ...[
-                          const SizedBox(width: 6),
-                          SmallBtn(
-                            label: 'Clear',
-                            ghost: true,
-                            onTap: () => c.send(SettingsCmd.setText(
-                                key: 'lock.wallpapers', value: '')),
-                          ),
+                      ),
+                    if (wall != null)
+                      part(
+                        'Wallpapers',
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Container(
+                              padding:
+                                  const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                              decoration: BoxDecoration(
+                                color: t.bg,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: t.outline),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('Lock screen folder',
+                                      style: TextStyle(
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.w600,
+                                          color: t.text)),
+                                  Text(
+                                      wall.value.isEmpty
+                                          ? 'None — the smoke gradient'
+                                          : tildePath(wall.value),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                          fontSize: 11, color: t.textDim)),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                SmallBtn(
+                                  label: 'Choose',
+                                  icon: Icons.folder_open_outlined,
+                                  onTap: _pickWallpapers,
+                                ),
+                                if (wall.value.isNotEmpty) ...[
+                                  const SizedBox(width: 6),
+                                  SmallBtn(
+                                    label: 'Clear',
+                                    ghost: true,
+                                    onTap: () => c.send(
+                                        const SettingsCmd.setText(
+                                            key: 'lock.wallpapers',
+                                            value: '')),
+                                  ),
+                                ],
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            _note(
+                                context,
+                                'The first ten pictures, one every twelve '
+                                'seconds, with a slow zoom.'),
+                          ],
+                        ),
+                      ),
+                    if (passkey != null || enc != null || sandbox != null)
+                      part(
+                        'Protection',
+                        Lines([
+                          if (passkey != null)
+                            SettingLine(
+                              title: 'Unlock with a passkey',
+                              note: 'This lock screen does not use it yet; '
+                                  'it asks for the PIN',
+                              trailing: SettingSwitch(
+                                  on: passkey.on_,
+                                  onChanged: (v) => toggle(passkey, v)),
+                            ),
+                          if (enc != null)
+                            SettingLine(
+                              title: 'Encrypt the library database',
+                              note: 'From the next start. Protects the index '
+                                  'if the disk is stolen; your files are '
+                                  'never touched',
+                              trailing: SettingSwitch(
+                                  on: enc.on_,
+                                  onChanged: (v) => toggle(enc, v)),
+                            ),
+                          if (sandbox != null)
+                            SettingLine(
+                              title: 'OS sandbox',
+                              note: 'Whether the system walls this copy off. '
+                                  'A reading only',
+                              trailing: StateChip(sandbox.value,
+                                  tint: sandbox.state == 'ok'
+                                      ? Tokens.ok
+                                      : null),
+                            ),
+                        ]),
+                      ),
+                  ];
+                  return IntrinsicHeight(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (var i = 0; i < parts.length; i++) ...[
+                          if (i > 0)
+                            VerticalDivider(
+                                width: 29, thickness: 1, color: t.outline),
+                          Expanded(child: parts[i]),
                         ],
                       ],
                     ),
-                    const SizedBox(height: 10),
-                    _note(context,
-                        'The first ten pictures, one every twelve seconds, '
-                        'with a slow zoom.'),
-                    ],
-                    if (passkey != null || enc != null) ...[
-                      const SizedBox(height: 6),
-                      Lines([
-                        if (passkey != null)
-                          SettingLine(
-                            title: 'Unlock with a passkey',
-                            note: 'This lock screen does not use it yet; it '
-                                'asks for the PIN',
-                            trailing: SettingSwitch(
-                                on: passkey.on_,
-                                onChanged: (v) => toggle(passkey, v)),
-                          ),
-                        if (enc != null)
-                          SettingLine(
-                            title: 'Encrypt the library database',
-                            note: 'From the next start. Protects the index if '
-                                'the disk is stolen; your files are never '
-                                'touched',
-                            trailing: SettingSwitch(
-                                on: enc.on_, onChanged: (v) => toggle(enc, v)),
-                          ),
-                      ]),
-                    ],
-                  ],
-                ),
+                  );
+                }),
               ),
             ),
         ]),
@@ -612,6 +666,16 @@ class DataTab extends StatelessWidget {
     await ShellController.instance.refresh();
   }
 
+  /// The file another app keeps its library in. Rust works out which app from
+  /// the file itself.
+  Future<void> _import() async {
+    final path = await pickFile(
+      label: 'Library to import',
+      extensions: const ['ini', 'xml', 'db', 'lrcat', 'dat'],
+    );
+    if (path != null) await controller.sendAction('import:$path');
+  }
+
   Future<void> _reset(BuildContext context) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -725,6 +789,55 @@ class DataTab extends StatelessWidget {
                     'one set of settings.'),
               ),
             ),
+          (
+            span: 3,
+            child: SettingsTile(
+              icon: Icons.upload_file_outlined,
+              tint: Tokens.secPhotos,
+              title: 'Export the library',
+              note: 'Items, albums, playlists, tags and ratings, as JSON',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _note(
+                      context,
+                      'Paths and what you did with them, never the files. Saved '
+                      'to the exports folder, which opens when it is done.'),
+                  const SizedBox(height: 12),
+                  SmallBtn(
+                    label: 'Export',
+                    icon: Icons.upload_outlined,
+                    onTap: () => c.sendAction('export'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          (
+            span: 3,
+            child: SettingsTile(
+              icon: Icons.download_outlined,
+              tint: Tokens.secMusic,
+              title: 'Import from another app',
+              note: 'Picasa stars, iTunes play counts and ratings',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _note(
+                      context,
+                      'Pick a .picasa.ini or an iTunes Library.xml. Plex, '
+                      'Lightroom and foobar2000 libraries are recognised, but '
+                      'not imported yet.'),
+                  const SizedBox(height: 12),
+                  SmallBtn(
+                    label: 'Choose a file…',
+                    icon: Icons.folder_open_outlined,
+                    onTap: _import,
+                  ),
+                ],
+              ),
+            ),
+          ),
           (
             span: 3,
             child: SettingsTile(
@@ -948,76 +1061,341 @@ class _ResetDialogState extends State<_ResetDialog> {
 }
 
 // ── advanced ────────────────────────────────────────────────────────────────
+//
+// A control center in three tabs. Overview opens on five vitals that say
+// whether anything is wrong before any list does, then the everyday switches,
+// only what needs you, and this build. Tools and Platform hold the detail.
+// Every row is one the Rust side already sends: the redesign moves them, it
+// adds no setting.
 
-class AdvancedTab extends StatelessWidget {
+/// No action where the fix is not a button: a slow start is read, not fixed.
+typedef _Issue = ({
+  Color tint,
+  String title,
+  String note,
+  String? action,
+  VoidCallback? onTap,
+});
+
+typedef _VitalData = ({
+  String label,
+  String value,
+  String unit,
+  String note,
+  double? frac,
+  Color tint,
+});
+
+const TextStyle _mono = TextStyle(
+    fontFamily: 'monospace', fontFamilyFallback: ['Menlo', 'Consolas']);
+
+class AdvancedTab extends StatefulWidget {
   const AdvancedTab({super.key, required this.controller, required this.state});
 
   final SettingsController controller;
   final SettingsState state;
+
+  @override
+  State<AdvancedTab> createState() => _AdvancedTabState();
+}
+
+class _AdvancedTabState extends State<AdvancedTab> {
+  /// overview | tools | platform.
+  String _tab = 'overview';
+
+  SettingsController get _c => widget.controller;
 
   /// The tool rows are readings named by the tool, in the order drawn.
   static const Map<String, String> _tools = {
     'ffmpeg': 'Converts and reads media',
     'ffprobe': 'Reads durations and streams',
     'yt-dlp': 'Downloads from video sites',
+    'whisper-cli': 'Turns speech into text, for Transcribe',
     'mpv': 'Plays music and video, inside the app',
     'rclone': 'Cloud sync',
     'exiftool': 'Photo metadata',
   };
+
+  /// The platform readings, by label, in the order drawn.
+  static const List<String> _platform = [
+    'System tray',
+    'Share sheet',
+    'Shortcuts (AppIntents)',
+    'Desktop widgets',
+    'Live Activities',
+  ];
+
+  void _go(String tab) => setState(() => _tab = tab);
+
+  Future<void> _browseToolsDir() async {
+    final dir = await pickDirectory(
+        title: 'Choose the folder holding ffmpeg, yt-dlp and the rest');
+    if (dir != null) {
+      await _c.send(SettingsCmd.setText(key: 'tools.bin-dir', value: dir));
+    }
+  }
+
+  /// Asks first, as Slint does: the folder may hold the only working copy of
+  /// a tool.
+  Future<void> _resetToolsDir() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reset the tools folder?'),
+        content: const Text('Tulipix goes back to its bundled tools and the '
+            'ones installed on your system.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Reset'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await _c.send(const SettingsCmd.setText(key: 'tools.bin-dir', value: ''));
+    }
+  }
+
+  /// The accent and the text scale are applied from the shell's snapshot, so
+  /// flipping either refreshes that too.
+  Future<void> _flip(SettingItem r, bool v, {bool shell = false}) async {
+    await _c.send(SettingsCmd.toggle(key: r.key, on_: v));
+    if (shell) await ShellController.instance.refresh();
+  }
+
+  /// Items [per] to a row, every row as tall as its tallest. A row the items
+  /// do not fill keeps their widths.
+  static Widget _rowsOf(List<Widget> items, {int per = 3, double gap = 10}) =>
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var i = 0; i < items.length; i += per) ...[
+            if (i > 0) SizedBox(height: gap),
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var j = i; j < i + per; j++) ...[
+                    if (j > i) SizedBox(width: gap),
+                    Expanded(
+                        child: j < items.length
+                            ? items[j]
+                            : const SizedBox.shrink()),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ],
+      );
+
+  static Color? _chipTint(String state) => switch (state) {
+        'ok' => Tokens.ok,
+        'warn' => Tokens.warn,
+        'error' => Tokens.error,
+        _ => null,
+      };
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final c = controller;
-    final rows = Rows(state.advanced);
+    final st = widget.state;
+    final rows = Rows(st.advanced);
     final tools =
         _tools.keys.map(rows.label).whereType<SettingItem>().toList();
-    final missing = tools.where((r) => r.state == 'error').length;
+    final speech = rows.label('Speech model');
     final binDir = rows.key('tools.bin-dir');
     final ytAuto = rows.key('ytdlp.auto-update');
     final clients = rows.key('ytdlp.player-clients');
     final power = rows.key('power-aware');
+    final powerNow = rows.label('Power source');
     final cache = rows.label('Thumbnail cache');
     rows.use(['clear-thumbs']);
     final notif = rows.key('notifications');
     final crash = rows.key('crash-upload');
+    final accent = rows.key('follow-system-accent');
+    final fontScale = rows.key('follow-os-font-scale');
+    final alloc = rows.label('Allocator');
+    final platform =
+        _platform.map(rows.label).whereType<SettingItem>().toList();
     final renderer = rows.label('Renderer');
     final player = rows.label('Player embedding');
     final formats = rows.label('Audio formats');
+    final onnx = rows.label('ONNX editor ops');
+    final gapless = rows.label('Gapless unverified');
+    final video = rows.label('Video formats');
+    final toolFormats = rows.label('Tools formats');
+    final books = rows.label('Book formats');
     final rest = rows.rest;
 
+    final missing = tools.where((r) => r.state == 'error').length;
+    final startup = Vitals.startupMs;
+    final mem = Vitals.residentMb;
+    final frames = Vitals.slowFrames;
+    final cacheMb = int.tryParse((cache?.value ?? '').split(' ').first) ?? 0;
+    final dirSet = (binDir?.value ?? '').trim().isNotEmpty;
+    final framed = WindowChrome.instance.custom;
+
+    // Only what is off, each with the button that fixes it.
+    final issues = <_Issue>[
+      for (final r in tools)
+        if (r.state == 'error')
+          (
+            tint: Tokens.error,
+            title: '${r.label} is missing',
+            note: '${_tools[r.label] ?? 'It'} is off until it is found',
+            action: 'Get it',
+            onTap: () => _c.sendAction('tool-update:${r.label}'),
+          )
+        else if (r.state == 'warn')
+          (
+            tint: Tokens.warn,
+            title: '${r.label} comes from your system',
+            note: 'Whatever version is installed',
+            action: 'Review',
+            onTap: () => _go('tools'),
+          ),
+      if (speech != null && speech.state != 'ok')
+        (
+          tint: Tokens.warn,
+          title: 'No speech model',
+          note: 'Transcribe needs a ggml .bin beside whisper-cli',
+          action: 'Tools',
+          onTap: () => _go('tools'),
+        ),
+      if ((startup ?? 0) >= 500)
+        (
+          tint: Tokens.warn,
+          title: 'A slow start',
+          note: '$startup ms to the first frame',
+          action: null,
+          onTap: null,
+        ),
+      if (mem >= 500)
+        (
+          tint: Tokens.warn,
+          title: 'High memory',
+          note: '$mem MB for the whole app',
+          action: null,
+          onTap: null,
+        ),
+      if (frames >= 60)
+        (
+          tint: Tokens.warn,
+          title: 'Many slow frames',
+          note: '$frames over 16 ms this session',
+          action: null,
+          onTap: null,
+        ),
+      for (final r in platform)
+        if (r.state == 'warn')
+          (
+            tint: Tokens.warn,
+            title: '${r.label}: ${r.value.toLowerCase()}',
+            note: 'The desktop did not answer for it',
+            action: 'Platform',
+            onTap: () => _go('platform'),
+          ),
+    ];
+
     final details = [
-      'Tulipix ${state.appVersion}',
+      'Tulipix ${st.appVersion}',
       if (renderer != null) 'Renderer: ${renderer.value}',
       if (player != null) 'Player: ${player.value}',
+      if (onnx != null) 'ONNX editor ops: ${onnx.value}',
+      if (alloc != null) 'Allocator: ${alloc.value}',
+      'Startup: ${startup ?? '?'} ms · Memory: $mem MB · Slow frames: $frames',
+      for (final r in tools) '${r.label}: ${r.value}',
+      if (speech != null) 'Speech model: ${speech.value}',
+      'Window frame: ${framed ? 'drawn by Tulipix' : 'the system'}',
+      for (final r in platform) '${r.label}: ${r.value}',
+      if (powerNow != null) 'Power: ${powerNow.value}',
       if (formats != null) 'Audio formats: ${formats.value}',
+      if (gapless != null) 'Gapless unverified: ${gapless.value}',
+      if (video != null) 'Video formats: ${video.value}',
+      if (toolFormats != null) 'Tools formats: ${toolFormats.value}',
+      if (books != null) 'Book formats: ${books.value}',
     ].join('\n');
 
-    Widget cap(String s) => Text(s,
-        style: TextStyle(
-            fontSize: 10.5,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.8,
-            color: t.textDim));
-    Widget rule() => Container(
-        width: 1,
-        margin: const EdgeInsets.symmetric(horizontal: 18),
-        color: t.outline);
-    Widget chip(String s) => Container(
-          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-          decoration: BoxDecoration(
-            color: t.bg,
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: t.outline),
-          ),
-          child: Text(s,
-              style: TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w500,
-                  color: t.textDim)),
-        );
+    // ── overview ──
+    Widget? control(SettingItem? r, IconData icon, String title, String note,
+            Color tint, {bool shell = false}) =>
+        r == null
+            ? null
+            : _ControlTile(
+                icon: icon,
+                title: title,
+                note: note,
+                tint: tint,
+                on: r.on_,
+                onChanged: (v) => _flip(r, v, shell: shell),
+              );
+    final controls = [
+      control(notif, Icons.notifications_outlined, 'Notifications',
+          'Downloads, Tools jobs, bills due', Tokens.brand),
+      control(power, Icons.battery_std_outlined, 'Battery aware',
+          'Rescans wait on a low battery', Tokens.ok),
+      control(ytAuto, Icons.update, 'Keep yt-dlp current',
+          'Checks weekly, updates itself', Tokens.secTools),
+      control(accent, Icons.palette_outlined, 'System accent',
+          'Sections take your desktop colour', Tokens.brand2, shell: true),
+      control(fontScale, Icons.format_size, 'OS text size',
+          'Follow the desktop\'s scale', Tokens.brand2, shell: true),
+      control(crash, Icons.bug_report_outlined, 'Crash reports',
+          'Kept on this machine · from phase 2', Tokens.warn),
+    ].whereType<Widget>().toList();
+
+    // This build: who made it and what it opens, last on Overview.
+    final gaps = gapless == null || gapless.value == 'None'
+        ? const <String>{}
+        : gapless.value
+            .split(' · ')
+            .map((s) => s.trim().toLowerCase())
+            .toSet();
+    Widget formatRow(String title, SettingItem? r, String count) {
+      final exts = r!.value.split(' · ');
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 96,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: t.text)),
+                  Text(count.isEmpty ? '${exts.length} formats' : count,
+                      style: TextStyle(fontSize: 11, color: t.textDim)),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Wrap(
+                spacing: 5,
+                runSpacing: 5,
+                children: [
+                  for (final f in exts)
+                    _FormatChip(f, unverified: gaps.contains(f.toLowerCase())),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
 
     Widget kv(String k, String v) => Padding(
-          padding: const EdgeInsets.symmetric(vertical: 3),
+          padding: const EdgeInsets.symmetric(vertical: 4),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1035,247 +1413,1050 @@ class AdvancedTab extends StatelessWidget {
           ),
         );
 
-    return SettingsPageBody(
-      head: SettingsHead.forTab('advanced',
-          note: 'The tools Tulipix runs, what it caches, and how it was built'),
-      children: [
-        TileGrid([
+    Widget overview() => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text('Right now, read as the page draws',
+                      style: TextStyle(fontSize: 12, color: t.textDim)),
+                ),
+                SmallBtn(
+                  label: 'Refresh',
+                  icon: Icons.refresh,
+                  onTap: () => _c.send(const SettingsCmd.refresh()),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            // The answer before the detail.
+            _Vitals([
+              (
+                label: 'Tools',
+                value: '${tools.length - missing}',
+                unit: 'of ${tools.length} ready',
+                note: missing == 0 ? 'All found' : '$missing missing',
+                frac: tools.isEmpty
+                    ? null
+                    : (tools.length - missing) / tools.length,
+                tint: missing == 0 ? Tokens.ok : Tokens.warn,
+              ),
+              (
+                label: 'Startup',
+                value: startup == null ? '…' : '$startup',
+                unit: 'ms',
+                note: 'Budget 500 ms',
+                frac: (startup ?? 0) / 500,
+                tint: (startup ?? 0) < 500 ? Tokens.ok : Tokens.warn,
+              ),
+              (
+                label: 'Memory',
+                value: '$mem',
+                unit: 'MB',
+                note: 'Whole app, player included',
+                frac: mem / 500,
+                tint: mem < 500 ? Tokens.ok : Tokens.warn,
+              ),
+              (
+                label: 'Slow frames',
+                value: '$frames',
+                unit: 'this session',
+                note: 'Over 16 ms · fine under 60',
+                frac: frames / 60,
+                tint: frames < 60 ? Tokens.ok : Tokens.warn,
+              ),
+              (
+                label: 'Thumbnail cache',
+                value: cacheMb >= 1024
+                    ? (cacheMb / 1024).toStringAsFixed(1)
+                    : '$cacheMb',
+                unit: cacheMb >= 1024 ? 'GB' : 'MB',
+                note: 'Redrawn when needed',
+                frac: null,
+                tint: Tokens.secTools,
+              ),
+            ]),
+            const SizedBox(height: TileGrid.gap),
+            TileGrid([
+              (
+                span: 4,
+                child: SettingsTile(
+                  icon: Icons.tune,
+                  tint: Tokens.brand,
+                  title: 'Quick controls',
+                  note: 'The switches you reach for, one tap each',
+                  child: _rowsOf(controls),
+                ),
+              ),
+              (
+                span: 2,
+                child: SettingsTile(
+                  icon: issues.isEmpty
+                      ? Icons.check_circle_outline
+                      : Icons.error_outline,
+                  tint: issues.isEmpty ? Tokens.ok : Tokens.warn,
+                  title: 'Needs attention',
+                  note: issues.isEmpty
+                      ? 'Nothing right now'
+                      : 'Only what is off, each with its fix',
+                  child: issues.isEmpty
+                      ? Text(
+                          'Every tool is found, and startup, memory and '
+                          'frames are inside budget.',
+                          style: TextStyle(fontSize: 12, color: t.textDim))
+                      : Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            for (var i = 0; i < issues.length; i++) ...[
+                              if (i > 0) const SizedBox(height: 8),
+                              _IssueLine(issues[i]),
+                            ],
+                          ],
+                        ),
+                ),
+              ),
+              (
+                span: 6,
+                child: SettingsTile(
+                  icon: Icons.handyman_outlined,
+                  tint: Tokens.secTools,
+                  title: 'Tools at a glance',
+                  note: 'Where each one is found. Tools updates them and sets '
+                      'the folder',
+                  trailing: [
+                    SmallBtn(label: 'Manage tools', onTap: () => _go('tools')),
+                  ],
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [for (final r in tools) _ToolPill(r)],
+                  ),
+                ),
+              ),
+              (
+                span: 2,
+                child: SettingsTile(
+                  icon: Icons.memory,
+                  tint: Tokens.secSettings,
+                  title: 'This build',
+                  note: '',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Center(
+                        child: AppMark(
+                          size: 56,
+                          radius: 14,
+                          choice:
+                              ShellController.instance.state?.logoChoice ?? 0,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text('Tulipix',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -0.1,
+                              color: t.text)),
+                      Text('Version ${st.appVersion}',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 12, color: t.textDim)),
+                      const SizedBox(height: 8),
+                      Text('© 2026 — Developed by Atish',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 11.5, color: t.textDim)),
+                      const SizedBox(height: 12),
+                      if (renderer != null) kv('Renderer', renderer.value),
+                      if (player != null) kv('Player', player.value),
+                      if (onnx != null) kv('ONNX editor ops', onnx.value),
+                      if (alloc != null) kv('Allocator', alloc.value),
+                    ],
+                  ),
+                ),
+              ),
+              (
+                span: 4,
+                child: SettingsTile(
+                  icon: Icons.description_outlined,
+                  tint: Tokens.secTools,
+                  title: 'Supported file formats',
+                  note: gaps.isEmpty
+                      ? 'What each section opens'
+                      : 'Outlined in amber: gapless playback not checked yet',
+                  child: Lines([
+                    if (formats != null) formatRow('Audio', formats, ''),
+                    if (video != null) formatRow('Video', video, ''),
+                    if (toolFormats != null)
+                      formatRow('Tools', toolFormats, 'Convert to · Save as'),
+                    if (books != null) formatRow('Books', books, ''),
+                  ]),
+                ),
+              ),
+            ]),
+          ],
+        );
+
+    // ── tools ──
+    String sourceOf(SettingItem r) => r.value.split(' · ').first;
+    String detailOf(SettingItem r) {
+      final version = r.value.split(' · ').skip(1).join(' · ');
+      return switch (r.state) {
+        'error' => 'Not found',
+        'warn' => 'Version unknown',
+        _ => version.isEmpty ? 'Ready' : version,
+      };
+    }
+
+    // The folder and yt-dlp's options side by side, then the tools three to a
+    // row: seven and the speech model leave two on the last.
+    Widget toolsTab() => TileGrid([
+          if (binDir != null)
+            (
+              span: 3,
+              child: SettingsTile(
+                icon: Icons.folder_open_outlined,
+                tint: Tokens.secTools,
+                title: 'Tools folder',
+                note: 'Optional. A copy here wins over every other, and '
+                    'applies at once',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: RowControl(
+                              row: binDir, controller: _c, below: true),
+                        ),
+                        const SizedBox(width: 8),
+                        SmallBtn(
+                          label: 'Browse…',
+                          icon: Icons.folder_open_outlined,
+                          onTap: _browseToolsDir,
+                        ),
+                        if (dirSet) ...[
+                          const SizedBox(width: 8),
+                          SmallBtn(
+                              label: 'Reset',
+                              ghost: true,
+                              onTap: _resetToolsDir),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    _Lookup(dirSet: dirSet),
+                  ],
+                ),
+              ),
+            ),
+          if (ytAuto != null || clients != null)
+            (
+              span: 3,
+              child: SettingsTile(
+                icon: Icons.download_outlined,
+                tint: Tokens.secTools,
+                title: 'yt-dlp options',
+                note: 'How the downloader keeps up as sites change',
+                child: Lines([
+                  if (ytAuto != null)
+                    SettingLine(
+                      title: 'Keep up to date',
+                      note: 'Checks weekly',
+                      trailing: SettingSwitch(
+                          on: ytAuto.on_, onChanged: (v) => _flip(ytAuto, v)),
+                    ),
+                  if (clients != null)
+                    SettingLine(
+                      title: 'Player clients',
+                      note: 'Blank: yt-dlp\'s own. Only if an issue asks',
+                      below: true,
+                      trailing:
+                          RowControl(row: clients, controller: _c, below: true),
+                    ),
+                ]),
+              ),
+            ),
+          for (final r in tools)
+            (
+              span: 2,
+              child: _ToolCard(
+                name: r.label,
+                what: _tools[r.label] ?? '',
+                source: sourceOf(r),
+                state: r.state,
+                detail: detailOf(r),
+                // yt-dlp updates itself; the others open their download page.
+                action: r.state == 'error' ? 'Get' : 'Update',
+                primary: r.state == 'error',
+                busy: st.taskKey == 'tool-update:${r.label}',
+                tooltip: r.label == 'yt-dlp'
+                    ? 'Download the newest yt-dlp'
+                    : 'Open the ${r.label} download page',
+                onAction: () => _c.sendAction('tool-update:${r.label}'),
+              ),
+            ),
+          if (speech != null)
+            (
+              span: 2,
+              child: _ToolCard(
+                name: 'Speech model',
+                what: 'What whisper-cli listens with',
+                source: speech.state == 'ok' ? 'Found' : 'Missing',
+                state: speech.state,
+                detail: speech.value,
+              ),
+            ),
+        ]);
+
+    // ── platform ──
+    final scale = MediaQuery.textScalerOf(context).scale(100).round();
+    Widget platformTab() => TileGrid([
+          (
+            span: 3,
+            child: SettingsTile(
+              icon: Icons.palette_outlined,
+              tint: Tokens.brand2,
+              title: 'Look & feel',
+              note: 'Let the desktop decide, or keep Tulipix\'s own',
+              child: Lines([
+                if (accent != null)
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SettingLine(
+                        title: 'Follow system accent',
+                        note: accent.desc,
+                        trailing: SettingSwitch(
+                            on: accent.on_,
+                            onChanged: (v) => _flip(accent, v, shell: true)),
+                      ),
+                      // The section colours as they are drawn now: one
+                      // colour when the desktop's accent is followed.
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Row(
+                          children: [
+                            for (final s in const [
+                              Section.home,
+                              Section.videos,
+                              Section.music,
+                              Section.books,
+                              Section.tools,
+                              Section.transfer,
+                            ])
+                              Container(
+                                width: 16,
+                                height: 16,
+                                margin: const EdgeInsets.only(right: 5),
+                                decoration: BoxDecoration(
+                                  color: Tokens.accentOf(s),
+                                  borderRadius: BorderRadius.circular(5),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                if (fontScale != null)
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SettingLine(
+                        title: 'Honour OS font scale',
+                        note: fontScale.desc,
+                        trailing: SettingSwitch(
+                            on: fontScale.on_,
+                            onChanged: (v) =>
+                                _flip(fontScale, v, shell: true)),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Row(
+                          children: [
+                            Text('Aa',
+                                style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w600,
+                                    color: t.textDim)),
+                            const SizedBox(width: 10),
+                            Text('$scale % right now',
+                                style: _mono.copyWith(
+                                    fontSize: 11, color: t.textDim)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                if (notif != null)
+                  SettingLine(
+                    title: 'Notifications',
+                    note: notif.desc,
+                    trailing: SettingSwitch(
+                        on: notif.on_, onChanged: (v) => _flip(notif, v)),
+                  ),
+              ]),
+            ),
+          ),
+          (
+            span: 3,
+            child: SettingsTile(
+              icon: Icons.desktop_windows_outlined,
+              tint: Tokens.secSettings,
+              title: 'What the desktop gives',
+              note: 'Readings only. The OS sandbox is in Security',
+              child: Lines([
+                SettingLine(
+                  title: 'Window frame',
+                  trailing: StateChip(
+                      framed ? 'Drawn by Tulipix' : 'The system’s',
+                      tint: Tokens.ok),
+                ),
+                for (final r in platform)
+                  SettingLine(
+                    title: r.label,
+                    trailing: StateChip(r.value, tint: _chipTint(r.state)),
+                  ),
+              ]),
+            ),
+          ),
           (
             span: 4,
             child: SettingsTile(
-              icon: Icons.handyman_outlined,
+              icon: Icons.photo_library_outlined,
               tint: Tokens.secTools,
-              title: 'Bundled tools',
-              note: 'Your folder first, then updates, then bundled, then the '
-                  'system',
+              title: 'Thumbnail cache',
+              note: 'Every thumbnail is drawn again the next time it is '
+                  'needed',
               trailing: [
-                StateChip(missing == 0 ? 'All found' : '$missing missing',
-                    tint: missing == 0 ? Tokens.ok : Tokens.warn),
+                SmallBtn(
+                  label: 'Clear the cache',
+                  onTap:
+                      cacheMb == 0 ? null : () => _c.sendAction('clear-thumbs'),
+                ),
               ],
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (tools.isNotEmpty)
-                    Container(
-                      clipBehavior: Clip.antiAlias,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: t.outline),
-                      ),
-                      child: Column(
-                        children: [
-                          for (var i = 0; i < tools.length; i++)
-                            _ToolLine(
-                              row: tools[i],
-                              what: _tools[tools[i].label] ?? '',
-                              first: i == 0,
-                            ),
-                        ],
-                      ),
-                    ),
-                  const SizedBox(height: 4),
-                  Lines([
-                    if (binDir != null) RowLine(row: binDir, controller: c),
-                    if (ytAuto != null) RowLine(row: ytAuto, controller: c),
-                    if (clients != null) RowLine(row: clients, controller: c),
-                  ]),
-                ],
-              ),
+              child: Text(cache?.value ?? '—',
+                  style: TextStyle(
+                      fontSize: 26,
+                      fontWeight: FontWeight.w700,
+                      color: t.text,
+                      fontFeatures: const [FontFeature.tabularFigures()])),
             ),
           ),
           (
             span: 2,
             child: SettingsTile(
-              icon: Icons.speed_outlined,
-              tint: Tokens.warn,
-              title: 'Performance',
-              note: 'Background work, the cache, and the platform',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (power != null)
-                    Lines([RowLine(row: power, controller: c)]),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Text('Thumbnail cache',
-                          style: TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w600,
-                              color: t.text)),
-                      const Spacer(),
-                      Text(cache?.value ?? '—',
-                          style: TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w700,
-                              color: t.text)),
-                    ],
+              icon: Icons.battery_std_outlined,
+              tint: Tokens.ok,
+              title: 'Background work',
+              note: 'What may run while you are not looking',
+              child: Lines([
+                if (power != null)
+                  SettingLine(
+                    title: 'Battery aware',
+                    note: power.desc,
+                    trailing: SettingSwitch(
+                        on: power.on_, onChanged: (v) => _flip(power, v)),
                   ),
-                  const SizedBox(height: 10),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: SmallBtn(
-                      label: 'Clear the cache',
-                      onTap: () => c.sendAction('clear-thumbs'),
-                    ),
+                if (powerNow != null)
+                  SettingLine(
+                    title: 'Power now',
+                    trailing: StateChip(powerNow.value,
+                        tint: _chipTint(powerNow.state)),
                   ),
-                  const SizedBox(height: 6),
-                  Text('Every thumbnail is redrawn the next time it is needed.',
-                      style: TextStyle(fontSize: 11, color: t.textDim)),
-                  // Notifications and crash reports: two switches that were
-                  // a tile of their own beside this one's empty half.
-                  if (notif != null || crash != null) ...[
-                    const SizedBox(height: 10),
-                    Lines([
-                      if (notif != null) RowLine(row: notif, controller: c),
-                      if (crash != null) RowLine(row: crash, controller: c),
-                    ]),
-                  ],
-                ],
-              ),
+              ]),
             ),
           ),
           (
             span: 6,
             child: SettingsTile(
-              icon: Icons.memory,
-              tint: Tokens.secSettings,
-              title: 'This build',
-              note: '',
-              trailing: [
-                SmallBtn(
-                  label: 'Copy',
-                  icon: Icons.copy_outlined,
-                  onTap: () async {
-                    await Clipboard.setData(ClipboardData(text: details));
-                    c.say('Copied the build details.');
-                  },
+              icon: Icons.schedule,
+              tint: Tokens.brand,
+              title: 'Coming next',
+              note: 'Switches still waiting for their feature, in build '
+                  'order',
+              child: _rowsOf(const [
+                _Soon(
+                  icon: Icons.bug_report_outlined,
+                  title: 'Crash reports',
+                  phase: 'Phase 2',
+                  note: 'Saved on this machine, listed here with Open and '
+                      'Report',
                 ),
-              ],
-              // Two columns: who made it, and what it runs on.
-              child: IntrinsicHeight(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    SizedBox(
-                      width: 230,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              AppMark(
-                                size: 56,
-                                radius: 14,
-                                choice: ShellController
-                                        .instance.state?.logoChoice ??
-                                    0,
-                              ),
-                              const SizedBox(width: 14),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text('Tulipix',
-                                        style: TextStyle(
-                                            fontSize: 22,
-                                            fontWeight: FontWeight.w700,
-                                            letterSpacing: -0.1,
-                                            color: t.text)),
-                                    Text('Version ${state.appVersion}',
-                                        style: TextStyle(
-                                            fontSize: 12, color: t.textDim)),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 14),
-                          Text('© 2026 — Developed by Atish Ak Sharma',
-                              style:
-                                  TextStyle(fontSize: 11.5, color: t.textDim)),
-                        ],
-                      ),
-                    ),
-                    rule(),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          cap('RUNS ON'),
-                          const SizedBox(height: 6),
-                          if (renderer != null) kv('Renderer', renderer.value),
-                          if (player != null) kv('Player', player.value),
-                          if (formats != null) ...[
-                            const SizedBox(height: 10),
-                            Wrap(
-                              spacing: 5,
-                              runSpacing: 5,
-                              children: [
-                                for (final f in formats.value.split(' · '))
-                                  chip(f.toUpperCase()),
-                              ],
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
+                _Soon(
+                  icon: Icons.hub_outlined,
+                  title: 'MCP server',
+                  phase: 'Phase 4',
+                  note: 'Lets AI apps search your library; writes need your '
+                      'say-so, tool by tool',
                 ),
-              ),
+              ], per: 2),
             ),
           ),
-        ]),
-        if (rest.isNotEmpty) MoreTile(rows: rest, controller: c),
+        ]);
+
+    return SettingsPageBody(
+      head: SettingsHead.forTab(
+        'advanced',
+        note: 'The tools Tulipix runs, how it is performing, what your desktop '
+            'gives it, and how this copy was built',
+        actions: [
+          SmallBtn(
+            label: 'Copy diagnostics',
+            icon: Icons.copy_outlined,
+            large: true,
+            onTap: () async {
+              await Clipboard.setData(ClipboardData(text: details));
+              _c.say('Copied the diagnostics.');
+            },
+          ),
+        ],
+      ),
+      children: [
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Seg(
+            options: const ['overview', 'tools', 'platform'],
+            labels: [
+              'Overview',
+              missing == 0 ? 'Tools' : 'Tools · $missing',
+              'Platform',
+            ],
+            value: _tab,
+            onPick: _go,
+          ),
+        ),
+        switch (_tab) {
+          'tools' => toolsTab(),
+          'platform' => platformTab(),
+          _ => overview(),
+        },
+        if (rest.isNotEmpty) MoreTile(rows: rest, controller: _c),
       ],
     );
   }
 }
 
-/// One tool: its name, what it does, and where this copy comes from.
-class _ToolLine extends StatelessWidget {
-  const _ToolLine({required this.row, required this.what, required this.first});
+/// The five vitals across the top of Overview: a dot, the figure, how far it
+/// is into its budget, and what it means. Outside the tile grid, so it may
+/// measure.
+class _Vitals extends StatelessWidget {
+  const _Vitals(this.vitals);
 
-  final SettingItem row;
-  final String what;
-  final bool first;
+  final List<_VitalData> vitals;
 
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    // "Bundled · 2026.08.30": the source, then yt-dlp's version.
-    final parts = row.value.split(' · ');
-    final source = parts.first;
-    final version = parts.skip(1).join(' · ');
-    final line = switch (row.state) {
-      'error' => '$what — install it, or set a tools folder',
-      'warn' => '$what · whatever version is installed',
-      _ => version.isEmpty ? what : '$what · $version',
-    };
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 10, 8),
-      decoration: BoxDecoration(
-        color: t.bg,
-        border: first ? null : Border(top: BorderSide(color: t.outline)),
-      ),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 90,
-            child: Text(row.label,
-                style: TextStyle(
-                    fontSize: 12.5, fontWeight: FontWeight.w600, color: t.text)),
-          ),
-          Expanded(
-            child: Text(line,
+    Widget card(_VitalData v) => Container(
+          padding: const EdgeInsets.fromLTRB(14, 13, 14, 12),
+          decoration: context.skin.surface(SurfaceRole.card, radius: 16) ??
+              BoxDecoration(
+                color: t.panel2,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: t.outline),
+              ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 7,
+                    height: 7,
+                    decoration:
+                        BoxDecoration(color: v.tint, shape: BoxShape.circle),
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(v.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w500,
+                            color: t.textDim)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text.rich(
+                TextSpan(children: [
+                  TextSpan(
+                      text: v.value,
+                      style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w700,
+                          color: t.text,
+                          fontFeatures: const [FontFeature.tabularFigures()])),
+                  TextSpan(
+                      text: ' ${v.unit}',
+                      style: TextStyle(fontSize: 12, color: t.textDim)),
+                ]),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 11.5, color: t.textDim)),
+              ),
+              const SizedBox(height: 8),
+              if (v.frac != null)
+                _Meter(v.frac!, v.tint)
+              else
+                const SizedBox(height: 5),
+              const SizedBox(height: 7),
+              Text(v.note,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: t.textDim)),
+            ],
           ),
-          const SizedBox(width: 10),
-          StateChip(source, tint: stateTint(row.state, t)),
+        );
+    return LayoutBuilder(
+      builder: (context, box) {
+        final per = box.maxWidth >= 900
+            ? vitals.length
+            : box.maxWidth >= 560
+                ? 3
+                : 2;
+        return _AdvancedTabState._rowsOf(
+            [for (final v in vitals) card(v)], per: per, gap: 12);
+      },
+    );
+  }
+}
+
+/// How far into its budget a figure is.
+class _Meter extends StatelessWidget {
+  const _Meter(this.frac, this.tint);
+
+  final double frac;
+  final Color tint;
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+        borderRadius: BorderRadius.circular(3),
+        child: LinearProgressIndicator(
+          value: frac.clamp(0.0, 1.0),
+          minHeight: 5,
+          color: tint,
+          backgroundColor: context.tokens.outline,
+        ),
+      );
+}
+
+/// A switch as a tile: tinted when on, the whole face is the button.
+class _ControlTile extends StatelessWidget {
+  const _ControlTile({
+    required this.icon,
+    required this.title,
+    required this.note,
+    required this.tint,
+    required this.on,
+    required this.onChanged,
+  });
+
+  final IconData icon;
+  final String title;
+  final String note;
+  final Color tint;
+  final bool on;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => onChanged(!on),
+        child: AnimatedContainer(
+          duration: t.reduceMotion
+              ? Duration.zero
+              : const Duration(milliseconds: 200),
+          padding: const EdgeInsets.all(13),
+          decoration: BoxDecoration(
+            color: on ? Color.alphaBlend(tint.withValues(alpha: 0.10), t.panel) : t.panel,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+                color: on ? tint.withValues(alpha: 0.55) : t.outline),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: on ? tint : t.outline,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(icon,
+                        size: 17, color: on ? Colors.white : t.textDim),
+                  ),
+                  const Spacer(),
+                  SettingSwitch(on: on, onChanged: onChanged),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(title,
+                  style: TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600, color: t.text)),
+              const SizedBox(height: 2),
+              Text(note,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11.5, color: t.textDim)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One thing that is off: a severity stripe, what and why, and its fix.
+class _IssueLine extends StatelessWidget {
+  const _IssueLine(this.issue);
+
+  final _Issue issue;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        decoration: BoxDecoration(
+          color: t.panel,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: t.outline),
+        ),
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(width: 4, color: issue.tint),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(11, 9, 8, 9),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(issue.title,
+                          style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                              color: t.text)),
+                      Text(issue.note,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 11.5, color: t.textDim)),
+                    ],
+                  ),
+                ),
+              ),
+              if (issue.action != null)
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 9),
+                    child: SmallBtn(label: issue.action!, onTap: issue.onTap),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A tool on Overview: a dot for its state, its name, where it comes from.
+class _ToolPill extends StatelessWidget {
+  const _ToolPill(this.row);
+
+  final SettingItem row;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+      decoration: BoxDecoration(
+        color: t.panel,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: t.outline),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(
+                color: stateTint(row.state, t), shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 8),
+          Text(row.label, style: _mono.copyWith(fontSize: 11.5, color: t.text)),
+          const SizedBox(width: 6),
+          Text(row.value,
+              style: TextStyle(fontSize: 11, color: t.textDim)),
         ],
       ),
+    );
+  }
+}
+
+/// The surface a tool card sits on.
+class _Card extends StatelessWidget {
+  const _Card({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: context.skin.surface(SurfaceRole.card, radius: 16) ??
+          BoxDecoration(
+            color: t.panel2,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: t.outline),
+          ),
+      child: child,
+    );
+  }
+}
+
+/// One tool: its name, what it does, where this copy comes from, and its fix.
+class _ToolCard extends StatelessWidget {
+  const _ToolCard({
+    required this.name,
+    required this.what,
+    required this.source,
+    required this.state,
+    required this.detail,
+    this.action,
+    this.primary = false,
+    this.busy = false,
+    this.tooltip,
+    this.onAction,
+  });
+
+  final String name;
+  final String what;
+  final String source;
+  final String state;
+  final String detail;
+  final String? action;
+  final bool primary;
+
+  /// Its update is running (yt-dlp's, in the job slot).
+  final bool busy;
+  final String? tooltip;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return _Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: _mono.copyWith(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: t.text)),
+                  ),
+                  StateChip(source, tint: stateTint(state, t)),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(what,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11.5, color: t.textDim)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Text(detail,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: _mono.copyWith(fontSize: 11, color: t.textDim)),
+              ),
+              if (action != null)
+                SmallBtn(
+                  label: action!,
+                  ghost: !primary,
+                  primary: primary,
+                  busy: busy,
+                  tooltip: tooltip,
+                  onTap: busy ? null : onAction,
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The order a tool is looked for in, with the steps that apply lit.
+class _Lookup extends StatelessWidget {
+  const _Lookup({required this.dirSet});
+
+  final bool dirSet;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    Widget step(int n, String label, bool lit) => Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: lit ? Tokens.secTools.withValues(alpha: 0.10) : null,
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(
+                color: lit
+                    ? Tokens.secTools.withValues(alpha: 0.55)
+                    : t.outlineStrong),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('$n',
+                  style: _mono.copyWith(fontSize: 10.5, color: t.textDim)),
+              const SizedBox(width: 7),
+              Text(label,
+                  style: TextStyle(
+                      fontSize: 11.5, color: lit ? t.text : t.textDim)),
+            ],
+          ),
+        );
+    Widget arrow() =>
+        Text('→', style: TextStyle(fontSize: 12, color: t.textDim));
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        step(1, 'Your folder', dirSet),
+        arrow(),
+        step(2, 'App updates', true),
+        arrow(),
+        step(3, 'Bundled', true),
+        arrow(),
+        step(4, 'System PATH', true),
+      ],
+    );
+  }
+}
+
+/// A switch still waiting for its feature, and the phase that brings it.
+class _Soon extends StatelessWidget {
+  const _Soon({
+    required this.icon,
+    required this.title,
+    required this.phase,
+    required this.note,
+  });
+
+  final IconData icon;
+  final String title;
+  final String phase;
+  final String note;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: t.outlineStrong),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: t.outline,
+              borderRadius: BorderRadius.circular(9),
+            ),
+            child: Icon(icon, size: 16, color: t.textDim),
+          ),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(title,
+                        style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: t.text)),
+                    StateChip(phase, tint: Tokens.brand),
+                  ],
+                ),
+                const SizedBox(height: 3),
+                Text(note, style: TextStyle(fontSize: 11.5, color: t.textDim)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One file extension. Outlined in amber when its gapless playback has not
+/// been checked.
+class _FormatChip extends StatelessWidget {
+  const _FormatChip(this.ext, {this.unverified = false});
+
+  final String ext;
+  final bool unverified;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: t.bg,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+            color: unverified ? Tokens.warn.withValues(alpha: 0.7) : t.outline),
+      ),
+      child: Text(ext.toUpperCase(),
+          style: _mono.copyWith(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w500,
+              color: unverified ? Tokens.warn : t.textDim)),
     );
   }
 }
