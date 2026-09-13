@@ -310,7 +310,7 @@ class _FieldRow extends StatelessWidget {
   }
 }
 
-/// The name the dialog puts on its filter row. `XTypeGroup` wants one.
+/// The name the dialog puts on its filter row. The portal's filter wants one.
 String _filterLabel(List<String> ext) =>
     ext.isEmpty ? 'Any file' : ext.take(4).join(', ').toUpperCase();
 

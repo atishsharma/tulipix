@@ -9,20 +9,68 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../shell/lock/lock_controller.dart';
 import '../../src/rust/api/settings.dart';
 
 /// The left rail, in order. `status` is last because it is a dashboard rather
 /// than a setting; it is here because that is where the Slint build put it.
-const List<({String id, String label, IconData icon})> kSettingsTabs = [
-  (id: 'profile', label: 'You & Home', icon: Icons.person_outline),
-  (id: 'libraries', label: 'Libraries', icon: Icons.folder_outlined),
-  (id: 'playback', label: 'Playback', icon: Icons.play_circle_outline),
-  (id: 'services', label: 'Services & Keys', icon: Icons.bolt_outlined),
-  (id: 'ai', label: 'AI Features', icon: Icons.auto_awesome_outlined),
-  (id: 'security', label: 'Security', icon: Icons.lock_outline),
-  (id: 'data', label: 'Backup & Data', icon: Icons.archive_outlined),
-  (id: 'advanced', label: 'Advanced', icon: Icons.build_outlined),
-  (id: 'status', label: 'Status', icon: Icons.monitor_heart_outlined),
+/// Each tab's colour is its page head's too.
+const List<({String id, String label, IconData icon, Color tint})>
+    kSettingsTabs = [
+  (
+    id: 'profile',
+    label: 'You & Home',
+    icon: Icons.person_outline,
+    tint: Color(0xFF7C3AED)
+  ),
+  (
+    id: 'libraries',
+    label: 'Libraries',
+    icon: Icons.folder_outlined,
+    tint: Color(0xFFF59E0B)
+  ),
+  (
+    id: 'playback',
+    label: 'Playback',
+    icon: Icons.play_circle_outline,
+    tint: Color(0xFF0EA5E9)
+  ),
+  (
+    id: 'services',
+    label: 'Services & Keys',
+    icon: Icons.bolt_outlined,
+    tint: Color(0xFFEAB308)
+  ),
+  (
+    id: 'ai',
+    label: 'AI Features',
+    icon: Icons.auto_awesome_outlined,
+    tint: Color(0xFF8B5CF6)
+  ),
+  (
+    id: 'security',
+    label: 'Security',
+    icon: Icons.lock_outline,
+    tint: Color(0xFF10B981)
+  ),
+  (
+    id: 'data',
+    label: 'Backup & Data',
+    icon: Icons.archive_outlined,
+    tint: Color(0xFF14B8A6)
+  ),
+  (
+    id: 'advanced',
+    label: 'Advanced',
+    icon: Icons.build_outlined,
+    tint: Color(0xFF94A3B8)
+  ),
+  (
+    id: 'status',
+    label: 'Status',
+    icon: Icons.monitor_heart_outlined,
+    tint: Color(0xFF34D399)
+  ),
 ];
 
 /// The four Home layouts. All four draw the same snapshot; the note is what
@@ -56,6 +104,17 @@ class SettingsController extends ChangeNotifier {
   /// the rail marks its tab and leaving it asks first.
   final ValueNotifier<bool> profileDirty = ValueNotifier(false);
 
+  /// Whether the Settings page is on screen. Long work is only watched while
+  /// it is: a library analysis runs for an hour, and a snapshot a second for
+  /// a page nobody is looking at is the cost with none of the use.
+  bool _visible = false;
+
+  set visible(bool on) {
+    if (_visible == on) return;
+    _visible = on;
+    _syncPoll();
+  }
+
   Future<void> send(SettingsCmd cmd) async {
     busy = true;
     error = null;
@@ -64,22 +123,36 @@ class SettingsController extends ChangeNotifier {
       final next = await settingsDispatch(cmd: cmd);
       state = next;
       notice = next.notice;
+      // The lock reads Security's keys; a new timeout or PIN applies now. A
+      // plain refresh changed nothing it reads.
+      if (cmd is! SettingsCmd_Refresh) LockController.instance.reload();
     } catch (e) {
       error = e;
     } finally {
       busy = false;
       notifyListeners();
+      _syncPoll();
     }
   }
 
   Future<void> refresh() => send(const SettingsCmd.refresh());
 
-  // ── model downloads ───────────────────────────────────────────────────────
+  Future<void> sendAction(String key) => send(SettingsCmd.action(key: key));
+
+  /// A notice from this side: what a tab did without a round trip through
+  /// the settings dispatch (a rescan, a copy to the clipboard).
+  void say(String text) {
+    notice = text;
+    notifyListeners();
+  }
+
+  // ── long work ─────────────────────────────────────────────────────────────
   //
-  // A download runs detached in Rust and reports into a progress map; there is
-  // no stream back. Polling a refresh while any row reads "busy" is the whole
-  // mechanism -- one timer, stopped the moment nothing is downloading, which
-  // is cheaper than a stream nobody else needs.
+  // A model download and a library analysis both run detached in Rust and
+  // report into state the next snapshot reads; there is no stream back.
+  // Polling a refresh while either is running is the whole mechanism -- one
+  // timer, stopped the moment nothing is, which is cheaper than a stream
+  // nobody else needs.
 
   Timer? _poll;
 
@@ -87,19 +160,15 @@ class SettingsController extends ChangeNotifier {
   bool get aiBusy =>
       (state?.ai ?? const <SettingItem>[]).any((r) => r.state == 'busy');
 
-  /// Send an action, then watch it if it started something long-running.
-  Future<void> sendAction(String key) async {
-    await send(SettingsCmd.action(key: key));
-    _syncPoll();
-  }
+  bool get _working => aiBusy || (state?.analysing ?? false);
 
+  /// Checked after every snapshot. The last tick after the work ends is the
+  /// one that clears its row, so stopping here, after it landed, never leaves
+  /// a bar frozen at 98%.
   void _syncPoll() {
-    if (aiBusy) {
-      _poll ??= Timer.periodic(const Duration(milliseconds: 600), (_) async {
-        await refresh();
-        // The last tick after the download ends is the one that clears the
-        // row; stopping before it would leave the bar frozen at 98%.
-        if (!aiBusy) _stopPoll();
+    if (_working && _visible) {
+      _poll ??= Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!busy) refresh();
       });
     } else {
       _stopPoll();
@@ -118,8 +187,7 @@ class SettingsController extends ChangeNotifier {
     super.dispose();
   }
 
-  /// The rows for the tab currently open, or an empty list for the two tabs
-  /// that are not row lists.
+  /// The rows for a data-driven tab, or an empty list for the others.
   List<SettingItem> rowsFor(String tab) {
     final st = state;
     if (st == null) return const [];

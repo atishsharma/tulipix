@@ -74,6 +74,27 @@ class StatusController extends ChangeNotifier {
 
   Future<void> refresh() => send(const StatusCmd.refresh());
 
+  /// A rescan in flight. Not [busy]: the call returns when the last scan does,
+  /// and the tick has to keep refreshing under it or nothing moves on screen.
+  bool rescanning = false;
+
+  Future<void> rescan() async {
+    if (rescanning) return;
+    rescanning = true;
+    notifyListeners();
+    try {
+      final next = await statusDispatch(cmd: const StatusCmd.rescan());
+      state = next;
+      notice = next.notice;
+      if (next.error.isNotEmpty) error = next.error;
+    } catch (e) {
+      error = e;
+    } finally {
+      rescanning = false;
+      notifyListeners();
+    }
+  }
+
   void clearError() {
     error = null;
     notifyListeners();

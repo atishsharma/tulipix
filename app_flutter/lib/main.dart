@@ -7,7 +7,7 @@
 // build uses.
 //
 // Still scaffolding above the sidebar: no custom caption row, no command
-// palette, no lock screen.
+// palette. The lock screen wraps everything (shell/lock/lock_screen.dart).
 
 import 'dart:ui' show AppExitResponse;
 
@@ -32,6 +32,8 @@ import 'sections/transfer/transfer_page.dart';
 import 'sections/videos/videos_page.dart';
 import 'playback/video_layer.dart';
 import 'shell/chat_overlay.dart';
+import 'shell/lock/lock_controller.dart';
+import 'shell/lock/lock_screen.dart';
 import 'shell/shell_controller.dart';
 import 'shell/sidebar.dart';
 import 'shell/title_row.dart';
@@ -86,7 +88,11 @@ class _TulipixAppState extends State<TulipixApp> {
     _shell.addListener(_onShell);
     // The first snapshot also carries the stored theme, which is why this runs
     // before anything is drawn rather than when the sidebar first appears.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _shell.refresh());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _shell.refresh();
+      // Whether to lock when idle, and after how long.
+      LockController.instance.reload();
+    });
     _lifecycle = AppLifecycleListener(
       onExitRequested: () async {
         transferShutdown();
@@ -157,7 +163,11 @@ class _TulipixAppState extends State<TulipixApp> {
       // that started it, and these are how it stays visible. Video covers the
       // window, including the mini; chat sits over the video, because Ctrl+J
       // has to answer from anywhere and a playing film is still anywhere.
-      home: ChatOverlay(
+      //
+      // The lock screen is over all of it, chat included: a locked window
+      // answers nothing but the lock.
+      home: LockOverlay(
+        child: ChatOverlay(
         child: VideoLayer(
           child: MusicOverlay(
             child: Scaffold(
@@ -302,6 +312,7 @@ class _TulipixAppState extends State<TulipixApp> {
             ),
           ),
         ),
+      ),
       ),
     );
   }

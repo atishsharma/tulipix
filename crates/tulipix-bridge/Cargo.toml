@@ -44,6 +44,9 @@ anyhow = "1"
 # and the ones that are awaited (yt-dlp listings, downloads) must not block a
 # bridge worker for the minutes they can take.
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "fs", "process", "time"] }
+# File and folder dialogs (api/dialog.rs), configured exactly as the Slint
+# build's: the portal backend, so KDE shows its own picker.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

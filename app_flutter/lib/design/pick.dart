@@ -2,26 +2,27 @@
 //
 // Every "Add folder", every import and every export in this app used to be a
 // text field you typed an absolute path into — accepted differences #2, #18,
-// #21 and #24, all of them the same difference. The shell was supposed to own
-// dialogs and the bridge's three `rfd` calls were the only ones that existed.
+// #21 and #24, all of them the same difference. Every dialog goes through
+// here, so the four functions below are the whole surface.
 //
-// `file_selector` is maintained by the Flutter team and does this natively on
-// every platform, so the dialogs belong here now and `rfd` — with its
-// xdg-portal backend — is out of the bridge entirely. What the bridge receives
-// is a path, which is what it wanted in the first place.
+// They open through the bridge (api/dialog.rs): `rfd` over the desktop portal,
+// exactly as the Slint build does. `file_selector` did this for a while, but
+// on Linux it drives GTK's chooser, which only reaches the portal inside a
+// sandbox — so on KDE it showed GTK's plain dialog, not KDE's picker with its
+// previews and Places.
 //
 // Cancelling returns null everywhere. None of these throw: a picker the desktop
 // portal refuses to open should leave the button looking unpressed, not put a
 // stack trace on screen.
 
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
+
+import '../src/rust/api/dialog.dart';
 
 /// One folder.
 Future<String?> pickDirectory({String? title, String? initial}) async {
   try {
-    return await getDirectoryPath(
-        confirmButtonText: 'Choose', initialDirectory: initial);
+    return await dialogPickFolder(title: title ?? '', initial: initial ?? '');
   } catch (e) {
     debugPrint('picker: $e');
     return null;
@@ -30,22 +31,20 @@ Future<String?> pickDirectory({String? title, String? initial}) async {
 
 /// One file, optionally narrowed to a set of extensions.
 ///
-/// Extensions are given without the dot, which is what `XTypeGroup` wants and
-/// also what the Rust side's filter lists already hold.
+/// Extensions are given without the dot, which is also what the Rust side's
+/// filter lists already hold.
 Future<String?> pickFile({
   required String label,
   List<String> extensions = const [],
   String? initial,
 }) async {
   try {
-    final file = await openFile(
-      initialDirectory: initial,
-      acceptedTypeGroups: [
-        if (extensions.isNotEmpty)
-          XTypeGroup(label: label, extensions: extensions),
-      ],
+    return await dialogPickFile(
+      title: '',
+      initial: initial ?? '',
+      label: label,
+      extensions: extensions,
     );
-    return file?.path;
   } catch (e) {
     debugPrint('picker: $e');
     return null;
@@ -60,14 +59,12 @@ Future<List<String>> pickFiles({
   String? initial,
 }) async {
   try {
-    final files = await openFiles(
-      initialDirectory: initial,
-      acceptedTypeGroups: [
-        if (extensions.isNotEmpty)
-          XTypeGroup(label: label, extensions: extensions),
-      ],
+    return await dialogPickFiles(
+      title: '',
+      initial: initial ?? '',
+      label: label,
+      extensions: extensions,
     );
-    return [for (final f in files) f.path];
   } catch (e) {
     debugPrint('picker: $e');
     return const [];
@@ -84,14 +81,12 @@ Future<String?> pickSaveLocation({
   List<String> extensions = const [],
 }) async {
   try {
-    final location = await getSaveLocation(
-      suggestedName: suggestedName,
-      acceptedTypeGroups: [
-        if (extensions.isNotEmpty)
-          XTypeGroup(label: label, extensions: extensions),
-      ],
+    return await dialogSaveFile(
+      title: '',
+      fileName: suggestedName,
+      label: label,
+      extensions: extensions,
     );
-    return location?.path;
   } catch (e) {
     debugPrint('picker: $e');
     return null;

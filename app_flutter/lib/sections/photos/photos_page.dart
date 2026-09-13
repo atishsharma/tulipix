@@ -206,7 +206,7 @@ class _Header extends StatelessWidget {
 
 /// The native directory chooser. This was a typed path until 2026-08-24 —
 /// accepted difference #2, on the grounds that the shell would own dialogs one
-/// day. `file_selector` is that day.
+/// day. `pickDirectory` is that day.
 Future<void> _promptAddFolder(BuildContext context, PhotosController c) async {
   final path = await pickDirectory();
   if (path == null) return;

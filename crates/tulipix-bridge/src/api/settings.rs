@@ -56,6 +56,15 @@ pub struct HomeCardRow {
     pub on: bool,
 }
 
+/// One backup under `<data>/backups`. `id` is its folder name, the Unix time it
+/// was made, and the only thing a Restore is allowed to name.
+pub struct BackupRow {
+    pub id: String,
+    pub secs: i64,
+    pub files: u32,
+    pub bytes: u64,
+}
+
 pub struct SettingsState {
     /// "profile" | "libraries" | "playback" | "services" | "ai" | "security"
     /// | "data" | "advanced" | "status".
@@ -80,6 +89,11 @@ pub struct SettingsState {
     pub default_cadence: String,
     // The data-driven panels.
     pub playback: Vec<SettingItem>,
+    /// Library analysis: tracks measured, tracks there are to measure, and
+    /// whether a pass is running now.
+    pub analysed: i64,
+    pub analysable: i64,
+    pub analysing: bool,
     pub services: Vec<SettingItem>,
     pub ai: Vec<SettingItem>,
     /// The "Requirements" sheet behind the AI panel: what each model asks of
@@ -88,6 +102,9 @@ pub struct SettingsState {
     pub ai_requirements: Vec<SettingItem>,
     pub security: Vec<SettingItem>,
     pub data: Vec<SettingItem>,
+    /// Newest first.
+    pub backups: Vec<BackupRow>,
+    pub data_path: String,
     pub advanced: Vec<SettingItem>,
     /// What the last action did. Cleared by the next refresh.
     pub notice: String,
@@ -131,6 +148,25 @@ pub async fn settings_dispatch(cmd: SettingsCmd) -> Result<SettingsState> {
                 let mut s = load();
                 s.idle_lock_secs = value.trim().parse().unwrap_or(0);
                 save(s);
+            }
+            // The "Lock after" choice: a label, stored as the seconds it means.
+            "lock.after" => {
+                if let Some((_, secs)) = LOCK_AFTER.iter().find(|(l, _)| *l == value) {
+                    let mut s = load();
+                    s.idle_lock_secs = *secs;
+                    save(s);
+                }
+            }
+            // Never stored as text: the core salts and hashes it.
+            "lock.pin" => {
+                let pin = value.trim();
+                notice = if (4..=8).contains(&pin.len()) && pin.chars().all(|c| c.is_ascii_digit()) {
+                    tulipix_core::account::set_pin(pin);
+                    crate::api::lock::remember_pin_len(pin.len());
+                    "PIN set. The lock screen asks for it from now on.".into()
+                } else {
+                    "A PIN is four to eight digits.".into()
+                };
             }
             _ => put(&key, &value),
         },
@@ -231,6 +267,7 @@ pub(crate) fn enabled_cards(s: &tulipix_core::settings::Settings) -> Vec<String>
 
 async fn snapshot() -> SettingsState {
     let s = load();
+    let (analysed, analysable, analysing) = crate::api::music::analyse_progress().await;
     SettingsState {
         tab: tab_cell().lock().map(|g| g.clone()).unwrap_or_else(|_| "profile".into()),
         display_name: s.text("profile.name"),
@@ -260,11 +297,18 @@ async fn snapshot() -> SettingsState {
             c => c,
         },
         playback: playback(&s),
+        analysed,
+        analysable,
+        analysing,
         services: services(&s),
         ai: ai(&s),
         ai_requirements: ai_requirement_rows(),
         security: security(&s),
         data: data(&s),
+        backups: backups(),
+        data_path: tulipix_core::paths::data_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_default(),
         advanced: advanced(&s),
         notice: String::new(),
     }
@@ -593,23 +637,66 @@ fn ai_requirement_rows() -> Vec<SettingItem> {
     rows
 }
 
+/// "Lock after": each choice and the seconds it means.
+const LOCK_AFTER: [(&str, u64); 7] = [
+    ("1 minute", 60),
+    ("2 minutes", 120),
+    ("5 minutes", 300),
+    ("10 minutes", 600),
+    ("15 minutes", 900),
+    ("30 minutes", 1800),
+    ("1 hour", 3600),
+];
+
+/// The choice nearest `secs`, so a value typed into the old seconds box that
+/// is not on the list still shows as something rather than as nothing.
+fn lock_after_label(secs: u64) -> &'static str {
+    LOCK_AFTER
+        .iter()
+        .min_by_key(|(_, s)| s.abs_diff(secs))
+        .map(|(l, _)| *l)
+        .unwrap_or("10 minutes")
+}
+
 fn security(s: &S) -> Vec<SettingItem> {
-    let idle = match s.idle_lock_secs {
-        0 => String::new(),
-        n => n.to_string(),
-    };
-    vec![
+    let has_pin = tulipix_core::account::has_pin();
+    let mut after = choice(s, "lock.after", "Lock after",
+        "How long without a key press or the pointer moving. A playing video never locks",
+        &LOCK_AFTER.map(|(l, _)| l));
+    after.value = lock_after_label(crate::api::lock::idle_secs(s)).into();
+    let mut rows = vec![
         hdr("LOCK"),
-        tog(s, "autolock", false, "Auto-lock when idle", "Lock the app and show the screensaver after a period of no activity"),
-        si("idle_lock_secs", "text", "Idle timeout (seconds)",
-            "How long before auto-lock kicks in — blank means 600 (ten minutes)", &idle, false, ""),
-        txt(s, "lock.wallpapers", "Lock screen wallpapers",
-            "Folder of pictures for the lock screen slideshow — the first ten are used, one every twelve seconds. Blank = the gradient"),
+        tog(s, "autolock", false, "Lock when idle",
+            "Shows the lock screen after a while without input, or now with Ctrl+L. Music keeps playing"),
+        after,
+        statact("lock-pin", "PIN",
+            "Four to eight digits, asked for on the lock screen. Without one, a click unlocks",
+            if has_pin { "Set" } else { "Not set" },
+            if has_pin { "ok" } else { "muted" },
+            if has_pin { "Change" } else { "Set a PIN" }),
+    ];
+    if has_pin {
+        rows.push(act("lock-pin-clear", "Remove the PIN",
+            "The lock screen goes back to unlocking with a click", "Remove"));
+    }
+    rows.extend([
+        hdr("ON THE LOCK SCREEN"),
+        tog(s, "lock.show-music", true, "What's playing", "Artwork, title and artist, lit in the cover's colours"),
+        tog(s, "lock.media-controls", true, "Music controls without unlocking", "Play, pause, skip and love from the lock screen"),
+        tog(s, "lock.show-lyrics", true, "Lyrics", "The synced line at the playhead, when the track has them"),
+        tog(s, "lock.show-video", true, "A paused video", "Its frame and title. Resuming asks for the PIN"),
+        tog(s, "lock.show-glance", true, "Glance cards", "Continue watching, bills due (a count, never amounts) and the library, when nothing is playing"),
+        tog(s, "lock.motion", true, "Moving smoke",
+            "A GPU shader drawn at a third of the window's size, twenty frames a second. Off: one still frame"),
+        txt(s, "lock.wallpapers", "Wallpapers folder",
+            "Pictures for when nothing is playing — the first ten, one every twelve seconds. Blank = the gradient"),
+        act("lock-wallpapers-browse", "Choose the wallpapers folder", "Opens a folder picker", "Choose"),
         hdr("UNLOCK"),
         tog(s, "passkey", false, "Unlock with a passkey", "Use a security key or fingerprint instead of a password"),
         hdr("ENCRYPTION"),
         tog(s, "db-encrypt", false, "Encrypt the library database", "Protects your library index if the disk is stolen — applies on next launch"),
-    ]
+    ]);
+    rows
 }
 
 fn data(s: &S) -> Vec<SettingItem> {
@@ -713,6 +800,23 @@ async fn action(key: &str) -> String {
         },
         "open-logs" => open(tulipix_core::paths::data_dir().map(|d| d.join("logs"))),
         "open-data" => open(tulipix_core::paths::data_dir()),
+        // Where the upscale chain is read from (`vmpv::glsl_chain`).
+        "open-shaders" => open(tulipix_core::paths::config_dir().map(|d| d.join("shaders"))),
+        // Only a folder that is on the watched list: the key is text from the
+        // page, and this opens whatever it names.
+        k if k.starts_with("lib-open:") => {
+            let dir = PathBuf::from(&k["lib-open:".len()..]);
+            if watched().contains(&dir) { open(Some(dir)) } else { "That folder is not watched.".into() }
+        }
+        k if k.starts_with("backup-restore-") => {
+            let id = &k["backup-restore-".len()..];
+            match restore(id) {
+                Ok(()) => "Restored. Your settings from before are a backup of their own now. \
+                           Some changes show after a restart."
+                    .into(),
+                Err(e) => format!("Could not restore: {e}"),
+            }
+        }
         "music-analyse" => {
             let n = crate::api::music::music_analyse_all().await.unwrap_or(0);
             match n {
@@ -740,6 +844,11 @@ async fn action(key: &str) -> String {
                 Ok(n) => format!("Sent {n} listen{}.", if n == 1 { "" } else { "s" }),
                 Err(e) => format!("Could not send: {e}"),
             }
+        }
+        "lock-pin-clear" => {
+            tulipix_core::account::set_pin("");
+            crate::api::lock::remember_pin_len(0);
+            "PIN removed. A click unlocks now.".into()
         }
         "clear-thumbs" => match tulipix_core::paths::thumbs_dir() {
             Some(dir) => {
@@ -832,6 +941,58 @@ fn backup() -> Result<PathBuf> {
         }
     }
     Ok(dest)
+}
+
+/// What `backup` has written, newest first. Folders not named by a number are
+/// not backups and are left out.
+fn backups() -> Vec<BackupRow> {
+    let Some(root) = tulipix_core::paths::data_dir().map(|d| d.join("backups")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<BackupRow> = std::fs::read_dir(&root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let id = e.file_name().to_string_lossy().into_owned();
+            let secs = id.parse::<i64>().ok()?;
+            let (mut files, mut bytes) = (0u32, 0u64);
+            for f in std::fs::read_dir(e.path()).ok()?.flatten() {
+                if let Ok(m) = f.metadata()
+                    && m.is_file()
+                {
+                    files += 1;
+                    bytes += m.len();
+                }
+            }
+            Some(BackupRow { id, secs, files, bytes })
+        })
+        .collect();
+    out.sort_by(|a, b| b.secs.cmp(&a.secs));
+    out
+}
+
+/// Copy a backup's files back over the live ones. The live ones are backed up
+/// first, so a restore is itself undoable.
+fn restore(id: &str) -> Result<()> {
+    // The id becomes a path, so it has to be the bare number `backup` names
+    // its folders with -- never a `..` or a separator.
+    anyhow::ensure!(!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()), "that is not a backup");
+    let data = tulipix_core::paths::data_dir()
+        .ok_or_else(|| anyhow::anyhow!("no data directory on this system"))?;
+    let src = data.join("backups").join(id);
+    anyhow::ensure!(src.is_dir(), "that backup is no longer there");
+    let cfg = tulipix_core::paths::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("no config directory on this system"))?;
+    backup()?;
+    std::fs::create_dir_all(&cfg)?;
+    for f in ["settings.json", "watched_folders.json"] {
+        let from = src.join(f);
+        if from.exists() {
+            std::fs::copy(&from, cfg.join(f))?;
+        }
+    }
+    Ok(())
 }
 
 // ── watched folders ─────────────────────────────────────────────────────────
@@ -938,6 +1099,26 @@ mod tests {
         let row = choice(&S::default(), "ai.model.voice", "Voice", "", &["tiny", "base"]);
         assert_eq!(row.value, "tiny");
         assert_eq!(row.options.len(), 2);
+    }
+
+    /// Every "Lock after" choice reads back as itself, and a value that is not
+    /// on the list shows as the nearest one.
+    #[test]
+    fn lock_after_labels_round_trip() {
+        for (label, secs) in LOCK_AFTER {
+            assert_eq!(lock_after_label(secs), label);
+        }
+        assert_eq!(lock_after_label(700), "10 minutes");
+        assert_eq!(lock_after_label(100_000), "1 hour");
+    }
+
+    /// A restore names a folder, so anything but a backup's bare number is
+    /// refused before it can become a path.
+    #[test]
+    fn a_restore_takes_only_a_backup_id() {
+        for bad in ["", "..", "../settings", "12/../../x", "abc"] {
+            assert!(restore(bad).is_err(), "{bad:?} was accepted");
+        }
     }
 
     /// Home cards default to on: a fresh install shows the whole page, and the

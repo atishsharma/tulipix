@@ -53,9 +53,9 @@ class VideosLibrary extends StatelessWidget {
   }
 }
 
-/// The bridge takes a path rather than opening a chooser itself — a native
-/// dialog from a cdylib has no window to parent to. `file_selector` opens it on
-/// this side, which is what the comment here used to say was missing.
+/// The chooser is `pickDirectory`: the portal's dialog, opened through the
+/// bridge the way the Slint build opens it. A cdylib has no window handle to
+/// give it, so it is not parented to the app window — as in the Slint build.
 Future<void> addVideoFolder(
     BuildContext context, VideosController controller) async {
   final path = await pickDirectory();

@@ -29,10 +29,6 @@ dependencies:
   # to PNG with `pdftoppm` and showing the file: selectable text, real search,
   # continuous zoom. Comics still come through the bridge as extracted images.
   pdfrx: ^2.4.7
-  # Native file and folder dialogs, Flutter-team maintained. The bridge used to
-  # open three of these through `rfd` and its xdg-portal backend; every other
-  # path in the app was typed. See lib/design/pick.dart.
-  file_selector: ^1.1.0
   # The other half of "a path is chosen, never typed": dropping a file onto a
   # Tools field fills it. Flutter has no built-in desktop file drop, and this
   # is the small, plugin-only way to get it — GTK drag-dest on Linux.
@@ -62,6 +58,10 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  # The lock screen's smoke (lib/shell/lock/smoke_layer.dart), compiled with
+  # the app.
+  shaders:
+    - shaders/smoke.frag
   assets:
     # The app mark (five picks, as ui/page_home.slint) and Welcome's drawn
     # banner, one per theme. Copied for the same reason the font is: Flutter

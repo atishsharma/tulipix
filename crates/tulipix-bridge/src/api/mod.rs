@@ -3,10 +3,12 @@
 pub mod books;
 pub mod chat;
 pub mod cloud;
+pub mod dialog;
 pub mod editor;
 pub mod finances;
 pub mod genesis;
 pub mod home;
+pub mod lock;
 pub mod mdl;
 pub mod music;
 pub mod photos;

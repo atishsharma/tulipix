@@ -3,8 +3,8 @@
 // Two widths, not a drawer: collapsed is a 68px icon rail, expanded is a
 // labelled column, and the transition is the width animating rather than a
 // panel sliding over the page. What is on it, top to bottom: the brand mark,
-// Home, the eight Applications, the health lamp, and a footer dock of four
-// buttons (Settings · Lock · Theme · Collapse).
+// Home, the eight Applications, the health lamp beside Lock, and a footer
+// dock of three buttons (Settings · Theme · Collapse).
 //
 // The active row is a double outline — an outer ring in the section accent and
 // an inner ring in neutral ink. No cast shadow under a nav row in any theme:
@@ -19,6 +19,7 @@ import '../design/app_mark.dart';
 import '../design/skin.dart';
 import '../design/tokens.dart';
 import '../src/rust/api/shell.dart';
+import 'lock/lock_controller.dart';
 import 'shell_controller.dart';
 
 const double kSidebarCollapsed = 68;
@@ -129,7 +130,20 @@ class Sidebar extends StatelessWidget {
             const SizedBox(height: 8),
             Container(height: 1, color: t.outline),
             const SizedBox(height: 8),
-            _StatusButton(controller: c, collapsed: collapsed),
+            // The lamp beside the lock: half the row each, stacked when the
+            // rail is a column of icons.
+            if (collapsed) ...[
+              _StatusButton(controller: c),
+              const SizedBox(height: 6),
+              const _LockBtn(),
+            ] else
+              Row(
+                children: [
+                  Expanded(child: _StatusButton(controller: c)),
+                  const SizedBox(width: 6),
+                  const Expanded(child: _LockBtn()),
+                ],
+              ),
             const SizedBox(height: 8),
             _Dock(
               controller: c,
@@ -484,59 +498,79 @@ class _UserCard extends StatelessWidget {
 
 // ── health lamp ─────────────────────────────────────────────────────────────
 
-class _StatusButton extends StatelessWidget {
-  const _StatusButton({required this.controller, required this.collapsed});
+/// Only the light: its words are the tooltip, and the page it opens.
+class _StatusButton extends StatefulWidget {
+  const _StatusButton({required this.controller});
 
   final ShellController controller;
-  final bool collapsed;
+
+  @override
+  State<_StatusButton> createState() => _StatusButtonState();
+}
+
+class _StatusButtonState extends State<_StatusButton> {
+  bool _hover = false;
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
-    final tint = switch (controller.statusLevel) {
+    final c = widget.controller;
+    final tint = switch (c.statusLevel) {
       'ok' => const Color(0xFF22C55E),
       'busy' => const Color(0xFF10B981),
       'problem' => Tokens.error,
       _ => Tokens.secSettings,
     };
-    final dot = Container(
-      width: 9,
-      height: 9,
-      decoration: BoxDecoration(color: tint, shape: BoxShape.circle),
-    );
     return Tooltip(
-      message: controller.statusNote,
+      message: c.statusNote,
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
         child: GestureDetector(
           // The dashboard is a Settings tab, as in the Slint build — the
-          // sidebar's lamp is a lamp, not a tenth section.
-          onTap: () => controller.go(Section.settings),
-          child: Container(
-            height: collapsed ? 34 : 40,
-            padding: EdgeInsets.symmetric(horizontal: collapsed ? 0 : 11),
+          // sidebar's lamp is a lamp, not a tenth section — so it opens that
+          // tab rather than whichever one Settings was last left on.
+          onTap: () => c.goTab(Section.settings, 'status'),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            height: 34,
+            alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: tint.withValues(alpha: 0.10),
-              borderRadius: BorderRadius.circular(Tokens.radiusMd),
+              color: tint.withValues(alpha: _hover ? 0.20 : 0.10),
+              borderRadius: BorderRadius.circular(10),
             ),
-            child: collapsed
-                ? Center(child: dot)
-                : Row(
-                    children: [
-                      dot,
-                      const SizedBox(width: 9),
-                      Expanded(
-                        child: Text(controller.statusNote,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontSize: 10.5, color: t.textDim)),
-                      ),
-                    ],
-                  ),
+            child: Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(
+                color: tint,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                      color: tint.withValues(alpha: 0.6),
+                      blurRadius: 8,
+                      spreadRadius: 1),
+                ],
+              ),
+            ),
           ),
         ),
       ),
     );
   }
+}
+
+/// Lock now — the same as Ctrl+L.
+class _LockBtn extends StatelessWidget {
+  const _LockBtn();
+
+  @override
+  Widget build(BuildContext context) => _DockBtn(
+        icon: Icons.lock_outline,
+        accent: const Color(0xFF10B981),
+        tip: 'Lock now · Ctrl+L',
+        onTap: LockController.instance.lock,
+      );
 }
 
 // ── the footer dock ─────────────────────────────────────────────────────────

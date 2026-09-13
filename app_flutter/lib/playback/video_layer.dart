@@ -19,6 +19,7 @@
 
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -81,6 +82,19 @@ final ValueNotifier<VideoRequest?> videoRequest = ValueNotifier(null);
 /// same `VideoPlay` and both should stay in the corner — undocking on the
 /// second episode of a series would be the surprise, not the courtesy.
 final ValueNotifier<bool> videoDocked = ValueNotifier(false);
+
+/// Whether a picture is playing. The lock screen's idle clock stands still
+/// while one is: a film being watched is not a window left alone.
+final ValueNotifier<bool> videoPlaying = ValueNotifier(false);
+
+/// For the lock screen, set while a player exists: the paused frame as a
+/// JPEG, and the way to carry on after unlocking.
+Future<Uint8List?> Function()? videoFrame;
+VoidCallback? videoResume;
+
+/// Which player set the two above, so only that one clears them — a new
+/// source's player can open before the old one has gone.
+Object? _hooksOwner;
 
 /// Put the player away.
 ///
@@ -491,7 +505,13 @@ class _VideoStageState extends State<_VideoStage> {
       // property reads for nothing.
       if (was <= 0 && _dur > 0) _ops.loadChapters();
     }));
+    _hooksOwner = this;
+    videoFrame = () => _player.screenshot();
+    videoResume = () {
+      _player.play();
+    };
     _subs.add(_player.stream.playing.listen((playing) {
+      videoPlaying.value = playing;
       // Pausing brings the chrome back and keeps it; playing starts the clock
       // that takes it away again.
       if (mounted) _wake();
@@ -534,6 +554,12 @@ class _VideoStageState extends State<_VideoStage> {
     _leaveFullscreen();
     _focus.dispose();
     _ops.dispose();
+    if (_hooksOwner == this) {
+      _hooksOwner = null;
+      videoFrame = null;
+      videoResume = null;
+      videoPlaying.value = false;
+    }
     _player.dispose();
     super.dispose();
   }

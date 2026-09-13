@@ -1858,6 +1858,23 @@ pub async fn music_analyse_pending() -> Result<i64> {
     .unwrap_or(0))
 }
 
+/// Measured tracks, measurable tracks, and whether a pass is running -- the
+/// ring on Settings › Playback. Zeros when the music database is not there yet.
+pub(crate) async fn analyse_progress() -> (i64, i64, bool) {
+    let running = ANALYSE_RUNNING.load(std::sync::atomic::Ordering::Relaxed);
+    let Ok(pool) = music_pool().await else { return (0, 0, running) };
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM track_meta tm JOIN items i ON i.id = tm.item_id \
+         WHERE i.section = 'music' AND i.missing_since IS NULL \
+           AND COALESCE(tm.is_audiobook, 0) = 0",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    let pending = music_analyse_pending().await.unwrap_or(0);
+    ((total - pending).max(0), total, running)
+}
+
 /// Analyse every track that has not been measured yet, in the background.
 ///
 /// Returns how many it is about to walk and gets out of the way -- a library

@@ -636,7 +636,7 @@ class _HeroStatusState extends State<_HeroStatus> {
           _ => Tokens.secSettings,
         };
         return Hover(
-          onTap: () => shell.go(Section.settings),
+          onTap: () => shell.goTab(Section.settings, 'status'),
           builder: (context, hov) => AnimatedContainer(
             duration: const Duration(milliseconds: 140),
             width: 162,
