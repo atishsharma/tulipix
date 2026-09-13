@@ -1,16 +1,19 @@
-// You & Home — the first Settings tab, and a port of ui/settings_you_home.slint.
+// You & Home — the first Settings tab, laid out as a control center
+// (docs/mockups/control-center-redesign.html).
 //
-// Both halves answer "what does the app look like when I open it", which is
-// why the Slint build merged Profile, Appearance and Home Layout into one
-// entry: choosing a layout and then theming it used to mean crossing the nav
-// twice.
+// Top to bottom: the profile (a cropped cover and photo, the name, the version
+// and app health), one grid of same-shaped tiles for how the app looks, Home's
+// layouts, and the credits, which are exactly as they were.
 //
-// The shape is Slint's, top to bottom: an identity banner, a pair of cards for
-// Appearance and the mini widget, the four Home layouts as pickable
-// schematics, and the credits. What the port leaves out is what the bridge has
-// no field for — a cover image and an avatar image are `pick-cover-image` /
-// `pick-avatar-image` there and nothing here, because `SaveProfile` carries a
-// name, an emoji and a logo index. The emoji IS this build's avatar.
+// Everything on the page is staged. Nothing reaches disk until Save changes
+// (or Ctrl+S), and Discard puts it all back. The page used to be half and
+// half: theme, motion, the layout and the cards wrote on click while the name,
+// the logo and the design language waited for a Save inside one card, so it
+// was never clear what had been kept. The sidebar shows only what is saved.
+
+import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -23,6 +26,7 @@ import '../../shell/shell_controller.dart';
 import '../../src/rust/api/settings.dart';
 import '../music/mini_widget.dart';
 import '../music/music_controller.dart';
+import 'profile_cropper.dart';
 import 'settings_controller.dart';
 
 /// The four layouts, in the order they matter in — the default first, which is
@@ -59,6 +63,24 @@ String _layoutName(String id) => kHomeLayoutTiles
     .firstWhere((l) => l.id == id, orElse: () => kHomeLayoutTiles[1])
     .name;
 
+const List<({String id, String label, Color a, Color b})> _themes = [
+  (id: 'system', label: 'System', a: Color(0xFF64748B), b: Color(0xFFE2E8F0)),
+  (id: 'light', label: 'Light', a: Color(0xFFF8FAFC), b: Color(0xFFCBD5E1)),
+  (id: 'dark', label: 'Dark', a: Color(0xFF1E293B), b: Color(0xFF0F172A)),
+  (
+    id: 'extra-dark',
+    label: 'Extra dark',
+    a: Color(0xFF0B0B0F),
+    b: Color(0xFF000000)
+  ),
+];
+
+const List<String> _logoLabels = ['Default', 'Colour', 'Dark', 'White', 'India'];
+
+/// Slot 0 drawn as the plain mark. `appLogoAsset(0)` is the seasonal swap
+/// inside a festival window, and two India tiles in one row read as a bug.
+const String _plainMark = 'assets/appicons/sidebar-default.png';
+
 class ProfileTab extends StatefulWidget {
   const ProfileTab({
     super.key,
@@ -70,8 +92,8 @@ class ProfileTab extends StatefulWidget {
   final SettingsController controller;
   final SettingsState state;
 
-  /// Where the status pill goes. The Slint page's `open-status` — the Status
-  /// TAB in settings, not the loopback dashboard the sidebar key opens.
+  /// Where the status pill goes: the Status TAB in settings, not the loopback
+  /// dashboard the sidebar key opens.
   final ValueChanged<String>? onTab;
 
   @override
@@ -82,33 +104,75 @@ class _ProfileTabState extends State<ProfileTab> {
   late final TextEditingController _name =
       TextEditingController(text: widget.state.displayName);
 
-  /// The mark being edited. Starts from the saved value and only reaches disk
-  /// on Save, which is what makes the row of chips a preview rather than a
-  /// stream of writes.
-  late int _logo = widget.state.logoChoice;
+  // What is staged. Null means untouched — the saved value shows through — so
+  // Discard is clearing these, and a refresh underneath never fights them.
+  String? _emoji;
 
-  /// The plain default mark, picked ON PURPOSE. Slot 0 belongs to the seasonal
-  /// swap otherwise, which inside a festival window left no way to ask for the
-  /// plain mark at all — every pick of it just showed India again. Session-only,
-  /// exactly as in Slint: what is on disk is still `default`.
+  /// Null untouched, empty remove, otherwise a PNG the cropper rendered.
+  Uint8List? _avatar;
+  Uint8List? _cover;
+  int? _logo;
+
+  /// The plain default mark, picked ON PURPOSE. Inside a festival window slot
+  /// 0 previews as the seasonal swap; this makes the preview show the plain
+  /// mark instead. Session-only, as in Slint.
   bool _defaultPicked = false;
+  DesignLanguage? _language;
+  String? _theme;
+  bool? _motion;
+  MiniStyle? _mini;
+  String? _layout;
+  final Map<String, bool> _cards = {};
+  bool? _musicLeft;
 
+  bool _saving = false;
   bool _justSaved = false;
 
-  /// The design language being picked. Null until a tile is clicked; like the
-  /// name and the mark, it only reaches disk on Save.
-  DesignLanguage? _language;
+  SettingsState get _st => widget.state;
+  ShellController get _shell => ShellController.instance;
 
-  DesignLanguage get _savedLanguage => ShellController.instance.designLanguage;
+  String get _emojiNow => _emoji ?? _st.avatarEmoji;
+  int get _logoNow => _logo ?? _st.logoChoice;
+  DesignLanguage get _languageNow => _language ?? _shell.designLanguage;
+  String get _themeNow {
+    final th = _theme ?? _st.theme;
+    return _themes.any((x) => x.id == th) ? th : 'system';
+  }
+
+  bool get _motionNow => _motion ?? _st.reduceMotion;
+  MiniStyle get _miniNow => _mini ?? MusicController.instance.widgetStyle;
+  String get _layoutNow => _layout ?? _st.homeLayout;
+  bool _cardOn(HomeCardRow c) => _cards[c.key] ?? c.on_;
+  bool get _musicLeftNow => _musicLeft ?? _st.homeMusicLeft;
+
+  /// What Save would write, by name — the save bar lists these.
+  List<String> get _changes {
+    final st = _st;
+    return [
+      if (_name.text.trim() != st.displayName.trim()) 'Name',
+      if (_avatar != null || (_emoji != null && _emoji != st.avatarEmoji))
+        'Profile photo',
+      if (_cover != null) 'Cover',
+      if (_theme != null && _theme != st.theme) 'Theme',
+      if (_motion != null && _motion != st.reduceMotion) 'Reduce motion',
+      if (_language != null && _language != _shell.designLanguage)
+        'Design language',
+      if (_logo != null && _logo != st.logoChoice) 'Sidebar logo',
+      if (_mini != null && _mini != MusicController.instance.widgetStyle)
+        'Mini player',
+      if (_layout != null && _layout != st.homeLayout) 'Home layout',
+      if (st.homeCards.any((c) => _cards[c.key] != null && _cards[c.key] != c.on_) ||
+          (_musicLeft != null && _musicLeft != st.homeMusicLeft))
+        'Home cards',
+    ];
+  }
 
   @override
   void initState() {
     super.initState();
-    // `_dirty` reads the field's text, and a TextEditingController notifies its
-    // own listeners without rebuilding the widget that holds it -- so typing a
-    // new name changed nothing this page could see, `actionDirty` stayed false,
-    // and Save stayed dim with `onPressed: null`. Every other control here
-    // goes through setState; the text field is the one that does not.
+    // A TextEditingController notifies its own listeners without rebuilding
+    // the widget holding it, so without this the save bar never heard about
+    // a new name.
     _name.addListener(_reread);
   }
 
@@ -123,481 +187,1033 @@ class _ProfileTabState extends State<ProfileTab> {
     super.dispose();
   }
 
-  /// What Save writes: the name, the mark and the design language. Theme,
-  /// reduce motion and the layout are NOT in here — those go to disk the moment
-  /// they are clicked, so counting them as unsaved work would leave the button
-  /// lit forever.
-  bool get _dirty =>
-      !_justSaved &&
-      (_name.text != widget.state.displayName ||
-          _logo != widget.state.logoChoice ||
-          _defaultPicked ||
-          (_language != null && _language != _savedLanguage));
+  /// Tell the rail. After the frame: the rail is a sibling mid-build.
+  void _publishDirty(bool dirty) {
+    final flag = widget.controller.profileDirty;
+    if (flag.value == dirty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) flag.value = dirty;
+    });
+  }
 
   Future<void> _save() async {
-    await widget.controller.send(SettingsCmd.saveProfile(
-      name: _name.text,
-      // Untouched: the emoji is the avatar and has its own editor below.
-      emoji: widget.state.avatarEmoji,
-      logo: _logo,
-    ));
-    final language = _language;
-    if (language != null && language != _savedLanguage) {
-      // The key and spellings the Slint build reads, through the generic text
-      // arm — no bridge command of its own.
-      await widget.controller.send(SettingsCmd.setText(
-        key: 'ui.design-language',
-        value: language.id,
+    if (_saving || _changes.isEmpty) return;
+    setState(() => _saving = true);
+    final c = widget.controller;
+    final st = _st;
+    final savedLanguage = _shell.designLanguage;
+    final savedMini = MusicController.instance.widgetStyle;
+    try {
+      await c.send(SettingsCmd.saveProfile(
+        name: _name.text.trim(),
+        emoji: _emojiNow,
+        logo: _logoNow,
+        avatar: _avatar,
+        cover: _cover,
       ));
+      // Staged edits stay staged on a failure, so nothing typed is lost.
+      if (c.error != null) return;
+      final language = _language;
+      if (language != null && language != savedLanguage) {
+        await c.send(SettingsCmd.setText(
+            key: 'ui.design-language', value: language.id));
+      }
+      final theme = _theme;
+      if (theme != null && theme != st.theme) {
+        await c.send(SettingsCmd.setTheme(theme: theme));
+      }
+      final motion = _motion;
+      if (motion != null && motion != st.reduceMotion) {
+        await c.send(SettingsCmd.setReduceMotion(on_: motion));
+      }
+      final layout = _layout;
+      if (layout != null && layout != st.homeLayout) {
+        await c.send(SettingsCmd.setHomeLayout(layout: layout));
+      }
+      for (final card in st.homeCards) {
+        final on = _cards[card.key];
+        if (on != null && on != card.on_) {
+          await c.send(SettingsCmd.homeCardSet(key: card.key, on_: on));
+        }
+      }
+      final left = _musicLeft;
+      if (left != null && left != st.homeMusicLeft) {
+        await c.send(SettingsCmd.toggle(key: 'home.music-left', on_: left));
+      }
+      final mini = _mini;
+      if (mini != null && mini != savedMini) {
+        MusicController.instance.setWidgetStyle(mini);
+        // The Slint build's own widget reads the same key and names.
+        await c.send(SettingsCmd.setText(
+            key: 'ui.mini-widget.style', value: mini.name));
+      }
+      if (_avatar != null || _cover != null) {
+        // Same file names, new pictures: drop the cached ones — live ones
+        // included — and bump the epoch so every Image resolves again.
+        final now = c.state;
+        for (final p in {
+          st.avatarPath,
+          st.coverPath,
+          now?.avatarPath ?? '',
+          now?.coverPath ?? '',
+        }) {
+          if (p.isNotEmpty) await FileImage(File(p)).evict();
+        }
+        _shell.pictureEpoch++;
+      }
+      // The sidebar prints the name, photo and mark, and the shell snapshot
+      // is where the app reads its theme and design language from.
+      await _shell.refresh();
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
-    // The sidebar prints the same name and mark, so it has to hear about it —
-    // and the shell snapshot is where the app reads the design language from.
-    await ShellController.instance.refresh();
-    if (!mounted) return;
-    setState(() {
-      _defaultPicked = false;
-      _language = null;
-      _justSaved = true;
-    });
+    if (!mounted || c.error != null) return;
+    _clearStaged();
+    setState(() => _justSaved = true);
     await Future<void>.delayed(const Duration(seconds: 2));
     if (mounted) setState(() => _justSaved = false);
   }
 
-  Future<void> _saveEmoji(String emoji) async {
-    await widget.controller.send(SettingsCmd.saveProfile(
-      name: _name.text,
-      emoji: emoji,
-      logo: _logo,
-    ));
-    await ShellController.instance.refresh();
+  void _clearStaged() {
+    _emoji = null;
+    _avatar = null;
+    _cover = null;
+    _logo = null;
+    _defaultPicked = false;
+    _language = null;
+    _theme = null;
+    _motion = null;
+    _mini = null;
+    _layout = null;
+    _cards.clear();
+    _musicLeft = null;
   }
 
-  Future<void> _editEmoji() async {
-    final field = TextEditingController(text: widget.state.avatarEmoji);
-    final picked = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Avatar'),
-        content: SizedBox(
-          width: 320,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              TextField(
-                controller: field,
-                autofocus: true,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: '🙂',
-                ),
-                onSubmitted: (v) => Navigator.pop(context, v),
-              ),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  for (final e in const [
-                    '🙂',
-                    '😎',
-                    '🎧',
-                    '🎬',
-                    '📚',
-                    '🌊',
-                    '🦊',
-                    '🐧',
-                    '🌙',
-                    '⚡',
-                    '🍁',
-                    '🔮',
-                  ])
-                    _EmojiChip(
-                      emoji: e,
-                      onTap: () => Navigator.pop(context, e),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, field.text),
-            child: const Text('Use'),
-          ),
-        ],
-      ),
-    );
-    field.dispose();
-    if (picked != null) await _saveEmoji(picked.trim());
-  }
+  void _discard() => setState(() {
+        _name.text = _st.displayName;
+        _clearStaged();
+      });
 
-  /// Switching Home out from under someone is not a click to make by accident,
-  /// so `Use this layout` asks first — the same dialog the Slint page shows.
-  Future<void> _useLayout(String id, String name) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Switch Home to $name?'),
-        content: const Text(
-          'Home is redrawn in the new arrangement. Your card switches for '
-          'this layout are kept, and you can switch back at any time.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text('Use $name'),
-          ),
-        ],
-      ),
-    );
-    if (ok == true) {
-      await widget.controller.send(SettingsCmd.setHomeLayout(layout: id));
+  static Future<Uint8List?> _read(String path) async {
+    try {
+      return await File(path).readAsBytes();
+    } catch (_) {
+      return null;
     }
   }
 
-  /// Customize applies the layout first, so the switches and the schematic in
-  /// the sheet are the real thing rather than a preview of something else.
-  Future<void> _customize(String id) async {
-    if (widget.state.homeLayout != id) {
-      await widget.controller.send(SettingsCmd.setHomeLayout(layout: id));
-    }
+  /// What the cropper starts from: the staged crop, else the saved file.
+  Future<Uint8List?> _current(Uint8List? staged, String saved) async {
+    if (staged != null) return staged.isEmpty ? null : staged;
+    return saved.isEmpty ? null : _read(saved);
+  }
+
+  Future<void> _editAvatar() async {
+    final st = _st;
+    final source = await _current(_avatar, st.avatarPath);
     if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (_) => _CardsDialog(controller: widget.controller),
+    final r = await showCropper(
+      context,
+      kind: CropKind.avatar,
+      source: source,
+      emoji: _emojiNow,
+      hasPicture: source != null,
     );
+    if (r == null || !mounted) return;
+    setState(() {
+      final png = r.png;
+      if (png != null) {
+        _avatar = png;
+      } else if (r.remove) {
+        _avatar = st.avatarPath.isEmpty ? null : Uint8List(0);
+      }
+      if (r.emoji != null) _emoji = r.emoji;
+    });
+  }
+
+  Future<void> _editCover() async {
+    final st = _st;
+    final source = await _current(_cover, st.coverPath);
+    if (!mounted) return;
+    final r = await showCropper(
+      context,
+      kind: CropKind.cover,
+      source: source,
+      hasPicture: source != null,
+    );
+    if (r == null || !mounted) return;
+    setState(() {
+      final png = r.png;
+      if (png != null) {
+        _cover = png;
+      } else if (r.remove) {
+        _cover = st.coverPath.isEmpty ? null : Uint8List(0);
+      }
+    });
+  }
+
+  Future<void> _copyUrl() async {
+    await Clipboard.setData(const ClipboardData(text: 'https://tulipix.pro'));
+    if (mounted) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        const SnackBar(content: Text('tulipix.pro copied')),
+      );
+    }
+  }
+
+  ImageProvider? get _avatarImage {
+    final a = _avatar;
+    if (a != null) return a.isEmpty ? null : MemoryImage(a);
+    return _st.avatarPath.isEmpty ? null : FileImage(File(_st.avatarPath));
   }
 
   @override
   Widget build(BuildContext context) {
-    final st = widget.state;
-    return LayoutBuilder(
-      builder: (context, box) {
-        // 2% of the viewport breathes on both sides at every window width, as
-        // the Slint page's padding does.
-        final gutter = box.maxWidth * 0.02;
-        // Below this the two cards stop being two cards: Slint sizes them off
-        // 60% of the page and a half of that is unusable in a narrow window.
-        final wide = box.maxWidth - gutter * 2 >= 820;
-        return ListView(
-          padding: EdgeInsets.fromLTRB(gutter, 18, gutter, 28),
-          children: [
-            _Identity(
-              state: st,
-              name: _name,
-              language: _language ?? _savedLanguage,
-              onLanguage: (l) => setState(() => _language = l),
-              onEmoji: _editEmoji,
-              onStatus: () => widget.onTab?.call('status'),
-              onCopyUrl: () async {
-                await Clipboard.setData(
-                    const ClipboardData(text: 'https://tulipix.pro'));
-                if (context.mounted) {
-                  ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                    const SnackBar(content: Text('tulipix.pro copied')),
-                  );
-                }
-              },
-            ),
-            const SizedBox(height: 18),
-            if (wide)
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(flex: 4, child: _appearance(st)),
-                  const SizedBox(width: 18),
-                  Expanded(flex: 3, child: _miniCard()),
-                ],
-              )
-            else ...[
-              _appearance(st),
-              const SizedBox(height: 18),
-              _miniCard(),
-            ],
-            const SizedBox(height: 22),
-            _HomeHeader(inUse: _layoutName(st.homeLayout)),
-            const SizedBox(height: 12),
-            _LayoutRow(
-              state: st,
-              wide: wide,
-              onUse: _useLayout,
-              onCustomize: _customize,
-            ),
-            const SizedBox(height: 26),
-            const _Credits(),
-          ],
-        );
+    final t = context.tokens;
+    final changes = _changes;
+    _publishDirty(changes.isNotEmpty);
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyS, control: true): () {
+          _save();
+        },
       },
+      child: Focus(
+        autofocus: true,
+        child: Column(
+          children: [
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, box) {
+                  final gutter = math.max(16.0, box.maxWidth * 0.02);
+                  final width = box.maxWidth - gutter * 2;
+                  return ListView(
+                    padding: EdgeInsets.fromLTRB(gutter, 18, gutter, 24),
+                    children: [
+                      Text('You & Home',
+                          style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w800,
+                              color: t.text)),
+                      const SizedBox(height: 2),
+                      Text(
+                          'Your profile, how Tulipix looks, and what Home '
+                          'shows',
+                          style: TextStyle(fontSize: 12.5, color: t.textDim)),
+                      const SizedBox(height: 14),
+                      _hero(t),
+                      const SizedBox(height: 16),
+                      _tiles(width),
+                      const SizedBox(height: 16),
+                      _layoutTile(width >= 900),
+                      const SizedBox(height: 22),
+                      const _Credits(),
+                    ],
+                  );
+                },
+              ),
+            ),
+            _saveBar(t, changes),
+          ],
+        ),
+      ),
     );
   }
 
-  Widget _appearance(SettingsState st) => _Card(
-        title: 'Appearance',
-        glyph: Icons.contrast,
-        tint: const Color(0xFFEC4899),
-        // Save lives here, not in the identity row: the name field and the
-        // marks are the two things it writes, and it is a click away from both.
-        action: _justSaved ? 'Saved ✓' : 'Save changes',
-        actionDirty: _dirty,
-        onAction: _save,
+  // ── profile ───────────────────────────────────────────────────────────────
+
+  Widget _hero(Tokens t) => Container(
+        decoration:
+            context.skin.surface(SurfaceRole.card, radius: 20) ??
+                BoxDecoration(
+                  color: t.panel2,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: t.outline),
+                ),
+        clipBehavior: Clip.antiAlias,
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const _RowLabel('Theme'),
-            const SizedBox(height: 8),
-            _ThemePicker(
-              choice: st.theme,
-              onPick: (v) =>
-                  widget.controller.send(SettingsCmd.setTheme(theme: v)),
+            // 4:1, the cropper's mask, clamped so a very narrow or very wide
+            // window still gets a sane band.
+            LayoutBuilder(
+              builder: (context, box) => SizedBox(
+                height: (box.maxWidth / 4).clamp(120.0, 220.0),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _coverFace(),
+                    Positioned(
+                      right: 12,
+                      top: 12,
+                      child: _GlassButton(
+                        icon: Icons.image_outlined,
+                        label: 'Change cover',
+                        onTap: _editCover,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
-            const SizedBox(height: 16),
-            _SwitchRow(
-              title: 'Reduce motion',
-              note: 'Drops the transitions that move things across the screen.',
-              on: st.reduceMotion,
-              onChanged: (v) =>
-                  widget.controller.send(SettingsCmd.setReduceMotion(on_: v)),
-            ),
-            const SizedBox(height: 16),
-            const _RowLabel('Sidebar logo'),
-            const SizedBox(height: 8),
-            _LogoRow(
-              selected: _logo,
-              defaultPicked: _defaultPicked,
-              onPick: (v) => setState(() {
-                _logo = v;
-                _defaultPicked = v == 0;
-              }),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+              child: Row(
+                children: [
+                  // Only the photo rides up over the seam, so the row keeps a
+                  // short box and the circle hangs out of the top of it.
+                  SizedBox(
+                    width: 104,
+                    height: 56,
+                    child: OverflowBox(
+                      maxHeight: 104,
+                      alignment: Alignment.topCenter,
+                      child: Transform.translate(
+                        offset: const Offset(0, -48),
+                        child: _avatarButton(t),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 18),
+                  _nameField(t),
+                  const SizedBox(width: 14),
+                  _VersionChip(
+                    label: 'Tulipix v${_st.appVersion} · tulipix.pro',
+                    onTap: _copyUrl,
+                  ),
+                  const Spacer(),
+                  Flexible(
+                    child:
+                        _StatusPill(onTap: () => widget.onTab?.call('status')),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
       );
 
-  Widget _miniCard() => AnimatedBuilder(
-        animation: MusicController.instance,
-        builder: (context, _) {
-          final music = MusicController.instance;
-          return _Card(
-            title: 'Mini Player Widget',
-            glyph: Icons.picture_in_picture_alt,
-            tint: const Color(0xFF8B5CF6),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const _RowLabel('Desktop widget'),
-                const SizedBox(height: 8),
-                // Three, because `MiniStyle` has three. The 300x470 card is a
-                // different object — the in-app mini player — and it is not a
-                // style this picker can choose.
-                //
-                // The sizes are the styles' own, not a table beside them:
-                // `MiniStyle.base` is what the window is actually resized to.
-                for (final s in MiniStyle.values)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: _PickTile(
-                      label: s.label,
-                      note: '${s.base.width.round()} × '
-                          '${s.base.height.round()}',
-                      active: music.widgetStyle == s,
-                      onTap: () {
-                        music.setWidgetStyle(s);
-                        // Written through as well, so the Slint build's own
-                        // widget opens in the style picked here — it reads
-                        // `ui.mini-widget.style`, same key, same three names.
-                        widget.controller.send(SettingsCmd.setText(
-                          key: 'ui.mini-widget.style',
-                          value: s.name,
-                        ));
-                      },
+  Widget _coverFace() {
+    final c = _cover;
+    if (c != null && c.isNotEmpty) {
+      return Image.memory(c, fit: BoxFit.cover, gaplessPlayback: true);
+    }
+    final saved = _st.coverPath;
+    if (c == null && saved.isNotEmpty) {
+      return Image.file(
+        File(saved),
+        key: ValueKey(_shell.pictureEpoch),
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stack) => const _CoverGradient(),
+      );
+    }
+    return const _CoverGradient();
+  }
+
+  Widget _avatarButton(Tokens t) => Tooltip(
+        message: 'Change profile photo',
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            onTap: _editAvatar,
+            child: SizedBox(
+              width: 104,
+              height: 104,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration:
+                        BoxDecoration(shape: BoxShape.circle, color: t.panel2),
+                    child: _AvatarFace(
+                        size: 96, image: _avatarImage, emoji: _emojiNow),
+                  ),
+                  Positioned(
+                    right: 2,
+                    bottom: 0,
+                    child: Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        color: Tokens.brand,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: t.panel2, width: 3),
+                      ),
+                      child: const Icon(Icons.photo_camera,
+                          size: 14, color: Colors.white),
                     ),
                   ),
-                const SizedBox(height: 10),
-                Text(
-                  'Opened from the title bar, and the window becomes it. The '
-                  'mini player is a different thing — a card inside the app, '
-                  'opened from the player.',
-                  style: TextStyle(
-                      fontSize: 11, color: context.tokens.textDim, height: 1.4),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+  // Capped at 12 characters: the Focused layout sizes its greeting off a width
+  // factor and wraps past that. Rust clamps again on save and on load.
+  Widget _nameField(Tokens t) => SizedBox(
+        width: 220,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _name,
+              maxLength: 12,
+              style: TextStyle(
+                  fontSize: 20, fontWeight: FontWeight.w800, color: t.text),
+              decoration: InputDecoration(
+                isDense: true,
+                counterText: '',
+                hintText: 'Your name',
+                hintStyle: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: t.textDim.withValues(alpha: 0.45),
+                ),
+                enabledBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: t.outline, width: 2)),
+                focusedBorder: const UnderlineInputBorder(
+                    borderSide: BorderSide(color: Tokens.brand, width: 2)),
+              ),
+              onSubmitted: (_) => _save(),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Expanded(
+                  child: Text('Shown on Home and in the sidebar',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11.5, color: t.textDim)),
+                ),
+                Text('${_name.text.characters.length}/12',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: t.textDim,
+                        fontFeatures: const [FontFeature.tabularFigures()])),
+              ],
+            ),
+          ],
+        ),
+      );
+
+  // ── the tiles ─────────────────────────────────────────────────────────────
+
+  /// Three across on a wide page, two on a middling one, one on a narrow one.
+  /// Every row is one height, set by its tallest tile.
+  Widget _tiles(double width) {
+    const gap = 14.0;
+    Widget row(List<Widget> tiles) => IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (var i = 0; i < tiles.length; i++) ...[
+                if (i > 0) const SizedBox(width: gap),
+                Expanded(child: tiles[i]),
+              ],
+            ],
+          ),
+        );
+    if (width >= 900) {
+      // Home cards spans the last two columns, so the mini tile is sized to
+      // exactly one of the three above it.
+      final third = (width - gap * 2) / 3;
+      return Column(
+        children: [
+          row([_themeTile(), _languageTile(), _logoTile()]),
+          const SizedBox(height: gap),
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(width: third, child: _miniTile()),
+                const SizedBox(width: gap),
+                Expanded(child: _cardsTile()),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+    if (width >= 600) {
+      return Column(
+        children: [
+          row([_themeTile(), _languageTile()]),
+          const SizedBox(height: gap),
+          row([_logoTile(), _miniTile()]),
+          const SizedBox(height: gap),
+          _cardsTile(),
+        ],
+      );
+    }
+    return Column(
+      children: [
+        for (final tile in [
+          _themeTile(),
+          _languageTile(),
+          _logoTile(),
+          _miniTile(),
+          _cardsTile(),
+        ]) ...[
+          tile,
+          const SizedBox(height: gap),
+        ],
+      ],
+    );
+  }
+
+  Widget _themeTile() => _Tile(
+        icon: Icons.contrast,
+        tint: const Color(0xFFEC4899),
+        title: 'Theme & motion',
+        note: 'Light, dark, and how much moves',
+        child: Column(
+          children: [
+            for (var r = 0; r < 2; r++) ...[
+              if (r > 0) const SizedBox(height: 8),
+              Row(
+                children: [
+                  for (final th in _themes.sublist(r * 2, r * 2 + 2)) ...[
+                    if (th != _themes[r * 2]) const SizedBox(width: 8),
+                    Expanded(
+                      child: _ThemeSwatch(
+                        theme: th,
+                        active: _themeNow == th.id,
+                        onTap: () => setState(() => _theme = th.id),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+            const SizedBox(height: 10),
+            _QuickToggle(
+              title: 'Reduce motion',
+              note: 'Drops the transitions that move things across the '
+                  'screen',
+              on: _motionNow,
+              onChanged: (v) => setState(() => _motion = v),
+            ),
+          ],
+        ),
+      );
+
+  Widget _languageTile() => _Tile(
+        icon: Icons.layers_outlined,
+        tint: Tokens.brand,
+        title: 'Design language',
+        note: 'The material Music is drawn in',
+        child: Column(
+          children: [
+            for (final l in DesignLanguage.values) ...[
+              if (l.index > 0) const SizedBox(height: 6),
+              _LanguageRow(
+                language: l,
+                active: l == _languageNow,
+                onTap: () => setState(() => _language = l),
+              ),
+            ],
+          ],
+        ),
+      );
+
+  Widget _logoTile() {
+    final t = context.tokens;
+    final l = _logoNow;
+    return _Tile(
+      icon: Icons.star_outline,
+      tint: const Color(0xFF0EA5E9),
+      title: 'Sidebar logo',
+      note: 'The mark at the top of the sidebar',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: t.bg,
+              borderRadius: BorderRadius.circular(13),
+              border: Border.all(color: t.outline),
+            ),
+            child: Row(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(9),
+                  child: Image.asset(
+                    l == 0 && _defaultPicked ? _plainMark : appLogoAsset(l),
+                    width: 28,
+                    height: 28,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text('Tulipix',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: t.text)),
+                const Spacer(),
+                Text('preview',
+                    style: TextStyle(fontSize: 10.5, color: t.textDim)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (var i = 0; i < 5; i++)
+                _Pick(
+                  active: l == i,
+                  radius: 10,
+                  padding: const EdgeInsets.fromLTRB(5, 5, 10, 5),
+                  onTap: () => setState(() {
+                    _logo = i;
+                    _defaultPicked = i == 0;
+                  }),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Image.asset(
+                          i == 0 ? _plainMark : appLogoAsset(i),
+                          width: 20,
+                          height: 20,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      const SizedBox(width: 7),
+                      Text(_logoLabels[i],
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: l == i ? t.text : t.textDim)),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _miniTile() {
+    final t = context.tokens;
+    return _Tile(
+      icon: Icons.picture_in_picture_alt,
+      tint: const Color(0xFF8B5CF6),
+      title: 'Mini player widget',
+      note: 'The window’s pocket-sized form',
+      child: Column(
+        children: [
+          // Three, because `MiniStyle` has three, and the sizes are the
+          // styles' own: `base` is what the window is actually resized to.
+          for (final s in MiniStyle.values) ...[
+            if (s.index > 0) const SizedBox(height: 7),
+            _Pick(
+              active: _miniNow == s,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              onTap: () => setState(() => _mini = s),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 46,
+                    height: 28,
+                    child: Center(child: _MiniShape(size: s.base)),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(s.label,
+                      style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                          color: t.text)),
+                  const Spacer(),
+                  Text(
+                      '${s.base.width.round()} × ${s.base.height.round()}',
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: t.textDim,
+                          fontFeatures: const [FontFeature.tabularFigures()])),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _cardsTile() {
+    final t = context.tokens;
+    final cards = _st.homeCards;
+    final on = cards.where(_cardOn).length;
+    final items = <Widget>[
+      for (final c in cards)
+        _CardToggle(
+          label: c.label,
+          on: _cardOn(c),
+          onTap: () => setState(() => _cards[c.key] = !_cardOn(c)),
+        ),
+      // Only Poweruser has a rail to swap.
+      if (_layoutNow == 'classic')
+        _CardToggle(
+          label: 'Music rail on the left',
+          on: _musicLeftNow,
+          onTap: () => setState(() => _musicLeft = !_musicLeftNow),
+        ),
+    ];
+    const cols = 3;
+    return _Tile(
+      icon: Icons.grid_view,
+      tint: const Color(0xFF34D399),
+      title: 'Home cards',
+      note: 'What Home shows, in every layout',
+      trailing: [
+        Text('$on of ${cards.length}',
+            style: TextStyle(
+                fontSize: 11,
+                color: t.textDim,
+                fontFeatures: const [FontFeature.tabularFigures()])),
+        const SizedBox(width: 4),
+        TextButton(
+          style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+          onPressed: () => setState(() {
+            for (final c in cards) {
+              _cards[c.key] = true;
+            }
+          }),
+          child: const Text('Reset', style: TextStyle(fontSize: 12)),
+        ),
+      ],
+      child: Column(
+        children: [
+          for (var i = 0; i < items.length; i += cols) ...[
+            if (i > 0) const SizedBox(height: 7),
+            Row(
+              children: [
+                for (var j = i; j < i + cols; j++) ...[
+                  if (j > i) const SizedBox(width: 7),
+                  Expanded(
+                      child: j < items.length
+                          ? items[j]
+                          : const SizedBox.shrink()),
+                ],
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _layoutTile(bool wide) {
+    final t = context.tokens;
+    final on = {
+      for (final c in _st.homeCards)
+        if (_cardOn(c)) c.key
+    };
+    final cards = [
+      for (final l in kHomeLayoutTiles)
+        _LayoutCard(
+          layout: l,
+          active: _layoutNow == l.id,
+          cards: on,
+          onTap: () => setState(() => _layout = l.id),
+        ),
+    ];
+    const gap = 12.0;
+    Widget row(List<Widget> xs) => IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (var i = 0; i < xs.length; i++) ...[
+                if (i > 0) const SizedBox(width: gap),
+                Expanded(child: xs[i]),
+              ],
+            ],
+          ),
+        );
+    return _Tile(
+      icon: Icons.home_outlined,
+      tint: const Color(0xFFF97316),
+      title: 'Home layout',
+      note: 'All four draw the same library; each arranges it differently',
+      trailing: [
+        Text('In use · ${_layoutName(_st.homeLayout)}',
+            style: TextStyle(fontSize: 11, color: t.textDim)),
+      ],
+      child: wide
+          ? row(cards)
+          : Column(
+              children: [
+                row(cards.sublist(0, 2)),
+                const SizedBox(height: gap),
+                row(cards.sublist(2)),
+              ],
+            ),
+    );
+  }
+
+  // ── the save bar ──────────────────────────────────────────────────────────
+
+  Widget _saveBar(Tokens t, List<String> changes) {
+    final dirty = changes.isNotEmpty;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 11),
+      decoration: BoxDecoration(
+        color: t.panel2,
+        border: Border(top: BorderSide(color: t.outline)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 9,
+            height: 9,
+            decoration: BoxDecoration(
+              color: dirty ? Tokens.warn : Tokens.ok,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            dirty
+                ? '${changes.length} ${changes.length == 1 ? 'change' : 'changes'} not saved'
+                : _justSaved
+                    ? 'Saved'
+                    : 'Everything saved',
+            style: TextStyle(
+                fontSize: 13, fontWeight: FontWeight.w700, color: t.text),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              dirty
+                  ? changes.join(' · ')
+                  : 'The sidebar and Home show what you see here',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12, color: t.textDim),
+            ),
+          ),
+          TextButton(
+            onPressed: dirty && !_saving ? _discard : null,
+            child: const Text('Discard'),
+          ),
+          const SizedBox(width: 8),
+          FilledButton(
+            onPressed: dirty && !_saving ? _save : null,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_saving) ...[
+                  const SizedBox(
+                    width: 13,
+                    height: 13,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                const Text('Save changes'),
+                const SizedBox(width: 8),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(5),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.35)),
+                  ),
+                  child: const Text('Ctrl S',
+                      style: TextStyle(fontSize: 10.5, letterSpacing: 0.3)),
                 ),
               ],
             ),
-          );
-        },
-      );
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-// ── identity ────────────────────────────────────────────────────────────────
+// ── pieces ──────────────────────────────────────────────────────────────────
 
-/// Cover, avatar straddling the seam, and everything else on ONE row beneath
-/// it: name, version, and app health at the right edge. The name used to sit
-/// over the cover gradient, where it was unreadable on every theme.
-class _Identity extends StatelessWidget {
-  const _Identity({
-    required this.state,
-    required this.name,
-    required this.language,
-    required this.onLanguage,
-    required this.onEmoji,
-    required this.onStatus,
-    required this.onCopyUrl,
+/// One control tile: a tinted glyph, a title and a line under it, whatever
+/// sits at the right of the header, then the controls. Every tile on the page
+/// is this shape, which is what makes the grid read as one panel.
+class _Tile extends StatelessWidget {
+  const _Tile({
+    required this.icon,
+    required this.tint,
+    required this.title,
+    required this.note,
+    required this.child,
+    this.trailing = const [],
   });
 
-  final SettingsState state;
-  final TextEditingController name;
-
-  /// The design language shown as picked — staged if one was clicked, the
-  /// stored one otherwise.
-  final DesignLanguage language;
-  final ValueChanged<DesignLanguage> onLanguage;
-  final VoidCallback onEmoji;
-  final VoidCallback onStatus;
-  final VoidCallback onCopyUrl;
+  final IconData icon;
+  final Color tint;
+  final String title;
+  final String note;
+  final Widget child;
+  final List<Widget> trailing;
 
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
     return Container(
-      decoration: context.skin
-              .surface(SurfaceRole.card, radius: Tokens.radiusLg) ??
+      padding: const EdgeInsets.all(16),
+      decoration: context.skin.surface(SurfaceRole.card, radius: 18) ??
           BoxDecoration(
             color: t.panel2,
-            borderRadius: BorderRadius.circular(Tokens.radiusLg),
+            borderRadius: BorderRadius.circular(18),
             border: Border.all(color: t.outline),
           ),
-      clipBehavior: Clip.antiAlias,
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 4:1, the cropper's mask exactly, clamped at both ends so a very
-          // narrow or very wide window still gets a sane band.
-          LayoutBuilder(
-            builder: (context, box) => SizedBox(
-              height: (box.maxWidth / 4).clamp(120.0, 200.0),
-              child: const Stack(
-                fit: StackFit.expand,
-                children: [
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [
-                          Tokens.brand,
-                          Tokens.brand2,
-                          Color(0xFF0EA5E9),
-                        ],
-                      ),
+          Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: context.skin
+                        .control(active: true, tint: tint, radius: 11) ??
+                    BoxDecoration(
+                      color: tint.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(11),
                     ),
-                  ),
-                  // The two blobs the Slint cover draws when no image is set.
-                  Positioned(
-                    right: -60,
-                    top: -55,
-                    child: _Blob(size: 190, color: Color(0x2AFFFFFF)),
-                  ),
-                  Positioned(
-                    left: -40,
-                    top: 44,
-                    child: _Blob(size: 130, color: Color(0x22000000)),
-                  ),
-                ],
+                child: Icon(context.skin.icon(icon), size: 17, color: tint),
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(title,
+                        style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: t.text)),
+                    Text(note,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 11.5, color: t.textDim)),
+                  ],
+                ),
+              ),
+              ...trailing,
+            ],
+          ),
+          const SizedBox(height: 14),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+/// A choice among siblings. Latched in the brand colour with a soft ring when
+/// picked; under a skin, the skin's own key.
+class _Pick extends StatelessWidget {
+  const _Pick({
+    required this.active,
+    required this.onTap,
+    required this.child,
+    this.padding = const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+    this.radius = 12,
+  });
+
+  final bool active;
+  final VoidCallback onTap;
+  final Widget child;
+  final EdgeInsets padding;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final r = BorderRadius.circular(radius);
+    return Material(
+      color: Colors.transparent,
+      borderRadius: r,
+      child: InkWell(
+        borderRadius: r,
+        onTap: onTap,
+        child: Container(
+          padding: padding,
+          decoration: context.skin
+                  .control(active: active, tint: Tokens.brand, radius: radius) ??
+              BoxDecoration(
+                color: active ? Tokens.brand.withValues(alpha: 0.10) : null,
+                borderRadius: r,
+                border: Border.all(
+                  color: active ? Tokens.brand : t.outline,
+                  width: active ? 1.5 : 1,
+                ),
+                boxShadow: active
+                    ? [
+                        BoxShadow(
+                          color: Tokens.brand.withValues(alpha: 0.18),
+                          spreadRadius: 3,
+                        ),
+                      ]
+                    : null,
+              ),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+class _ThemeSwatch extends StatelessWidget {
+  const _ThemeSwatch({
+    required this.theme,
+    required this.active,
+    required this.onTap,
+  });
+
+  final ({String id, String label, Color a, Color b}) theme;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return _Pick(
+      active: active,
+      onTap: onTap,
+      child: Row(
+        children: [
+          Container(
+            width: 30,
+            height: 20,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: t.outline),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [theme.a, theme.a, theme.b, theme.b],
+                stops: const [0, 0.5, 0.5, 1],
               ),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                // Only the avatar rides up over the seam, so the row reserves
-                // a short box and the circle hangs out of the top of it.
-                SizedBox(
-                  width: 92,
-                  height: 52,
-                  child: OverflowBox(
-                    maxHeight: 92,
-                    alignment: Alignment.topCenter,
-                    child: Transform.translate(
-                      offset: const Offset(0, -40),
-                      child: _Avatar(emoji: state.avatarEmoji, onTap: onEmoji),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                // Capped at 12 characters: the Focused layout sizes its
-                // greeting off a width factor and wraps past that. Rust clamps
-                // again on save and on load.
-                SizedBox(
-                  width: 150,
-                  child: TextField(
-                    controller: name,
-                    maxLength: 12,
-                    style: TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.w700,
-                        color: t.text),
-                    decoration: InputDecoration(
-                      isDense: true,
-                      counterText: '',
-                      hintText: 'Your name',
-                      hintStyle: TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.w700,
-                        color: t.textDim.withValues(alpha: 0.45),
-                      ),
-                      enabledBorder: UnderlineInputBorder(
-                          borderSide: BorderSide(color: t.outline, width: 2)),
-                      focusedBorder: const UnderlineInputBorder(
-                          borderSide:
-                              BorderSide(color: Tokens.brand, width: 2)),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 14),
-                _Chip(
-                  label: 'Tulipix v${state.appVersion}',
-                  icon: Icons.link,
-                  fill: const Color(0xFFF97316),
-                  onTap: onCopyUrl,
-                ),
-                const Spacer(),
-                Flexible(child: _StatusPill(onTap: onStatus)),
-              ],
-            ),
-          ),
-          // Under the name: which material Music is drawn in. Staged like the
-          // name and the mark — it goes on Save changes, in the Appearance card.
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const _RowLabel('Design language'),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final l in DesignLanguage.values)
-                      _LanguageTile(
-                        language: l,
-                        active: l == language,
-                        onTap: () => onLanguage(l),
-                      ),
-                  ],
-                ),
-              ],
-            ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(theme.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: active ? t.text : t.textDim)),
           ),
         ],
       ),
@@ -605,10 +1221,61 @@ class _Identity extends StatelessWidget {
   }
 }
 
-/// One design language: a two-tone swatch of its material, the style's name,
-/// and underneath this app's name for it.
-class _LanguageTile extends StatelessWidget {
-  const _LanguageTile({
+class _QuickToggle extends StatelessWidget {
+  const _QuickToggle({
+    required this.title,
+    required this.note,
+    required this.on,
+    required this.onChanged,
+  });
+
+  final String title;
+  final String note;
+  final bool on;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+      decoration: BoxDecoration(
+        color: t.bg,
+        borderRadius: BorderRadius.circular(13),
+        border: Border.all(color: t.outline),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(title,
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: t.text)),
+                Text(note,
+                    style: TextStyle(fontSize: 11.5, color: t.textDim)),
+              ],
+            ),
+          ),
+          Switch(
+            value: on,
+            activeThumbColor: Tokens.brand,
+            onChanged: onChanged,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One design language: a two-tone dot of its material, the style's name,
+/// and this app's name for it.
+class _LanguageRow extends StatelessWidget {
+  const _LanguageRow({
     required this.language,
     required this.active,
     required this.onTap,
@@ -633,63 +1300,118 @@ class _LanguageTile extends StatelessWidget {
     return Tooltip(
       message: language.blurb,
       waitDuration: const Duration(milliseconds: 500),
-      child: Material(
-        color:
-            active ? Tokens.brand.withValues(alpha: 0.12) : Colors.transparent,
-        borderRadius: BorderRadius.circular(Tokens.radiusSm),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(Tokens.radiusSm),
-          onTap: onTap,
-          child: Container(
-            width: 184,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(Tokens.radiusSm),
-              border: Border.all(
-                color: active ? Tokens.brand : t.outline,
-                width: active ? 1.5 : 1,
+      child: _Pick(
+        active: active,
+        onTap: onTap,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        child: Row(
+          children: [
+            Container(
+              width: 20,
+              height: 20,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [a, b],
+                ),
+                border: Border.all(color: t.outline),
               ),
             ),
+            const SizedBox(width: 10),
+            Text(language.label,
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: active ? t.text : t.textDim)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(language.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: t.textDim)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A style's outline, its own proportions, fitted into the glyph box.
+class _MiniShape extends StatelessWidget {
+  const _MiniShape({required this.size});
+
+  final Size size;
+
+  @override
+  Widget build(BuildContext context) {
+    final k = math.min(44 / size.width, 28 / size.height);
+    return Container(
+      width: size.width * k,
+      height: size.height * k,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(4),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFFF472B6), Tokens.brand],
+        ),
+      ),
+    );
+  }
+}
+
+class _CardToggle extends StatelessWidget {
+  const _CardToggle({
+    required this.label,
+    required this.on,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool on;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final r = BorderRadius.circular(10);
+    return Tooltip(
+      message: label,
+      waitDuration: const Duration(milliseconds: 700),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: r,
+        child: InkWell(
+          borderRadius: r,
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: context.skin
+                    .control(active: on, tint: Tokens.brand, radius: 10) ??
+                BoxDecoration(
+                  borderRadius: r,
+                  border: Border.all(
+                    color: on
+                        ? Tokens.brand.withValues(alpha: 0.45)
+                        : t.outline,
+                  ),
+                ),
             child: Row(
               children: [
-                Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [a, b],
-                    ),
-                    border: Border.all(color: t.outline),
-                  ),
-                ),
-                const SizedBox(width: 10),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        language.label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12.5,
+                  child: Text(label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 12,
                           fontWeight: FontWeight.w600,
-                          color: t.text,
-                        ),
-                      ),
-                      Text(
-                        language.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 10.5, color: t.textDim),
-                      ),
-                    ],
-                  ),
+                          color: on ? t.text : t.textDim)),
                 ),
+                const SizedBox(width: 8),
+                _MiniSwitch(on: on),
               ],
             ),
           ),
@@ -697,6 +1419,186 @@ class _LanguageTile extends StatelessWidget {
       ),
     );
   }
+}
+
+class _MiniSwitch extends StatelessWidget {
+  const _MiniSwitch({required this.on});
+
+  final bool on;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    const d = Duration(milliseconds: 150);
+    return AnimatedContainer(
+      duration: d,
+      width: 26,
+      height: 15,
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: on ? Tokens.brand : t.panel,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: on ? Tokens.brand : t.outline),
+      ),
+      child: AnimatedAlign(
+        duration: d,
+        alignment: on ? Alignment.centerRight : Alignment.centerLeft,
+        child: Container(
+          width: 9,
+          height: 9,
+          decoration: BoxDecoration(
+            color: on ? Colors.white : t.textDim,
+            shape: BoxShape.circle,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LayoutCard extends StatelessWidget {
+  const _LayoutCard({
+    required this.layout,
+    required this.active,
+    required this.cards,
+    required this.onTap,
+  });
+
+  final ({String id, String name, String blurb}) layout;
+  final bool active;
+  final Set<String> cards;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return _Pick(
+      active: active,
+      onTap: onTap,
+      radius: 14,
+      padding: const EdgeInsets.all(10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AspectRatio(
+            aspectRatio: 16 / 9,
+            child: _LayoutThumb(kind: layout.id, cards: cards),
+          ),
+          const SizedBox(height: 9),
+          Row(
+            children: [
+              Expanded(
+                child: Text(layout.name,
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: t.text)),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: active
+                        ? Tokens.brand.withValues(alpha: 0.5)
+                        : t.outline,
+                  ),
+                ),
+                child: Text(active ? 'IN USE' : 'USE',
+                    style: TextStyle(
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.5,
+                        color: active ? Tokens.brand : t.textDim)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(layout.blurb,
+              style: TextStyle(fontSize: 11.5, height: 1.4, color: t.textDim)),
+        ],
+      ),
+    );
+  }
+}
+
+class _AvatarFace extends StatelessWidget {
+  const _AvatarFace({
+    required this.size,
+    required this.image,
+    required this.emoji,
+  });
+
+  final double size;
+  final ImageProvider? image;
+  final String emoji;
+
+  @override
+  Widget build(BuildContext context) {
+    final fallback = Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF312E81), Tokens.brand],
+        ),
+      ),
+      child: emoji.trim().isEmpty
+          ? Icon(Icons.person, size: size * 0.42, color: Colors.white)
+          : Text(emoji, style: TextStyle(fontSize: size * 0.5)),
+    );
+    final img = image;
+    if (img == null) return fallback;
+    return ClipOval(
+      child: Image(
+        image: img,
+        key: img is FileImage
+            ? ValueKey(ShellController.instance.pictureEpoch)
+            : null,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (context, error, stack) => fallback,
+      ),
+    );
+  }
+}
+
+/// The cover when there is no picture: the gradient and the two blobs the
+/// Slint cover draws.
+class _CoverGradient extends StatelessWidget {
+  const _CoverGradient();
+
+  @override
+  Widget build(BuildContext context) => const Stack(
+        fit: StackFit.expand,
+        children: [
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Tokens.brand, Tokens.brand2, Color(0xFF0EA5E9)],
+              ),
+            ),
+          ),
+          Positioned(
+            right: -60,
+            top: -55,
+            child: _Blob(size: 190, color: Color(0x2AFFFFFF)),
+          ),
+          Positioned(
+            left: -40,
+            top: 44,
+            child: _Blob(size: 130, color: Color(0x22000000)),
+          ),
+        ],
+      );
 }
 
 class _Blob extends StatelessWidget {
@@ -713,62 +1615,84 @@ class _Blob extends StatelessWidget {
       );
 }
 
-class _Avatar extends StatefulWidget {
-  const _Avatar({required this.emoji, required this.onTap});
+/// A button that sits on a picture: dark glass, white type.
+class _GlassButton extends StatelessWidget {
+  const _GlassButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
 
-  final String emoji;
+  final IconData icon;
+  final String label;
   final VoidCallback onTap;
 
   @override
-  State<_Avatar> createState() => _AvatarState();
+  Widget build(BuildContext context) {
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(10),
+      side: const BorderSide(color: Color(0x38FFFFFF)),
+    );
+    return Material(
+      color: const Color(0x990A0A0E),
+      shape: shape,
+      child: InkWell(
+        customBorder: shape,
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 16, color: Colors.white),
+              const SizedBox(width: 7),
+              Text(label,
+                  style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
-class _AvatarState extends State<_Avatar> {
-  bool _hover = false;
+class _VersionChip extends StatelessWidget {
+  const _VersionChip({required this.label, required this.onTap});
+
+  final String label;
+  final VoidCallback onTap;
+
+  static const Color _orange = Color(0xFFF97316);
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
-          width: 92,
-          height: 92,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(26),
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Tokens.brand, Tokens.brand2],
+    final shape = StadiumBorder(
+        side: BorderSide(color: _orange.withValues(alpha: 0.4)));
+    return Tooltip(
+      message: 'Copy tulipix.pro',
+      child: Material(
+        color: _orange.withValues(alpha: 0.14),
+        shape: shape,
+        child: InkWell(
+          customBorder: shape,
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.copy, size: 13, color: _orange),
+                const SizedBox(width: 7),
+                Text(label,
+                    style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: _orange)),
+              ],
             ),
-            border:
-                Border.all(color: _hover ? Tokens.focus : t.panel2, width: 4),
-          ),
-          clipBehavior: Clip.antiAlias,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Center(
-                child: widget.emoji.trim().isEmpty
-                    ? const Icon(Icons.person, size: 38, color: Colors.white)
-                    : Text(widget.emoji, style: const TextStyle(fontSize: 40)),
-              ),
-              AnimatedOpacity(
-                duration: const Duration(milliseconds: 140),
-                opacity: _hover ? 1 : 0,
-                child: const ColoredBox(
-                  color: Color(0x6B000000),
-                  child: Center(
-                    child: Icon(Icons.edit, size: 24, color: Colors.white),
-                  ),
-                ),
-              ),
-            ],
           ),
         ),
       ),
@@ -794,13 +1718,14 @@ class _StatusPill extends StatelessWidget {
           _ => context.tokens.textDim,
         };
         return Material(
-          color: tint.withValues(alpha: 0.14),
-          borderRadius: BorderRadius.circular(999),
+          color: tint.withValues(alpha: 0.12),
+          shape: StadiumBorder(
+              side: BorderSide(color: tint.withValues(alpha: 0.4))),
           child: InkWell(
-            borderRadius: BorderRadius.circular(999),
+            customBorder: const StadiumBorder(),
             onTap: onTap,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(11, 7, 13, 7),
+              padding: const EdgeInsets.fromLTRB(11, 8, 13, 8),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -818,9 +1743,9 @@ class _StatusPill extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                          fontSize: 11.5,
+                          fontSize: 12,
                           fontWeight: FontWeight.w600,
-                          color: tint),
+                          color: context.tokens.text),
                     ),
                   ),
                 ],
@@ -833,697 +1758,12 @@ class _StatusPill extends StatelessWidget {
   }
 }
 
-class _Chip extends StatelessWidget {
-  const _Chip({
-    required this.label,
-    required this.icon,
-    required this.fill,
-    required this.onTap,
-  });
-
-  final String label;
-  final IconData icon;
-  final Color fill;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => Material(
-        color: fill,
-        borderRadius: BorderRadius.circular(999),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(999),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(11, 6, 12, 6),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 13, color: Colors.white),
-                const SizedBox(width: 6),
-                Text(label,
-                    style: const TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white)),
-              ],
-            ),
-          ),
-        ),
-      );
-}
-
-class _EmojiChip extends StatelessWidget {
-  const _EmojiChip({required this.emoji, required this.onTap});
-
-  final String emoji;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => Material(
-        color: context.tokens.panel,
-        borderRadius: BorderRadius.circular(Tokens.radiusSm),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(Tokens.radiusSm),
-          onTap: onTap,
-          child: SizedBox(
-            width: 40,
-            height: 40,
-            child: Center(
-                child: Text(emoji, style: const TextStyle(fontSize: 20))),
-          ),
-        ),
-      );
-}
-
-// ── the card shell ──────────────────────────────────────────────────────────
-
-class _Card extends StatelessWidget {
-  const _Card({
-    required this.title,
-    required this.glyph,
-    required this.tint,
-    required this.child,
-    this.action,
-    this.actionDirty = false,
-    this.onAction,
-  });
-
-  final String title;
-  final IconData glyph;
-  final Color tint;
-  final Widget child;
-  final String? action;
-  final bool actionDirty;
-  final VoidCallback? onAction;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-      decoration: context.skin
-              .surface(SurfaceRole.card, radius: Tokens.radiusLg) ??
-          BoxDecoration(
-            color: t.panel2,
-            borderRadius: BorderRadius.circular(Tokens.radiusLg),
-            border: Border.all(color: t.outline),
-          ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 28,
-                height: 28,
-                decoration: context.skin
-                        .control(active: true, tint: tint, radius: 9) ??
-                    BoxDecoration(
-                      color: tint.withValues(alpha: 0.16),
-                      borderRadius: BorderRadius.circular(9),
-                    ),
-                child: Icon(context.skin.icon(glyph), size: 15, color: tint),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(title,
-                    style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: t.text)),
-              ),
-              if (action != null)
-                // Lit only while there is something to write — a Save that
-                // stays lit is a Save nobody reads.
-                FilledButton(
-                  style: FilledButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    backgroundColor: actionDirty ? Tokens.brand : t.panel,
-                    foregroundColor: actionDirty ? Colors.white : t.textDim,
-                  ),
-                  onPressed: actionDirty ? onAction : null,
-                  child: Text(action!, style: const TextStyle(fontSize: 12)),
-                ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          child,
-        ],
-      ),
-    );
-  }
-}
-
-class _RowLabel extends StatelessWidget {
-  const _RowLabel(this.text);
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) => Text(
-        text.toUpperCase(),
-        style: TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 0.9,
-            color: context.tokens.textDim),
-      );
-}
-
-class _SwitchRow extends StatelessWidget {
-  const _SwitchRow({
-    required this.title,
-    required this.on,
-    required this.onChanged,
-    this.note = '',
-  });
-
-  final String title;
-  final String note;
-  final bool on;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Row(
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title,
-                  style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: t.text)),
-              if (note.isNotEmpty)
-                Text(note, style: TextStyle(fontSize: 11, color: t.textDim)),
-            ],
-          ),
-        ),
-        Switch(
-          value: on,
-          activeThumbColor: Tokens.brand,
-          onChanged: onChanged,
-        ),
-      ],
-    );
-  }
-}
-
-// ── appearance controls ─────────────────────────────────────────────────────
-
-class _ThemePicker extends StatelessWidget {
-  const _ThemePicker({required this.choice, required this.onPick});
-
-  final String choice;
-  final ValueChanged<String> onPick;
-
-  static const List<({String id, String label, Color a, Color b})> _themes = [
-    (id: 'system', label: 'System', a: Color(0xFF64748B), b: Color(0xFFE2E8F0)),
-    (id: 'light', label: 'Light', a: Color(0xFFF8FAFC), b: Color(0xFFCBD5E1)),
-    (id: 'dark', label: 'Dark', a: Color(0xFF1E293B), b: Color(0xFF0F172A)),
-    (
-      id: 'extra-dark',
-      label: 'Extra dark',
-      a: Color(0xFF0B0B0F),
-      b: Color(0xFF000000)
-    ),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    final at = _themes.any((x) => x.id == choice) ? choice : 'system';
-    return Row(
-      children: [
-        for (final th in _themes)
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(Tokens.radiusSm),
-                  onTap: () => onPick(th.id),
-                  child: Container(
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(Tokens.radiusSm),
-                      border: Border.all(
-                        color: at == th.id ? Tokens.brand : t.outline,
-                        width: at == th.id ? 2 : 1,
-                      ),
-                    ),
-                    child: Column(
-                      children: [
-                        Container(
-                          height: 26,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(5),
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [th.a, th.b],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 5),
-                        Text(
-                          th.label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 10.5,
-                            fontWeight:
-                                at == th.id ? FontWeight.w700 : FontWeight.w500,
-                            color: at == th.id ? t.text : t.textDim,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-/// Six tiles: what the sidebar is wearing, then the five marks to pick from.
-class _LogoRow extends StatelessWidget {
-  const _LogoRow({
-    required this.selected,
-    required this.defaultPicked,
-    required this.onPick,
-  });
-
-  final int selected;
-  final bool defaultPicked;
-  final ValueChanged<int> onPick;
-
-  static const List<String> _labels = [
-    'Default',
-    'Colour',
-    'Dark',
-    'White',
-    'India',
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return LayoutBuilder(
-      builder: (context, box) {
-        const gap = 8.0;
-        final cell = ((box.maxWidth - 6 * gap) / 6).clamp(30.0, 46.0);
-        return Row(
-          children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('ACTIVE',
-                    style: TextStyle(
-                        fontSize: 8,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.8,
-                        color: t.textDim)),
-                const SizedBox(height: 4),
-                // Preview only — the five beside it are what changes it. The
-                // seasonal swap shows HERE, which is why the Default chip below
-                // always draws the plain mark: two India tiles in one row read
-                // as a bug.
-                Container(
-                  width: cell,
-                  height: cell,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Tokens.brand, width: 2),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: Image.asset(
-                    selected == 0 && defaultPicked
-                        ? 'assets/appicons/sidebar-default.png'
-                        : appLogoAsset(selected),
-                    fit: BoxFit.cover,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(width: gap * 2),
-            for (var i = 0; i < 5; i++)
-              Padding(
-                padding: const EdgeInsets.only(top: 16, right: gap),
-                child: _LogoChip(
-                  // Always the plain mark for slot 0, even in a festival
-                  // window.
-                  asset: i == 0
-                      ? 'assets/appicons/sidebar-default.png'
-                      : appLogoAsset(i),
-                  label: _labels[i],
-                  size: cell,
-                  selected: selected == i,
-                  onTap: () => onPick(i),
-                ),
-              ),
-          ],
-        );
-      },
-    );
-  }
-}
-
-class _LogoChip extends StatelessWidget {
-  const _LogoChip({
-    required this.asset,
-    required this.label,
-    required this.size,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String asset;
-  final String label;
-  final double size;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Tooltip(
-      message: label,
-      child: GestureDetector(
-        onTap: onTap,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: Container(
-            width: size,
-            height: size,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: selected ? Tokens.brand : t.outline,
-                width: selected ? 2 : 1,
-              ),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Image.asset(asset, fit: BoxFit.cover),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PickTile extends StatelessWidget {
-  const _PickTile({
-    required this.label,
-    required this.note,
-    required this.active,
-    required this.onTap,
-  });
-
-  final String label;
-  final String note;
-  final bool active;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    final skin = context.skin;
-    return Material(
-      color: active && skin.isStandard
-          ? Tokens.brand.withValues(alpha: 0.12)
-          : Colors.transparent,
-      borderRadius: BorderRadius.circular(Tokens.radiusSm),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(Tokens.radiusSm),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
-          decoration: skin.control(
-                active: active,
-                tint: Tokens.brand,
-                radius: Tokens.radiusSm,
-              ) ??
-              BoxDecoration(
-                borderRadius: BorderRadius.circular(Tokens.radiusSm),
-                border: Border.all(
-                  color: active ? Tokens.brand : t.outline,
-                  width: active ? 1.5 : 1,
-                ),
-              ),
-          child: Row(
-            children: [
-              Icon(
-                active ? Icons.radio_button_checked : Icons.radio_button_off,
-                size: 15,
-                color: active ? Tokens.brand : t.textDim,
-              ),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Text(label,
-                    style: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w600,
-                        color: t.text)),
-              ),
-              Text(note,
-                  style: TextStyle(
-                      fontSize: 10.5,
-                      color: t.textDim,
-                      fontFeatures: const [FontFeature.tabularFigures()])),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 // ── home layouts ────────────────────────────────────────────────────────────
-
-class _HomeHeader extends StatelessWidget {
-  const _HomeHeader({required this.inUse});
-
-  final String inUse;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Row(
-      children: [
-        Container(
-          width: 30,
-          height: 30,
-          decoration: BoxDecoration(
-            color: Tokens.brand.withValues(alpha: 0.16),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: const Icon(Icons.grid_view, size: 15, color: Tokens.brand),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text('Home Layouts',
-              style: TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w700, color: t.text)),
-        ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
-          decoration: BoxDecoration(
-            color: Tokens.brand.withValues(alpha: 0.18),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Text('IN USE · ${inUse.toUpperCase()}',
-              style: const TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.6,
-                  color: Tokens.brand)),
-        ),
-      ],
-    );
-  }
-}
-
-class _LayoutRow extends StatelessWidget {
-  const _LayoutRow({
-    required this.state,
-    required this.wide,
-    required this.onUse,
-    required this.onCustomize,
-  });
-
-  final SettingsState state;
-  final bool wide;
-  final void Function(String id, String name) onUse;
-  final void Function(String id) onCustomize;
-
-  @override
-  Widget build(BuildContext context) {
-    final on = {
-      for (final c in state.homeCards)
-        if (c.on_) c.key
-    };
-    final tiles = [
-      for (final l in kHomeLayoutTiles)
-        _LayoutTile(
-          layout: l,
-          active: state.homeLayout == l.id,
-          cards: on,
-          onUse: () => onUse(l.id, l.name),
-          onCustomize: () => onCustomize(l.id),
-        ),
-    ];
-    // Four across, or two rows of two — a grid would size its columns off the
-    // longest blurb and the tiles would stop matching, which is why Slint
-    // places them by hand.
-    const gap = 14.0;
-    if (wide) {
-      return IntrinsicHeight(
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            for (var i = 0; i < tiles.length; i++) ...[
-              if (i > 0) const SizedBox(width: gap),
-              Expanded(child: tiles[i]),
-            ],
-          ],
-        ),
-      );
-    }
-    return Column(
-      children: [
-        for (var i = 0; i < tiles.length; i += 2) ...[
-          if (i > 0) const SizedBox(height: gap),
-          IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(child: tiles[i]),
-                const SizedBox(width: gap),
-                if (i + 1 < tiles.length)
-                  Expanded(child: tiles[i + 1])
-                else
-                  const Spacer(),
-              ],
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-class _LayoutTile extends StatelessWidget {
-  const _LayoutTile({
-    required this.layout,
-    required this.active,
-    required this.cards,
-    required this.onUse,
-    required this.onCustomize,
-  });
-
-  final ({String id, String name, String blurb}) layout;
-  final bool active;
-  final Set<String> cards;
-  final VoidCallback onUse;
-  final VoidCallback onCustomize;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      // The layout in use is latched in the brand's colour; the others are the
-      // skin's cards.
-      decoration: (active
-              ? context.skin.control(
-                  active: true, tint: Tokens.brand, radius: Tokens.radiusLg)
-              : context.skin
-                  .surface(SurfaceRole.card, radius: Tokens.radiusLg)) ??
-          BoxDecoration(
-            color: t.panel2,
-            borderRadius: BorderRadius.circular(Tokens.radiusLg),
-            border: Border.all(
-              color: active ? Tokens.brand : t.outline,
-              width: active ? 2 : 1,
-            ),
-          ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          AspectRatio(
-            aspectRatio: 16 / 9,
-            child: _LayoutThumb(kind: layout.id, cards: cards),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: Text(layout.name,
-                    style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: t.text)),
-              ),
-              if (active)
-                const Text('IN USE',
-                    style: TextStyle(
-                        fontSize: 8.5,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.6,
-                        color: Tokens.brand)),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(layout.blurb,
-              style: TextStyle(fontSize: 11, height: 1.35, color: t.textDim)),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: active
-                    ? OutlinedButton(
-                        style: OutlinedButton.styleFrom(
-                            visualDensity: VisualDensity.compact),
-                        onPressed: null,
-                        child: const Text('In use',
-                            style: TextStyle(fontSize: 11.5)),
-                      )
-                    : FilledButton(
-                        style: FilledButton.styleFrom(
-                            visualDensity: VisualDensity.compact),
-                        onPressed: onUse,
-                        child: const Text('Use this',
-                            style: TextStyle(fontSize: 11.5)),
-                      ),
-              ),
-              const SizedBox(width: 6),
-              IconButton(
-                tooltip: 'Customize cards',
-                visualDensity: VisualDensity.compact,
-                iconSize: 17,
-                onPressed: onCustomize,
-                icon: const Icon(Icons.tune),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 /// The 16:9 schematic — a port of `LayoutThumb`.
 ///
 /// Rows collapse rather than stretch, so a stripped layout looks stripped:
-/// switching a card off in the sheet takes its block out of every tile.
+/// switching a card off takes its block out of every tile.
 class _LayoutThumb extends StatelessWidget {
   const _LayoutThumb({required this.kind, required this.cards});
 
@@ -1857,87 +2097,6 @@ class _LayoutThumb extends StatelessWidget {
         decoration:
             BoxDecoration(color: c, borderRadius: BorderRadius.circular(3)),
       );
-}
-
-/// The card switches for the layout in use — Slint's Customize popup.
-class _CardsDialog extends StatelessWidget {
-  const _CardsDialog({required this.controller});
-
-  final SettingsController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, _) {
-        final st = controller.state;
-        if (st == null) return const SizedBox.shrink();
-        final on = {
-          for (final c in st.homeCards)
-            if (c.on_) c.key
-        };
-        return AlertDialog(
-          title: Row(
-            children: [
-              Expanded(child: Text('${_layoutName(st.homeLayout)} — cards')),
-              TextButton(
-                onPressed: () =>
-                    controller.send(const SettingsCmd.homeCardsReset()),
-                child: const Text('Reset', style: TextStyle(fontSize: 12)),
-              ),
-            ],
-          ),
-          content: SizedBox(
-            width: 520,
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // The same schematic the tile shows, so switching a card off
-                  // is visible before the page is looked at.
-                  Center(
-                    child: SizedBox(
-                      width: 260,
-                      child: AspectRatio(
-                        aspectRatio: 16 / 9,
-                        child: _LayoutThumb(kind: st.homeLayout, cards: on),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  for (final card in st.homeCards)
-                    _SwitchRow(
-                      title: card.label,
-                      on: card.on_,
-                      onChanged: (v) => controller
-                          .send(SettingsCmd.homeCardSet(key: card.key, on_: v)),
-                    ),
-                  if (st.homeLayout == 'classic') ...[
-                    Divider(color: t.outline, height: 24),
-                    _SwitchRow(
-                      title: 'Music rail on the left',
-                      note: 'Swaps the rail and the card deck.',
-                      on: st.homeMusicLeft,
-                      onChanged: (v) => controller.send(
-                          SettingsCmd.toggle(key: 'home.music-left', on_: v)),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            FilledButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Done'),
-            ),
-          ],
-        );
-      },
-    );
-  }
 }
 
 // ── credits ─────────────────────────────────────────────────────────────────

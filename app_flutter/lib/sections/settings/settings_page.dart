@@ -51,6 +51,37 @@ class _SettingsPageState extends State<SettingsPage> {
     super.dispose();
   }
 
+  /// Open a tab. You & Home stages its edits until Save, so leaving it with
+  /// some pending asks first rather than dropping them without a word.
+  Future<void> _go(String v) async {
+    if (v == _tab) return;
+    if (_tab == 'profile' && _c.profileDirty.value) {
+      final leave = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Leave without saving?'),
+          content: const Text(
+              'Your changes on You & Home are not saved yet. Leaving the tab '
+              'throws them away.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Stay'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Discard changes'),
+            ),
+          ],
+        ),
+      );
+      if (leave != true || !mounted) return;
+      _c.profileDirty.value = false;
+    }
+    setState(() => _tab = v);
+    _c.send(SettingsCmd.setTab(tab: v));
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
@@ -62,13 +93,7 @@ class _SettingsPageState extends State<SettingsPage> {
           color: t.bg,
           child: Row(
             children: [
-              _Rail(
-                tab: _tab,
-                onTab: (v) {
-                  setState(() => _tab = v);
-                  _c.send(SettingsCmd.setTab(tab: v));
-                },
-              ),
+              _Rail(tab: _tab, controller: _c, onTab: _go),
               Container(width: 1, color: t.outline),
               Expanded(
                 child: st == null
@@ -101,14 +126,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _stage(SettingsState st) => switch (_tab) {
         // The status pill on the identity row goes to the Status tab, so the
         // page that owns the tab has to hand it the way back.
-        'profile' => ProfileTab(
-            controller: _c,
-            state: st,
-            onTab: (v) {
-              setState(() => _tab = v);
-              _c.send(SettingsCmd.setTab(tab: v));
-            },
-          ),
+        'profile' => ProfileTab(controller: _c, state: st, onTab: _go),
         'libraries' => LibrariesTab(controller: _c, state: st),
         // The dashboard, as its own tab — the same page the sidebar's lamp
         // reports on, not a second rendering of it.
@@ -121,9 +139,14 @@ class _SettingsPageState extends State<SettingsPage> {
 }
 
 class _Rail extends StatelessWidget {
-  const _Rail({required this.tab, required this.onTab});
+  const _Rail({
+    required this.tab,
+    required this.controller,
+    required this.onTab,
+  });
 
   final String tab;
+  final SettingsController controller;
   final ValueChanged<String> onTab;
 
   @override
@@ -131,23 +154,29 @@ class _Rail extends StatelessWidget {
     final t = context.tokens;
     return SizedBox(
       width: 208,
-      child: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 10),
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 0, 8, 14),
-            child: Text('Settings',
-                style: TextStyle(
-                    fontSize: 19, fontWeight: FontWeight.w800, color: t.text)),
-          ),
-          for (final item in kSettingsTabs)
-            _RailItem(
-              label: item.label,
-              icon: item.icon,
-              active: tab == item.id,
-              onTap: () => onTab(item.id),
+      child: ValueListenableBuilder(
+        valueListenable: controller.profileDirty,
+        builder: (context, dirty, _) => ListView(
+          padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 10),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 14),
+              child: Text('Settings',
+                  style: TextStyle(
+                      fontSize: 19,
+                      fontWeight: FontWeight.w800,
+                      color: t.text)),
             ),
-        ],
+            for (final item in kSettingsTabs)
+              _RailItem(
+                label: item.label,
+                icon: item.icon,
+                active: tab == item.id,
+                unsaved: dirty && item.id == 'profile',
+                onTap: () => onTab(item.id),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -159,12 +188,16 @@ class _RailItem extends StatelessWidget {
     required this.icon,
     required this.active,
     required this.onTap,
+    this.unsaved = false,
   });
 
   final String label;
   final IconData icon;
   final bool active;
   final VoidCallback onTap;
+
+  /// An amber dot: this tab has edits that are not saved yet.
+  final bool unsaved;
 
   @override
   Widget build(BuildContext context) {
@@ -200,6 +233,16 @@ class _RailItem extends StatelessWidget {
                               active ? FontWeight.w700 : FontWeight.w500,
                           color: active ? t.text : t.textDim)),
                 ),
+                if (unsaved)
+                  Tooltip(
+                    message: 'Unsaved changes',
+                    child: Container(
+                      width: 7,
+                      height: 7,
+                      decoration: const BoxDecoration(
+                          color: Tokens.warn, shape: BoxShape.circle),
+                    ),
+                  ),
               ],
             ),
           ),

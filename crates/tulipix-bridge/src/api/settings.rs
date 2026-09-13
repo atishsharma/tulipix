@@ -63,6 +63,10 @@ pub struct SettingsState {
     // You & Home.
     pub display_name: String,
     pub avatar_emoji: String,
+    /// The cropped profile photo, or empty -- the emoji stands in.
+    pub avatar_path: String,
+    /// The cropped header cover, or empty -- the gradient stands in.
+    pub cover_path: String,
     pub logo_choice: i32,
     pub theme: String,
     pub reduce_motion: bool,
@@ -97,7 +101,9 @@ pub enum SettingsCmd {
     /// A button row. The key names what to do; unknown keys are ignored rather
     /// than crashing a settings page.
     Action { key: String },
-    SaveProfile { name: String, emoji: String, logo: i32 },
+    /// `avatar` / `cover`: None leaves the picture alone, empty bytes remove
+    /// it, anything else is a PNG the page already cropped.
+    SaveProfile { name: String, emoji: String, logo: i32, avatar: Option<Vec<u8>>, cover: Option<Vec<u8>> },
     SetTheme { theme: String },
     SetReduceMotion { on: bool },
     SetHomeLayout { layout: String },
@@ -129,13 +135,19 @@ pub async fn settings_dispatch(cmd: SettingsCmd) -> Result<SettingsState> {
             _ => put(&key, &value),
         },
         SettingsCmd::Action { key } => notice = action(&key).await,
-        SettingsCmd::SaveProfile { name, emoji, logo } => {
+        SettingsCmd::SaveProfile { name, emoji, logo, avatar, cover } => {
             crate::api::shell::shell_dispatch(crate::api::shell::ShellCmd::SaveProfile {
                 name,
                 emoji,
                 logo,
             })
             .await?;
+            if let Some(png) = avatar {
+                crate::api::shell::store_picture("avatar.png", &png)?;
+            }
+            if let Some(png) = cover {
+                crate::api::shell::store_picture("cover.png", &png)?;
+            }
         }
         SettingsCmd::SetTheme { theme } => {
             let mut s = load();
@@ -192,8 +204,8 @@ const HOME_CARD_PREFIX: &str = "home.card.";
 
 /// Every card the classic Home layout can draw, in the order it draws them.
 const HOME_CARDS: [(&str, &str); 12] = [
-    ("hero", "Greeting and library totals"),
-    ("continue", "Continue where you left off"),
+    ("hero", "Greeting"),
+    ("continue", "Continue"),
     ("player", "Music player"),
     ("quick", "Quick actions"),
     ("photos", "Photos"),
@@ -223,6 +235,8 @@ async fn snapshot() -> SettingsState {
         tab: tab_cell().lock().map(|g| g.clone()).unwrap_or_else(|_| "profile".into()),
         display_name: s.text("profile.name"),
         avatar_emoji: s.text("profile.emoji"),
+        avatar_path: crate::api::shell::picture("avatar.png"),
+        cover_path: crate::api::shell::picture("cover.png"),
         logo_choice: s.text("profile.logo").parse().unwrap_or(0),
         theme: s.theme.clone(),
         reduce_motion: s.reduce_motion,

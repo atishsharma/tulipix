@@ -35,6 +35,10 @@ class ShellController extends ChangeNotifier {
   String statusLevel = 'unknown';
   String statusNote = 'Starting…';
 
+  /// Bumped when Save rewrites the profile photo or cover. The files keep
+  /// their names, so anything drawing them keys on this to load them again.
+  int pictureEpoch = 0;
+
   Timer? _tick;
 
   /// The poll runs while something is drawing the badge and the lamp, and not

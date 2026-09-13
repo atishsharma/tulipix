@@ -11,6 +11,8 @@
 // the active row is pressed *into* the shell, and a recess that also floats
 // reads as neither.
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../design/app_mark.dart';
@@ -412,6 +414,20 @@ class _UserCard extends StatelessWidget {
     final t = context.tokens;
     final u = state?.user;
     final emoji = u?.avatarEmoji ?? '';
+    final photo = u?.avatarPath ?? '';
+    final face = Container(
+      width: 28,
+      height: 28,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: Tokens.brand.withValues(alpha: 0.18),
+        shape: BoxShape.circle,
+      ),
+      child: emoji.isEmpty
+          ? Icon(context.skin.icon(Icons.person_outline),
+              size: 15, color: t.text)
+          : Text(emoji, style: const TextStyle(fontSize: 14)),
+    );
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
@@ -427,19 +443,19 @@ class _UserCard extends StatelessWidget {
               ),
           child: Row(
             children: [
-              Container(
-                width: 28,
-                height: 28,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: Tokens.brand.withValues(alpha: 0.18),
-                  shape: BoxShape.circle,
-                ),
-                child: emoji.isEmpty
-                    ? Icon(context.skin.icon(Icons.person_outline),
-                        size: 15, color: t.text)
-                    : Text(emoji, style: const TextStyle(fontSize: 14)),
-              ),
+              // The photo when there is one; the emoji if the file is gone.
+              photo.isEmpty
+                  ? face
+                  : ClipOval(
+                      child: Image.file(
+                        File(photo),
+                        key: ValueKey(ShellController.instance.pictureEpoch),
+                        width: 28,
+                        height: 28,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stack) => face,
+                      ),
+                    ),
               const SizedBox(width: 9),
               Expanded(
                 child: Column(

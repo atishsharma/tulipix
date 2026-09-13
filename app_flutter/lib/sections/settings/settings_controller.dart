@@ -52,6 +52,10 @@ class SettingsController extends ChangeNotifier {
   bool busy = false;
   String notice = '';
 
+  /// Unsaved edits on You & Home. That page stages everything until Save, so
+  /// the rail marks its tab and leaving it asks first.
+  final ValueNotifier<bool> profileDirty = ValueNotifier(false);
+
   Future<void> send(SettingsCmd cmd) async {
     busy = true;
     error = null;
@@ -110,6 +114,7 @@ class SettingsController extends ChangeNotifier {
   @override
   void dispose() {
     _stopPoll();
+    profileDirty.dispose();
     super.dispose();
   }
 

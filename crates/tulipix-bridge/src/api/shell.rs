@@ -15,6 +15,8 @@ pub struct ShellUser {
     /// same count.
     pub secondary: String,
     pub avatar_emoji: String,
+    /// The cropped profile photo, or empty -- the emoji stands in.
+    pub avatar_path: String,
     /// Everything is on this machine. There is no account tier yet, and the
     /// pill says so rather than implying one is coming.
     pub mode: String,
@@ -92,6 +94,7 @@ async fn snapshot() -> Result<ShellState> {
             },
             secondary: crate::api::home::library_line().await,
             avatar_emoji: s.text("profile.emoji"),
+            avatar_path: picture("avatar.png"),
             mode: "local".into(),
         },
         logo_choice: s.text("profile.logo").parse().unwrap_or(0),
@@ -132,6 +135,46 @@ fn clamp_name(name: &str) -> String {
     name.trim().chars().take(NAME_MAX).collect()
 }
 
+/// `<data>/profile/{avatar,cover}.png` -- the fixed names the Slint build reads
+/// and writes too, so both builds show the same pictures.
+fn picture_file(name: &str) -> Option<std::path::PathBuf> {
+    tulipix_core::paths::data_dir().map(|d| d.join("profile").join(name))
+}
+
+/// The picture's path if it is on disk, else empty.
+pub(crate) fn picture(name: &str) -> String {
+    picture_file(name)
+        .filter(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Replace a profile picture with a PNG the page already cropped, or remove it
+/// when `png` is empty.
+pub(crate) fn store_picture(name: &str, png: &[u8]) -> Result<()> {
+    let path = picture_file(name).ok_or_else(|| anyhow::anyhow!("no data directory on this system"))?;
+    write_picture(&path, png)
+}
+
+/// Written beside and renamed over, so a crash mid-write never leaves half a
+/// file that both builds would then fail to decode.
+fn write_picture(path: &std::path::Path, png: &[u8]) -> Result<()> {
+    if png.is_empty() {
+        return match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        };
+    }
+    anyhow::ensure!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "the cropped picture is not a PNG");
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let part = path.with_extension("png.part");
+    std::fs::write(&part, png)?;
+    std::fs::rename(&part, path)?;
+    Ok(())
+}
+
 pub(crate) fn load() -> tulipix_core::settings::Settings {
     tulipix_core::settings::Settings::load().unwrap_or_default()
 }
@@ -166,5 +209,24 @@ mod tests {
         assert_eq!(clamp_name("  Ada  "), "Ada");
         assert_eq!(clamp_name(&"x".repeat(80)).len(), NAME_MAX);
         assert_eq!(clamp_name("   "), "");
+    }
+
+    /// A picture is written, replaced, refused when it is not a PNG, and
+    /// removed -- and removing one that is already gone is not an error.
+    #[test]
+    fn a_profile_picture_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profile").join("avatar.png");
+        let png = b"\x89PNG\r\n\x1a\nfirst".to_vec();
+        write_picture(&path, &png).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), png);
+        let next = b"\x89PNG\r\n\x1a\nsecond".to_vec();
+        write_picture(&path, &next).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), next);
+        assert!(write_picture(&path, b"GIF89a").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), next);
+        write_picture(&path, &[]).unwrap();
+        assert!(!path.exists());
+        write_picture(&path, &[]).unwrap();
     }
 }
