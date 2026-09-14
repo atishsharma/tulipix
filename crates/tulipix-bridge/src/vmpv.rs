@@ -248,6 +248,9 @@ pub async fn ended(token: i64, pos: f64, dur: f64) {
     let Ok(pool) = crate::db::videos_pool().await else { return };
     if dur > 0.0 && pos >= dur * 0.98 {
         let _ = tulipix_videos::watch_progress::mark_finished(pool, id, true).await;
+        // Watched to the end: Trakt hears about it, if it is switched on and
+        // the account is linked. Detached, so closing the player never waits.
+        crate::api::videos::trakt_push_watched(id);
     } else if pos > 1.0 {
         let _ = tulipix_videos::watch_progress::update(pool, id, pos, Some(dur)).await;
     }

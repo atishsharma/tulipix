@@ -25,6 +25,15 @@ hmac = "0.13"
 md-5 = "0.11"
 base64 = "0.23"
 url = "2"
+# AniDB: both its endpoints answer with a gzip body and no Content-Encoding
+# header, and the anime document is XML. Both crates are already in the tree
+# (flate2 under lofty and zip, roxmltree under usvg), so this is two
+# dependency lines rather than two new crates to compile.
+flate2 = "1"
+roxmltree = "0.21"
+# Addic7ed has no API: its episode page is read with a handful of regexes.
+# regex is already in the tree under tracing-subscriber's env-filter.
+regex = "1"
 # Stream Plus streams a download to disk chunk by chunk rather than buffering a
 # whole episode in memory, which needs reqwest's byte stream.
 futures-util = { workspace = true }

@@ -18,15 +18,26 @@ use crate::api::shell::{load, save};
 
 // ── service keys ────────────────────────────────────────────────────────────
 
-/// The services with a key worth setting, in the order drawn. The five the
-/// Slint build's Service keys page lists; the rest of `api_keys::SERVICES` are
+/// The services with a key worth setting, in the order drawn. The first five
+/// are the Slint build's Service keys page; the rest arrived with the service
+/// integrations, and every one of them is a secret, so every one of them is
+/// here rather than in settings.json. The others in `api_keys::SERVICES` are
 /// keyless public APIs, or not keys at all.
-const KEYED: [(&str, &str); 5] = [
+const KEYED: [(&str, &str); 12] = [
     ("tmdb", "TMDB"),
     ("tvdb", "TheTVDB"),
     ("opensubtitles", "OpenSubtitles"),
     ("lastfm", "Last.fm"),
     ("libretranslate", "LibreTranslate"),
+    ("discogs", "Discogs"),
+    ("spotify_id", "Spotify client ID"),
+    ("spotify_secret", "Spotify client secret"),
+    ("youtube_data", "YouTube Data"),
+    ("trakt", "Trakt client ID"),
+    ("trakt_secret", "Trakt client secret"),
+    // Not a key: AniDB registers a client by name, and every request carries
+    // it. Same box, same keychain, so it is kept with the keys.
+    ("anidb", "AniDB client name"),
 ];
 
 fn label(service: &str) -> Option<&'static str> {
@@ -140,6 +151,60 @@ pub(crate) async fn test_key(service: &str) -> String {
         "tvdb" => client
             .post("https://api4.thetvdb.com/v4/login")
             .json(&serde_json::json!({ "apikey": key })),
+        // The integrations each know their own cheapest call, so the check
+        // goes through their client rather than being spelled out twice.
+        "discogs" => {
+            return match tulipix_music::discogs::DiscogsClient::new(key).check().await {
+                Ok(true) => "Discogs accepted the token.".into(),
+                Ok(false) => "Discogs turned the token down. Check it was copied whole.".into(),
+                Err(e) => format!("Could not reach Discogs: {e}"),
+            };
+        }
+        // Spotify needs both halves, and the token call is what checks them.
+        "spotify_id" | "spotify_secret" => {
+            let (Some(id), Some(secret)) = (
+                tulipix_core::api_keys::fetch("spotify_id").ok().flatten(),
+                tulipix_core::api_keys::fetch("spotify_secret").ok().flatten(),
+            ) else {
+                return "Save both the client ID and the client secret, then test.".into();
+            };
+            return match tulipix_music::spotify_api::SpotifyClient::new(id.trim(), secret.trim())
+                .check()
+                .await
+            {
+                Ok(_) => "Spotify accepted the ID and secret.".into(),
+                Err(e) => format!("Spotify turned them down: {e}"),
+            };
+        }
+        "youtube_data" => {
+            return match tulipix_music::youtube_data::YoutubeDataClient::new(key).check().await {
+                Ok(true) => "YouTube accepted the key.".into(),
+                Ok(false) => {
+                    "YouTube turned the key down, or today's quota is spent.".into()
+                }
+                Err(e) => format!("Could not reach YouTube: {e}"),
+            };
+        }
+        // Trakt's id is checked by asking for a device code, which is the
+        // first thing Link does anyway.
+        "trakt" | "trakt_secret" => {
+            let Some(app) = crate::services::trakt_app() else {
+                return "Save both the Trakt client ID and the client secret, then test.".into();
+            };
+            return match app.device_code().await {
+                Ok(_) => "Trakt accepted the ID. Use Link to sign in.".into(),
+                Err(e) => format!("Trakt turned the ID down: {e}"),
+            };
+        }
+        // AniDB's client name is only checked by a real lookup, and their
+        // terms are firm about how often that may happen.
+        "anidb" => {
+            return format!(
+                "The AniDB client name is saved. AniDB allows one titles \
+                 download a day, so {name} is checked the first time an anime \
+                 is looked up."
+            );
+        }
         // Every LibreTranslate server is someone's own, with its own rules.
         _ => {
             return format!(
@@ -158,24 +223,189 @@ pub(crate) async fn test_key(service: &str) -> String {
     }
 }
 
-/// A TMDB key typed into the old text row sat in settings.json as
-/// `api.tmdb`, which nothing reads. Move it to the keychain, where the videos
-/// look, and take it out of the file. Runs once: after it the key is gone.
-pub(crate) fn rescue_tmdb_key() {
-    let Some(typed) = load().advanced.get("api.tmdb").map(|v| v.trim().to_string()) else {
-        return;
-    };
-    if !typed.is_empty() && !has_key("tmdb") {
-        // Left where it is if the keychain will not take it, and tried again
-        // on the next snapshot, rather than lost.
-        if tulipix_core::api_keys::store("tmdb", &typed).is_err() {
-            return;
+/// Keys typed into a text row, which sat in settings.json where nothing reads
+/// them. Each one moves to the keychain, where the section that needs it
+/// looks, and comes out of the file.
+///
+/// `api.tmdb` was the first: the Flutter build saved it and the videos read
+/// the keychain, so a key typed there did nothing at all. The Spotify and
+/// YouTube ones are the same mistake, found when the service integrations
+/// went in -- and they are secrets, which settings.json is not for.
+///
+/// Runs on every snapshot and does nothing after the first: once a key has
+/// moved, the file has no such entry to find.
+pub(crate) fn rescue_typed_keys() {
+    const MOVED: [(&str, &str); 4] = [
+        ("api.tmdb", "tmdb"),
+        ("api.spotify-id", "spotify_id"),
+        ("api.spotify-secret", "spotify_secret"),
+        ("api.youtube-data", "youtube_data"),
+    ];
+    let mut moved_any = false;
+    for (old_key, service) in MOVED {
+        let Some(typed) = load().advanced.get(old_key).map(|v| v.trim().to_string()) else {
+            continue;
+        };
+        if !typed.is_empty() && !has_key(service) {
+            // Left where it is if the keychain will not take it, and tried
+            // again on the next snapshot, rather than lost.
+            if tulipix_core::api_keys::store(service, &typed).is_err() {
+                continue;
+            }
+            moved_any = true;
         }
+        let mut s = load();
+        s.advanced.remove(old_key);
+        save(s);
+    }
+    if moved_any {
         forget_saved();
     }
-    let mut s = load();
-    s.advanced.remove("api.tmdb");
-    save(s);
+}
+
+// ── Trakt's device flow ─────────────────────────────────────────────────────
+//
+// The one integration with a sign-in. Link asks Trakt for a code, and the
+// polling runs detached: the code is good for ten minutes and a settings
+// dispatch that waited on it would hold the page for all of them. What it is
+// doing rides the snapshot, the way a model download does.
+
+pub(crate) enum TraktState {
+    /// No client ID and secret saved yet, so there is nothing to link with.
+    NoApp,
+    /// Waiting for the user to type `code` at `url`.
+    Waiting { code: String, url: String },
+    Linked(String),
+    NotLinked,
+}
+
+/// The code being waited on, and whether the poll is still running. Cleared
+/// when the flow ends, however it ends.
+fn trakt_pending() -> &'static Mutex<Option<(String, String)>> {
+    static P: std::sync::OnceLock<Mutex<Option<(String, String)>>> = std::sync::OnceLock::new();
+    P.get_or_init(|| Mutex::new(None))
+}
+
+/// The account name behind the saved token, looked up once per run. `None`
+/// means "not asked yet"; `Some(None)` means asked, and the token is no good.
+fn trakt_user() -> &'static Mutex<Option<Option<String>>> {
+    static U: std::sync::OnceLock<Mutex<Option<Option<String>>>> = std::sync::OnceLock::new();
+    U.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn trakt_state() -> TraktState {
+    if let Some((code, url)) = trakt_pending().lock().ok().and_then(|g| g.clone()) {
+        return TraktState::Waiting { code, url };
+    }
+    if crate::services::key("trakt").is_none() || crate::services::key("trakt_secret").is_none() {
+        return TraktState::NoApp;
+    }
+    if crate::services::key("trakt_token").is_none() {
+        return TraktState::NotLinked;
+    }
+    // The name is filled in by the check `start_trakt_link` kicks off after a
+    // successful link, and by the first Refresh after a restart.
+    match trakt_user().lock().ok().and_then(|g| g.clone()) {
+        Some(Some(user)) => TraktState::Linked(user),
+        Some(None) => TraktState::NotLinked,
+        None => {
+            start_trakt_check();
+            TraktState::Linked("…".into())
+        }
+    }
+}
+
+/// Ask Trakt whose token this is, once. A token they no longer accept comes
+/// back as `Some(None)` and the row says "Not linked" rather than lying.
+fn start_trakt_check() {
+    let Some((client, token)) = crate::services::trakt() else { return };
+    // Marked as asked at once, so a snapshot a second later does not start a
+    // second lookup.
+    if let Ok(mut g) = trakt_user().lock() {
+        if g.is_some() {
+            return;
+        }
+        *g = Some(Some("…".into()));
+    }
+    tokio::spawn(async move {
+        let user = client.username(&token).await.ok().flatten();
+        if let Ok(mut g) = trakt_user().lock() {
+            *g = Some(user);
+        }
+    });
+}
+
+/// Link, cancel or unlink, depending on where the flow is. One button, because
+/// there is only ever one thing to do next.
+pub(crate) fn trakt_link_action() -> String {
+    if trakt_pending().lock().is_ok_and(|g| g.is_some()) {
+        if let Ok(mut g) = trakt_pending().lock() {
+            *g = None;
+        }
+        return "Stopped waiting for Trakt.".into();
+    }
+    if crate::services::key("trakt_token").is_some() {
+        let _ = tulipix_core::api_keys::delete("trakt_token");
+        if let Ok(mut g) = trakt_user().lock() {
+            *g = None;
+        }
+        forget_saved();
+        return "Unlinked. Nothing more is sent to Trakt.".into();
+    }
+    let Some(app) = crate::services::trakt_app() else {
+        return "Add a Trakt client ID and secret first — they come from \
+                trakt.tv/oauth/applications."
+            .into();
+    };
+    tokio::spawn(async move {
+        let code = match app.device_code().await {
+            Ok(c) => c,
+            Err(e) => return done(format!("Trakt would not start the sign-in: {e}")),
+        };
+        if let Ok(mut g) = trakt_pending().lock() {
+            *g = Some((code.user_code.clone(), code.verification_url.clone()));
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(code.expires_in.max(60) as u64);
+        let mut wait = Duration::from_secs(code.interval.max(1) as u64);
+        let outcome = loop {
+            tokio::time::sleep(wait).await;
+            // Cancel is the pending slot going empty under us.
+            if trakt_pending().lock().is_ok_and(|g| g.is_none()) {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                break "The Trakt code ran out. Press Link to get another.".to_string();
+            }
+            match app.poll_token(&code.device_code).await {
+                Ok(tulipix_videos::trakt::DevicePoll::Token(token)) => {
+                    break match tulipix_core::api_keys::store("trakt_token", &token) {
+                        Ok(()) => {
+                            if let Ok(mut g) = trakt_user().lock() {
+                                *g = None;
+                            }
+                            forget_saved();
+                            "Trakt is linked. What you finish watching goes to your history.".into()
+                        }
+                        Err(e) => format!("Trakt signed in, but the token could not be saved: {e}"),
+                    };
+                }
+                Ok(tulipix_videos::trakt::DevicePoll::Pending) => {}
+                Ok(tulipix_videos::trakt::DevicePoll::SlowDown) => wait += Duration::from_secs(1),
+                Ok(tulipix_videos::trakt::DevicePoll::Expired) => {
+                    break "The Trakt code ran out. Press Link to get another.".into()
+                }
+                Ok(tulipix_videos::trakt::DevicePoll::Denied) => {
+                    break "The sign-in was turned down at trakt.tv.".into()
+                }
+                Err(e) => break format!("Trakt stopped answering: {e}"),
+            }
+        };
+        if let Ok(mut g) = trakt_pending().lock() {
+            *g = None;
+        }
+        done(outcome);
+    });
+    "Opening Trakt — type the code shown on this row at trakt.tv/activate.".into()
 }
 
 // ── the running job ─────────────────────────────────────────────────────────

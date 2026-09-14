@@ -1355,6 +1355,71 @@ class _ServicesTabState extends State<ServicesTab> {
         'https://portal.libretranslate.com'
       ),
     ),
+    // The service integrations. Each one is a secret, so each one is a
+    // keychain row rather than a text box in settings.json.
+    'discogs': (
+      icon: Icons.library_music_outlined,
+      tint: Color(0xFF111827),
+      note: 'Artist biographies where MusicBrainz has no match',
+      link: (
+        'Personal token from discogs.com',
+        'https://www.discogs.com/settings/developers'
+      ),
+    ),
+    'spotify_id': (
+      icon: Icons.graphic_eq,
+      tint: Color(0xFF22C55E),
+      note: 'Genres and artist pictures. Goes with the secret below',
+      link: (
+        'Client ID from developer.spotify.com',
+        'https://developer.spotify.com/dashboard'
+      ),
+    ),
+    'spotify_secret': (
+      icon: Icons.graphic_eq,
+      tint: Color(0xFF16A34A),
+      note: 'The other half of the Spotify client ID',
+      link: (
+        'Client secret from the same app',
+        'https://developer.spotify.com/dashboard'
+      ),
+    ),
+    'youtube_data': (
+      icon: Icons.smart_display_outlined,
+      tint: Color(0xFFEF4444),
+      note: 'View counts and real thumbnails on the YouTube tab',
+      link: (
+        'Key from the Google Cloud console',
+        'https://console.cloud.google.com/apis/credentials'
+      ),
+    ),
+    'trakt': (
+      icon: Icons.check_circle_outline,
+      tint: Color(0xFFDC2626),
+      note: 'What you finish watching, sent to your Trakt history',
+      link: (
+        'Create an application at trakt.tv',
+        'https://trakt.tv/oauth/applications'
+      ),
+    ),
+    'trakt_secret': (
+      icon: Icons.check_circle_outline,
+      tint: Color(0xFFB91C1C),
+      note: 'The other half of the Trakt client ID',
+      link: (
+        'Client secret from the same application',
+        'https://trakt.tv/oauth/applications'
+      ),
+    ),
+    'anidb': (
+      icon: Icons.animation_outlined,
+      tint: Color(0xFF7C3AED),
+      note: 'Not a key: the client name you registered at anidb.net',
+      link: (
+        'Register a client at anidb.net',
+        'https://anidb.net/software/add'
+      ),
+    ),
   };
 
   Future<void> _testKey(String service) async {
@@ -1414,6 +1479,51 @@ class _ServicesTabState extends State<ServicesTab> {
     );
   }
 
+  /// Trakt's sign-in row. One button, because there is only ever one thing to
+  /// do next: Link, Cancel while the code is out, or Unlink once it is done.
+  /// The bridge decides which; this draws what it says.
+  Widget _traktTile(SettingItem r) {
+    final t = context.tokens;
+    final tint = switch (r.state) {
+      'ok' => Tokens.ok,
+      'busy' => Tokens.brand,
+      'warn' => Tokens.warn,
+      _ => null,
+    };
+    return SettingsTile(
+      icon: Icons.check_circle_outline,
+      tint: const Color(0xFFDC2626),
+      title: 'Trakt account',
+      note: 'What you finish watching, added to your history',
+      trailing: [StateChip(r.state == 'ok' ? 'Linked' : 'Not linked', tint: tint)],
+      fill: true,
+      child: Spread(
+        gap: 8,
+        [
+          Text(r.value,
+              style: TextStyle(
+                  fontSize: 12.5,
+                  color: r.state == 'busy' ? t.text : t.textDim,
+                  fontWeight:
+                      r.state == 'busy' ? FontWeight.w600 : FontWeight.w400)),
+          if (r.btn.isNotEmpty)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: SmallBtn(
+                label: r.btn,
+                icon: r.btn == 'Link' ? Icons.link : Icons.link_off,
+                primary: r.btn == 'Link',
+                danger: r.btn == 'Unlink',
+                onTap: () => _c.sendAction(r.key),
+              ),
+            ),
+          if (r.state == 'busy')
+            _linkLine(('Open trakt.tv/activate', 'https://trakt.tv/activate')),
+        ],
+      ),
+    );
+  }
+
   Widget _linkLine((String, String) link) {
     final t = context.tokens;
     return Align(
@@ -1444,9 +1554,11 @@ class _ServicesTabState extends State<ServicesTab> {
 
   static const _sourceKeys = [
     'api.discogs',
-    'api.anidb',
+    'api.spotify',
+    'api.youtube-data',
     'api.anilist',
-    'api.subscene',
+    'api.anidb',
+    'api.addic7ed',
     'api.trakt',
     // Not 'api.listenbrainz': that switch is the Scrobbling tile's.
   ];
@@ -1467,10 +1579,9 @@ class _ServicesTabState extends State<ServicesTab> {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final rows = Rows(widget.state.services);
-    final spId = rows.key('api.spotify-id');
-    final spSecret = rows.key('api.spotify-secret');
-    final yt = rows.key('api.youtube-data');
     final piped = rows.key('api.piped-instance');
+    // The Trakt sign-in row, which only exists while the Trakt switch is on.
+    final traktLink = rows.key('trakt-link');
     final sources =
         _sourceKeys.map(rows.key).whereType<SettingItem>().toList();
     final servers =
@@ -1502,36 +1613,7 @@ class _ServicesTabState extends State<ServicesTab> {
           // The keychain keys -- TMDB, TheTVDB, OpenSubtitles, Last.fm and
           // LibreTranslate -- three to a row.
           for (final k in keys) (span: 2, child: _serviceKeyTile(k)),
-          if (spId != null && spSecret != null)
-            (
-              span: 2,
-              child: _keyTile(
-                icon: Icons.graphic_eq,
-                tint: const Color(0xFF22C55E),
-                title: 'Spotify',
-                note: 'Better music search and recommendations',
-                fields: [spId, spSecret],
-                link: (
-                  'Client ID and secret from developer.spotify.com',
-                  'https://developer.spotify.com/dashboard'
-                ),
-              ),
-            ),
-          if (yt != null)
-            (
-              span: 2,
-              child: _keyTile(
-                icon: Icons.smart_display_outlined,
-                tint: const Color(0xFFEF4444),
-                title: 'YouTube Data',
-                note: 'Richer YouTube search results and video details',
-                fields: [yt],
-                link: (
-                  'Key from the Google Cloud console',
-                  'https://console.cloud.google.com/apis/credentials'
-                ),
-              ),
-            ),
+          if (traktLink != null) (span: 2, child: _traktTile(traktLink)),
           if (piped != null)
             (
               span: 2,
@@ -1638,38 +1720,6 @@ class _ServicesTabState extends State<ServicesTab> {
         ]),
         if (rest.isNotEmpty) MoreTile(rows: rest, controller: _c),
       ],
-    );
-  }
-
-  Widget _keyTile({
-    required IconData icon,
-    required Color tint,
-    required String title,
-    required String note,
-    required List<SettingItem> fields,
-    required (String, String) link,
-  }) {
-    final all = fields.every(_set);
-    return SettingsTile(
-      icon: icon,
-      tint: tint,
-      title: title,
-      note: note,
-      trailing: [StateChip(all ? 'Set' : 'Not set', tint: all ? Tokens.ok : null)],
-      fill: true,
-      child: Spread(
-        gap: 8,
-        [
-          for (final r in fields)
-            FieldBox(
-              value: r.value,
-              secret: true,
-              hint: fields.length > 1 ? r.label : 'Paste a key',
-              onSubmit: (v) => _save(r, v),
-            ),
-          _linkLine(link),
-        ],
-      ),
     );
   }
 

@@ -985,9 +985,18 @@ fn pictures_dir() -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-/// One OpenSubtitles result.
+/// One subtitle, from either source.
 pub struct SubtitleHit {
+    /// Which source it came from: "opensubtitles" or "addic7ed". The download
+    /// needs to know, because the two are fetched in completely different
+    /// ways.
+    pub provider: String,
+    /// OpenSubtitles' file id. 0 for an Addic7ed result, which has none.
     pub file_id: i64,
+    /// Addic7ed's download path and the page it was listed on, which its
+    /// download needs as a Referer. Both empty for OpenSubtitles.
+    pub link: String,
+    pub referer: String,
     pub language: String,
     /// The uploader's release name — how you tell a 23.976 fps rip from a 25
     /// fps one, which is the difference between in sync and unwatchable. Empty
@@ -1011,59 +1020,130 @@ pub async fn videos_subtitle_search(
     season: i64,
     episode: i64,
 ) -> Result<Vec<SubtitleHit>> {
-    let client = os_client()?;
     let lang = if language.trim().is_empty() { "en" } else { language.trim() };
     let path = PathBuf::from(&source);
+    let a7 = crate::services::addic7ed();
 
+    // OpenSubtitles needs a key. Without one it used to be the whole of the
+    // answer, so its absence was the error; now Addic7ed may still have
+    // something, and only a search with no source left at all is an error.
     let mut hits = Vec::new();
-    if path.is_file() {
-        if let Ok((hash, _)) = tulipix_videos::sub_opensubtitles::osdb_hash(&path) {
-            // A failure here is not fatal: the query search below is the
-            // fallback, and it reports its own errors. Swallowing this one
-            // silently is the difference between "no hash match" and "the
-            // whole search is broken", and only the second is worth a message.
-            hits = client.search_by_hash(hash, lang).await.unwrap_or_default();
+    match os_client() {
+        Ok(client) => {
+            if path.is_file() {
+                if let Ok((hash, _)) = tulipix_videos::sub_opensubtitles::osdb_hash(&path) {
+                    // A failure here is not fatal: the query search below is
+                    // the fallback, and it reports its own errors. Swallowing
+                    // this one silently is the difference between "no hash
+                    // match" and "the whole search is broken", and only the
+                    // second is worth a message.
+                    hits = client.search_by_hash(hash, lang).await.unwrap_or_default();
+                }
+            }
+            if hits.is_empty() {
+                let query = if title.trim().is_empty() {
+                    path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string()
+                } else {
+                    title.trim().to_string()
+                };
+                if !query.is_empty() {
+                    match client
+                        .search_by_query(&query, lang, positive(season), positive(episode))
+                        .await
+                    {
+                        Ok(found) => hits = found,
+                        Err(e) if a7.is_none() => return Err(e),
+                        Err(e) => tracing::debug!(error = %e, "opensubtitles: query search"),
+                    }
+                }
+            }
         }
+        Err(e) if a7.is_none() => return Err(e),
+        Err(e) => tracing::debug!(error = %e, "opensubtitles: no key, Addic7ed only"),
     }
 
-    if hits.is_empty() {
-        let query = if title.trim().is_empty() {
-            path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string()
-        } else {
-            title.trim().to_string()
-        };
-        if query.is_empty() {
-            return Ok(Vec::new());
-        }
-        hits = client
-            .search_by_query(&query, lang, positive(season), positive(episode))
-            .await?;
-    }
-
-    Ok(hits
+    let mut out: Vec<SubtitleHit> = hits
         .into_iter()
         .map(|h| SubtitleHit {
+            provider: "opensubtitles".into(),
             file_id: h.file_id,
+            link: String::new(),
+            referer: String::new(),
             language: h.language,
             release: h.release.unwrap_or_default(),
             downloads: h.download_count.unwrap_or_default(),
             from_trusted: h.from_trusted,
         })
-        .collect())
+        .collect();
+
+    // Then Addic7ed, under whatever OpenSubtitles had. It is the source that
+    // has tonight's episode, and the one that has nothing at all for a film,
+    // so it is a second list rather than a replacement. Its failures are a log
+    // line: the results above are already on screen.
+    if let Some(a7) = a7 {
+        let show = addic7ed_show_title(&title, &source);
+        match a7.search(&show, season, episode, lang).await {
+            Ok(found) => out.extend(found.into_iter().map(|h| SubtitleHit {
+                provider: "addic7ed".into(),
+                file_id: 0,
+                link: h.link,
+                referer: h.referer,
+                language: h.language,
+                release: h.release,
+                downloads: h.downloads,
+                // Addic7ed has no trusted-uploader mark; a finished version is
+                // the closest thing it has to one.
+                from_trusted: h.completed,
+            })),
+            Err(e) => tracing::debug!(error = %e, "addic7ed: search"),
+        }
+    }
+
+    Ok(out)
+}
+
+/// The show name Addic7ed files an episode under. Its URLs are keyed on the
+/// series, never the episode, so a filename like `The.Expanse.S03E07.1080p`
+/// has to lose everything after the series name first.
+fn addic7ed_show_title(title: &str, source: &str) -> String {
+    if !title.trim().is_empty() {
+        return title.trim().to_string();
+    }
+    let stem = Path::new(source)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    tulipix_videos::agents::parse_filename(stem).title
 }
 
 /// Fetch one result and return the path it landed at, ready for `sub-add`.
 pub async fn videos_subtitle_download(
     source: String,
+    provider: String,
     file_id: i64,
+    link: String,
+    referer: String,
     language: String,
 ) -> Result<String> {
+    let lang = if language.trim().is_empty() { "en" } else { language.trim() };
+    let anchor = subtitle_anchor(&source);
+    if provider == "addic7ed" {
+        let a7 = crate::services::addic7ed()
+            .ok_or_else(|| anyhow::anyhow!("Addic7ed is switched off in Settings › Services."))?;
+        let hit = tulipix_videos::sub_addic7ed::A7Subtitle {
+            release: String::new(),
+            language: lang.to_string(),
+            link,
+            completed: true,
+            downloads: 0,
+            referer,
+        };
+        let out = a7.save_as_sibling(&anchor, &hit, lang).await?;
+        return Ok(out.display().to_string());
+    }
     let client = os_client()?;
     let link = client.download_link(file_id).await?;
-    let lang = if language.trim().is_empty() { "en" } else { language.trim() };
-    let out = client
-        .save_as_sibling(&subtitle_anchor(&source), &link, lang, "srt")
-        .await?;
+    let out = client.save_as_sibling(&anchor, &link, lang, "srt").await?;
     Ok(out.display().to_string())
 }
 
@@ -1637,6 +1717,11 @@ async fn tile_action(index: i64, action: &str) -> Result<()> {
             .map_err(Into::into),
         "mark-watched" => {
             let now = wp::get(pool, id).await.ok().flatten().map(|p| p.finished).unwrap_or(false);
+            // Marking it watched sends it to Trakt; un-marking it does not
+            // take it back, because a history entry is a thing that happened.
+            if !now {
+                trakt_push_watched(id);
+            }
             wp::mark_finished(pool, id, !now).await
         }
         _ => Ok(()),
@@ -1908,6 +1993,11 @@ async fn ingest_new(pool: &sqlx::SqlitePool) {
         let Some(abs) = abs else { continue };
         classify_episode(pool, id, Path::new(&abs)).await;
         scrape_tmdb(pool, id, Path::new(&abs)).await;
+        // TMDB is wrong about anime often enough to be worth a second look:
+        // absolute episode numbering, romaji titles, OVAs folded into the
+        // series. This runs only for what TMDB left blank, and only when the
+        // AniList or AniDB switch is on.
+        scrape_anime(pool, id, Path::new(&abs)).await;
     }
 }
 
@@ -2077,6 +2167,249 @@ async fn scrape_tmdb(pool: &sqlx::SqlitePool, item_id: i64, path: &Path) {
                 .await;
         }
     }
+}
+
+/// The anime fallback, for what TMDB left blank.
+///
+/// TMDB knows anime under its English release title and numbers episodes by
+/// season; a file called `[Group] Shingeki no Kyojin - 25.mkv` matches
+/// nothing. AniList answers the romaji title with an overview and a poster,
+/// and AniDB answers with the episode list AniList has not got. Both are off
+/// until switched on in Settings, and neither runs for a file TMDB already
+/// answered for.
+async fn scrape_anime(pool: &sqlx::SqlitePool, item_id: i64, path: &Path) {
+    use tulipix_videos::anime::AnimeProvider as _;
+
+    let anilist = crate::services::anilist();
+    let anidb = crate::services::anidb();
+    if anilist.is_none() && anidb.is_none() {
+        return;
+    }
+    // Already answered for, by TMDB or by an earlier pass.
+    if has_artwork(pool, item_id).await {
+        return;
+    }
+    let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let parsed = tulipix_videos::agents::parse_filename(name);
+    if parsed.title.trim().is_empty() {
+        return;
+    }
+
+    // AniList first: one request, no registration, and it carries the poster.
+    // AniDB second, for the episode list and as the fallback when AniList has
+    // never heard of the title.
+    let mut meta = match &anilist {
+        Some(p) => p.search(&parsed.title).await.ok().flatten(),
+        None => None,
+    };
+    let mut source = "anilist";
+    let mut episodes = Vec::new();
+    if let Some(db) = &anidb {
+        match db.find_aid(&parsed.title).await {
+            Ok(Some(aid)) => match db.anime(aid).await {
+                Ok(Some((m, eps))) => {
+                    episodes = eps;
+                    match &mut meta {
+                        // Both answered: keep AniList's prose and poster, take
+                        // AniDB's id so the episode list has something to hang
+                        // off.
+                        Some(existing) => existing.anidb_id = m.anidb_id,
+                        None => {
+                            meta = Some(m);
+                            source = "anidb";
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => tracing::debug!(error = %e, "anidb: anime lookup"),
+            },
+            Ok(None) => {}
+            Err(e) => tracing::debug!(error = %e, "anidb: title lookup"),
+        }
+    }
+    let Some(meta) = meta else { return };
+
+    if let Err(e) = tulipix_videos::anime::apply_schema(pool).await {
+        tracing::warn!(error = %e, "anime: schema");
+        return;
+    }
+    if let Err(e) = tulipix_videos::anime::upsert(pool, item_id, source, &meta).await {
+        tracing::warn!(error = %e, "anime: upsert");
+        return;
+    }
+    tracing::info!(item_id, source, title = %meta.title_romaji, episodes = episodes.len(), "anime metadata");
+
+    // AniDB is the only one of the two with per-episode data. An anime file is
+    // usually numbered absolutely, which is exactly the number AniDB indexes
+    // by, so this fills in the title TMDB could not name. Only where the row
+    // has none: a title already written came from somewhere better.
+    for ep in &episodes {
+        let _ = sqlx::query(
+            "UPDATE episodes SET title = COALESCE(NULLIF(title, ''), ?), \
+             overview = COALESCE(NULLIF(overview, ''), ?) \
+             WHERE item_id = ? AND episode = ?",
+        )
+        .bind(&ep.title)
+        .bind(&ep.overview)
+        .bind(item_id)
+        .bind(ep.episode)
+        .execute(pool)
+        .await;
+    }
+
+    // Then into the columns the grid actually draws from, so a poster shows
+    // without every view learning about `anime_meta`.
+    let title = meta
+        .title_english
+        .clone()
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| meta.title_romaji.clone());
+    let poster_local = match (&meta.poster_url, poster_cache_dir()) {
+        (Some(url), Some(dir)) => {
+            tulipix_videos::tmdb::cache_image(tulipix_core::net::http(), url, &dir)
+                .await
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        }
+        _ => None,
+    };
+    let show_id: Option<i64> = sqlx::query_scalar("SELECT show_id FROM episodes WHERE item_id = ?")
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    let _ = match show_id {
+        Some(show_id) => {
+            sqlx::query(
+                "UPDATE shows SET year = COALESCE(year, ?), \
+                 overview = COALESCE(NULLIF(overview, ''), ?), \
+                 poster_local = COALESCE(poster_local, ?) WHERE id = ?",
+            )
+            .bind(meta.year)
+            .bind(&meta.overview)
+            .bind(&poster_local)
+            .bind(show_id)
+            .execute(pool)
+            .await
+        }
+        None => {
+            sqlx::query(
+                "INSERT INTO movies (item_id, title, year, overview, poster_local, updated) \
+                 VALUES (?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(item_id) DO UPDATE SET \
+                    year = COALESCE(movies.year, excluded.year), \
+                    overview = COALESCE(NULLIF(movies.overview, ''), excluded.overview), \
+                    poster_local = COALESCE(movies.poster_local, excluded.poster_local), \
+                    updated = excluded.updated",
+            )
+            .bind(item_id)
+            .bind(&title)
+            .bind(meta.year)
+            .bind(&meta.overview)
+            .bind(&poster_local)
+            .bind(now_secs())
+            .execute(pool)
+            .await
+        }
+    };
+}
+
+/// Whether this item already has a poster on disk, through its show or as a
+/// film. The one question the anime fallback asks before spending a request.
+async fn has_artwork(pool: &sqlx::SqlitePool, item_id: i64) -> bool {
+    let show: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT s.poster_local FROM episodes e JOIN shows s ON s.id = e.show_id \
+         WHERE e.item_id = ?",
+    )
+    .bind(item_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    if show.flatten().is_some_and(|p| !p.is_empty()) {
+        return true;
+    }
+    let movie: Option<Option<String>> =
+        sqlx::query_scalar("SELECT poster_local FROM movies WHERE item_id = ?")
+            .bind(item_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    movie.flatten().is_some_and(|p| !p.is_empty())
+}
+
+/// Tell Trakt this was watched.
+///
+/// Called wherever something becomes finished -- the player reaching the end,
+/// and "Mark as watched" in the poster menu -- so the account matches the
+/// library however it got there. A no-op unless Trakt is switched on and the
+/// account is linked, and always detached: a network call has no business
+/// holding up the window closing.
+pub(crate) fn trakt_push_watched(item_id: i64) {
+    let Some((client, token)) = crate::services::trakt() else { return };
+    tokio::spawn(async move {
+        let Ok(pool) = crate::db::videos_pool().await else { return };
+        let Some(item) = trakt_history_item(pool, item_id).await else { return };
+        match client.add_to_history(&token, &item).await {
+            Ok(()) => tracing::info!(item_id, title = %item.title, "trakt: added to history"),
+            Err(e) => tracing::warn!(item_id, error = %e, "trakt: could not add to history"),
+        }
+    });
+}
+
+/// What the library knows about an item, in the shape Trakt takes: an episode
+/// when it is one, a film otherwise. `None` when the row names nothing Trakt
+/// could match on.
+async fn trakt_history_item(
+    pool: &sqlx::SqlitePool,
+    item_id: i64,
+) -> Option<tulipix_videos::trakt::HistoryItem> {
+    use tulipix_videos::trakt::{HistoryItem, Kind};
+    let watched_at = tulipix_videos::trakt::iso8601_utc(now_secs());
+
+    let episode: Option<(String, Option<i64>, Option<i64>, i64, i64)> = sqlx::query_as(
+        "SELECT s.title, s.year, s.tmdb_id, e.season, e.episode \
+         FROM episodes e JOIN shows s ON s.id = e.show_id WHERE e.item_id = ?",
+    )
+    .bind(item_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    if let Some((title, year, tmdb_id, season, episode)) = episode {
+        if title.trim().is_empty() {
+            return None;
+        }
+        return Some(HistoryItem {
+            kind: Kind::Episode,
+            title,
+            year,
+            tmdb_id,
+            season: Some(season),
+            episode: Some(episode),
+            watched_at,
+        });
+    }
+
+    let movie: Option<(String, Option<i64>, Option<i64>)> =
+        sqlx::query_as("SELECT title, year, tmdb_id FROM movies WHERE item_id = ?")
+            .bind(item_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    let (title, year, tmdb_id) = movie?;
+    (!title.trim().is_empty()).then_some(HistoryItem {
+        kind: Kind::Movie,
+        title,
+        year,
+        tmdb_id,
+        season: None,
+        episode: None,
+        watched_at,
+    })
 }
 
 fn watched_path() -> Option<PathBuf> {

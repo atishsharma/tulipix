@@ -31,6 +31,23 @@ pub const SERVICES: &[&str] = &[
     "google_oauth",
     "github_oauth",
     "ytdlp_cookies",
+    // The service integrations. Each one is a secret, so each one lives here
+    // rather than in settings.json -- `assert_never_in_settings_json` refuses
+    // anything named `api.*`, `*token*` or `*secret*`, and these are all three.
+    "discogs",
+    "spotify_id",
+    "spotify_secret",
+    "youtube_data",
+    // Trakt's device flow: the app's id and secret, then the access token the
+    // flow hands back. Three entries because they have three lifetimes -- the
+    // first two are typed once, the third expires.
+    "trakt",
+    "trakt_secret",
+    "trakt_token",
+    // AniDB registers a client by name; `anidb` holds that name, not a key.
+    // Nothing else about AniDB is secret, but it is the same shape and the
+    // same page, so it is kept in the same place.
+    "anidb",
 ];
 
 fn entry(service: &str) -> Result<Entry> {

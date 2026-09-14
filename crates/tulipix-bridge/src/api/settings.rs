@@ -312,9 +312,9 @@ pub(crate) fn enabled_cards(s: &tulipix_core::settings::Settings) -> Vec<String>
 }
 
 async fn snapshot() -> SettingsState {
-    // A TMDB key typed into the old text row sat in settings.json, where
-    // nothing reads it; it moves to the keychain, where the videos do.
-    crate::api::maintenance::rescue_tmdb_key();
+    // Keys typed into an old text row sat in settings.json, where nothing
+    // reads them; they move to the keychain, where the sections do.
+    crate::api::maintenance::rescue_typed_keys();
     let s = load();
     let (analysed, analysable, analysing) = crate::api::music::analyse_progress().await;
     let (task_key, task_label, task_frac) = crate::api::maintenance::job();
@@ -473,21 +473,25 @@ fn shader_row() -> SettingItem {
 }
 
 fn services(s: &S) -> Vec<SettingItem> {
-    vec![
+    let mut rows = vec![
         hdr("OPTIONAL SERVICE KEYS"),
-        // TMDB is not a row: it is one of the keychain keys (`keys`), which is
-        // where the videos read it from. A text row here saved it to
-        // settings.json, which nothing reads.
-        txt(s, "api.spotify-id", "Spotify client ID", "Better music search and recommendations. Free key from developer.spotify.com"),
-        txt(s, "api.spotify-secret", "Spotify client secret", "Goes together with the client ID above"),
-        txt(s, "api.youtube-data", "YouTube API key", "Richer YouTube search results and video details"),
+        // No key is a text row here. Every one of them is a secret, and this
+        // file is settings.json: they are all keychain rows on the Service
+        // keys list above (`keys`), which is where the sections read them
+        // from. A key typed into a text row here went nowhere at all --
+        // that was the TMDB bug, and Spotify and YouTube had it too.
         txt(s, "api.piped-instance", "YouTube backend server (Piped)", "The server used to browse YouTube. Leave blank for the default"),
         hdr("EXTRA METADATA SOURCES"),
-        tog(s, "api.discogs", false, "Discogs", "Extra music metadata when MusicBrainz has no match"),
-        tog(s, "api.anidb", false, "AniDB", "Anime titles, episodes, and ratings"),
-        tog(s, "api.anilist", false, "AniList", "A second anime source when AniDB misses"),
-        tog(s, "api.subscene", false, "Subscene / Addic7ed", "Backup subtitle sources when OpenSubtitles is busy"),
-        tog(s, "api.trakt", false, "Trakt.tv", "Track what you watch with a Trakt account"),
+        // Each of these is read only when it is switched on and its key is
+        // saved, and none of them is ever the first source: they answer where
+        // MusicBrainz, TMDB, OpenSubtitles or yt-dlp came back with nothing.
+        tog(s, "api.discogs", false, "Discogs", "Artist biographies and metadata where MusicBrainz has no match. Needs a Discogs token above"),
+        tog(s, "api.spotify", false, "Spotify", "Genres and artist pictures, from the Spotify catalogue. Needs the client ID and secret above"),
+        tog(s, "api.youtube-data", false, "YouTube Data API", "View counts, upload dates and real thumbnails on the YouTube tab, in place of a yt-dlp subprocess per search. Needs a key above"),
+        tog(s, "api.anilist", false, "AniList", "Anime titles, overviews and posters where TMDB has the wrong show. No key needed"),
+        tog(s, "api.anidb", false, "AniDB", "Episode titles for anime, which AniList does not carry. Needs a client name registered at anidb.net"),
+        tog(s, "api.addic7ed", false, "Addic7ed", "A second subtitle source, listed under whatever OpenSubtitles had. Best for television, often the same night. No key needed"),
+        tog(s, "api.trakt", false, "Trakt.tv", "Send what you finish watching to your Trakt account. Needs the client ID and secret above, and Link below"),
         tog(s, "api.listenbrainz", false, "ListenBrainz", "Scrobble played music — the open Last.fm alternative"),
         hdr("SELF-HOSTED SERVERS (ADVANCED)"),
         // Not here: the update server, the crash-report server and the
@@ -497,7 +501,48 @@ fn services(s: &S) -> Vec<SettingItem> {
         txt(s, "api.radio-browser", "Radio station server", "Mirror for the internet-radio directory"),
         txt(s, "api.autoeq", "Headphone EQ database", "Mirror for AutoEq headphone profiles"),
         txt(s, "api.tmdb-image-base", "Poster artwork server", "Mirror for movie and show artwork"),
-    ]
+    ];
+    rows.extend(trakt_rows(s));
+    rows
+}
+
+/// Trakt is the one integration with a sign-in. Its client ID and secret are
+/// keychain rows like any other, but the token behind them comes from the
+/// device flow: Link asks Trakt for a code, shows it, and waits while the user
+/// types it into trakt.tv/activate in their browser.
+fn trakt_rows(s: &S) -> Vec<SettingItem> {
+    if !s.flag("api.trakt", false) {
+        return Vec::new();
+    }
+    let (value, state, btn) = match crate::api::maintenance::trakt_state() {
+        crate::api::maintenance::TraktState::NoApp => (
+            "Add the client ID and secret above".to_string(),
+            "muted",
+            "",
+        ),
+        crate::api::maintenance::TraktState::Waiting { code, url } => {
+            (format!("Type {code} at {url}"), "busy", "Cancel")
+        }
+        crate::api::maintenance::TraktState::Linked(user) => {
+            (format!("Linked as {user}"), "ok", "Unlink")
+        }
+        crate::api::maintenance::TraktState::NotLinked => {
+            ("Not linked".to_string(), "warn", "Link")
+        }
+    };
+    let mut row = statact(
+        "trakt-link",
+        "Trakt account",
+        "What you finish watching is added to your Trakt history. Marking \
+         something watched sends it too; un-marking it does not take it back",
+        &value,
+        state,
+        btn,
+    );
+    if btn.is_empty() {
+        row.kind = "status".into();
+    }
+    vec![hdr("TRAKT"), row]
 }
 
 fn ai(s: &S) -> Vec<SettingItem> {
@@ -1156,6 +1201,8 @@ async fn action(key: &str) -> String {
             }
         }
         "rebuild-search" => crate::api::maintenance::start_rebuild_search(),
+        // Link, cancel or unlink, depending on where the device flow is.
+        "trakt-link" => crate::api::maintenance::trakt_link_action(),
         // `lib-section:<key>:<folder>`. The key has no colon; the folder may
         // (C:\Music), so the split is at the first one.
         k if k.starts_with("lib-section:") => {

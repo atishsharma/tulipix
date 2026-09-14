@@ -82,7 +82,9 @@ class _SubtitleFinderState extends State<_SubtitleFinder> {
   String? _error;
   List<SubtitleHit>? _hits;
 
-  /// The row being fetched, so only that one shows a spinner.
+  /// The row being fetched, so only that one shows a spinner. The index, not
+  /// the file id: an Addic7ed result has no file id, so every one of them
+  /// would be row 0.
   int? _downloading;
 
   @override
@@ -128,15 +130,18 @@ class _SubtitleFinderState extends State<_SubtitleFinder> {
     }
   }
 
-  Future<void> _download(SubtitleHit hit) async {
+  Future<void> _download(int index, SubtitleHit hit) async {
     setState(() {
-      _downloading = hit.fileId;
+      _downloading = index;
       _error = null;
     });
     try {
       final path = await videosSubtitleDownload(
         source: widget.source,
+        provider: hit.provider,
         fileId: hit.fileId,
+        link: hit.link,
+        referer: hit.referer,
         language: hit.language,
       );
       if (!mounted) return;
@@ -268,7 +273,7 @@ class _SubtitleFinderState extends State<_SubtitleFinder> {
       separatorBuilder: (context, index) => const Divider(height: 1),
       itemBuilder: (context, i) {
         final hit = hits[i];
-        final busy = _downloading == hit.fileId;
+        final busy = _downloading == i;
         return ListTile(
           dense: true,
           enabled: _downloading == null,
@@ -284,7 +289,8 @@ class _SubtitleFinderState extends State<_SubtitleFinder> {
             overflow: TextOverflow.ellipsis,
           ),
           subtitle: Text(
-            '${hit.language} · ${hit.downloads} downloads',
+            '${hit.language} · ${hit.downloads} downloads · '
+            '${hit.provider == 'addic7ed' ? 'Addic7ed' : 'OpenSubtitles'}',
             style: theme.textTheme.bodySmall,
           ),
           trailing: busy
@@ -294,7 +300,7 @@ class _SubtitleFinderState extends State<_SubtitleFinder> {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Icon(Icons.download, size: 18),
-          onTap: busy ? null : () => _download(hit),
+          onTap: busy ? null : () => _download(i, hit),
         );
       },
     );

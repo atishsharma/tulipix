@@ -7274,6 +7274,35 @@ fn yt_entry(e: &serde_json::Value) -> YtVideo {
     }
 }
 
+/// One YouTube Data result as a row of the tab. The Data API carries what
+/// yt-dlp's flat playlist leaves out -- the view count and when it went up --
+/// so the second line says both.
+fn yt_from_data(v: &tulipix_music::youtube_data::YtVideo) -> YtVideo {
+    let mut meta = Vec::new();
+    if v.views > 0 {
+        meta.push(format!("{} views", yt_fmt_count(v.views)));
+    }
+    if let Some(year) = v.published.get(..4) {
+        if year.chars().all(|c| c.is_ascii_digit()) {
+            meta.push(year.to_string());
+        }
+    }
+    if v.live {
+        meta.push("Live".into());
+    }
+    YtVideo {
+        video_id: v.id.clone(),
+        title: v.title.clone(),
+        channel: v.channel.clone(),
+        thumb: v.thumbnail.clone().unwrap_or_default(),
+        duration: v.duration_s,
+        media_path: String::new(),
+        meta: meta.join(" · "),
+        progress: 0.0,
+        quality: String::new(),
+    }
+}
+
 /// A Shorts filter over our own row shape. The domain crate's rule is by
 /// duration and title marker; reproduce it here rather than converting both
 /// ways through `piped::Video` for one predicate.
@@ -7302,19 +7331,35 @@ async fn yt_search(query: &str, more: bool) -> Result<()> {
     let have = if more { lock().yt_results.len() } else { 0 };
     let want = have + YT_HITS;
     lock().yt_status = if more { "Loading more…".into() } else { "Searching…".into() };
-    let json = ytdlp_json(vec![
-        "--flat-playlist".into(),
-        "-J".into(),
-        "--no-warnings".into(),
-        format!("ytsearch{want}:{q}"),
-    ])
-    .await;
-    let hits = json
-        .as_ref()
-        .and_then(|j| j.get("entries"))
-        .and_then(|e| e.as_array())
-        .map(|arr| arr.iter().map(yt_entry).collect::<Vec<_>>())
-        .unwrap_or_default();
+
+    // With a YouTube Data key, one HTTPS call in place of a yt-dlp
+    // subprocess -- and it answers with the view count and the published
+    // date, which yt-dlp's flat playlist does not carry. Anything that goes
+    // wrong (a spent quota, a key turned down, no network) falls through to
+    // yt-dlp below, which is what the tab has always used.
+    let mut hits: Vec<YtVideo> = Vec::new();
+    if let Some(api) = crate::services::youtube_data() {
+        match api.search(&q, want.min(50) as u32).await {
+            Ok(found) if !found.is_empty() => hits = found.iter().map(yt_from_data).collect(),
+            Ok(_) => {}
+            Err(e) => tracing::debug!(error = %e, "youtube data: search"),
+        }
+    }
+    if hits.is_empty() {
+        let json = ytdlp_json(vec![
+            "--flat-playlist".into(),
+            "-J".into(),
+            "--no-warnings".into(),
+            format!("ytsearch{want}:{q}"),
+        ])
+        .await;
+        hits = json
+            .as_ref()
+            .and_then(|j| j.get("entries"))
+            .and_then(|e| e.as_array())
+            .map(|arr| arr.iter().map(yt_entry).collect::<Vec<_>>())
+            .unwrap_or_default();
+    }
     let hits = drop_shorts(hits);
     if let Ok(pool) = youtube_pool().await {
         let _ = tulipix_music::youtube::store::push_recent_search(pool, &q).await;
@@ -8498,7 +8543,10 @@ async fn artist_bio(
     let mbid = mbid.unwrap_or_default();
     let has_facts = facts.as_deref().is_some_and(|f| !f.is_empty());
     let facts_now = split_facts(facts);
-    if !bio.trim().is_empty() && src.as_deref() == Some("wikipedia") {
+    // Any source counts, not only Wikipedia: since Discogs became the second
+    // one, `src == Some("wikipedia")` would send every Discogs biography back
+    // for another lookup on every refresh.
+    if !bio.trim().is_empty() && src.is_some() {
         return (bio, facts_now, mbid);
     }
     if name.trim().is_empty() || !bio_first_try(artist_id) {
@@ -8541,11 +8589,57 @@ async fn artist_bio(
             // theirs too.
             tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         }
-        let bio = tulipix_music::musicbrainz::wikipedia_bio(&client, &mbid)
+        let mut bio = tulipix_music::musicbrainz::wikipedia_bio(&client, &mbid)
             .await
             .ok()
             .flatten()
             .unwrap_or_default();
+        let mut bio_src = "wikipedia";
+
+        // Wikipedia has an article for the bands with articles. For everyone
+        // else -- a local label, a reissue, a name three people use -- Discogs
+        // is where the writing is, and it is the switch's whole purpose.
+        if bio.trim().is_empty() {
+            if let Some(dc) = crate::services::discogs() {
+                match dc.artist(&name).await {
+                    Ok(Some(a)) if !a.profile.trim().is_empty() => {
+                        // Facts are short phrases joined by FACT_SEP, the same
+                        // shape `artist_facts` builds: where they came from
+                        // must not show in how they read.
+                        let mut extra: Vec<String> = Vec::new();
+                        if let Some(area) = a.area.clone() {
+                            extra.push(area);
+                        }
+                        if a.members.len() > 1 {
+                            extra.push(format!("{} members", a.members.len()));
+                        }
+                        if facts.is_empty() && !extra.is_empty() {
+                            facts = extra.join(FACT_SEP);
+                        }
+                        bio = a.profile;
+                        bio_src = "discogs";
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::debug!(error = %e, "discogs: artist lookup"),
+                }
+            }
+        }
+
+        // Spotify has no prose at all, but it does have the genres, and
+        // MusicBrainz's tag list is often empty where Spotify's is not.
+        if facts.is_empty() && !has_facts {
+            if let Some(sp) = crate::services::spotify() {
+                match sp.artist(&name).await {
+                    Ok(Some(a)) if !a.genres.is_empty() => {
+                        // Three at most: Spotify lists a dozen for a
+                        // well-tagged artist and the row has space for a line.
+                        facts = a.genres.iter().take(3).cloned().collect::<Vec<_>>().join(FACT_SEP);
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::debug!(error = %e, "spotify: artist lookup"),
+                }
+            }
+        }
         // No prose clears an old one-liner rather than leaving it in the
         // column, and the source is only marked when there is prose -- so a
         // miss, offline or not, is tried again next run. The mbid is only
@@ -8553,12 +8647,13 @@ async fn artist_bio(
         // and this is a search hit.
         let _ = sqlx::query(
             "UPDATE artists SET bio = NULLIF(?, ''), \
-             bio_src = CASE WHEN ? = '' THEN NULL ELSE 'wikipedia' END, \
+             bio_src = CASE WHEN ? = '' THEN NULL ELSE ? END, \
              facts = COALESCE(NULLIF(?, ''), facts), \
              mbid = COALESCE(NULLIF(mbid, ''), NULLIF(?, '')) WHERE id = ?",
         )
         .bind(&bio)
         .bind(&bio)
+        .bind(bio_src)
         .bind(&facts)
         .bind(&mbid)
         .bind(artist_id)

@@ -19,6 +19,9 @@ mod db;
 mod mpv;
 /// Media applet, tray and taskbar registration.
 mod shellsurface;
+// The seven service integrations' on/off + key gate. Not Dart-facing: the
+// sections ask it for a client, and Settings owns the switches and the keys.
+mod services;
 // Same reason: the Finances forms are a plain data structure the section builds
 // and validates, not a Dart-facing type. `api::finances` maps them into the one
 // struct that does cross.
