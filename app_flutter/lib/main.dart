@@ -34,6 +34,7 @@ import 'playback/video_layer.dart';
 import 'shell/chat_overlay.dart';
 import 'shell/lock/lock_controller.dart';
 import 'shell/lock/lock_screen.dart';
+import 'shell/onboarding/onboarding_flow.dart';
 import 'shell/shell_controller.dart';
 import 'shell/sidebar.dart';
 import 'shell/title_row.dart';
@@ -195,153 +196,165 @@ class _TulipixAppState extends State<TulipixApp> {
       //
       // The lock screen is over all of it, chat included: a locked window
       // answers nothing but the lock.
+      //
+      // Setup sits inside the lock and outside everything else: a locked
+      // window answers nothing, first run included, and the ten cards cover
+      // the player and the chat the way any modal does.
       home: LockOverlay(
-        child: ChatOverlay(
-        child: VideoLayer(
-          child: MusicOverlay(
-            child: Scaffold(
-              backgroundColor: tokens.bg,
-              // Outside everything: the grab strip is the window's own edge, and
-              // a handle inside the page would be a handle the sidebar covers.
-              body: WindowResizeEdges(
-                child: AnimatedBuilder(
-                  animation: _shell,
-                  builder: (context, _) {
-                    final at = _shell.section;
-                    return Stack(children: [
-                      // The language's backdrop under the whole shell — the
-                      // aura, the plate. Always a child, empty under Standard:
-                      // a child that comes and goes moves its siblings, and
-                      // that costs every page its State (see the resize edges).
-                      //
-                      // The window's only one. While Music is up it is lit by
-                      // the record, which is what Music's own backdrop was for:
-                      // that one sat over this one, and under Glass the two
-                      // were four window-sized gradients in every frame.
-                      Positioned.fill(
-                        child: ListenableBuilder(
-                          listenable: MusicController.instance,
-                          builder: (context, _) {
-                            final music = at == Section.music
-                                ? MusicController.instance
-                                : null;
-                            return skin.pageBackdrop(
-                                  accent: music?.accent ?? Tokens.accentOf(at),
-                                  alt: music?.accentAlt ?? Tokens.brand2,
-                                ) ??
-                                const SizedBox.shrink();
-                          },
-                        ),
-                      ),
-                      Column(children: [
-                        // Above the rail and the page both, the way the caption row
-                        // is in ui/main.slint — it is the window's row, not the
-                        // shell's, so nothing sits beside it.
-                        //
-                        // Gone in logo-fullscreen, which is what makes that mode
-                        // borderless: `if root.csd && !root.app-fullscreen` on
-                        // the Slint row. The strip at the bottom of this Stack is
-                        // what gives it back on hover.
-                        if (!_shell.appFullscreen) const AppTitleRow(),
-                        // Keyed, and it has to be. Entering logo-fullscreen
-                        // drops the row above, which slides this from index 1
-                        // to index 0; unkeyed, Flutter matches a Column's
-                        // children by position, finds a different type there
-                        // and rebuilds this whole branch -- taking the
-                        // IndexedStack and every page's State with it. The key
-                        // is what lets it be recognised as the same child that
-                        // merely moved. Same defect the resize edges had.
-                        Expanded(
-                          key: const ValueKey('shell-body'),
-                          child: Row(
-                            children: [
-                              Sidebar(
-                                controller: _shell,
-                                onCycleTheme: _shell.cycleTheme,
-                                themeIcon: _themeIcon,
-                              ),
-                              // Every section stays alive across a switch: Transfer polls a
-                              // running server, Music holds a playing deck and a queue, and
-                              // rebuilding either every time it is looked at would restart
-                              // the poll and lose the ledger's page and sort, or drop the
-                              // now-playing. The ones that cost something to keep warm are
-                              // told whether they are on screen instead.
-                              //
-                              // `ContentSurface` in ui/main.slint: the page is a card, not
-                              // the window. The shell there is one
-                              // `HorizontalLayout { padding: 14px; spacing: 14px }` around
-                              // the rail and this, which is the gutter the port was
-                              // missing — the page ran flush into the sidebar and off
-                              // three edges of the window.
-                              Expanded(
-                                child: Container(
-                                  margin:
-                                      const EdgeInsets.fromLTRB(14, 14, 14, 14),
-                                  // The language's card: a raised sheet, a
-                                  // pane, a tonal card.
-                                  decoration: skin.surface(SurfaceRole.card,
-                                          radius: Tokens.radiusLg) ??
-                                      BoxDecoration(
-                                    color: tokens.panel,
-                                    borderRadius:
-                                        BorderRadius.circular(Tokens.radiusLg),
-                                    border: Border.all(color: tokens.outline),
-                                    boxShadow: const [
-                                      BoxShadow(
-                                          color: Color(0x40000000),
-                                          blurRadius: 32),
-                                    ],
-                                  ),
-                                  clipBehavior: Clip.antiAlias,
-                                  child: IndexedStack(
-                                    index: at.index,
-                                    children: [
-                                      // TickerMode is what makes "kept alive" stop short of
-                                      // "kept animating". IndexedStack holds all ten pages
-                                      // in the tree and skips painting the nine underneath,
-                                      // but it does not stop their tickers -- and one
-                                      // offstage indeterminate spinner is enough to ask for
-                                      // a frame at every vsync, for as long as the app is
-                                      // open. Settings is exactly that: it does not load
-                                      // until it is first opened, so its page sits on
-                                      // FirstLoad's CircularProgressIndicator from launch,
-                                      // and the window rebuilt, laid out, painted and
-                                      // re-walked its semantics tree 144 times a second
-                                      // over a screen where nothing moved.
-                                      for (final (i, page) in <Widget>[
-                                        HomePage(visible: at == Section.home),
-                                        const PhotosPage(),
-                                        const VideosPage(),
-                                        const MusicPage(),
-                                        const BooksPage(),
-                                        const CloudPage(),
-                                        ToolsPage(visible: at == Section.tools),
-                                        TransferPage(
-                                            visible: at == Section.transfer),
-                                        const FinancesPage(),
-                                        SettingsPage(
-                                            visible: at == Section.settings),
-                                      ].indexed)
-                                        TickerMode(
-                                            enabled: i == at.index,
-                                            child: page),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ],
+        child: OnboardingOverlay(
+          child: ChatOverlay(
+            child: VideoLayer(
+              child: MusicOverlay(
+                child: Scaffold(
+                  backgroundColor: tokens.bg,
+                  // Outside everything: the grab strip is the window's own edge, and
+                  // a handle inside the page would be a handle the sidebar covers.
+                  body: WindowResizeEdges(
+                    child: AnimatedBuilder(
+                      animation: _shell,
+                      builder: (context, _) {
+                        final at = _shell.section;
+                        return Stack(children: [
+                          // The language's backdrop under the whole shell — the
+                          // aura, the plate. Always a child, empty under Standard:
+                          // a child that comes and goes moves its siblings, and
+                          // that costs every page its State (see the resize edges).
+                          //
+                          // The window's only one. While Music is up it is lit by
+                          // the record, which is what Music's own backdrop was for:
+                          // that one sat over this one, and under Glass the two
+                          // were four window-sized gradients in every frame.
+                          Positioned.fill(
+                            child: ListenableBuilder(
+                              listenable: MusicController.instance,
+                              builder: (context, _) {
+                                final music = at == Section.music
+                                    ? MusicController.instance
+                                    : null;
+                                return skin.pageBackdrop(
+                                      accent:
+                                          music?.accent ?? Tokens.accentOf(at),
+                                      alt: music?.accentAlt ?? Tokens.brand2,
+                                    ) ??
+                                    const SizedBox.shrink();
+                              },
+                            ),
                           ),
-                        ),
-                      ]),
-                      if (_shell.appFullscreen) const FullscreenPeek(),
-                    ]);
-                  },
+                          Column(children: [
+                            // Above the rail and the page both, the way the caption row
+                            // is in ui/main.slint — it is the window's row, not the
+                            // shell's, so nothing sits beside it.
+                            //
+                            // Gone in logo-fullscreen, which is what makes that mode
+                            // borderless: `if root.csd && !root.app-fullscreen` on
+                            // the Slint row. The strip at the bottom of this Stack is
+                            // what gives it back on hover.
+                            if (!_shell.appFullscreen) const AppTitleRow(),
+                            // Keyed, and it has to be. Entering logo-fullscreen
+                            // drops the row above, which slides this from index 1
+                            // to index 0; unkeyed, Flutter matches a Column's
+                            // children by position, finds a different type there
+                            // and rebuilds this whole branch -- taking the
+                            // IndexedStack and every page's State with it. The key
+                            // is what lets it be recognised as the same child that
+                            // merely moved. Same defect the resize edges had.
+                            Expanded(
+                              key: const ValueKey('shell-body'),
+                              child: Row(
+                                children: [
+                                  Sidebar(
+                                    controller: _shell,
+                                    onCycleTheme: _shell.cycleTheme,
+                                    themeIcon: _themeIcon,
+                                  ),
+                                  // Every section stays alive across a switch: Transfer polls a
+                                  // running server, Music holds a playing deck and a queue, and
+                                  // rebuilding either every time it is looked at would restart
+                                  // the poll and lose the ledger's page and sort, or drop the
+                                  // now-playing. The ones that cost something to keep warm are
+                                  // told whether they are on screen instead.
+                                  //
+                                  // `ContentSurface` in ui/main.slint: the page is a card, not
+                                  // the window. The shell there is one
+                                  // `HorizontalLayout { padding: 14px; spacing: 14px }` around
+                                  // the rail and this, which is the gutter the port was
+                                  // missing — the page ran flush into the sidebar and off
+                                  // three edges of the window.
+                                  Expanded(
+                                    child: Container(
+                                      margin: const EdgeInsets.fromLTRB(
+                                          14, 14, 14, 14),
+                                      // The language's card: a raised sheet, a
+                                      // pane, a tonal card.
+                                      decoration: skin.surface(SurfaceRole.card,
+                                              radius: Tokens.radiusLg) ??
+                                          BoxDecoration(
+                                            color: tokens.panel,
+                                            borderRadius: BorderRadius.circular(
+                                                Tokens.radiusLg),
+                                            border: Border.all(
+                                                color: tokens.outline),
+                                            boxShadow: const [
+                                              BoxShadow(
+                                                  color: Color(0x40000000),
+                                                  blurRadius: 32),
+                                            ],
+                                          ),
+                                      clipBehavior: Clip.antiAlias,
+                                      child: IndexedStack(
+                                        index: at.index,
+                                        children: [
+                                          // TickerMode is what makes "kept alive" stop short of
+                                          // "kept animating". IndexedStack holds all ten pages
+                                          // in the tree and skips painting the nine underneath,
+                                          // but it does not stop their tickers -- and one
+                                          // offstage indeterminate spinner is enough to ask for
+                                          // a frame at every vsync, for as long as the app is
+                                          // open. Settings is exactly that: it does not load
+                                          // until it is first opened, so its page sits on
+                                          // FirstLoad's CircularProgressIndicator from launch,
+                                          // and the window rebuilt, laid out, painted and
+                                          // re-walked its semantics tree 144 times a second
+                                          // over a screen where nothing moved.
+                                          for (final (i, page) in <Widget>[
+                                            HomePage(
+                                                visible: at == Section.home),
+                                            const PhotosPage(),
+                                            const VideosPage(),
+                                            const MusicPage(),
+                                            const BooksPage(),
+                                            const CloudPage(),
+                                            ToolsPage(
+                                                visible: at == Section.tools),
+                                            TransferPage(
+                                                visible:
+                                                    at == Section.transfer),
+                                            const FinancesPage(),
+                                            SettingsPage(
+                                                visible:
+                                                    at == Section.settings),
+                                          ].indexed)
+                                            TickerMode(
+                                                enabled: i == at.index,
+                                                child: page),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ]),
+                          if (_shell.appFullscreen) const FullscreenPeek(),
+                        ]);
+                      },
+                    ),
+                  ),
                 ),
               ),
             ),
           ),
         ),
-      ),
       ),
     );
   }

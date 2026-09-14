@@ -1070,7 +1070,7 @@ fn profile_rows(s: &S) -> Vec<SettingItem> {
 
 /// A path with the home directory shortened, for a row that is describing
 /// where something lives rather than naming a file to open.
-fn tildeish(p: &Path) -> String {
+pub(crate) fn tildeish(p: &Path) -> String {
     let s = p.display().to_string();
     match std::env::var("HOME") {
         Ok(home) if !home.is_empty() && s.starts_with(&home) => format!("~{}", &s[home.len()..]),
@@ -1838,7 +1838,7 @@ fn watched_path() -> Option<PathBuf> {
     tulipix_core::paths::config_dir().map(|d| d.join("watched_folders.json"))
 }
 
-fn watched() -> Vec<PathBuf> {
+pub(crate) fn watched() -> Vec<PathBuf> {
     let Some(p) = watched_path() else { return Vec::new() };
     std::fs::read_to_string(p)
         .ok()

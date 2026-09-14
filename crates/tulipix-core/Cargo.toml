@@ -14,7 +14,14 @@ tracing.workspace = true
 # The JSONL sink's `tracing` layer (`logging::FileLayer`). Both front ends own a
 # `tracing-subscriber` already; the layer lives here so each installs the same
 # one with a single line rather than keeping a copy of it.
-tracing-subscriber.workspace = true
+#
+# Pinned rather than inherited, with no features at all: implementing `Layer`
+# needs only `tracing_subscriber::layer`, which is ungated. Taking the
+# workspace entry would take its defaults (ansi, tracing-log, smallvec) with
+# it, and cargo unifies features across the graph -- so this one line would
+# silently undo the `default-features = false` the bridge sets on the same
+# crate, and put nu-ansi-term back into a build that had dropped it.
+tracing-subscriber = { version = "0.3", default-features = false }
 keyring.workspace = true
 sqlx.workspace = true
 sha2.workspace = true

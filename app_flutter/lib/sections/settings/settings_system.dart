@@ -13,6 +13,7 @@ import '../../design/pick.dart';
 import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../shell/lock/lock_controller.dart';
+import '../../shell/onboarding/onboarding_controller.dart';
 import '../../shell/shell_controller.dart';
 import '../../shell/vitals.dart';
 import '../../shell/window.dart' show WindowChrome;
@@ -1104,6 +1105,33 @@ class DataTab extends StatelessWidget {
                         ),
                       ],
                     ),
+            ),
+          ),
+          (
+            span: 3,
+            child: SettingsTile(
+              icon: Icons.auto_awesome_outlined,
+              tint: Tokens.brand,
+              title: 'Set up again',
+              note: 'The ten cards from the first run, over the app as it is',
+              fill: true,
+              child: Spread(
+                gap: 12,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                [
+                  _note(
+                      context,
+                      'Walks the same setup you saw the first time — your '
+                      'name, the look, which folders to read. Nothing is '
+                      'changed by a card you skip, so you can run it to alter '
+                      'one thing and leave the rest exactly as it is.'),
+                  SmallBtn(
+                    label: 'Run setup',
+                    icon: Icons.play_arrow_outlined,
+                    onTap: OnboardingController.instance.start,
+                  ),
+                ],
+              ),
             ),
           ),
           (

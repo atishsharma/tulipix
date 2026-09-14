@@ -1,3 +1,11 @@
+//! **Superseded, and unused.** Nothing calls this.
+//!
+//! The onboarding that ships is ten cards in Flutter
+//! (`app_flutter/lib/shell/onboarding/`), staged in Dart and committed through
+//! the existing settings commands; whether it runs at all is the `onboarded`
+//! flag, which the Slint build reads directly. This module's six-step machine
+//! describes a flow neither front end has. Build on the Flutter one.
+//!
 //! 5-step onboarding wizard state machine.
 //!
 //! Step order: Theme → Security → Mode → AI models → Libraries → Done.

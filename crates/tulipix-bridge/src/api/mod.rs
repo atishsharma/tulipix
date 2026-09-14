@@ -13,6 +13,7 @@ pub mod logs;
 pub mod maintenance;
 pub mod mdl;
 pub mod music;
+pub mod onboarding;
 pub mod photos;
 pub mod scrobble;
 pub mod settings;
