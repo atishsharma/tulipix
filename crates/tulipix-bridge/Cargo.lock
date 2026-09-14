@@ -4040,6 +4040,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "roxmltree"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "rust-embed"
 version = "8.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5297,8 +5306,11 @@ name = "tulipix-core"
 version = "1.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "getrandom 0.4.3",
  "image",
  "keyring",
+ "libsqlite3-sys",
  "notify",
  "reqwest",
  "serde",
@@ -5477,10 +5489,13 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.23.1",
+ "flate2",
  "futures-util",
  "hmac 0.13.0",
  "md-5 0.11.0",
+ "regex",
  "reqwest",
+ "roxmltree",
  "serde",
  "serde_json",
  "sha2 0.11.0",
