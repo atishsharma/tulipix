@@ -387,7 +387,7 @@ class SecurityTab extends StatelessWidget {
                   for (final r in passkeyWays)
                     SettingLine(
                       title: r.label,
-                      note: r.desc.isEmpty ? null : r.desc,
+                      note: r.desc,
                       trailing: r.btn.isEmpty
                           ? StateChip(r.value, tint: _stateTint(r.state))
                           : Row(
@@ -1205,7 +1205,7 @@ class _CrashLine extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.error_outline, size: 16, color: Tokens.warn),
+          const Icon(Icons.error_outline, size: 16, color: Tokens.warn),
           const SizedBox(width: 12),
           Expanded(
             child: Column(

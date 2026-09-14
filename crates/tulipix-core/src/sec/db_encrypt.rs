@@ -88,12 +88,18 @@ pub fn pragma_value(key_hex: &str) -> String {
 
 /// The same key as a SQL blob literal, for `ATTACH … KEY`. No double quotes
 /// here: in SQL those mean an identifier, and the KEY clause wants a value.
+///
+/// Only `convert` calls it, and `convert` only exists with the feature on —
+/// but the tests below check it either way, and `dead_code` does not count a
+/// test as a use.
+#[cfg_attr(not(feature = "db-encrypt"), allow(dead_code))]
 fn blob_literal(key_hex: &str) -> String {
     format!("x'{key_hex}'")
 }
 
 /// A path inside a SQL string literal. Rare, and silently wrong if left out:
 /// a folder with an apostrophe in it would end the literal early.
+#[cfg_attr(not(feature = "db-encrypt"), allow(dead_code))]
 fn sql_path(path: &std::path::Path) -> String {
     path.display().to_string().replace('\'', "''")
 }
