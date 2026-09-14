@@ -44,6 +44,11 @@ pub fn init_app() {
         )
         .try_init();
 
+    // A panic in any Rust section leaves a JSON dump under `<data>/crashes/`,
+    // which Settings › Data lists. Nothing is sent anywhere -- Report opens a
+    // pre-filled issue in the browser and the user decides.
+    tulipix_core::crash::install_panic_hook();
+
     // yt-dlp goes stale on its own schedule: sites change, and a binary a few
     // weeks old starts answering 403 on downloads that worked yesterday. This
     // is the weekly check — background thread, at most one network call a week,

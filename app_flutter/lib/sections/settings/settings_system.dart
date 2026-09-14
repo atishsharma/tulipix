@@ -722,8 +722,15 @@ class DataTab extends StatelessWidget {
     final t = context.tokens;
     final c = controller;
     final rows = Rows(state.data);
-    rows.use(['backup', 'open-logs', 'open-data']);
+    rows.use(['backup', 'open-logs', 'open-data', 'crash-open', 'crash-clear']);
     final multi = rows.key('multi-user');
+    // One row per crash dump the bridge found, newest first. Nothing is sent
+    // anywhere: Report opens a pre-filled issue in the browser.
+    final crashes = [
+      for (final r in state.data)
+        if (r.key.startsWith('crash-report:')) r,
+    ];
+    rows.use(crashes.map((r) => r.key));
     final rest = rows.rest;
     final backups = state.backups;
     final data = state.dataPath;
@@ -897,6 +904,68 @@ class DataTab extends StatelessWidget {
           (
             span: 3,
             child: SettingsTile(
+              icon: Icons.bug_report_outlined,
+              tint: Tokens.warn,
+              title: 'Crash reports',
+              note: 'Kept on this computer. Nothing is ever sent on its own',
+              trailing: [
+                StateChip(
+                  crashes.isEmpty ? 'None' : '${crashes.length}',
+                  tint: crashes.isEmpty ? Tokens.ok : Tokens.warn,
+                ),
+              ],
+              child: crashes.isEmpty
+                  ? _note(
+                      context,
+                      'Tulipix has not crashed on this computer. If it does, '
+                      'the report lands here and Report opens an issue with '
+                      'the details filled in — you decide whether to post it.')
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Container(
+                          clipBehavior: Clip.antiAlias,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: t.outline),
+                          ),
+                          child: Column(
+                            children: [
+                              for (var i = 0; i < crashes.length; i++)
+                                _CrashLine(
+                                  row: crashes[i],
+                                  first: i == 0,
+                                  onReport: () =>
+                                      c.sendAction(crashes[i].key),
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            SmallBtn(
+                              label: 'Open the folder',
+                              icon: Icons.folder_open_outlined,
+                              onTap: () => c.sendAction('crash-open'),
+                            ),
+                            SmallBtn(
+                              label: 'Delete all',
+                              icon: Icons.delete_outline,
+                              danger: true,
+                              onTap: () => c.sendAction('crash-clear'),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+            ),
+          ),
+          (
+            span: 3,
+            child: SettingsTile(
               icon: Icons.delete_outline,
               tint: Tokens.error,
               title: 'Start over',
@@ -967,6 +1036,57 @@ class _BackupLine extends StatelessWidget {
               style: TextStyle(fontSize: 11.5, color: t.textDim)),
           const SizedBox(width: 12),
           SmallBtn(label: 'Restore', onTap: onRestore),
+        ],
+      ),
+    );
+  }
+}
+
+/// One crash dump: when it happened, what panicked, and Report. The bridge
+/// has already written the line — `label` is the time, `desc` the panic and
+/// where it was, `value` the version it happened on.
+class _CrashLine extends StatelessWidget {
+  const _CrashLine({
+    required this.row,
+    required this.first,
+    required this.onReport,
+  });
+
+  final SettingItem row;
+  final bool first;
+  final VoidCallback onReport;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
+      decoration: BoxDecoration(
+        color: t.bg,
+        border: first ? null : Border(top: BorderSide(color: t.outline)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.error_outline, size: 16, color: Tokens.warn),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('${row.label} · ${row.value}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12.5, color: t.text)),
+                if (row.desc.isNotEmpty)
+                  Text(row.desc,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11.5, color: t.textDim)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          SmallBtn(label: 'Report', onTap: onReport),
         ],
       ),
     );
@@ -1247,7 +1367,6 @@ class _AdvancedTabState extends State<AdvancedTab> {
     final cache = rows.label('Thumbnail cache');
     rows.use(['clear-thumbs']);
     final notif = rows.key('notifications');
-    final crash = rows.key('crash-upload');
     final accent = rows.key('follow-system-accent');
     final fontScale = rows.key('follow-os-font-scale');
     final alloc = rows.label('Allocator');
@@ -1376,8 +1495,6 @@ class _AdvancedTabState extends State<AdvancedTab> {
           'Sections take your desktop colour', Tokens.brand2, shell: true),
       control(fontScale, Icons.format_size, 'OS text size',
           'Follow the desktop\'s scale', Tokens.brand2, shell: true),
-      control(crash, Icons.bug_report_outlined, 'Crash reports',
-          'Kept on this machine · from phase 2', Tokens.warn),
     ].whereType<Widget>().toList();
 
     // This build: who made it and what it opens, last on Overview.

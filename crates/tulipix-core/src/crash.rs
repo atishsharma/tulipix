@@ -1,189 +1,185 @@
+//! Crash reports, kept on this machine.
+//!
+//! A panic writes one JSON file into `<data>/crashes/`. Nothing is ever
+//! uploaded: Settings › Data lists what is there, and Report opens a
+//! pre-filled issue on the tracker in the browser, so the user posts it
+//! themselves or not at all. The panic text and location go through the
+//! bug-report redactor first, which is what strips absolute paths, emails
+//! and secret-shaped blobs.
+
+use crate::bug_report::redact;
 use crate::paths;
-use anyhow::Result;
 use std::panic::PanicHookInfo;
-use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, RwLock};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CrashConsent { OptIn, OptOut }
-
-static CONSENT: OnceLock<RwLock<CrashConsent>> = OnceLock::new();
-
-fn consent() -> &'static RwLock<CrashConsent> {
-    CONSENT.get_or_init(|| RwLock::new(CrashConsent::OptOut))
-}
-
-pub fn set_consent(c: CrashConsent) { *consent().write().unwrap() = c; }
-pub fn current_consent() -> CrashConsent { *consent().read().unwrap() }
-
-// ─── Overlay bus ─────────────────────────────────────────────────────────
-//
-// The panic hook writes the crash dump and then fires a `ShowErrorOverlay`
-// event. The app crate registers a listener that pops the ErrorBoundary
-// modal with the dump path so the user can Open Logs / Reload / Quit
-// without ever seeing a console-only stack trace.
-
-type OverlayCallback = Box<dyn Fn(ShowErrorOverlay) + Send + Sync>;
-static OVERLAY: OnceLock<RwLock<Option<OverlayCallback>>> = OnceLock::new();
-fn overlay_slot() -> &'static RwLock<Option<OverlayCallback>> {
-    OVERLAY.get_or_init(|| RwLock::new(None))
-}
+/// Where the tracker lives. The Report button opens `.../issues/new` here.
+pub const ISSUES_URL: &str = "https://github.com/atishsharma/tulipix/issues/new";
 
 #[derive(Debug, Clone)]
-pub struct ShowErrorOverlay {
-    pub crash_id: String,
-    pub dump_path: PathBuf,
+pub struct CrashEntry {
+    /// The file's stem, `crash-<unix secs>`. The only thing an action is
+    /// allowed to name.
+    pub id: String,
+    pub secs: i64,
+    /// The panic message, one line.
     pub headline: String,
+    /// `file:line:col` of the panic, or empty.
+    pub location: String,
+    pub version: String,
+    pub path: PathBuf,
 }
 
-pub fn set_overlay_handler<F: Fn(ShowErrorOverlay) + Send + Sync + 'static>(f: F) {
-    *overlay_slot().write().unwrap() = Some(Box::new(f));
+pub fn dir() -> Option<PathBuf> {
+    paths::data_dir().map(|d| d.join("crashes"))
 }
-
-fn fire_overlay(ev: ShowErrorOverlay) {
-    if let Some(cb) = overlay_slot().read().unwrap().as_ref() { cb(ev); }
-}
-
-// ─── Panic hook ─────────────────────────────────────────────────────────
 
 pub fn install_panic_hook() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        match write_crash_dump(info) {
-            Ok((id, path)) => fire_overlay(ShowErrorOverlay {
-                crash_id: id,
-                dump_path: path,
-                headline: info.payload().downcast_ref::<&str>().copied().unwrap_or("Tulipix crashed").to_string(),
-            }),
-            Err(e) => tracing::error!(error = %e, "write_crash_dump failed"),
+        if let Err(e) = write_crash_dump(info) {
+            tracing::error!(error = %e, "write_crash_dump failed");
         }
         default(info);
     }));
 }
 
-fn write_crash_dump(info: &PanicHookInfo<'_>) -> std::io::Result<(String, PathBuf)> {
-    let Some(dir) = paths::data_dir() else { return Ok(("".into(), PathBuf::new())); };
-    let crash_dir = dir.join("crashes");
+/// The panic payload as a line. `panic!("{x}")` carries a `String` and
+/// `panic!("literal")` a `&str`; missing the first left most crashes headed
+/// "Tulipix crashed".
+fn headline_of(info: &PanicHookInfo<'_>) -> String {
+    let p = info.payload();
+    p.downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "Tulipix crashed".into())
+}
+
+fn write_crash_dump(info: &PanicHookInfo<'_>) -> std::io::Result<()> {
+    let Some(crash_dir) = dir() else { return Ok(()) };
     std::fs::create_dir_all(&crash_dir)?;
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let id = format!("crash-{ts}");
-    let path = crash_dir.join(format!("{id}.json"));
-    let payload_struct = serde_json::json!({
-        "ts": ts,
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let path = crash_dir.join(format!("crash-{secs}.json"));
+    let dump = serde_json::json!({
+        "ts": secs,
         "version": env!("CARGO_PKG_VERSION"),
-        "consent": format!("{:?}", current_consent()),
-        "panic": info.to_string(),
-        "location": info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())),
+        "headline": headline_of(info),
+        "location": info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_default(),
     });
-    std::fs::write(&path, serde_json::to_vec_pretty(&payload_struct)?)?;
-    Ok((id, path))
+    std::fs::write(&path, serde_json::to_vec_pretty(&dump)?)
 }
 
-pub fn pending_crashes() -> Vec<PathBuf> {
-    let Some(dir) = paths::data_dir().map(|d| d.join("crashes")) else { return vec![]; };
-    let Ok(rd) = std::fs::read_dir(&dir) else { return vec![]; };
-    rd.flatten().map(|e| e.path()).filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json")).collect()
+/// What is in the crash folder, newest first. A file that is not a dump, or
+/// is half-written, is left out rather than shown as a blank row.
+pub fn list() -> Vec<CrashEntry> {
+    let Some(crash_dir) = dir() else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(&crash_dir) else { return Vec::new() };
+    let mut out: Vec<CrashEntry> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+        .filter_map(|p| {
+            let id = p.file_stem()?.to_str()?.to_string();
+            let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).ok()?).ok()?;
+            Some(CrashEntry {
+                secs: v["ts"].as_i64().unwrap_or(0),
+                headline: v["headline"].as_str().unwrap_or("Tulipix crashed").to_string(),
+                location: v["location"].as_str().unwrap_or_default().to_string(),
+                version: v["version"].as_str().unwrap_or_default().to_string(),
+                id,
+                path: p,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.secs.cmp(&a.secs));
+    out
 }
 
-pub fn mark_uploaded(path: &Path) -> std::io::Result<()> {
-    let new = path.with_extension("sent");
-    std::fs::rename(path, new)
+pub fn find(id: &str) -> Option<CrashEntry> {
+    list().into_iter().find(|c| c.id == id)
 }
 
-// ─── Uploaders ───────────────────────────────────────────────────────────
-//
-// Two pluggable sinks. Only one is active at runtime — the choice flips
-// on the `EndpointConfig.sentry_dsn` value:
-//   * non-empty + valid → SentrySink
-//   * empty             → MinidumpSink (writes to the configured path, default
-//     Tulipix-managed receiver)
-// Both implement `CrashUploader` so `submit_pending()` can loop without
-// caring which the user picked.
-
-pub trait CrashUploader: Send + Sync {
-    fn upload(&self, dump_path: &Path) -> Result<String>;
+/// Delete every dump. Returns how many went.
+pub fn clear() -> usize {
+    list()
+        .into_iter()
+        .filter(|c| std::fs::remove_file(&c.path).is_ok())
+        .count()
 }
 
-#[derive(Debug, Clone)]
-pub struct SentrySink { pub dsn: String }
-impl CrashUploader for SentrySink {
-    fn upload(&self, dump_path: &Path) -> Result<String> {
-        // The sentry-rust SDK call lands in the app crate (depends on
-        // sentry's heavy transports). Here we just record where the dump
-        // would go — the integration test asserts the contract.
-        Ok(format!("sentry://{}#{}", self.dsn, dump_path.display()))
+/// A pre-filled issue on the tracker: title, and a body holding the version,
+/// the machine, the panic and where it happened. Redacted, because the body
+/// is about to be pasted into a public issue.
+pub fn issue_url(c: &CrashEntry) -> String {
+    let title = format!("Crash: {}", one_line(&redact(&c.headline), 90));
+    let body = format!(
+        "**What I was doing:**\n\n\n---\n\
+         Tulipix {} · {} {}\n\
+         Panic: {}\n\
+         At: {}\n",
+        if c.version.is_empty() { env!("CARGO_PKG_VERSION") } else { &c.version },
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        one_line(&redact(&c.headline), 400),
+        one_line(&redact(&c.location), 200),
+    );
+    format!("{ISSUES_URL}?title={}&body={}", enc(&title), enc(&body))
+}
+
+fn one_line(s: &str, max: usize) -> String {
+    let flat: String = s.trim().chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    match flat.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…", &flat[..i]),
+        None => flat,
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MinidumpSink { pub endpoint: String }
-impl CrashUploader for MinidumpSink {
-    fn upload(&self, dump_path: &Path) -> Result<String> {
-        Ok(format!("minidump-post://{}/{}", self.endpoint, dump_path.display()))
-    }
-}
-
-pub struct DiscardSink;
-impl CrashUploader for DiscardSink {
-    fn upload(&self, _dump_path: &Path) -> Result<String> { Ok("discarded".into()) }
-}
-
-/// Walk pending crash dumps. Each one is uploaded then renamed `.sent`.
-/// Honours consent: `OptOut` short-circuits to `Ok(0)` without reading any
-/// dump bytes (still keeps them on disk so the user can flip later).
-pub fn submit_pending(uploader: &dyn CrashUploader) -> Result<usize> {
-    if current_consent() == CrashConsent::OptOut { return Ok(0); }
-    let mut sent = 0;
-    for dump in pending_crashes() {
-        match uploader.upload(&dump) {
-            Ok(_)  => { mark_uploaded(&dump)?; sent += 1; }
-            Err(e) => { tracing::warn!(path = %dump.display(), error = %e, "crash upload failed"); }
+/// Percent-encode a query value. Unreserved characters through, everything
+/// else as %XX — a handful of lines rather than a dependency for two calls.
+fn enc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(*b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
         }
     }
-    Ok(sent)
-}
-
-pub fn pick_uploader(sentry_dsn: &str, minidump_endpoint: &str) -> Box<dyn CrashUploader> {
-    if !sentry_dsn.trim().is_empty() {
-        Box::new(SentrySink { dsn: sentry_dsn.to_string() })
-    } else if !minidump_endpoint.trim().is_empty() {
-        Box::new(MinidumpSink { endpoint: minidump_endpoint.to_string() })
-    } else {
-        Box::new(DiscardSink)
-    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn consent_round_trip() {
-        set_consent(CrashConsent::OptIn);
-        assert_eq!(current_consent(), CrashConsent::OptIn);
-        set_consent(CrashConsent::OptOut);
-        assert_eq!(current_consent(), CrashConsent::OptOut);
+
+    #[test]
+    fn enc_escapes_space_and_newline_and_keeps_unreserved() {
+        assert_eq!(enc("a b"), "a%20b");
+        assert_eq!(enc("a\nb"), "a%0Ab");
+        assert_eq!(enc("Az0-_.~"), "Az0-_.~");
     }
-    #[test] fn pick_uploader_prefers_sentry_then_minidump_then_discard() {
-        let s = pick_uploader("https://abc@sentry.io/1", "");
-        assert!(s.upload(Path::new("/x")).unwrap().starts_with("sentry://"));
-        let m = pick_uploader("", "https://crash.example.com/submit");
-        assert!(m.upload(Path::new("/x")).unwrap().starts_with("minidump-post://"));
-        let d = pick_uploader("", "");
-        assert_eq!(d.upload(Path::new("/x")).unwrap(), "discarded");
+
+    #[test]
+    fn one_line_flattens_and_truncates() {
+        assert_eq!(one_line("  a\nb  ", 90), "a b");
+        assert_eq!(one_line("abcdef", 3), "abc…");
     }
-    #[test] fn overlay_handler_fires() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        use std::sync::Arc;
-        let n = Arc::new(AtomicU32::new(0));
-        let n2 = n.clone();
-        set_overlay_handler(move |_ev| { n2.fetch_add(1, Ordering::Relaxed); });
-        fire_overlay(ShowErrorOverlay { crash_id: "c-1".into(), dump_path: PathBuf::from("/tmp/x.json"), headline: "boom".into() });
-        assert_eq!(n.load(Ordering::Relaxed), 1);
-    }
-    #[test] fn opt_out_short_circuits_submit_pending() {
-        set_consent(CrashConsent::OptOut);
-        struct Boom;
-        impl CrashUploader for Boom { fn upload(&self, _: &Path) -> Result<String> { panic!("should not run") } }
-        assert_eq!(submit_pending(&Boom).unwrap(), 0);
+
+    #[test]
+    fn issue_url_redacts_and_carries_both_fields() {
+        let c = CrashEntry {
+            id: "crash-1".into(),
+            secs: 1,
+            headline: "failed on /home/alice/secret.jpg".into(),
+            location: "crates/x/src/y.rs:3:4".into(),
+            version: "1.0.1".into(),
+            path: PathBuf::from("/tmp/crash-1.json"),
+        };
+        let u = issue_url(&c);
+        assert!(u.starts_with(ISSUES_URL));
+        assert!(u.contains("title="), "{u}");
+        assert!(u.contains("&body="), "{u}");
+        // The home path never reaches the query.
+        assert!(!u.contains("alice"), "{u}");
+        assert!(u.contains(&enc("<path>")), "{u}");
     }
 }

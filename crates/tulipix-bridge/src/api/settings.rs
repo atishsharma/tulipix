@@ -828,14 +828,79 @@ fn sandbox() -> (&'static str, &'static str) {
 }
 
 fn data(s: &S) -> Vec<SettingItem> {
-    vec![
+    let mut rows = vec![
         hdr("BACKUP"),
         act("backup", "Back up settings", "Saves your settings and folder list so you can restore them later", "Back up"),
         hdr("PROBLEMS"),
         act("open-logs", "Open the log folder", "tracing JSON logs with daily rotation", "Open"),
         act("open-data", "Open the data folder", "Where the section databases live", "Open"),
         tog(s, "multi-user", false, "Separate library per computer user", "Each OS account gets its own Tulipix library"),
-    ]
+    ];
+    rows.extend(crashes());
+    rows
+}
+
+/// Crash reports, kept on this machine. One row each, newest first, with a
+/// Report button that opens a pre-filled issue in the browser. Nothing is
+/// uploaded and nothing is sent in the background: the row is the whole of it.
+/// A machine that has never crashed gets one quiet status line instead of a
+/// heading over nothing.
+fn crashes() -> Vec<SettingItem> {
+    let found = tulipix_core::crash::list();
+    if found.is_empty() {
+        return vec![
+            hdr("CRASH REPORTS"),
+            stat("Crash reports", "None on this computer", "ok"),
+        ];
+    }
+    let mut rows = vec![
+        hdr("CRASH REPORTS"),
+        stat(
+            "Kept here only",
+            "Nothing is sent anywhere. Report opens a pre-filled issue in your browser",
+            "muted",
+        ),
+    ];
+    // Ten is the whole list anyone reads; the rest stay on disk and the folder
+    // button is right there.
+    for c in found.iter().take(10) {
+        rows.push(statact(
+            &format!("crash-report:{}", c.id),
+            &crash_when(c.secs),
+            &if c.location.is_empty() {
+                c.headline.clone()
+            } else {
+                format!("{} — {}", c.headline, c.location)
+            },
+            &format!("Tulipix {}", c.version),
+            "warn",
+            "Report",
+        ));
+    }
+    if found.len() > 10 {
+        rows.push(stat("Older reports", &format!("{} more in the folder", found.len() - 10), "muted"));
+    }
+    rows.push(act("crash-open", "Open the crash folder", "The JSON files these rows are read from", "Open"));
+    rows.push(act("crash-clear", "Delete the crash reports", "Removes every file in that folder", "Delete"));
+    rows
+}
+
+/// "Today 14:05" / "3 Sep 2026 14:05" — a crash is looked up by when it
+/// happened, so the clock time matters as much as the date.
+fn crash_when(secs: i64) -> String {
+    let Some(t) = chrono::DateTime::from_timestamp(secs, 0).map(|t| t.with_timezone(&chrono::Local))
+    else {
+        return "Unknown time".into();
+    };
+    use chrono::Datelike;
+    let now = chrono::Local::now();
+    if t.date_naive() == now.date_naive() {
+        t.format("Today %H:%M").to_string()
+    } else if t.year() == now.year() {
+        t.format("%-d %b %H:%M").to_string()
+    } else {
+        t.format("%-d %b %Y %H:%M").to_string()
+    }
 }
 
 fn advanced(s: &S) -> Vec<SettingItem> {
@@ -889,7 +954,10 @@ fn advanced(s: &S) -> Vec<SettingItem> {
         // Read by the shell snapshot (`system_accent`, `follow_os_font_scale`).
         tog(s, "follow-system-accent", false, "Follow system accent", "Every section takes your desktop's accent colour"),
         tog(s, "follow-os-font-scale", true, "Honour OS font scale", "Text follows your desktop's text size; off keeps it at 100 %"),
-        tog(s, "crash-upload", false, "Opt-in crash uploader", "Send minidumps to the configured Sentry DSN"),
+        // Not here: the opt-in crash uploader. This build never sends a crash
+        // anywhere -- the dumps are listed in Data › Crash reports and Report
+        // opens an issue in the browser -- so a switch for it was a promise
+        // nothing kept.
         // Readings only. The tray is a real probe; the other four say what this
         // build has, which on Linux is none of them. The window frame and the
         // OS sandbox are read elsewhere (Dart, and Security).
@@ -1022,6 +1090,23 @@ async fn action(key: &str) -> String {
             Err(e) => format!("Backup failed: {e}"),
         },
         "open-logs" => open(tulipix_core::paths::data_dir().map(|d| d.join("logs"))),
+        "crash-open" => open(tulipix_core::crash::dir()),
+        "crash-clear" => match tulipix_core::crash::clear() {
+            0 => "There were no crash reports to delete.".into(),
+            1 => "Deleted 1 crash report.".into(),
+            n => format!("Deleted {n} crash reports."),
+        },
+        // The browser, with the issue form filled in. Nothing is posted: the
+        // page opens and the user decides whether to send it.
+        k if k.starts_with("crash-report:") => {
+            match tulipix_core::crash::find(&k["crash-report:".len()..]) {
+                Some(c) => {
+                    crate::api::transfer::open_url(&tulipix_core::crash::issue_url(&c));
+                    "Opened an issue with the details filled in. Nothing is sent until you post it.".into()
+                }
+                None => "That crash report is not there any more.".into(),
+            }
+        }
         "open-data" => open(tulipix_core::paths::data_dir()),
         // Where the upscale chain is read from (`vmpv::glsl_chain`).
         "open-shaders" => open(tulipix_core::paths::config_dir().map(|d| d.join("shaders"))),
