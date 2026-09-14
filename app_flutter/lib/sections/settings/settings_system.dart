@@ -16,6 +16,7 @@ import '../../shell/lock/lock_controller.dart';
 import '../../shell/shell_controller.dart';
 import '../../shell/vitals.dart';
 import '../../shell/window.dart' show WindowChrome;
+import '../../src/rust/api/logs.dart';
 import '../../src/rust/api/settings.dart';
 import '../../src/rust/api/status.dart';
 import 'settings_controller.dart';
@@ -1034,6 +1035,10 @@ class DataTab extends StatelessWidget {
                     title: 'Logs',
                     path: data.isEmpty ? '' : tildePath('$data/logs'),
                     onOpen: () => c.sendAction('open-logs'),
+                    onView: () => showDialog<void>(
+                      context: context,
+                      builder: (_) => const _LogViewer(),
+                    ),
                   ),
                 ],
               ),
@@ -1237,12 +1242,17 @@ class _PathRow extends StatelessWidget {
     required this.title,
     required this.path,
     required this.onOpen,
+    this.onView,
   });
 
   final IconData icon;
   final String title;
   final String path;
   final VoidCallback onOpen;
+
+  /// Reads the folder's contents inside the app. Only the logs have one — a
+  /// folder of JSONL is not something to send anyone to a file manager for.
+  final VoidCallback? onView;
 
   @override
   Widget build(BuildContext context) {
@@ -1274,7 +1284,291 @@ class _PathRow extends StatelessWidget {
               ],
             ),
           ),
+          if (onView != null) ...[
+            SmallBtn(
+                label: 'View',
+                icon: Icons.subject_outlined,
+                onTap: onView!),
+            const SizedBox(width: 6),
+          ],
           SmallBtn(label: 'Open', icon: Icons.open_in_new, onTap: onOpen),
+        ],
+      ),
+    );
+  }
+}
+
+/// The log viewer: what the app has been saying to itself, without leaving it.
+///
+/// The lines are shown as they were written — real paths and all, because this
+/// is your own machine and the folder that failed to scan is usually the whole
+/// answer. Copy is the one that scrubs, since that is the trip that ends in an
+/// issue tracker.
+class _LogViewer extends StatefulWidget {
+  const _LogViewer();
+
+  @override
+  State<_LogViewer> createState() => _LogViewerState();
+}
+
+class _LogViewerState extends State<_LogViewer> {
+  /// Empty is everything; the rest are `tracing` levels as the bridge spells
+  /// them.
+  static const List<String> _levels = ['', 'INFO', 'WARN', 'ERROR'];
+  static const List<String> _levelLabels = ['All', 'Info', 'Warnings', 'Errors'];
+
+  /// Enough to scroll through and cheap to re-read on every keystroke; the
+  /// footer says when it was not the whole of it.
+  static const int _limit = 500;
+
+  String _level = '';
+  String _search = '';
+  LogPage? _page;
+  String? _error;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _busy = true);
+    try {
+      final p = await logsRead(level: _level, search: _search, limit: _limit);
+      if (!mounted) return;
+      setState(() {
+        _page = p;
+        _error = null;
+        _busy = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$e';
+        _busy = false;
+      });
+    }
+  }
+
+  Future<void> _copy() async {
+    try {
+      final text =
+          await logsCopy(level: _level, search: _search, limit: _limit);
+      await Clipboard.setData(ClipboardData(text: text));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Copied, with paths and keys scrubbed'),
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = '$e');
+    }
+  }
+
+  Future<void> _clear() async {
+    try {
+      await logsClear();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = '$e');
+      return;
+    }
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final page = _page;
+    return AlertDialog(
+      title: Row(
+        children: [
+          const Expanded(child: Text('Logs')),
+          if (page != null)
+            StateChip(
+              page.files == 0
+                  ? 'Nothing yet'
+                  : '${page.files} ${page.files == 1 ? 'day' : 'days'}',
+              tint: page.files == 0 ? Tokens.warn : Tokens.ok,
+            ),
+        ],
+      ),
+      content: SizedBox(
+        width: 720,
+        height: 460,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Seg(
+                  options: _levels,
+                  labels: _levelLabels,
+                  value: _level,
+                  onPick: (v) {
+                    setState(() => _level = v);
+                    _load();
+                  },
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FieldBox(
+                    value: _search,
+                    hint: 'Find in messages or modules',
+                    onSubmit: (v) {
+                      setState(() => _search = v.trim());
+                      _load();
+                    },
+                  ),
+                ),
+                const SizedBox(width: 10),
+                SmallBtn(
+                  label: 'Refresh',
+                  icon: Icons.refresh,
+                  onTap: _busy ? null : _load,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: Container(
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  color: t.bg,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: t.outline),
+                ),
+                child: _body(context),
+              ),
+            ),
+            if (page != null && page.truncated) ...[
+              const SizedBox(height: 8),
+              _note(
+                  context,
+                  'Showing the newest $_limit lines. Narrow the search, or '
+                  'open the folder for the rest.'),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: (_page?.lines.isEmpty ?? true) ? null : _clear,
+          child: const Text('Delete all'),
+        ),
+        TextButton(
+          onPressed: (_page?.lines.isEmpty ?? true) ? null : _copy,
+          child: const Text('Copy, scrubbed'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+      ],
+    );
+  }
+
+  Widget _body(BuildContext context) {
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Text('Could not read the logs: $_error',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12.5, color: Tokens.error)),
+        ),
+      );
+    }
+    final page = _page;
+    if (page == null) {
+      return const Center(
+        child: SizedBox(
+            width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    }
+    if (page.lines.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: _note(
+              context,
+              page.files == 0
+                  ? 'Nothing has been logged yet. Tulipix writes one file a '
+                      'day here and keeps a fortnight.'
+                  : 'No line matches that. Try a wider level, or clear the '
+                      'search.'),
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: EdgeInsets.zero,
+      itemCount: page.lines.length,
+      itemBuilder: (_, i) => _LogLineRow(line: page.lines[i], first: i == 0),
+    );
+  }
+}
+
+/// One line: the clock, the level, the module that said it, the message.
+class _LogLineRow extends StatelessWidget {
+  const _LogLineRow({required this.line, required this.first});
+
+  final LogLine line;
+  final bool first;
+
+  /// Only the two levels worth noticing are coloured. Green on every INFO
+  /// line makes a healthy log look like an alarm.
+  static Color? _tint(String level) => switch (level.toUpperCase()) {
+        'ERROR' => Tokens.error,
+        'WARN' => Tokens.warn,
+        _ => null,
+      };
+
+  /// The target is `tulipix_videos::anime`; the crate prefix is on every line
+  /// and says nothing, so only the last part is drawn.
+  static String _module(String target) {
+    final i = target.lastIndexOf('::');
+    return i < 0 ? target : target.substring(i + 2);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final d = DateTime.fromMillisecondsSinceEpoch(line.secs.toInt() * 1000);
+    final tint = _tint(line.level) ?? t.textDim;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+      decoration: BoxDecoration(
+        border: first ? null : Border(top: BorderSide(color: t.outline)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('${_two(d.hour)}:${_two(d.minute)}:${_two(d.second)}',
+              style: _mono.copyWith(fontSize: 11, color: t.textDim)),
+          const SizedBox(width: 10),
+          SizedBox(
+            width: 46,
+            child: Text(line.level.toUpperCase(),
+                style: _mono.copyWith(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: tint)),
+          ),
+          const SizedBox(width: 6),
+          SizedBox(
+            width: 108,
+            child: Text(_module(line.target),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: _mono.copyWith(fontSize: 11, color: t.textDim)),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: SelectableText(line.message,
+                style: _mono.copyWith(fontSize: 11.5, color: t.text)),
+          ),
         ],
       ),
     );

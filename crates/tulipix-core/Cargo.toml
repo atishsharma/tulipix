@@ -11,6 +11,10 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
+# The JSONL sink's `tracing` layer (`logging::FileLayer`). Both front ends own a
+# `tracing-subscriber` already; the layer lives here so each installs the same
+# one with a single line rather than keeping a copy of it.
+tracing-subscriber.workspace = true
 keyring.workspace = true
 sqlx.workspace = true
 sha2.workspace = true

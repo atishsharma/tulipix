@@ -1,6 +1,6 @@
 // Desktop GUI app: never spawn/keep a console window on Windows (all builds).
-// Logs still land in the file sink (tulipix_core::logging::LOG); only the
-// stdout `tracing` fmt layer goes silent on Windows.
+// Logs still land in the file sink (tulipix_core::logging::FileLayer); only
+// the stdout `tracing` fmt layer goes silent on Windows.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use anyhow::{Context, Result};
@@ -292,8 +292,14 @@ fn main() -> Result<()> {
     //
     // Scoped to the default only: RUST_LOG still wins, so `RUST_LOG=icu_provider=warn`
     // brings it back without a rebuild.
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    //
+    // A registry rather than `fmt()`: `fmt()` builds a subscriber that admits
+    // no second layer, and there are two sinks now -- stdout, and the rolling
+    // JSONL file the log viewer and the bug-report bundler read.
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    tracing_subscriber::registry()
+        .with(
             EnvFilter::try_from_default_env()
                 // sctk_adwaita: the client-side-decoration crate warns
                 // "Ignoring unknown button type: icon" for every button in the
@@ -304,9 +310,11 @@ fn main() -> Result<()> {
                     EnvFilter::new("info,icu_provider=error,sctk_adwaita=error")
                 }),
         )
+        .with(tracing_subscriber::fmt::layer())
+        .with(tulipix_core::logging::FileLayer)
         .init();
     tulipix_core::crash::install_panic_hook();
-    let _ = tulipix_core::logging::LOG.write_event("info", "tulipix", "startup");
+    let _ = tulipix_core::logging::prune(14);
 
     // zbus (transitive via rfd/xdg-portal + ashpd) requires a
     // Tokio reactor in scope for the calling thread. Enter a multi-thread

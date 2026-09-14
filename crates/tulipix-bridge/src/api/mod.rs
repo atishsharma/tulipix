@@ -9,6 +9,7 @@ pub mod finances;
 pub mod genesis;
 pub mod home;
 pub mod lock;
+pub mod logs;
 pub mod maintenance;
 pub mod mdl;
 pub mod music;
@@ -37,12 +38,25 @@ pub fn init_app() {
     // `try_init` because a global default can only be set once and a hot
     // restart re-enters this: failing to install a second logger is not worth
     // taking the app down for.
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
+    //
+    // Two sinks under one filter: the console formatter, and the rolling JSONL
+    // file that Settings › Data › Logs reads back. A registry rather than
+    // `fmt()` because `fmt()` builds a subscriber that admits no second layer.
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let _ = tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with(tracing_subscriber::fmt::layer())
+        .with(tulipix_core::logging::FileLayer)
         .try_init();
+
+    // Daily rotation with nothing deleting the old days grows `<data>/logs/`
+    // for the life of the install. A fortnight is more than the viewer shows
+    // and more than a bug report needs.
+    let _ = tulipix_core::logging::prune(14);
 
     // Before any database is opened: if Settings › Security's encryption
     // switch and the files on disk disagree, this is the moment they are
