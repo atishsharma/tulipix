@@ -11,7 +11,6 @@
 // opens this from Settings › Advanced to change one thing must not have the
 // other nine reset around them.
 
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
@@ -152,7 +151,7 @@ class OnboardingController extends ChangeNotifier {
     await _toggle('follow-system-accent', a.followAccent);
     if (a.reduceMotion != null) {
       await settingsDispatch(
-          cmd: SettingsCmd.setReduceMotion(on: a.reduceMotion!));
+          cmd: SettingsCmd.setReduceMotion(on_: a.reduceMotion!));
     }
     await _toggle('follow-os-font-scale', a.osFontScale);
 
@@ -188,7 +187,7 @@ class OnboardingController extends ChangeNotifier {
 
   Future<void> _toggle(String key, bool? on) async {
     if (on == null) return;
-    await settingsDispatch(cmd: SettingsCmd.toggle(key: key, on: on));
+    await settingsDispatch(cmd: SettingsCmd.toggle(key: key, on_: on));
   }
 
   Future<void> _text(String key, String? value) async {

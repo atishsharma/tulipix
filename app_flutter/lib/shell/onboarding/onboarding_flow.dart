@@ -10,7 +10,6 @@
 // "skipped" rather than claim a value nobody chose.
 
 import 'dart:typed_data';
-import 'dart:ui' show FontFeature;
 
 import 'package:flutter/material.dart';
 
@@ -390,7 +389,7 @@ class _FlowState extends State<_Flow> {
         _ => _ready(),
       };
 
-  Widget _welcome() => _Card(
+  Widget _welcome() => const _Card(
         kicker: 'Welcome',
         tint: Tokens.brand,
         title: 'Everything you own, in one place — and it stays here.',
@@ -403,12 +402,12 @@ class _FlowState extends State<_Flow> {
             _Row(
               title: 'Anything sent anywhere',
               note: 'Online lookups stay off until you turn them on, card 8',
-              trailing: const StateChip('Nothing, so far', tint: Tokens.ok),
+              trailing: StateChip('Nothing, so far', tint: Tokens.ok),
             ),
             _Row(
               title: 'Where this lives',
               note: 'One folder for settings, one for the index. Both yours',
-              trailing: const StateChip('On this computer'),
+              trailing: StateChip('On this computer'),
             ),
           ]),
         ],
