@@ -1,5 +1,49 @@
 use std::path::{Path, PathBuf};
 
+/// The environment variable that picks a profile. Empty or unset is the one
+/// everybody has had until now, whose folders keep their old names.
+pub const PROFILE_ENV: &str = "TULIPIX_PROFILE";
+
+/// What goes on the end of every folder name: `-mom` for the "mom" profile,
+/// nothing for the default one.
+///
+/// Read once. Every path in the app is built from these three functions, so a
+/// value that changed mid-run would leave half the process looking at one
+/// library and half at another; switching profiles restarts instead.
+pub fn profile_suffix() -> &'static str {
+    static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    S.get_or_init(|| match std::env::var(PROFILE_ENV) {
+        Ok(v) => {
+            let slug = slugify_profile(&v);
+            if slug.is_empty() { String::new() } else { format!("-{slug}") }
+        }
+        Err(_) => String::new(),
+    })
+}
+
+/// A profile name as a folder-safe slug. The name comes from a text box, and
+/// it becomes a directory: anything that is not a letter, a digit or a dash
+/// has no business in one.
+pub fn slugify_profile(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut dash = true;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            dash = false;
+        } else if !dash {
+            out.push('-');
+            dash = true;
+        }
+    }
+    out.trim_matches('-').chars().take(40).collect()
+}
+
+/// The folder name for this profile: "Tulipix", or "Tulipix-mom".
+fn app_dir_name() -> String {
+    format!("Tulipix{}", profile_suffix())
+}
+
 pub fn config_dir() -> Option<PathBuf> {
     let base = if cfg!(target_os = "linux") {
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
@@ -9,7 +53,7 @@ pub fn config_dir() -> Option<PathBuf> {
     } else {
         std::env::var_os("APPDATA").map(PathBuf::from)
     };
-    base.map(|b| b.join("Tulipix"))
+    base.map(|b| b.join(app_dir_name()))
 }
 
 pub fn data_dir() -> Option<PathBuf> {
@@ -21,7 +65,7 @@ pub fn data_dir() -> Option<PathBuf> {
     } else {
         std::env::var_os("APPDATA").map(PathBuf::from)
     };
-    base.map(|b| b.join("Tulipix"))
+    base.map(|b| b.join(app_dir_name()))
 }
 
 pub fn cache_dir() -> Option<PathBuf> {
@@ -33,7 +77,7 @@ pub fn cache_dir() -> Option<PathBuf> {
     } else {
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
     };
-    base.map(|b| b.join("Tulipix"))
+    base.map(|b| b.join(app_dir_name()))
 }
 
 pub fn thumbs_dir() -> Option<PathBuf> { cache_dir().map(|d| d.join("thumbs")) }

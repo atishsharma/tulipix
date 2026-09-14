@@ -53,8 +53,13 @@ impl DbHandle {
     }
 
     /// Build a WAL-mode pool with normal-sync, foreign-keys on. Idempotent.
+    ///
+    /// Keyed when Settings › Security has encryption on and this build has
+    /// SQLCipher: sqlx sends `PRAGMA key` before every other pragma, which is
+    /// the order SQLCipher requires — `journal_mode` on an encrypted file
+    /// with no key set fails, and would fail here first.
     pub async fn pool(&self) -> Result<SqlitePool> {
-        let opts = SqliteConnectOptions::from_str(&self.url)?
+        let mut opts = SqliteConnectOptions::from_str(&self.url)?
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
             .foreign_keys(true)
@@ -76,6 +81,9 @@ impl DbHandle {
             .pragma("cache_size", "-4000")
             .pragma("temp_store", "MEMORY")
             .create_if_missing(true);
+        if let Some(key) = crate::sec::db_encrypt::active_key() {
+            opts = opts.pragma("key", crate::sec::db_encrypt::pragma_value(&key));
+        }
         let pool = SqlitePoolOptions::new()
             // Writers serialise on the WAL lock anyway; the readers that
             // actually run concurrently are the section populate calls, and
@@ -100,12 +108,17 @@ impl DbHandle {
             anyhow::bail!("no {} library on this computer yet", self.section);
         }
         let url = format!("sqlite://{}?mode=ro", self.path.display());
-        let opts = SqliteConnectOptions::from_str(&url)?
+        let mut opts = SqliteConnectOptions::from_str(&url)?
             .read_only(true)
             .busy_timeout(std::time::Duration::from_secs(5))
             .pragma("cache_size", "-4000")
             .pragma("temp_store", "MEMORY")
             .create_if_missing(false);
+        // An encrypted library is unreadable to the MCP server too without
+        // the key, and it has as much right to it as the app does.
+        if let Some(key) = crate::sec::db_encrypt::active_key() {
+            opts = opts.pragma("key", crate::sec::db_encrypt::pragma_value(&key));
+        }
         let pool = SqlitePoolOptions::new()
             .max_connections(2)
             .acquire_timeout(std::time::Duration::from_secs(10))

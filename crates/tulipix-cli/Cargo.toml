@@ -23,5 +23,10 @@ sqlx = { workspace = true }
 tokio = { workspace = true }
 async-trait = "0.1"
 
+[features]
+# The MCP server reads the same databases the app does, so it needs the same
+# SQLite: an encrypted library is unreadable without it.
+db-encrypt = ["tulipix-core/db-encrypt"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

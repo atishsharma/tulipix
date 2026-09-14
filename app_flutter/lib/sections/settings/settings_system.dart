@@ -75,6 +75,9 @@ Widget _note(BuildContext context, String text) => Text(text,
 
 // ── security ────────────────────────────────────────────────────────────────
 
+/// The slug at the end of a `profile-…:<slug>` action key.
+String _slugOf(String key) => key.substring(key.indexOf(':') + 1);
+
 /// A status row's colour. Shared by the tabs in this file: the bridge sends
 /// the same four words everywhere, and two copies of this drifted once.
 Color? _stateTint(String state) => switch (state) {
@@ -146,6 +149,10 @@ class SecurityTab extends StatelessWidget {
     ];
     rows.use(passkeyWays.map((r) => r.key));
     final enc = rows.key('db-encrypt');
+    // What encryption is actually doing: off, on, or waiting for a restart.
+    // A build without SQLCipher has the reading and no switch at all.
+    final encState = rows.label('Encryption');
+    final encUnsupported = rows.label('Encrypt the library database');
     final sandbox = rows.label('OS sandbox');
     final face = _face.map(rows.key).whereType<SettingItem>().toList();
     final rest = rows.rest;
@@ -403,6 +410,24 @@ class SecurityTab extends StatelessWidget {
                           'disk is stolen; your files are never touched',
                       trailing: SettingSwitch(
                           on: enc.on_, onChanged: (v) => toggle(enc, v)),
+                    ),
+                  if (enc == null && encUnsupported != null)
+                    SettingLine(
+                      title: 'Encrypt the library database',
+                      note: encUnsupported.value,
+                      trailing: const StateChip('Not in this build'),
+                    ),
+                  if (encState != null)
+                    SettingLine(
+                      title: 'Encryption',
+                      note: encState.value,
+                      trailing: StateChip(
+                          switch (encState.state) {
+                            'ok' => 'On',
+                            'warn' => 'At next start',
+                            _ => 'Off',
+                          },
+                          tint: _stateTint(encState.state)),
                     ),
                   if (sandbox != null)
                     SettingLine(
@@ -763,6 +788,25 @@ class DataTab extends StatelessWidget {
     final rows = Rows(state.data);
     rows.use(['backup', 'open-logs', 'open-data', 'crash-open', 'crash-clear']);
     final multi = rows.key('multi-user');
+    // One row per profile, plus the name box and Add, once the switch is on.
+    final profiles = [
+      for (final r in state.data)
+        if (r.key.startsWith('profile-use:') ||
+            r.key.startsWith('profile-rename:') ||
+            r.key.startsWith('profile-delete:'))
+          r,
+    ];
+    final newProfile = rows.key('profile.new-name');
+    rows.use(['profile-add', ...profiles.map((r) => r.key)]);
+    // One line per profile; the Delete rows sit beside them, keyed by slug.
+    final profileLines = [
+      for (final r in profiles)
+        if (!r.key.startsWith('profile-delete:')) r,
+    ];
+    final deleteKeys = {
+      for (final r in profiles)
+        if (r.key.startsWith('profile-delete:')) _slugOf(r.key): r.key,
+    };
     // One row per crash dump the bridge found, newest first. Nothing is sent
     // anywhere: Report opens a pre-filled issue in the browser.
     final crashes = [
@@ -846,22 +890,77 @@ class DataTab extends StatelessWidget {
           ),
           if (multi != null)
             (
-              span: 3,
+              span: multi.on_ ? 6 : 3,
               child: SettingsTile(
                 icon: Icons.group_outlined,
                 tint: Tokens.secPhotos,
-                title: 'One library per user',
-                note: 'Each computer account gets its own',
+                title: 'Profiles',
+                note: 'Several people on this computer account, each with '
+                    'their own library',
                 trailing: [
+                  if (multi.on_ && profiles.isNotEmpty)
+                    StateChip('${profileLines.length}'),
                   SettingSwitch(
                     on: multi.on_,
                     onChanged: (v) =>
                         c.send(SettingsCmd.toggle(key: multi.key, on_: v)),
                   ),
                 ],
-                child: _note(context,
-                    'Off, everyone on this computer shares one library and '
-                    'one set of settings.'),
+                child: !multi.on_
+                    ? _note(
+                        context,
+                        'Off, everyone using this computer account shares one '
+                        'library and one set of settings.')
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _note(
+                              context,
+                              'Nothing is shared between profiles — each has '
+                              'its own watched folders, settings and PIN. '
+                              'Opening one restarts Tulipix.'),
+                          const SizedBox(height: 10),
+                          Container(
+                            clipBehavior: Clip.antiAlias,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: t.outline),
+                            ),
+                            child: Column(
+                              children: [
+                                for (var i = 0; i < profileLines.length; i++)
+                                  _ProfileLine(
+                                    row: profileLines[i],
+                                    first: i == 0,
+                                    onTap: () =>
+                                        c.sendAction(profileLines[i].key),
+                                    onDelete: deleteKeys.containsKey(
+                                            _slugOf(profileLines[i].key))
+                                        ? () => c.sendAction(deleteKeys[
+                                            _slugOf(profileLines[i].key)]!)
+                                        : null,
+                                  ),
+                              ],
+                            ),
+                          ),
+                          if (newProfile != null) ...[
+                            const SizedBox(height: 10),
+                            FieldBox(
+                              value: newProfile.value,
+                              hint: 'A name — “Mum”, “The kids”',
+                              onSubmit: (v) => c.send(SettingsCmd.setText(
+                                  key: newProfile.key, value: v)),
+                              trailing: [
+                                SmallBtn(
+                                  label: 'Add',
+                                  icon: Icons.person_add_alt,
+                                  onTap: () => c.sendAction('profile-add'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ],
+                      ),
               ),
             ),
           (
@@ -2684,6 +2783,68 @@ class _Snippet extends StatelessWidget {
           Text(note!, style: TextStyle(fontSize: 11, color: t.textDim)),
         ],
       ],
+    );
+  }
+}
+
+/// One profile: its name, where its library lives, and the one thing that can
+/// be done to it — Use for another, Rename for the one in use.
+class _ProfileLine extends StatelessWidget {
+  const _ProfileLine({
+    required this.row,
+    required this.first,
+    required this.onTap,
+    this.onDelete,
+  });
+
+  final SettingItem row;
+  final bool first;
+  final VoidCallback onTap;
+
+  /// Null for the profile in use and for the first one: neither can go.
+  final VoidCallback? onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final active = row.state == 'ok';
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
+      decoration: BoxDecoration(
+        color: t.bg,
+        border: first ? null : Border(top: BorderSide(color: t.outline)),
+      ),
+      child: Row(
+        children: [
+          Icon(active ? Icons.person : Icons.person_outline,
+              size: 16, color: active ? Tokens.ok : t.textDim),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(row.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                        color: t.text)),
+                Text(row.desc,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11.5, color: t.textDim)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          if (onDelete != null) ...[
+            SmallBtn(label: 'Delete', ghost: true, danger: true, onTap: onDelete),
+            const SizedBox(width: 6),
+          ],
+          SmallBtn(label: row.btn, primary: !active, onTap: onTap),
+        ],
+      ),
     );
   }
 }

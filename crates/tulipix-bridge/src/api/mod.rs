@@ -44,6 +44,16 @@ pub fn init_app() {
         )
         .try_init();
 
+    // Before any database is opened: if Settings › Security's encryption
+    // switch and the files on disk disagree, this is the moment they are
+    // brought into line, because it is the only moment nothing holds them
+    // open. A no-op on every start but the one after the switch is flipped.
+    match tulipix_core::sec::db_encrypt::apply_pending() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(n, "databases converted at startup"),
+        Err(e) => tracing::error!(error = %e, "database encryption could not be applied"),
+    }
+
     // A panic in any Rust section leaves a JSON dump under `<data>/crashes/`,
     // which Settings › Data lists. Nothing is sent anywhere -- Report opens a
     // pre-filled issue in the browser and the user decides.

@@ -35,6 +35,17 @@ pub struct LockConfig {
     /// What the passkey button should say: "Use your fingerprint" or
     /// "Touch your security key". Empty when `passkey` is false.
     pub passkey_label: String,
+    /// The profiles to choose between, when profiles are on and there is more
+    /// than one. Empty otherwise, and then the lock screen shows no picker.
+    pub profiles: Vec<LockProfile>,
+}
+
+/// One profile on the lock screen's picker.
+pub struct LockProfile {
+    pub slug: String,
+    pub name: String,
+    /// The one this window is already using.
+    pub active: bool,
 }
 
 pub fn lock_config() -> LockConfig {
@@ -53,7 +64,34 @@ pub fn lock_config() -> LockConfig {
         wallpapers: s.text("lock.wallpapers"),
         passkey: passkey_label(&s).is_some(),
         passkey_label: passkey_label(&s).unwrap_or_default(),
+        profiles: lock_profiles(),
     }
+}
+
+/// The picker's rows, or nothing at all. Nothing is the ordinary case: one
+/// profile, or the switch off.
+fn lock_profiles() -> Vec<LockProfile> {
+    if !tulipix_core::multi_user::needs_picker() {
+        return Vec::new();
+    }
+    tulipix_core::multi_user::list()
+        .into_iter()
+        .map(|p| LockProfile { slug: p.slug, name: p.display_name, active: p.active })
+        .collect()
+}
+
+/// Open another profile from the lock screen. Tulipix starts again as that
+/// profile: every path in the app is fixed when the process starts, and this
+/// one has its databases open.
+///
+/// Returns false when the name is not a profile — the slug comes from the
+/// page, and this is about to become an environment variable.
+pub fn lock_switch_profile(slug: String) -> bool {
+    if !tulipix_core::multi_user::list().iter().any(|p| p.slug == slug) {
+        return false;
+    }
+    crate::api::settings::relaunch_as_profile(&slug);
+    true
 }
 
 /// What the lock screen's passkey button should say, or `None` when there is

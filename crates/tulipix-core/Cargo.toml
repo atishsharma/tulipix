@@ -35,6 +35,26 @@ tokio = { workspace = true }
 # adds nothing to the build that was not already being compiled.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 
+[features]
+# SQLCipher, compiled in. Off by default: it builds SQLCipher from source and
+# links the system OpenSSL, which is a real build requirement to put on
+# everyone for a setting most people leave off. With it, Settings › Security ›
+# "Encrypt the library database" works; without it, that row says so.
+#
+# libsqlite3-sys is not used directly -- it is here so cargo's feature
+# unification gives sqlx-sqlite a SQLCipher-flavoured SQLite to link against.
+db-encrypt = ["dep:libsqlite3-sys"]
+
+[dependencies.libsqlite3-sys]
+version = "0.37"
+features = ["bundled-sqlcipher"]
+optional = true
+
+# libsqlite3-sys is never named in the code: it is a link-time swap for
+# sqlx's SQLite, pulled in by feature unification.
+[package.metadata.cargo-machete]
+ignored = ["libsqlite3-sys"]
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt"] }

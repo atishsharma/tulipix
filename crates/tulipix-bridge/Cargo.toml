@@ -187,6 +187,12 @@ ai-onnx = ["tulipix-photos/onnx"]
 # absent, so `tts_engine` degrades on its own rather than failing.
 books-tts = ["tulipix-books/kokoro"]
 
+# SQLCipher for the library databases, forwarded to tulipix-core. Off by
+# default: it builds SQLCipher from source and links the system OpenSSL, which
+# is a real build requirement to put on everyone for a setting most people
+# leave off. Without it, Settings › Security says so instead of pretending.
+db-encrypt = ["tulipix-core/db-encrypt"]
+
 # Cargo reads profiles from the workspace ROOT manifest, and this crate is its
 # own workspace root — so it inherits none of the tuning in the repo's
 # Cargo.toml. Without this block the bridge builds its dependency tree with full

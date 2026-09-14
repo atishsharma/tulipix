@@ -1126,6 +1126,7 @@ class _LockScreenState extends State<LockScreen> {
               const SizedBox(height: 16),
               if (_hasPin) ..._pinPad() else ..._noPin(),
               ..._passkey(),
+              ..._profilePicker(),
             ],
           ),
         ),
@@ -1292,6 +1293,44 @@ class _LockScreenState extends State<LockScreen> {
         ),
       ),
     ];
+  }
+
+  /// Whose library to open, when more than one person uses this computer
+  /// account. Picking another restarts Tulipix as that profile — every path
+  /// in the app is fixed when the process starts.
+  List<Widget> _profilePicker() {
+    final profiles = _cfg?.profiles ?? const [];
+    if (profiles.length < 2) return const [];
+    return [
+      const SizedBox(height: 22),
+      const Text('Whose library?',
+          style: TextStyle(fontSize: 12.5, color: Color(0xBFFFFFFF))),
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        alignment: WrapAlignment.center,
+        children: [
+          for (final p in profiles)
+            _Pill(
+              label: p.name,
+              icon: p.active ? Icons.person : Icons.person_outline,
+              filled: p.active,
+              onTap: () {
+                if (!p.active) _switchProfile(p.slug);
+              },
+            ),
+        ],
+      ),
+    ];
+  }
+
+  Future<void> _switchProfile(String slug) async {
+    setState(() {
+      _msgInfo = true;
+      _msg = 'Opening that library — Tulipix is starting again…';
+    });
+    await lockSwitchProfile(slug: slug);
   }
 
   /// The fingerprint / security-key button, under whichever way in is drawn.

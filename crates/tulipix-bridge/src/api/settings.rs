@@ -843,14 +843,62 @@ fn security(s: &S) -> Vec<SettingItem> {
              still works: this is another way in, never the only one"),
     ]);
     rows.extend(passkey_rows(s));
-    rows.extend([
-        hdr("ENCRYPTION"),
-        tog(s, "db-encrypt", false, "Encrypt the library database", "Protects your library index if the disk is stolen — applies on next launch"),
-        {
-            let (label, state) = sandbox();
-            stat("OS sandbox", label, state)
-        },
-    ]);
+    rows.push(hdr("ENCRYPTION"));
+    rows.extend(encryption_rows(s));
+    rows.push({
+        let (label, state) = sandbox();
+        stat("OS sandbox", label, state)
+    });
+    rows
+}
+
+/// The encryption switch, and what it is actually doing.
+///
+/// Three things the old one-line toggle did not say: whether this build can
+/// encrypt at all, where the key is kept, and that a flip does not happen
+/// until the next start — which is the only moment nothing holds the
+/// databases open.
+fn encryption_rows(s: &S) -> Vec<SettingItem> {
+    use tulipix_core::sec::db_encrypt::{self, State};
+    if !db_encrypt::supported() {
+        return vec![
+            stat("Encrypt the library database", db_encrypt::why_not(), "muted"),
+        ];
+    }
+    let mut rows = vec![tog(
+        s,
+        db_encrypt::FLAG,
+        false,
+        "Encrypt the library database",
+        "SQLCipher over what Tulipix knows about your files — where they are, what you did with \
+         them. Your files themselves are never touched. The key is 32 random bytes in the system \
+         keychain, so the library opens when you log in and is unreadable on a stolen disk",
+    )];
+    rows.push(match db_encrypt::state() {
+        State::Unsupported => stat("Encryption", db_encrypt::why_not(), "muted"),
+        State::Off => stat("Encryption", "Off — the index is plain SQLite", "muted"),
+        State::On => stat("Encryption", "On — every library database is encrypted", "ok"),
+        State::PendingOn => stat(
+            "Encryption",
+            "Set to encrypt. It happens the next time Tulipix starts, before anything opens \
+             the databases. Back up first",
+            "warn",
+        ),
+        State::PendingOff => stat(
+            "Encryption",
+            "Set to decrypt. It happens the next time Tulipix starts",
+            "warn",
+        ),
+    });
+    if s.flag(db_encrypt::FLAG, false) {
+        rows.push(act(
+            "backup",
+            "Back up before it happens",
+            "Saves your settings and folder list. The databases themselves rebuild from a rescan, \
+             which is the way back if a conversion ever goes wrong",
+            "Back up",
+        ));
+    }
     rows
 }
 
@@ -960,11 +1008,78 @@ fn data(s: &S) -> Vec<SettingItem> {
         hdr("PROBLEMS"),
         act("open-logs", "Open the log folder", "tracing JSON logs with daily rotation", "Open"),
         act("open-data", "Open the data folder", "Where the section databases live", "Open"),
-        tog(s, "multi-user", false, "Separate library per computer user", "Each OS account gets its own Tulipix library"),
+        tog(s, tulipix_core::multi_user::FLAG, false, "Profiles",
+            "Several people sharing this computer account, each with their own library, settings \
+             and PIN. Nothing is shared between them. Off, there is one library and no picker"),
     ];
+    rows.extend(profile_rows(s));
     rows.extend(crashes());
     rows
 }
+
+/// The profiles on this computer, once the switch is on: one row each, with
+/// Use or Delete, and the one in use marked.
+///
+/// A profile is a whole parallel set of folders, so switching is a restart —
+/// the running process has its databases open, and pretending otherwise would
+/// mean two libraries half-loaded in one window.
+fn profile_rows(s: &S) -> Vec<SettingItem> {
+    use tulipix_core::multi_user;
+    if !s.flag(multi_user::FLAG, false) {
+        return Vec::new();
+    }
+    let mut rows = vec![hdr("PROFILES")];
+    for p in multi_user::list() {
+        let key = if p.active {
+            format!("profile-rename:{}", p.slug)
+        } else {
+            format!("profile-use:{}", p.slug)
+        };
+        rows.push(statact(
+            &key,
+            &p.display_name,
+            &if p.active {
+                "The profile this window is using. Rename takes the name from the box below"
+                    .to_string()
+            } else {
+                format!("Its own library, in {}", tildeish(&p.data_dir))
+            },
+            if p.active { "In use" } else { "Ready" },
+            if p.active { "ok" } else { "muted" },
+            // The one in use has nothing to switch to, so its button is the
+            // only other thing it can do: take the name from the box below.
+            if p.active { "Rename" } else { "Use" },
+        ));
+        // Deleting the one in use, or the first one, is refused in the core;
+        // not drawing the button is how that is said before it is pressed.
+        if !p.active && p.slug != multi_user::DEFAULT_SLUG {
+            rows.push(act(
+                &format!("profile-delete:{}", p.slug),
+                &format!("Delete {}", p.display_name),
+                "Erases that profile's library index, settings and thumbnails. The files it \
+                 pointed at are never touched",
+                "Delete",
+            ));
+        }
+    }
+    rows.push(txt(s, PROFILE_NEW_KEY, "New profile",
+        "A name, then Add. It starts empty: its own watched folders, its own settings, its own PIN"));
+    rows.push(act("profile-add", "Add the profile", "Makes its folders and shows it above", "Add"));
+    rows
+}
+
+/// A path with the home directory shortened, for a row that is describing
+/// where something lives rather than naming a file to open.
+fn tildeish(p: &Path) -> String {
+    let s = p.display().to_string();
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && s.starts_with(&home) => format!("~{}", &s[home.len()..]),
+        _ => s,
+    }
+}
+
+/// Where the name typed into the New profile box waits until Add is pressed.
+const PROFILE_NEW_KEY: &str = "profile.new-name";
 
 /// Crash reports, kept on this machine. One row each, newest first, with a
 /// Report button that opens a pre-filled issue in the browser. Nothing is
@@ -1291,6 +1406,55 @@ async fn action(key: &str) -> String {
         },
         "open-logs" => open(tulipix_core::paths::data_dir().map(|d| d.join("logs"))),
         "crash-open" => open(tulipix_core::crash::dir()),
+        // Profiles. Switching is a restart, because this process has its
+        // databases open and a profile is a different set of them.
+        "profile-add" => {
+            let name = load().text(PROFILE_NEW_KEY);
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return "Type a name for the profile first.".into();
+            }
+            match tulipix_core::multi_user::create(&name) {
+                Ok(_) => {
+                    put(PROFILE_NEW_KEY, "");
+                    format!("Added {name}. Press Use to open it.")
+                }
+                Err(e) => format!("Could not add it: {e}"),
+            }
+        }
+        k if k.starts_with("profile-use:") => {
+            let slug = &k["profile-use:".len()..];
+            // Only a profile that is actually there: the key is text from the
+            // page, and this is about to become an environment variable.
+            if !tulipix_core::multi_user::list().iter().any(|p| p.slug == slug) {
+                return "There is no profile by that name.".into();
+            }
+            relaunch_as_profile(slug);
+            "Opening that profile — Tulipix is starting again.".into()
+        }
+        k if k.starts_with("profile-delete:") => {
+            match tulipix_core::multi_user::delete(&k["profile-delete:".len()..]) {
+                Ok(()) => "That profile is gone. The files it pointed at are untouched.".into(),
+                Err(e) => format!("Could not delete it: {e}"),
+            }
+        }
+        // The one in use: its name is the only thing that can change from
+        // here, and it is typed in the New profile box.
+        k if k.starts_with("profile-rename:") => {
+            let slug = k["profile-rename:".len()..].to_string();
+            let name = load().text(PROFILE_NEW_KEY);
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return "Type the new name in the box below, then press Rename.".into();
+            }
+            match tulipix_core::multi_user::set_display_name(&slug, &name) {
+                Ok(()) => {
+                    put(PROFILE_NEW_KEY, "");
+                    format!("This profile is called {name} now.")
+                }
+                Err(e) => format!("Could not rename it: {e}"),
+            }
+        }
         "crash-clear" => match tulipix_core::crash::clear() {
             0 => "There were no crash reports to delete.".into(),
             1 => "Deleted 1 crash report.".into(),
@@ -1562,6 +1726,30 @@ async fn action(key: &str) -> String {
         // so beats a button that silently does nothing.
         other => format!("Nothing is wired to “{other}” yet."),
     }
+}
+
+/// Start a fresh copy in another profile and leave.
+///
+/// The same shape as the reset relaunch in `api::status`: a beat so the page
+/// can say what is happening, then a new process with `TULIPIX_PROFILE` set,
+/// then out. It has to be a new process — every path in the app is read from
+/// `paths::profile_suffix`, which is read once, and this one's databases are
+/// open.
+pub(crate) fn relaunch_as_profile(slug: &str) {
+    let value = if slug == tulipix_core::multi_user::DEFAULT_SLUG {
+        String::new()
+    } else {
+        slug.to_string()
+    };
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::process::Command::new(exe)
+                .env(tulipix_core::paths::PROFILE_ENV, &value)
+                .spawn();
+        }
+        std::process::exit(0);
+    });
 }
 
 fn open(dir: Option<PathBuf>) -> String {

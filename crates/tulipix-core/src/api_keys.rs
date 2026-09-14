@@ -44,6 +44,10 @@ pub const SERVICES: &[&str] = &[
     "trakt",
     "trakt_secret",
     "trakt_token",
+    // The library databases' encryption key, 32 random bytes as hex. Made
+    // once, and never regenerated: a second key would make every existing
+    // database unreadable.
+    "db_key",
     // AniDB registers a client by name; `anidb` holds that name, not a key.
     // Nothing else about AniDB is secret, but it is the same shape and the
     // same page, so it is kept in the same place.
