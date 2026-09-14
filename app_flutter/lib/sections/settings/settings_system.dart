@@ -1318,6 +1318,11 @@ class _AdvancedTabState extends State<AdvancedTab> {
     if (shell) await ShellController.instance.refresh();
   }
 
+  Future<void> _copy(String text, String what) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    _c.say('Copied $what.');
+  }
+
   /// Items [per] to a row, every row as tall as its tallest. A row the items
   /// do not fill keeps their widths.
   static Widget _rowsOf(List<Widget> items, {int per = 3, double gap = 10}) =>
@@ -1370,6 +1375,13 @@ class _AdvancedTabState extends State<AdvancedTab> {
     final accent = rows.key('follow-system-accent');
     final fontScale = rows.key('follow-os-font-scale');
     final alloc = rows.label('Allocator');
+    // The MCP server, and the four readings that only exist while it is on.
+    final mcp = rows.key('mcp-server');
+    final mcpWrite = rows.key('mcp.write');
+    final mcpTools = rows.label('Tools offered');
+    final mcpReads = rows.label('Reads');
+    final mcpCommand = rows.label('Command');
+    final mcpConfig = rows.label('Claude Desktop config');
     final platform =
         _platform.map(rows.label).whereType<SettingItem>().toList();
     final renderer = rows.label('Renderer');
@@ -2017,32 +2029,71 @@ class _AdvancedTabState extends State<AdvancedTab> {
               ]),
             ),
           ),
-          (
-            span: 6,
-            child: SettingsTile(
-              icon: Icons.schedule,
-              tint: Tokens.brand,
-              title: 'Coming next',
-              note: 'Switches still waiting for their feature, in build '
-                  'order',
-              child: _rowsOf(const [
-                _Soon(
-                  icon: Icons.bug_report_outlined,
-                  title: 'Crash reports',
-                  phase: 'Phase 2',
-                  note: 'Saved on this machine, listed here with Open and '
-                      'Report',
+          if (mcp != null)
+            (
+              span: 6,
+              child: SettingsTile(
+                icon: Icons.hub_outlined,
+                tint: Tokens.brand,
+                title: 'MCP server',
+                note: 'An AI agent on this computer, reading your library',
+                trailing: [
+                  StateChip(mcp.on_ ? 'On' : 'Off',
+                      tint: mcp.on_ ? Tokens.ok : null),
+                ],
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Lines([
+                      SettingLine(
+                        title: 'MCP server',
+                        note: mcp.desc,
+                        trailing: SettingSwitch(
+                            on: mcp.on_, onChanged: (v) => _flip(mcp, v)),
+                      ),
+                      if (mcpWrite != null)
+                        SettingLine(
+                          title: 'Let agents change things',
+                          note: mcpWrite.desc,
+                          trailing: SettingSwitch(
+                              on: mcpWrite.on_,
+                              onChanged: (v) => _flip(mcpWrite, v)),
+                        ),
+                      if (mcpTools != null)
+                        SettingLine(
+                          title: 'Tools offered',
+                          trailing: StateChip(mcpTools.value,
+                              tint: _chipTint(mcpTools.state)),
+                        ),
+                      if (mcpReads != null)
+                        SettingLine(
+                          title: 'Reads',
+                          trailing: StateChip(mcpReads.value),
+                        ),
+                    ]),
+                    if (mcpCommand != null) ...[
+                      const SizedBox(height: 12),
+                      _Snippet(
+                        label: 'Command',
+                        text: mcpCommand.value,
+                        onCopy: () => _copy(mcpCommand.value, 'the command'),
+                      ),
+                    ],
+                    if (mcpConfig != null) ...[
+                      const SizedBox(height: 8),
+                      _Snippet(
+                        label: 'Claude Desktop config',
+                        text: mcpConfig.value,
+                        note: 'Paste into claude_desktop_config.json, then '
+                            'restart Claude Desktop',
+                        onCopy: () =>
+                            _copy(mcpConfig.value, 'the config block'),
+                      ),
+                    ],
+                  ],
                 ),
-                _Soon(
-                  icon: Icons.hub_outlined,
-                  title: 'MCP server',
-                  phase: 'Phase 4',
-                  note: 'Lets AI apps search your library; writes need your '
-                      'say-so, tool by tool',
-                ),
-              ], per: 2),
+              ),
             ),
-          ),
         ]);
 
     return SettingsPageBody(
@@ -2518,71 +2569,6 @@ class _Lookup extends StatelessWidget {
 }
 
 /// A switch still waiting for its feature, and the phase that brings it.
-class _Soon extends StatelessWidget {
-  const _Soon({
-    required this.icon,
-    required this.title,
-    required this.phase,
-    required this.note,
-  });
-
-  final IconData icon;
-  final String title;
-  final String phase;
-  final String note;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: t.outlineStrong),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              color: t.outline,
-              borderRadius: BorderRadius.circular(9),
-            ),
-            child: Icon(icon, size: 16, color: t.textDim),
-          ),
-          const SizedBox(width: 11),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 4,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    Text(title,
-                        style: TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w600,
-                            color: t.text)),
-                    StateChip(phase, tint: Tokens.brand),
-                  ],
-                ),
-                const SizedBox(height: 3),
-                Text(note, style: TextStyle(fontSize: 11.5, color: t.textDim)),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// One file extension. Outlined in amber when its gapless playback has not
-/// been checked.
 class _FormatChip extends StatelessWidget {
   const _FormatChip(this.ext, {this.unverified = false});
 
@@ -2605,6 +2591,67 @@ class _FormatChip extends StatelessWidget {
               fontSize: 10.5,
               fontWeight: FontWeight.w500,
               color: unverified ? Tokens.warn : t.textDim)),
+    );
+  }
+}
+
+/// A block of text meant to be copied rather than read: a command line, a
+/// configuration block. Monospaced, scrollable sideways rather than wrapped —
+/// a path broken across lines is a path that will not paste.
+class _Snippet extends StatelessWidget {
+  const _Snippet({
+    required this.label,
+    required this.text,
+    required this.onCopy,
+    this.note,
+  });
+
+  final String label;
+  final String text;
+  final String? note;
+  final VoidCallback onCopy;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(label,
+                  style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      color: t.textDim)),
+            ),
+            SmallBtn(
+                label: 'Copy', icon: Icons.copy_outlined, onTap: onCopy),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Container(
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+          decoration: BoxDecoration(
+            color: t.bg,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: t.outline),
+          ),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Text(text,
+                maxLines: 1,
+                softWrap: false,
+                style: TextStyle(
+                    fontFamily: 'monospace', fontSize: 11.5, color: t.text)),
+          ),
+        ),
+        if (note != null) ...[
+          const SizedBox(height: 5),
+          Text(note!, style: TextStyle(fontSize: 11, color: t.textDim)),
+        ],
+      ],
     );
   }
 }

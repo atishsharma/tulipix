@@ -950,7 +950,7 @@ fn crash_when(secs: i64) -> String {
 
 fn advanced(s: &S) -> Vec<SettingItem> {
     let cache_mb = tulipix_core::thumbs::cache_size().map(|b| b / (1024 * 1024)).unwrap_or(0);
-    vec![
+    let mut rows = vec![
         hdr("PERFORMANCE"),
         // The Rust side's. The Flutter engine and the Dart VM keep their own,
         // and startup, memory and slow frames are read on the Dart side.
@@ -1015,6 +1015,11 @@ fn advanced(s: &S) -> Vec<SettingItem> {
         stat("Shortcuts (AppIntents)", if cfg!(target_os = "macos") { "Not in this build" } else { "Not on this OS" }, "muted"),
         stat("Desktop widgets", if cfg!(target_os = "linux") { "Not on Linux" } else { "Not in this build" }, "muted"),
         stat("Live Activities", if cfg!(target_os = "macos") { "Not in this build" } else { "Not on this OS" }, "muted"),
+        hdr("MCP SERVER"),
+        tog(s, tulipix_core::mcp::ENABLED_FLAG, false, "MCP server",
+            "Lets an AI agent on this computer — Claude Desktop, an IDE assistant — search and \
+             read your library. It runs as `tulipix-cli mcp`, started by the agent, not by \
+             Tulipix: nothing listens on a port and nothing runs in the background"),
         hdr("BUILD"),
         stat("Renderer", "Flutter", "ok"),
         stat("Player embedding", "libmpv inside the app, through media_kit", "ok"),
@@ -1037,7 +1042,76 @@ fn advanced(s: &S) -> Vec<SettingItem> {
         stat("Video formats", &tulipix_videos::scan::VIDEO_EXTS.join(" · "), "ok"),
         stat("Tools formats", &tools_formats(), "ok"),
         stat("Book formats", &book_formats(), "ok"),
+    ];
+    // The MCP rows that only mean anything once the server is on go in beside
+    // their switch, not at the end of the tab.
+    if let Some(at) = rows.iter().position(|r| r.key == tulipix_core::mcp::ENABLED_FLAG) {
+        let extra = mcp_rows(s);
+        rows.splice(at + 1..at + 1, extra);
+    }
+    rows
+}
+
+/// The rows under the MCP switch, once it is on: what the agent may do, the
+/// command to point it at, and the configuration block to paste.
+fn mcp_rows(s: &S) -> Vec<SettingItem> {
+    if !s.flag(tulipix_core::mcp::ENABLED_FLAG, false) {
+        return Vec::new();
+    }
+    let reads = tulipix_core::mcp::BUILTIN_TOOLS
+        .iter()
+        .filter(|t| matches!(t.kind, tulipix_core::mcp::ToolKind::Read))
+        .count();
+    let writes = tulipix_core::mcp::BUILTIN_TOOLS.len() - reads;
+    let writes_on = s.flag(tulipix_core::mcp::WRITE_FLAG, false);
+    vec![
+        tog(s, tulipix_core::mcp::WRITE_FLAG, false, "Let agents change things",
+            "Off, an agent can read the library and nothing else. On, it can also tag and star \
+             photos. The tools that write are not even listed to the agent while this is off"),
+        stat(
+            "Tools offered",
+            &if writes_on {
+                format!("{reads} that read · {writes} that change things")
+            } else {
+                format!("{reads} that read · {writes} held back")
+            },
+            if writes_on { "warn" } else { "ok" },
+        ),
+        stat("Reads", "Photos, videos, music and books. Never Finances", "muted"),
+        stat("Command", &mcp_command(), "ok"),
+        // The whole block, so it is one copy rather than four fields typed by
+        // hand into a JSON file.
+        stat("Claude Desktop config", &mcp_config_json(), "muted"),
     ]
+}
+
+/// Where `tulipix-cli` is, as an agent would have to spell it: the bundled
+/// copy, else beside this executable, else the bare name for a copy on PATH.
+fn mcp_command() -> String {
+    let exe = if cfg!(target_os = "windows") { "tulipix-cli.exe" } else { "tulipix-cli" };
+    if let Some(p) = tulipix_core::thumbs::bundled_file(exe) {
+        return format!("{} mcp", p.display());
+    }
+    if let Some(beside) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join(exe)))
+        .filter(|p| p.exists())
+    {
+        return format!("{} mcp", beside.display());
+    }
+    format!("{exe} mcp")
+}
+
+/// The `mcpServers` entry Claude Desktop wants, filled in for this computer.
+fn mcp_config_json() -> String {
+    let command = mcp_command();
+    let program = command.trim_end_matches(" mcp");
+    serde_json::json!({
+        "mcpServers": {
+            "tulipix": { "command": program, "args": ["mcp"] }
+        }
+    })
+    .to_string()
 }
 
 /// Every "Convert to" and "Save as" choice in the Tools catalog -- its

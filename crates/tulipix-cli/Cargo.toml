@@ -14,3 +14,14 @@ anyhow.workspace = true
 tracing-subscriber.workspace = true
 serde_json.workspace = true
 tulipix-tools = { path = "../tulipix-tools" }
+# `tulipix-cli mcp`: the MCP server's protocol and the read-only pools it
+# answers from. tulipix-core, not tulipix-common -- common applies each
+# section's schema on open, and a second process must never migrate the user's
+# database under the running app.
+tulipix-core = { path = "../tulipix-core" }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

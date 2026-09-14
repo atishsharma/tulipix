@@ -88,6 +88,33 @@ impl DbHandle {
         Ok(pool)
     }
 
+    /// A pool that cannot write and cannot create the file.
+    ///
+    /// For readers outside the app -- the MCP server is the one -- where two
+    /// things matter: a second process must never migrate the user's database
+    /// out from under the running app, and a library that has never been
+    /// opened must not come into being because something asked to read it.
+    /// `mode=ro` on an absent file is an error, which is the answer wanted.
+    pub async fn read_only_pool(&self) -> Result<SqlitePool> {
+        if !self.path.exists() {
+            anyhow::bail!("no {} library on this computer yet", self.section);
+        }
+        let url = format!("sqlite://{}?mode=ro", self.path.display());
+        let opts = SqliteConnectOptions::from_str(&url)?
+            .read_only(true)
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .pragma("cache_size", "-4000")
+            .pragma("temp_store", "MEMORY")
+            .create_if_missing(false);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect_with(opts)
+            .await
+            .with_context(|| format!("open sqlite pool read-only {}", self.path.display()))?;
+        Ok(pool)
+    }
+
     pub async fn init_pool(&self) -> Result<SqlitePool> {
         let pool = self.pool().await?;
         apply_proxy_schema(&pool, &self.section).await?;
@@ -150,5 +177,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows, 1);
+    }
+
+    #[tokio::test]
+    async fn a_read_only_pool_reads_but_will_not_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.db");
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        let handle = DbHandle { section: "photos".into(), path: path.clone(), url };
+        let _ = handle.init_pool().await.unwrap();
+
+        let ro = handle.read_only_pool().await.unwrap();
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM items")
+            .fetch_one(&ro)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0);
+        assert!(
+            sqlx::query("INSERT INTO schema_migrations (id, applied_at, description) VALUES (9, 0, 'x')")
+                .execute(&ro)
+                .await
+                .is_err(),
+            "a read-only pool must refuse a write"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_library_that_does_not_exist_is_not_created_by_reading_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("missing.db");
+        let handle = DbHandle {
+            section: "photos".into(),
+            path: path.clone(),
+            url: format!("sqlite://{}?mode=rwc", path.display()),
+        };
+        assert!(handle.read_only_pool().await.is_err());
+        assert!(!path.exists(), "reading must not bring a database into being");
     }
 }
