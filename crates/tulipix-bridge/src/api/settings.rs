@@ -838,7 +838,12 @@ fn security(s: &S) -> Vec<SettingItem> {
             "Pictures for when nothing is playing — the first ten, one every twelve seconds. Blank = the gradient"),
         act("lock-wallpapers-browse", "Choose the wallpapers folder", "Opens a folder picker", "Choose"),
         hdr("UNLOCK"),
-        tog(s, "passkey", false, "Unlock with a passkey", "Use a security key or fingerprint instead of a password"),
+        tog(s, "passkey", false, "Unlock with a passkey",
+            "Unlock with your fingerprint or a security key instead of typing the PIN. The PIN \
+             still works: this is another way in, never the only one"),
+    ]);
+    rows.extend(passkey_rows(s));
+    rows.extend([
         hdr("ENCRYPTION"),
         tog(s, "db-encrypt", false, "Encrypt the library database", "Protects your library index if the disk is stolen — applies on next launch"),
         {
@@ -846,6 +851,82 @@ fn security(s: &S) -> Vec<SettingItem> {
             stat("OS sandbox", label, state)
         },
     ]);
+    rows
+}
+
+/// What is set up to unlock with, once the passkey switch is on.
+///
+/// Two back ends, and each says plainly when it is not there: fprintd is a
+/// package, libfido2's tools are a package, and neither exists on macOS or
+/// Windows in this build. A row that offered a button for something absent
+/// would be the old switch all over again.
+fn passkey_rows(s: &S) -> Vec<SettingItem> {
+    use tulipix_core::sec::passkey::{self, PasskeyKind};
+    if !s.flag("passkey", false) {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+
+    // Fingerprint. Tulipix never enrols one — the fingers are the desktop's,
+    // and this only turns them into a way into the app.
+    let fp_on = passkey::has(PasskeyKind::Fingerprint);
+    if !passkey::fingerprint::available() {
+        rows.push(stat("Fingerprint", passkey::fingerprint::why_not(), "muted"));
+    } else if !passkey::fingerprint::enrolled() {
+        rows.push(stat(
+            "Fingerprint",
+            "No finger is enrolled with fprintd. Add one in your desktop's settings first",
+            "warn",
+        ));
+    } else {
+        rows.push(statact(
+            if fp_on { "passkey-fp-remove" } else { "passkey-fp-add" },
+            "Fingerprint",
+            "The fingers already enrolled with fprintd. Nothing about them is stored by Tulipix",
+            if fp_on { "On" } else { "Off" },
+            if fp_on { "ok" } else { "muted" },
+            if fp_on { "Turn off" } else { "Turn on" },
+        ));
+    }
+
+    // Security keys, one row each, plus a row for whatever is plugged in and
+    // not yet set up.
+    if !passkey::security_key::available() {
+        rows.push(stat("Security key", passkey::security_key::why_not(), "muted"));
+        return rows;
+    }
+    let enrolled: Vec<_> = passkey::list()
+        .into_iter()
+        .filter(|c| c.kind == PasskeyKind::SecurityKey)
+        .collect();
+    for c in &enrolled {
+        rows.push(statact(
+            &format!("passkey-key-remove:{}", c.id),
+            &c.label,
+            "A security key set up to unlock Tulipix",
+            "Set up",
+            "ok",
+            "Remove",
+        ));
+    }
+    let plugged = passkey::security_key::devices();
+    let new: Vec<_> = plugged
+        .into_iter()
+        .filter(|(_, label)| !enrolled.iter().any(|c| c.label == *label))
+        .collect();
+    if new.is_empty() && enrolled.is_empty() {
+        rows.push(stat("Security key", "Plug one in to set it up", "muted"));
+    }
+    for (device, label) in new {
+        rows.push(statact(
+            &format!("passkey-key-add:{device}"),
+            &label,
+            "Plugged in. Setting it up asks you to touch it once",
+            "Not set up",
+            "muted",
+            "Set up",
+        ));
+    }
     rows
 }
 
@@ -1336,6 +1417,62 @@ async fn action(key: &str) -> String {
                 ),
                 Ok(n) => format!("Sent {n} listen{}.", if n == 1 { "" } else { "s" }),
                 Err(e) => format!("Could not send: {e}"),
+            }
+        }
+        // Fingerprint: nothing is enrolled here, only recorded as a way in.
+        // The fingers are fprintd's, put there by the desktop's own settings.
+        "passkey-fp-add" => {
+            use tulipix_core::sec::passkey::{self, PasskeyCredential, PasskeyKind};
+            if !passkey::fingerprint::enrolled() {
+                return "No finger is enrolled with fprintd yet. Add one in your desktop's settings first.".into();
+            }
+            match passkey::add(PasskeyCredential {
+                id: String::new(),
+                kind: PasskeyKind::Fingerprint,
+                label: std::env::var("USER").unwrap_or_else(|_| "this account".into()),
+                public_key: String::new(),
+                created_at: tulipix_core::util::unix_secs(),
+            }) {
+                Ok(()) => "The lock screen takes your fingerprint now. The PIN still works.".into(),
+                Err(e) => format!("Could not turn it on: {e}"),
+            }
+        }
+        "passkey-fp-remove" => {
+            use tulipix_core::sec::passkey::{self, PasskeyKind};
+            match passkey::remove("", PasskeyKind::Fingerprint) {
+                Ok(()) => "The lock screen no longer asks for a fingerprint.".into(),
+                Err(e) => format!("Could not turn it off: {e}"),
+            }
+        }
+        // A security key. Blocking on both counts -- it waits for a touch --
+        // so it goes to a thread that is allowed to wait.
+        k if k.starts_with("passkey-key-add:") => {
+            use tulipix_core::sec::passkey::{self, security_key};
+            let device = k["passkey-key-add:".len()..].to_string();
+            // Only a device the tools are reporting right now: the key is
+            // text from the page, and this runs a program with it.
+            let Some((device, label)) = security_key::devices()
+                .into_iter()
+                .find(|(d, _)| *d == device)
+            else {
+                return "That security key is not plugged in any more.".into();
+            };
+            let done = tokio::task::spawn_blocking(move || {
+                security_key::enrol(&device, &label).and_then(passkey::add)
+            })
+            .await;
+            match done {
+                Ok(Ok(())) => "That security key unlocks Tulipix now. The PIN still works.".into(),
+                Ok(Err(e)) => format!("Could not set it up: {e}"),
+                Err(e) => format!("Could not set it up: {e}"),
+            }
+        }
+        k if k.starts_with("passkey-key-remove:") => {
+            use tulipix_core::sec::passkey::{self, PasskeyKind};
+            let id = &k["passkey-key-remove:".len()..];
+            match passkey::remove(id, PasskeyKind::SecurityKey) {
+                Ok(()) => "That security key no longer unlocks Tulipix.".into(),
+                Err(e) => format!("Could not remove it: {e}"),
             }
         }
         "lock-pin-clear" => {

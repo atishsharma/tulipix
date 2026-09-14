@@ -102,6 +102,15 @@ class LockController extends ChangeNotifier {
     return ok;
   }
 
+  /// Ask for a fingerprint or a security-key touch, and unlock when it is
+  /// given. Rust waits on the reader or the key; this is the one unlock that
+  /// can take as long as the user takes.
+  Future<bool> tryPasskey() async {
+    final ok = await lockVerifyPasskey();
+    if (ok) unlock();
+    return ok;
+  }
+
   void unlock() {
     if (!locked) return;
     locked = false;

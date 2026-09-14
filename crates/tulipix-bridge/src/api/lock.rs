@@ -28,6 +28,13 @@ pub struct LockConfig {
     pub motion: bool,
     /// The wallpapers folder, or empty for the gradient.
     pub wallpapers: String,
+    /// Settings › Security › Unlock with a passkey, and something actually
+    /// set up to unlock with. Both, or the lock screen offers nothing it
+    /// cannot do.
+    pub passkey: bool,
+    /// What the passkey button should say: "Use your fingerprint" or
+    /// "Touch your security key". Empty when `passkey` is false.
+    pub passkey_label: String,
 }
 
 pub fn lock_config() -> LockConfig {
@@ -44,7 +51,61 @@ pub fn lock_config() -> LockConfig {
         show_glance: s.flag("lock.show-glance", true),
         motion: s.flag("lock.motion", true),
         wallpapers: s.text("lock.wallpapers"),
+        passkey: passkey_label(&s).is_some(),
+        passkey_label: passkey_label(&s).unwrap_or_default(),
     }
+}
+
+/// What the lock screen's passkey button should say, or `None` when there is
+/// nothing to offer: the switch is off, or nothing is enrolled.
+fn passkey_label(s: &tulipix_core::settings::Settings) -> Option<String> {
+    use tulipix_core::sec::passkey::{self, PasskeyKind};
+    if !s.flag("passkey", false) {
+        return None;
+    }
+    let have_finger = passkey::has(PasskeyKind::Fingerprint);
+    let have_key = passkey::has(PasskeyKind::SecurityKey);
+    match (have_finger, have_key) {
+        (true, true) => Some("Fingerprint or security key".into()),
+        (true, false) => Some("Use your fingerprint".into()),
+        (false, true) => Some("Touch your security key".into()),
+        (false, false) => None,
+    }
+}
+
+/// Unlock with whatever is enrolled. Fingerprint first when both are, because
+/// it asks nothing of the user but a finger they have already put down.
+///
+/// Blocking: `fprintd-verify` waits for a finger and `fido2-assert` waits for
+/// a touch, and neither has an async form. It runs on a blocking thread so the
+/// lock screen keeps drawing while it waits.
+pub async fn lock_verify_passkey() -> bool {
+    use tulipix_core::sec::passkey::{self, PasskeyKind};
+    if passkey_label(&load()).is_none() {
+        return false;
+    }
+    tokio::task::spawn_blocking(|| {
+        if passkey::has(PasskeyKind::Fingerprint) && passkey::fingerprint::available() {
+            match passkey::fingerprint::verify() {
+                Ok(true) => return true,
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, "fingerprint unlock"),
+            }
+        }
+        for cred in passkey::list() {
+            if cred.kind != PasskeyKind::SecurityKey {
+                continue;
+            }
+            match passkey::security_key::verify(&cred) {
+                Ok(true) => return true,
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, "security key unlock"),
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Whether `pin` opens the lock. True when no PIN is set, so a plain click

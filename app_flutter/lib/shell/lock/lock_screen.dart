@@ -256,6 +256,10 @@ class _LockScreenState extends State<LockScreen> {
 
   LockConfig? get _cfg => LockController.instance.config;
   bool get _hasPin => _cfg?.hasPin ?? false;
+
+  /// A fingerprint read or a key touch is outstanding. The button says so and
+  /// a second press does nothing: fprintd allows one verify at a time.
+  bool _passkeyBusy = false;
   bool get _moving =>
       (_cfg?.motion ?? true) &&
       !(ShellController.instance.state?.reduceMotion ?? false);
@@ -1121,6 +1125,7 @@ class _LockScreenState extends State<LockScreen> {
                       color: Colors.white)),
               const SizedBox(height: 16),
               if (_hasPin) ..._pinPad() else ..._noPin(),
+              ..._passkey(),
             ],
           ),
         ),
@@ -1287,6 +1292,45 @@ class _LockScreenState extends State<LockScreen> {
         ),
       ),
     ];
+  }
+
+  /// The fingerprint / security-key button, under whichever way in is drawn.
+  /// Only when Rust says there is something enrolled to use.
+  List<Widget> _passkey() {
+    final label = _cfg?.passkeyLabel ?? '';
+    if (!(_cfg?.passkey ?? false) || label.isEmpty) return const [];
+    return [
+      const SizedBox(height: 14),
+      _Pill(
+        label: _passkeyBusy ? 'Waiting…' : label,
+        icon: Icons.fingerprint,
+        // _Pill takes a callback, not a nullable one; _tryPasskey is
+        // already a no-op while a read is outstanding.
+        onTap: _tryPasskey,
+      ),
+    ];
+  }
+
+  Future<void> _tryPasskey() async {
+    if (_passkeyBusy || _waiting) return;
+    setState(() {
+      _passkeyBusy = true;
+      _msgInfo = true;
+      _msg = 'Waiting for your fingerprint or key…';
+    });
+    final ok = await LockController.instance.tryPasskey();
+    if (!mounted) return;
+    if (ok) {
+      setState(() => _passkeyBusy = false);
+      _afterUnlock();
+      return;
+    }
+    setState(() {
+      _passkeyBusy = false;
+      _shake++;
+      _msgInfo = false;
+      _msg = 'That didn\u2019t open it. Try again, or use the PIN.';
+    });
   }
 
   List<Widget> _noPin() => [

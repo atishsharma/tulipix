@@ -75,6 +75,15 @@ Widget _note(BuildContext context, String text) => Text(text,
 
 // ── security ────────────────────────────────────────────────────────────────
 
+/// A status row's colour. Shared by the tabs in this file: the bridge sends
+/// the same four words everywhere, and two copies of this drifted once.
+Color? _stateTint(String state) => switch (state) {
+      'ok' => Tokens.ok,
+      'warn' => Tokens.warn,
+      'error' => Tokens.error,
+      _ => null,
+    };
+
 class SecurityTab extends StatelessWidget {
   const SecurityTab({super.key, required this.controller, required this.state});
 
@@ -125,6 +134,17 @@ class SecurityTab extends StatelessWidget {
     rows.use(['lock-pin-clear', 'lock-wallpapers-browse']);
     final wall = rows.key('lock.wallpapers');
     final passkey = rows.key('passkey');
+    // What is actually set up to unlock with, once the switch is on: the
+    // fingerprint row, and one row per security key — plugged in, or already
+    // set up. The bridge decides which exist; this draws what it sends.
+    final passkeyWays = [
+      for (final r in state.security)
+        if (r.key.startsWith('passkey-') ||
+            (r.kind == 'status' &&
+                (r.label == 'Fingerprint' || r.label == 'Security key')))
+          r,
+    ];
+    rows.use(passkeyWays.map((r) => r.key));
     final enc = rows.key('db-encrypt');
     final sandbox = rows.label('OS sandbox');
     final face = _face.map(rows.key).whereType<SettingItem>().toList();
@@ -351,11 +371,30 @@ class SecurityTab extends StatelessWidget {
                   if (passkey != null)
                     SettingLine(
                       title: 'Unlock with a passkey',
-                      note: 'This lock screen does not use it yet; it asks '
-                          'for the PIN',
+                      note: 'A fingerprint or a security key, instead of '
+                          'typing the PIN. The PIN still works',
                       trailing: SettingSwitch(
                           on: passkey.on_,
                           onChanged: (v) => toggle(passkey, v)),
+                    ),
+                  for (final r in passkeyWays)
+                    SettingLine(
+                      title: r.label,
+                      note: r.desc.isEmpty ? null : r.desc,
+                      trailing: r.btn.isEmpty
+                          ? StateChip(r.value, tint: _stateTint(r.state))
+                          : Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                StateChip(r.value, tint: _stateTint(r.state)),
+                                const SizedBox(width: 8),
+                                SmallBtn(
+                                  label: r.btn,
+                                  danger: r.btn == 'Remove',
+                                  onTap: () => c.sendAction(r.key),
+                                ),
+                              ],
+                            ),
                     ),
                   if (enc != null)
                     SettingLine(
@@ -1349,13 +1388,6 @@ class _AdvancedTabState extends State<AdvancedTab> {
         ],
       );
 
-  static Color? _chipTint(String state) => switch (state) {
-        'ok' => Tokens.ok,
-        'warn' => Tokens.warn,
-        'error' => Tokens.error,
-        _ => null,
-      };
-
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
@@ -1977,7 +2009,7 @@ class _AdvancedTabState extends State<AdvancedTab> {
                 for (final r in platform)
                   SettingLine(
                     title: r.label,
-                    trailing: StateChip(r.value, tint: _chipTint(r.state)),
+                    trailing: StateChip(r.value, tint: _stateTint(r.state)),
                   ),
               ]),
             ),
@@ -2024,7 +2056,7 @@ class _AdvancedTabState extends State<AdvancedTab> {
                   SettingLine(
                     title: 'Power now',
                     trailing: StateChip(powerNow.value,
-                        tint: _chipTint(powerNow.state)),
+                        tint: _stateTint(powerNow.state)),
                   ),
               ]),
             ),
@@ -2063,7 +2095,7 @@ class _AdvancedTabState extends State<AdvancedTab> {
                         SettingLine(
                           title: 'Tools offered',
                           trailing: StateChip(mcpTools.value,
-                              tint: _chipTint(mcpTools.state)),
+                              tint: _stateTint(mcpTools.state)),
                         ),
                       if (mcpReads != null)
                         SettingLine(
