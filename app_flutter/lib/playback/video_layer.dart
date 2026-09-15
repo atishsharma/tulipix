@@ -74,6 +74,15 @@ class VideoRequest {
 /// What is on screen, set by the videos controller from the bridge's events.
 final ValueNotifier<VideoRequest?> videoRequest = ValueNotifier(null);
 
+/// Whether the player has actually produced a picture.
+///
+/// The app is taken Offstage under a film that fills the window, which is only
+/// safe while there IS a film to look at. A source that opens its audio and
+/// never its video — a codec libmpv cannot use, a GL context it cannot get —
+/// otherwise took the whole UI down with it and left no way back: sound, a
+/// black window, and nothing that answers. This is the guard on that.
+final ValueNotifier<bool> videoHasPicture = ValueNotifier(false);
+
 /// Docked to the corner rather than filling the window.
 ///
 /// It survives a source change on purpose. The autoplay chain starting the
@@ -104,6 +113,7 @@ Object? _hooksOwner;
 /// repeated three times and forgotten in one.
 void clearVideo() {
   videoRequest.value = null;
+  videoHasPicture.value = false;
   videoDocked.value = false;
   // A file that ends mid-drag would otherwise leave a stale offset for the next
   // card to appear at. The pinned spot survives; the drag in progress does not.
@@ -219,7 +229,14 @@ class StageCover {
   bool _docked = false;
   bool _settled = false;
 
-  bool covers({required int? token, required bool docked}) {
+  /// [hasPicture] defaults true because the slide and dock logic below is
+  /// about geometry, not about the source — but the layer passes the real
+  /// thing, and a film with no picture never covers the app.
+  bool covers({
+    required int? token,
+    required bool docked,
+    bool hasPicture = true,
+  }) {
     if (token != _token) {
       _token = token;
       _settled = token != null && !docked;
@@ -227,7 +244,7 @@ class StageCover {
       _settled = false;
     }
     _docked = docked;
-    return token != null && !docked && _settled;
+    return token != null && !docked && _settled && hasPicture;
   }
 
   /// A slide ended. True when that changes what [covers] answers.
@@ -257,7 +274,8 @@ class _VideoLayerState extends State<VideoLayer> {
     // nested ones.
     return AnimatedBuilder(
       animation: Listenable.merge(
-        [videoRequest, videoDocked, videoDockSpot, videoDockDrag],
+        [videoRequest, videoDocked, videoDockSpot, videoDockDrag,
+         videoHasPicture],
       ),
       builder: (context, _) {
         final request = videoRequest.value;
@@ -285,8 +303,24 @@ class _VideoLayerState extends State<VideoLayer> {
         // stops what animates down there, which would ask for frames of its
         // own; ExcludeFocus keeps the keyboard with the film. Flags only, so the
         // tree's shape never changes and nothing underneath is rebuilt.
-        final covered = _cover.covers(token: request?.token, docked: docked);
+        final covered = _cover.covers(
+          token: request?.token,
+          docked: docked,
+          hasPicture: videoHasPicture.value,
+        );
         return Stack(
+          // Expand, and this is load-bearing. A Stack takes its size from its
+          // largest NON-POSITIONED child, and the only one here is the app —
+          // which, once `covered`, is an `Offstage`. `RenderOffstage` reports
+          // `constraints.smallest` when it is offstage, and `ChatOverlay` (the
+          // widget directly above this one) is a plain `Stack`, so what arrives
+          // here is LOOSE: smallest is Size.zero. The Stack collapsed to
+          // nothing the instant the cover engaged, the film — a positioned
+          // child, contributing nothing to the size — was laid out into zero
+          // space, and what was left was sound with no picture over a hidden
+          // app. Expand makes those constraints tight, so smallest is the
+          // window and the Offstage keeps the window's size.
+          fit: StackFit.expand,
           children: [
             ExcludeFocus(
               excluding: covered,
@@ -517,6 +551,21 @@ class _VideoStageState extends State<_VideoStage> {
     }));
     _subs.add(_player.stream.completed.listen((done) {
       if (done) _close();
+    }));
+    // A picture, or the want of one. `width` is the first thing that says a
+    // video track is really decoding; until it arrives the app stays drawn
+    // behind the stage rather than being hidden under a black rectangle.
+    _subs.add(_player.stream.width.listen((w) {
+      videoHasPicture.value = (w ?? 0) > 0;
+    }));
+    // Nothing was listening to this. libmpv reported a bad codec, a missing
+    // GL context or an unreadable file into a stream with no subscriber, so a
+    // film that failed to open was indistinguishable from one still loading —
+    // and with the app hidden underneath, indistinguishable from a hang.
+    _subs.add(_player.stream.error.listen((e) {
+      if (e.trim().isEmpty) return;
+      debugPrint('video: $e');
+      if (mounted) _flashMessage(e);
     }));
     await _player.open(Media(r.src));
   }

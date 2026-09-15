@@ -152,6 +152,43 @@ void main() {
       c.covers(token: 1, docked: true);
       expect(c.covers(token: 2, docked: false), isTrue);
     });
+
+    // The one that bit: a source whose audio opens and whose video never does
+    // used to hide the app anyway — sound, a black window, and nothing that
+    // answers, with no way back to the app underneath.
+    test('a film with no picture never hides the app', () {
+      final c = StageCover();
+      expect(c.covers(token: 1, docked: false, hasPicture: false), isFalse);
+      // Still nothing after a settle: it is the picture that is missing, not
+      // the slide that is unfinished.
+      c.settle();
+      expect(c.covers(token: 1, docked: false, hasPicture: false), isFalse);
+      // And the moment one arrives, the app goes under it as before.
+      expect(c.covers(token: 1, docked: false, hasPicture: true), isTrue);
+    });
+  });
+
+  // The regression that took the picture away: the layer's Stack sized itself
+  // from the app beneath, and once that app went Offstage under a playing film
+  // it reported `constraints.smallest` — zero, because `ChatOverlay` above hands
+  // down loose constraints. The Stack collapsed, and the film (a positioned
+  // child, which contributes nothing to a Stack's size) was laid out into no
+  // space at all: sound, no picture, and a hidden app that answered nothing.
+  //
+  // Asserted on the widget rather than on a rendered frame because engaging the
+  // cover needs a real `Player`, and that wants libmpv.
+  testWidgets('the layer keeps the window when the app beneath goes Offstage',
+      (tester) async {
+    await tester.pumpWidget(
+      // Loose, the way ChatOverlay hands it down.
+      const MaterialApp(
+        home: Stack(children: [VideoLayer(child: Text('app'))]),
+      ),
+    );
+    final stack = tester.widget<Stack>(
+      find.descendant(of: find.byType(VideoLayer), matching: find.byType(Stack)),
+    );
+    expect(stack.fit, StackFit.expand);
   });
 
   testWidgets('the layer draws only its child until something plays',

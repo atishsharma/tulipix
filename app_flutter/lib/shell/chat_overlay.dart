@@ -95,6 +95,10 @@ class _ChatOverlayState extends State<ChatOverlay> {
       child: Focus(
         autofocus: true,
         child: Stack(
+          // As `LockOverlay` and `OnboardingOverlay` both already do. Without
+          // it this handed the whole app below loose constraints, which is what
+          // let an `Offstage` down there collapse the window to nothing.
+          fit: StackFit.expand,
           children: [
             widget.child,
             if (_open) _panel(context),
