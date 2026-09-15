@@ -487,7 +487,7 @@ Future<void> openNowPlaying(
         final l = controller.state?.live ?? live;
         final t = ctx.tokens;
         return AlertDialog(
-          backgroundColor: t.modal,
+          backgroundColor: t.modalSolid,
           title: Row(
             children: [
               Container(
@@ -601,7 +601,7 @@ Future<void> openPlaylistPicker(
             .send(VideosCmd.liveConfigLoad(tab: tab, query: filter.text));
 
         return AlertDialog(
-          backgroundColor: t.modal,
+          backgroundColor: t.modalSolid,
           title: const Text('Live TV playlists'),
           content: SizedBox(
             width: 520,

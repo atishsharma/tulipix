@@ -29,7 +29,7 @@ Future<void> showHelp(
     builder: (context) {
       final t = context.tokens;
       return Dialog(
-        backgroundColor: t.modal,
+        backgroundColor: t.modalSolid,
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 620, maxHeight: 640),
           child: Column(
@@ -200,7 +200,7 @@ Future<(DeviceAction, String)?> showDevice(
     builder: (context) {
       final t = context.tokens;
       return Dialog(
-        backgroundColor: t.modal,
+        backgroundColor: t.modalSolid,
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 400),
           child: Padding(
@@ -467,7 +467,7 @@ Future<void> showPairDialog(
     builder: (context) {
       final t = context.tokens;
       return AlertDialog(
-        backgroundColor: t.modal,
+        backgroundColor: t.modalSolid,
         title: const Text('Do these match?'),
         content: Column(
           mainAxisSize: MainAxisSize.min,

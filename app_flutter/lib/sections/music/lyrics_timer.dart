@@ -181,7 +181,7 @@ class _TimerState extends State<_Timer> {
     final total = _lines.where((l) => l.text.isNotEmpty).length;
 
     return Dialog(
-      backgroundColor: t.panel.withValues(alpha: 1),
+      backgroundColor: t.panelSolid,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18),
         side: BorderSide(color: t.outline),

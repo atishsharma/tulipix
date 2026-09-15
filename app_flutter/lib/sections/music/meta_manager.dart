@@ -54,7 +54,7 @@ class _Manager extends StatelessWidget {
           // a sheet that slides over a page, wrong for a 640x680 modal, which
           // showed the song grid through its own progress bar and made both
           // unreadable.
-          backgroundColor: t.panel.withValues(alpha: 1),
+          backgroundColor: t.panelSolid,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(18),
             side: BorderSide(color: t.outline),

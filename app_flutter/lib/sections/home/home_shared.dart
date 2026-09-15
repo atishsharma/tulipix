@@ -1467,7 +1467,7 @@ class VizMenu extends StatelessWidget {
       // whatever is behind it reads straight through the labels. Composed over
       // the page ground it keeps the hue and stops being see-through; the
       // surface tint would put the M3 elevation wash back on top of it.
-      color: Color.alphaBlend(t.panel, t.bg),
+      color: t.panelSolid,
       surfaceTintColor: Colors.transparent,
       onSelected: (v) {
         if (v == 'off') return onOff();

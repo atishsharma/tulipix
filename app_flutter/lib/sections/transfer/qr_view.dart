@@ -95,7 +95,7 @@ Future<void> showQrDialog(
         builder: (context, setLocal) {
           final t = context.tokens;
           return AlertDialog(
-            backgroundColor: t.modal,
+            backgroundColor: t.modalSolid,
             title: Text(
               'Scan to pair',
               textAlign: TextAlign.center,

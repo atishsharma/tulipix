@@ -67,6 +67,17 @@ class Tokens extends ThemeExtension<Tokens> {
   final Color panel2;
   final Color modal;
 
+  /// [panel] and [modal], composed over [bg] so they are OPAQUE.
+  ///
+  /// `panel` is 0xD0FFFFFF on the light palette and `modal` 0xE6FFFFFF. That
+  /// translucency is right for a sheet lying ON the page — it is what makes
+  /// the page read as layered — and wrong for anything floating OVER
+  /// arbitrary content, where whatever is behind it reads straight through the
+  /// text. Anything in a dialog, a menu or a popped panel takes these instead,
+  /// and keeps the same hue while doing it.
+  Color get panelSolid => Color.alphaBlend(panel, bg);
+  Color get modalSolid => Color.alphaBlend(modal, bg);
+
   // --- Text ---
   final Color text;
   final Color textDim;
@@ -272,10 +283,43 @@ extension TokensOf on BuildContext {
 /// keeps stock Material widgets (dialogs, scrollbars, text fields) in step.
 ThemeData tulipixTheme(Tokens t) {
   final base = t.dark ? ThemeData.dark() : ThemeData.light();
+  // Every popup gets an OPAQUE surface, in every design language.
+  //
+  // `panel` is 0xD0FFFFFF on the light palette and `modal` is 0xE6FFFFFF:
+  // right for a sheet lying ON the page, wrong for a dialog or a menu floating
+  // OVER arbitrary content, where whatever is behind it reads straight through
+  // the text. Composed over the page ground once they keep their hue and stop
+  // being see-through. The M3 surface tint would lay an elevation wash back on
+  // top of that, so it goes off with them.
+  //
+  // Here rather than in `appTheme`, which returns early for Standard — so the
+  // language that ships with the app was the one language this never reached.
+  final solid = t.modalSolid;
+  final menu = t.panelSolid;
+  const noTint = WidgetStatePropertyAll<Color?>(Colors.transparent);
+  final menuStyle = MenuStyle(
+    backgroundColor: WidgetStatePropertyAll<Color?>(menu),
+    surfaceTintColor: noTint,
+  );
   return base.copyWith(
     scaffoldBackgroundColor: t.bg,
-    canvasColor: t.panel,
+    // The opaque one: this is what a bare `DropdownButton` fills its list with.
+    canvasColor: menu,
     dividerColor: t.outline,
+    dialogTheme: DialogThemeData(
+      backgroundColor: solid,
+      surfaceTintColor: Colors.transparent,
+    ),
+    popupMenuTheme: PopupMenuThemeData(
+      color: menu,
+      surfaceTintColor: Colors.transparent,
+    ),
+    menuTheme: MenuThemeData(style: menuStyle),
+    dropdownMenuTheme: DropdownMenuThemeData(menuStyle: menuStyle),
+    bottomSheetTheme: BottomSheetThemeData(
+      backgroundColor: solid,
+      surfaceTintColor: Colors.transparent,
+    ),
     extensions: [t],
     colorScheme: base.colorScheme.copyWith(
       primary: Tokens.brand,

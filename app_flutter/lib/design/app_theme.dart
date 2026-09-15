@@ -116,12 +116,17 @@ ThemeData appTheme(Tokens t, AppSkin skin) {
         side: BorderSide(color: t.outline),
       ),
     ),
+    // `modalSolid` / `panelSolid`, not the raw tokens: those are 0xE6 and 0xD0
+    // on the light palette, and this block overrides the opaque ones
+    // `tulipixTheme` sets — so a language got see-through dialogs back.
     dialogTheme: DialogThemeData(
-      backgroundColor: t.modal,
+      backgroundColor: t.modalSolid,
+      surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(borderRadius: panel),
     ),
     popupMenuTheme: PopupMenuThemeData(
-      color: t.modal,
+      color: t.panelSolid,
+      surfaceTintColor: Colors.transparent,
       shape: shape,
       textStyle: TextStyle(fontFamily: face, color: t.text),
     ),

@@ -781,7 +781,7 @@ Future<void> openCastPicker(
         final s = controller.state?.stream;
         final t = ctx.tokens;
         return AlertDialog(
-          backgroundColor: t.modal,
+          backgroundColor: t.modalSolid,
           title: const Row(
             children: [
               Icon(Icons.cast, size: 18, color: Tokens.secVideos),
@@ -876,7 +876,7 @@ Future<void> openStreamSettings(
           final t = ctx.tokens;
           if (s == null) return const SizedBox.shrink();
           return AlertDialog(
-            backgroundColor: t.modal,
+            backgroundColor: t.modalSolid,
             title: const Text('Stream Setting'),
             content: SizedBox(
               width: 500,

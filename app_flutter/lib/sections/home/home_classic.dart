@@ -1394,7 +1394,7 @@ class _RemoveMenu extends StatelessWidget {
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: t.panel,
+        backgroundColor: t.panelSolid,
         title: const Text('Remove from Continue?',
             style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
         content:

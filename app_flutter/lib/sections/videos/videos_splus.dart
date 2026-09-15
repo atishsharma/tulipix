@@ -1951,7 +1951,7 @@ Future<void> openSplusServers(
         final s = controller.state?.splus;
         final t = ctx.tokens;
         return AlertDialog(
-          backgroundColor: t.modal,
+          backgroundColor: t.modalSolid,
           title: const Text('Servers'),
           content: SizedBox(
             width: 500,

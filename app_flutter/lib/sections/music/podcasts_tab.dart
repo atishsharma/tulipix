@@ -758,7 +758,7 @@ class _InfoCard extends StatelessWidget {
                 constraints: const BoxConstraints(maxHeight: 520),
                 padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
-                  color: t.modal,
+                  color: t.modalSolid,
                   borderRadius: BorderRadius.circular(Tokens.radiusLg),
                   border: Border.all(color: t.outline),
                 ),
@@ -918,7 +918,7 @@ class _TranscriptPanel extends StatelessWidget {
         margin: const EdgeInsets.all(12),
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
-          color: t.modal,
+          color: t.modalSolid,
           borderRadius: BorderRadius.circular(Tokens.radiusLg),
           border: Border.all(color: t.outline),
         ),

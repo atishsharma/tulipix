@@ -1671,7 +1671,7 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar>
               // `panel` is 82% white on the light theme. A queue floating over
               // the artwork needs to be opaque or the track titles read through
               // it, so compose it over the page ground.
-              color: Color.alphaBlend(t.dark ? t.panel2 : t.panel, t.bg),
+              color: t.dark ? t.panel2 : t.panelSolid,
               borderRadius: BorderRadius.circular(14),
               elevation: 12,
               child: Container(

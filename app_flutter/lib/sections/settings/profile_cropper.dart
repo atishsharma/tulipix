@@ -315,6 +315,9 @@ class _CropperState extends State<_Cropper> {
     final t = context.tokens;
     final avatar = _k == CropKind.avatar;
     return Dialog(
+      // `panel2` is opaque on both palettes; the keys and the source button
+      // inside it take `panelSolid`, because plain `panel` is 82% white on the
+      // light one and let this dialog's own fill through them.
       backgroundColor: t.panel2,
       insetPadding: const EdgeInsets.all(24),
       shape: RoundedRectangleBorder(
@@ -543,7 +546,7 @@ class _CropperState extends State<_Cropper> {
   Widget _emojiKey(Tokens t, String e) {
     final on = _emoji == e;
     return Material(
-      color: t.panel,
+      color: t.panelSolid,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
@@ -689,7 +692,7 @@ class _CropperState extends State<_Cropper> {
   Widget _preview(Tokens t, double w, double h, {required bool round}) {
     final img = _img;
     final Widget face = img == null
-        ? ColoredBox(color: t.panel)
+        ? ColoredBox(color: t.panelSolid)
         : CustomPaint(
             painter: _CropPainter(
               img: img,
@@ -728,7 +731,7 @@ class _CropperState extends State<_Cropper> {
       );
 
   Widget _source(Tokens t, String note) => Material(
-        color: t.panel,
+        color: t.panelSolid,
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
