@@ -422,9 +422,12 @@ async fn counts() -> HomeCounts {
 async fn recent_photos() -> Vec<HomeTile> {
     let Ok(p) = crate::db::photos_pool().await else { return Vec::new() };
     sqlx::query_as::<_, (i64, String)>(
-        "SELECT id, COALESCE(abs_path, '') FROM items \
-         WHERE section = 'photos' AND missing_since IS NULL \
-         ORDER BY COALESCE(taken_at, added_at) DESC LIMIT ?",
+        // `taken_at` is on photo_meta, not items, and the shelf orders the way
+        // the Photos grid does by default -- shot date first, undated last.
+        "SELECT items.id, COALESCE(items.abs_path, '') FROM items \
+         LEFT JOIN photo_meta pm ON pm.item_id = items.id \
+         WHERE items.section = 'photos' AND items.missing_since IS NULL \
+         ORDER BY pm.taken_at DESC NULLS LAST, items.mtime DESC LIMIT ?",
     )
     .bind(SHELF)
     .fetch_all(p)
@@ -441,7 +444,7 @@ async fn recent_videos() -> Vec<HomeTile> {
         "SELECT vm.item_id, COALESCE(i.abs_path, ''), vm.duration_s \
          FROM video_meta vm JOIN items i ON i.id = vm.item_id \
          WHERE vm.deleted_at IS NULL AND vm.archived = 0 \
-         ORDER BY i.added_at DESC LIMIT ?",
+         ORDER BY i.added DESC LIMIT ?",
     )
     .bind(SHELF)
     .fetch_all(p)
@@ -531,9 +534,15 @@ fn hero(row: Option<&HomeContinue>) -> HomeHero {
 async fn recent_songs() -> Vec<HomeTile> {
     let Ok(p) = crate::db::music_pool().await else { return Vec::new() };
     sqlx::query_as::<_, (i64, Option<String>, Option<String>, String)>(
-        "SELECT i.id, tm.title, tm.artist, COALESCE(i.abs_path, '') \
+        // `MUSIC_WHERE` in music.rs, not a looser one: Welcome's Recently
+        // Added is the My Music shelf, and an audiobook chapter turning up in
+        // it is the bug that constant exists to prevent.
+        "SELECT i.id, tm.title, ar.name, COALESCE(i.abs_path, '') \
          FROM items i LEFT JOIN track_meta tm ON tm.item_id = i.id \
-         WHERE i.missing_since IS NULL ORDER BY i.added DESC LIMIT ?",
+         LEFT JOIN artists ar ON ar.id = tm.artist_id \
+         WHERE i.section = 'music' AND i.missing_since IS NULL \
+           AND COALESCE(tm.is_audiobook, 0) = 0 \
+         ORDER BY i.added DESC LIMIT ?",
     )
     .bind(SHELF)
     .fetch_all(p)
@@ -680,9 +689,15 @@ fn set_filter(v: String) {
     }
 }
 
-/// "All" leads with the newest of each kind for variety, then backfills the
-/// empty slots with the next-newest rows whatever their kind -- a library with
-/// only books in progress used to show one card and three empty wells.
+/// "All" is one row per kind and no more: the newest video, the newest book,
+/// the newest podcast, the newest audiobook, in that order.
+///
+/// It used to backfill the leftover slots with the next-newest rows whatever
+/// their kind, so a library with two books in progress spent two of the four
+/// slots on books. Four slots and four kinds is the whole point of the row --
+/// it is a "where was I in each of these", not a recent list -- and the
+/// backfill is what pushed a kind out of it. A slot with nothing of its kind
+/// to show stays empty.
 fn filtered(mut rows: Vec<(HomeContinue, i64)>, filter: &str) -> Vec<HomeContinue> {
     rows.sort_by(|a, b| b.1.cmp(&a.1));
     if filter != "all" {
@@ -700,15 +715,6 @@ fn filtered(mut rows: Vec<(HomeContinue, i64)>, filter: &str) -> Vec<HomeContinu
             break;
         }
         if let Some(i) = (0..rows.len()).find(|&i| !used[i] && rows[i].0.kind == kind) {
-            used[i] = true;
-            out.push(std::mem::replace(&mut rows[i].0, blank()));
-        }
-    }
-    for i in 0..rows.len() {
-        if out.len() >= CONTINUE_SLOTS {
-            break;
-        }
-        if !used[i] {
             used[i] = true;
             out.push(std::mem::replace(&mut rows[i].0, blank()));
         }
@@ -746,7 +752,7 @@ async fn continue_rows() -> Vec<(HomeContinue, i64)> {
 async fn cont_books() -> Vec<(HomeContinue, i64)> {
     let Ok(p) = crate::db::books_pool().await else { return Vec::new() };
     sqlx::query_as::<_, (i64, String, Option<String>, String, f64, i64, i64)>(
-        "SELECT b.id, COALESCE(b.title, ''), b.author, COALESCE(b.abs_path, ''), \
+        "SELECT b.id, COALESCE(b.title, ''), b.author, COALESCE(b.path, ''), \
                 COALESCE(pr.percent, 0.0), COALESCE(pr.page, 0), COALESCE(pr.updated_at, 0) \
          FROM progress pr JOIN books b ON b.id = pr.book_id \
          WHERE b.finished = 0 AND b.missing = 0 \
@@ -781,9 +787,13 @@ async fn cont_books() -> Vec<(HomeContinue, i64)> {
 
 async fn cont_podcasts() -> Vec<(HomeContinue, i64)> {
     let Ok(p) = crate::db::podcasts_pool().await else { return Vec::new() };
-    sqlx::query_as::<_, (i64, String, String, f64, Option<f64>, i64)>(
+    sqlx::query_as::<_, (i64, String, String, f64, Option<f64>, i64, String)>(
+        // The SHOW's cover, same as the feed row's and the deck's. See
+        // `ev_podcasts` for why every leg needs its own `NULLIF`.
         "SELECT e.id, COALESCE(e.title, ''), COALESCE(p.title, ''), e.position_s, e.duration_s, \
-                COALESCE(e.published, 0) \
+                COALESCE(e.published, 0), \
+                COALESCE(NULLIF(p.custom_image, ''), NULLIF(p.image_url, ''), \
+                         NULLIF(e.image_url, ''), '') \
          FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id \
          WHERE e.position_s > 5 \
            AND (e.duration_s IS NULL OR e.duration_s <= 0 OR e.position_s < e.duration_s * 0.95) \
@@ -795,7 +805,7 @@ async fn cont_podcasts() -> Vec<(HomeContinue, i64)> {
     .unwrap_or_default()
     .into_iter()
     .filter(|(_, title, ..)| !title.is_empty())
-    .map(|(id, title, show, pos, dur, ts)| {
+    .map(|(id, title, show, pos, dur, ts, art)| {
         let (frac, sub) = left(pos, dur);
         (
             HomeContinue {
@@ -805,7 +815,11 @@ async fn cont_podcasts() -> Vec<(HomeContinue, i64)> {
                 sub,
                 frac,
                 id,
-                path: String::new(),
+                // The show's art URL. Nothing in the Flutter build reads
+                // `path` on a Continue row -- a podcast resumes by episode id
+                // -- and `music_ensure_art`'s "podcast" arm wants a URL, so
+                // the card's thumbnail travels in the field that was empty.
+                path: art,
             },
             ts,
         )
@@ -815,9 +829,21 @@ async fn cont_podcasts() -> Vec<(HomeContinue, i64)> {
 
 async fn cont_audiobooks() -> Vec<(HomeContinue, i64)> {
     let Ok(p) = crate::db::music_pool().await else { return Vec::new() };
-    let items = sqlx::query_as::<_, (String, i64, f64, i64)>(
-        "SELECT tm.folder, ap.item_id, ap.position_s, COALESCE(ap.updated, 0) \
-         FROM audiobook_progress ap JOIN track_meta tm ON tm.item_id = ap.item_id \
+    // The chapter's own title and the book's FETCHED one, not the folder name.
+    // `audiobook_meta` is what the scraper writes per folder -- "A Woman's Love"
+    // by "Sir Arthur Conan Doyle" where the directory is called `womanslove` --
+    // and `track_meta.title` is the chapter. The card was showing neither: it
+    // printed the directory basename over the literal word "Audiobook", which
+    // the kind tag beside it already says.
+    let items = sqlx::query_as::<_, (String, i64, f64, i64, String, String, String)>(
+        "SELECT tm.folder, ap.item_id, ap.position_s, COALESCE(ap.updated, 0), \
+                COALESCE(NULLIF(tm.title, ''), ''), \
+                COALESCE(NULLIF(am.title, ''), ''), \
+                COALESCE(i.abs_path, '') \
+         FROM audiobook_progress ap \
+         JOIN track_meta tm ON tm.item_id = ap.item_id \
+         LEFT JOIN audiobook_meta am ON am.folder = tm.folder \
+         LEFT JOIN items i ON i.id = ap.item_id \
          WHERE ap.finished = 0 AND ap.position_s > 0 AND tm.folder IS NOT NULL \
          ORDER BY ap.updated DESC LIMIT 12",
     )
@@ -827,7 +853,7 @@ async fn cont_audiobooks() -> Vec<(HomeContinue, i64)> {
 
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for (folder, item_id, pos, ts) in items {
+    for (folder, item_id, pos, ts, chapter, book, path) in items {
         // One card per book, not one per chapter: the newest chapter resume is
         // the book's position.
         if !seen.insert(folder.clone()) {
@@ -836,15 +862,25 @@ async fn cont_audiobooks() -> Vec<(HomeContinue, i64)> {
         if out.len() >= CONTINUE_SLOTS {
             break;
         }
-        let title = std::path::Path::new(&folder)
+        // Folder basename is the LAST resort for either line, not the first:
+        // an untagged rip and an unfetched book both still read as something.
+        let stem = std::path::Path::new(&folder)
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_else(|| folder.clone());
+        let chapter = match chapter.is_empty() {
+            false => chapter,
+            true => file_name(&path),
+        };
+        let book = match book.is_empty() {
+            false => book,
+            true => stem.clone(),
+        };
         out.push((
             HomeContinue {
                 kind: "audiobook".into(),
-                title: clip(&title),
-                author: "Audiobook".into(),
+                title: clip(&if chapter.is_empty() { stem } else { chapter }),
+                author: book,
                 sub: format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60),
                 frac: -1.0,
                 id: item_id,
@@ -1208,16 +1244,22 @@ async fn ev_music() -> Vec<Raw> {
 /// so this reports the feed's clock, which is the honest one.
 async fn ev_podcasts() -> Vec<Raw> {
     let Ok(p) = crate::db::podcasts_pool().await else { return Vec::new() };
-    sqlx::query_as::<_, (i64, Option<String>, String, Option<i64>)>(
-        "SELECT e.id, e.title, COALESCE(p.title, ''), e.published FROM podcast_episodes e \
-         JOIN podcasts p ON p.id = e.podcast_id \
+    // The SHOW's cover, with `NULLIF` on every leg: an episode's `image_url`
+    // is TEXT `''` rather than NULL, and `COALESCE` stops at the first
+    // non-NULL, so an unguarded one returns the empty string. `custom_image`
+    // leads because that is the one the user set.
+    sqlx::query_as::<_, (i64, Option<String>, String, Option<i64>, String)>(
+        "SELECT e.id, e.title, COALESCE(p.title, ''), e.published, \
+                COALESCE(NULLIF(p.custom_image, ''), NULLIF(p.image_url, ''), \
+                         NULLIF(e.image_url, ''), '') \
+         FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id \
          WHERE e.published IS NOT NULL ORDER BY e.published DESC LIMIT 8",
     )
     .fetch_all(p)
     .await
     .unwrap_or_default()
     .into_iter()
-    .filter_map(|(id, ep, show, published)| {
+    .filter_map(|(id, ep, show, published, art)| {
         Some(Raw {
             at: published?,
             section: "music",
@@ -1227,7 +1269,11 @@ async fn ev_podcasts() -> Vec<Raw> {
             action: "Play",
             alarm: false,
             id,
-            path: String::new(),
+            // `path` carries the show's art URL for an episode row. Nothing
+            // else reads it on this kind -- `eventAction` opens an episode by
+            // id -- and `music_ensure_art`'s "podcast" arm takes a URL as its
+            // key, so this is the thing it needs, already in the struct.
+            path: art,
         })
     })
     .collect()
@@ -1315,19 +1361,34 @@ mod tests {
         )
     }
 
-    /// "All" leads with one of each kind, then backfills — a library with only
-    /// books in progress must fill all four slots with books, not show one card
-    /// and three empty wells.
+    /// "All" is the newest of each kind and nothing else: four slots, four
+    /// kinds, one apiece. A second book never takes the podcast's place.
     #[test]
-    fn the_all_filter_varies_then_backfills() {
+    fn the_all_filter_shows_one_of_each_kind() {
         let mixed = vec![row("book", 1, 90), row("video", 2, 80), row("book", 3, 70)];
         let kinds: Vec<String> =
             filtered(mixed, "all").into_iter().map(|r| r.kind).collect();
-        assert_eq!(kinds, ["video", "book", "book"]);
+        assert_eq!(kinds, ["video", "book"]);
 
-        let only_books =
-            vec![row("book", 1, 4), row("book", 2, 3), row("book", 3, 2), row("book", 4, 1), row("book", 5, 0)];
-        assert_eq!(filtered(only_books, "all").len(), CONTINUE_SLOTS);
+        // One of every kind fills the row, in the fixed order.
+        let all_four = vec![
+            row("audiobook", 1, 40),
+            row("podcast", 2, 30),
+            row("book", 3, 20),
+            row("video", 4, 10),
+        ];
+        let ids: Vec<i64> = filtered(all_four, "all").into_iter().map(|r| r.id).collect();
+        assert_eq!(ids, [4, 3, 2, 1]);
+
+        // Five books in progress still show ONE card, not four.
+        let only_books = vec![
+            row("book", 1, 4),
+            row("book", 2, 3),
+            row("book", 3, 2),
+            row("book", 4, 1),
+            row("book", 5, 0),
+        ];
+        assert_eq!(filtered(only_books, "all").len(), 1);
     }
 
     #[test]

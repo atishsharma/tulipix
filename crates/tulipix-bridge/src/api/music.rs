@@ -3744,8 +3744,15 @@ fn yt_download_dir() -> PathBuf {
 async fn play_episode(episode_id: i64) -> Result<()> {
     let pool = podcasts_pool().await?;
     let row: Option<(String, String, f64, String, String, String)> = sqlx::query_as(
+        // The SHOW's cover, and `NULLIF` on every leg of it. An episode's
+        // `image_url` is TEXT `''` here, not NULL, and `COALESCE` stops at the
+        // first non-NULL -- so `COALESCE(e.image_url, p.image_url)` returned
+        // the empty string and the deck played every episode under a blank
+        // plate. The channel cover is what a podcast is recognised by anyway.
         "SELECT e.title, e.audio_url, e.position_s, COALESCE(e.downloaded_path, ''), \
-                COALESCE(p.title, ''), COALESCE(NULLIF(p.custom_image, ''), COALESCE(e.image_url, p.image_url), '') \
+                COALESCE(p.title, ''), \
+                COALESCE(NULLIF(p.custom_image, ''), NULLIF(p.image_url, ''), \
+                         NULLIF(e.image_url, ''), '') \
          FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id WHERE e.id = ?",
     )
     .bind(episode_id)
@@ -3821,30 +3828,93 @@ async fn play_chapter(pool: &sqlx::SqlitePool, item_id: i64) -> Result<()> {
         // The same filter the Slint build's skip-silence toggle installs.
         args.push("--af-append=lavfi=[silenceremove=1:0:-50dB]".into());
     }
+    // Resume needs something to resume FROM. This read its position back from
+    // `audiobook_progress` and never wrote one: `save_progress` had exactly one
+    // caller in the tree, in crates/tulipix-app -- the Slint build -- so under
+    // Flutter a book always restarted at zero and never reached Home's Continue
+    // strip, which is keyed off that same table.
+    //
+    // The tick is the only place the deck's position is known, and it arrives
+    // on Dart's thread with no runtime under it, so the handle is taken here
+    // while this function is still on one and moved into the closure.
+    let rt = tokio::runtime::Handle::current();
+    let book_speed = tulipix_music::audiobooks::clamp_speed(speed);
+    // At most one write every 5s, plus one the moment it pauses. The tick is a
+    // second apart, and a row per second is a write per second for a number
+    // nothing reads until the deck stops.
+    let mark = std::sync::Mutex::new((f64::NEG_INFINITY, false));
     mpv::play(
         &path,
         mpv::Slot::Book,
         &args,
         Some(position),
-        |obs| {
+        move |obs| {
             emit(MusicEvent::Tick {
                 pos: obs.pos,
                 dur: obs.dur,
                 playing: !obs.paused,
-            })
+            });
+            let due = match mark.lock() {
+                Ok(mut g) => {
+                    let (last, was_paused) = *g;
+                    let due = (obs.pos - last).abs() >= 5.0 || (obs.paused && !was_paused);
+                    *g = (if due { obs.pos } else { last }, obs.paused);
+                    due
+                }
+                Err(_) => false,
+            };
+            if due && obs.pos > 0.0 {
+                let pos = obs.pos;
+                rt.spawn(async move {
+                    if let Ok(pool) = crate::db::music_pool().await {
+                        let _ = tulipix_music::audiobooks::save_progress(
+                            pool,
+                            item_id,
+                            pos.max(1.0),
+                            book_speed,
+                        )
+                        .await;
+                    }
+                });
+            }
         },
         || emit(MusicEvent::Ended),
     );
-    let book = Path::new(&folder)
+    let stem = Path::new(&folder)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // The FETCHED book and its FETCHED cover, not the directory name and
+    // whatever image happens to be lying in it. `audiobook_meta` and
+    // `audiobook_covers` are what the scraper fills -- "A Woman's Love" for a
+    // directory called `womanslove` -- and `book_cover` keeps the Audiobooks
+    // tab's own chain behind them: the fetched file, then a sidecar in the
+    // folder, then the art embedded in the first chapter. `folder_cover` alone
+    // was only the middle step of that three, so a book whose cover had been
+    // fetched still played under a blank plate.
+    let fetched: Option<String> = sqlx::query_scalar(
+        "SELECT COALESCE(title, '') FROM audiobook_meta WHERE folder = ?",
+    )
+    .bind(&folder)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or_default();
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT path FROM audiobook_covers WHERE folder = ?")
+            .bind(&folder)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or_default();
+    let book = fetched.filter(|t| !t.is_empty()).unwrap_or(stem);
     mpv::set_now_playing(mpv::NowPlaying {
         item_id,
         title: if title.is_empty() { book.clone() } else { title },
         artist: book,
         album: String::new(),
-        art: folder_cover(Path::new(&folder)).unwrap_or_default(),
+        art: book_cover(pool, &folder, stored.as_deref())
+            .await
+            .or_else(|| folder_cover(Path::new(&folder)))
+            .unwrap_or_default(),
         key: folder,
     });
     emit(MusicEvent::TrackChanged);
