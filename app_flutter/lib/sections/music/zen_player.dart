@@ -57,6 +57,22 @@ class ZenPlayer extends StatelessWidget {
     );
   }
 
+  /// The stand-in backdrop: the record's own accent over the canvas, so the
+  /// page is a surface with a colour rather than an empty sheet.
+  Widget _noArt(Tokens t, Color accent) => DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              accent.withValues(alpha: 0.45),
+              accent.withValues(alpha: 0.18),
+              t.nCanvas,
+            ],
+          ),
+        ),
+      );
+
   Widget _body(BuildContext context) {
     final t = context.tokens;
     final st = controller.state;
@@ -122,9 +138,16 @@ class ZenPlayer extends StatelessWidget {
                   child: Image.file(
                     File(now.art),
                     fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                    errorBuilder: (_, __, ___) => _noArt(t, accent),
                   ),
-                ),
+                )
+              else
+                // No art, no flat rectangle. With nothing behind it the glass
+                // below is `nCanvas` at 50%, and `nCanvas` on the light palette
+                // is pure white — so a track whose cover has not resolved put
+                // the whole page up as a blank white card. Cinema's backdrop
+                // already stands a gradient in for the same reason.
+                Positioned.fill(child: _noArt(t, accent)),
               // The glass. Half the canvas colour, so the cover reads through
               // it at about half strength everywhere — the panel is what the
               // controls stand on, and the art is what it stands over.
@@ -179,12 +202,23 @@ class ZenPlayer extends StatelessWidget {
                                   ),
                                 ),
                               ),
-                            if (lyricsShown)
+                            // `Expanded` only ever as a direct child of this
+                            // Column — see `_ZenLyrics`.
+                            if (lyricsShown && lyricsBig)
+                              Expanded(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 28),
+                                  child: _ZenLyrics(
+                                      controller: controller, big: true),
+                                ),
+                              )
+                            else if (lyricsShown)
                               Padding(
                                 padding:
                                     const EdgeInsets.symmetric(horizontal: 28),
                                 child: _ZenLyrics(
-                                    controller: controller, big: lyricsBig),
+                                    controller: controller, big: false),
                               ),
                             if (!vizShown && !lyricsShown) const Spacer(),
                             Padding(
@@ -468,17 +502,23 @@ class _ZenLyrics extends StatelessWidget {
         quiet(a >= 0 && a + 1 < lines.length ? lines[a + 1].text : ''),
       ],
     );
-    return big
-        ? Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 56),
-              child: Center(child: body),
-            ),
-          )
-        : Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            child: body,
-          );
+    // No `Expanded` here, whatever `big` says. This used to return one, and
+    // the caller wraps this widget in a `Padding` — so the `Expanded` came out
+    // under a `Padding` rather than directly inside the `Column`, which is
+    // `Incorrect use of ParentDataWidget` and throws during layout. In a debug
+    // build that is a red band; in a release build `ErrorWidget.builder` paints
+    // a plain grey rectangle, which is what swallowed the whole zen page from
+    // the title down — visualizer, seek bar and transport with it.
+    //
+    // It only showed with the visualizer OFF, because `lyricsBig` is
+    // `lyricsShown && !vizShown` — and a podcast forces the visualizer on
+    // (`!library`), so it was always the FIRST library track after one that
+    // hit it. Whether this stretches is the Column's business, not this
+    // widget's: the caller decides.
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: big ? 56 : 10),
+      child: big ? Center(child: body) : body,
+    );
   }
 }
 

@@ -505,7 +505,11 @@ class _Header extends StatelessWidget {
 
   /// Dropped into Home's Classic rail rather than floating. The rail sizes the
   /// player itself, so a control that changes the player's size has nothing to
-  /// change — the layout button is for the floating copy only.
+  /// change — the layout button is for the floating copy only, and so are
+  /// Close and Dock-as-a-bubble: `MusicMini` gates both on `if !root.embedded`
+  /// (ui/page_music.slint:8242, :8256 — "renders inline inside a card, so drop
+  /// the floating chrome"). Closing the player inside the rail that exists to
+  /// hold it leaves an empty rail and no way back.
   final bool embedded;
 
   @override
@@ -513,14 +517,15 @@ class _Header extends StatelessWidget {
     final t = context.tokens;
     return Row(
       children: [
-        PlayerBtn(
-          icon: Icons.close,
-          tip: 'Close',
-          size: 26 * scale,
-          iconSize: 13 * scale,
-          accent: controller.accent,
-          onTap: controller.toggleMini,
-        ),
+        if (!embedded)
+          PlayerBtn(
+            icon: Icons.close,
+            tip: 'Close',
+            size: 26 * scale,
+            iconSize: 13 * scale,
+            accent: controller.accent,
+            onTap: controller.toggleMini,
+          ),
         Expanded(
           child: _Link(
             controller: controller,
@@ -540,14 +545,15 @@ class _Header extends StatelessWidget {
             ),
           ),
         ),
-        PlayerBtn(
-          icon: Icons.chevron_right,
-          tip: 'Dock as a bubble',
-          size: 26 * scale,
-          iconSize: 14 * scale,
-          accent: controller.accent,
-          onTap: () => controller.setMiniBubble(true),
-        ),
+        if (!embedded)
+          PlayerBtn(
+            icon: Icons.chevron_right,
+            tip: 'Dock as a bubble',
+            size: 26 * scale,
+            iconSize: 14 * scale,
+            accent: controller.accent,
+            onTap: () => controller.setMiniBubble(true),
+          ),
       ],
     );
   }
@@ -1068,10 +1074,22 @@ class _ChapterRow extends StatelessWidget {
 /// all: a 222-unit disc washed from the artwork's accent, two groove rings, a
 /// spinning centre label, a static spindle, and an arm pivoted at (210, 16)
 /// whose needle rides 150 units out at 12° when the track starts and 34° when
-/// it ends. The arm is the thing that moves. The disc does not: it used to
-/// rotate as a whole, shadow and all, which at this size reads as a shudder
-/// rather than as a turntable.
-class _Vinyl extends StatelessWidget {
+/// it ends.
+///
+/// The label turns and nothing else does. The disc as a whole used to rotate,
+/// shadow and all, which at this size read as a shudder rather than a
+/// turntable — and it is also the expensive way round, since a moving shadow
+/// and a moving gradient are a fresh raster every frame. The artwork is the
+/// only part with anything on it to see turn, so it is the only part that
+/// turns: wrapped in a [RepaintBoundary] the rotation is a transform on a
+/// layer that is already cached, which the GPU does for nothing, and the
+/// grooves, the rim, the spindle and the arm are never repainted at all.
+///
+/// The clock is the shared [MotionClock] rather than a ticker of its own, and
+/// it is joined only while the deck is playing AND this is the section on
+/// screen, stepped rather than beaten — the same rule the minimised bubble
+/// follows, and for the same reason: a whole-window frame to turn one disc.
+class _Vinyl extends StatefulWidget {
   const _Vinyl({
     required this.controller,
     required this.now,
@@ -1081,6 +1099,60 @@ class _Vinyl extends StatelessWidget {
   final MusicController controller;
   final NowPlaying now;
   final double scale;
+
+  @override
+  State<_Vinyl> createState() => _VinylState();
+}
+
+class _VinylState extends State<_Vinyl> {
+  final ValueNotifier<double> _t = ValueNotifier<double>(0);
+  bool _joined = false;
+
+  MusicController get controller => widget.controller;
+  NowPlaying get now => widget.now;
+  double get scale => widget.scale;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(covariant _Vinyl old) {
+    super.didUpdateWidget(old);
+    _sync();
+  }
+
+  void _sync() {
+    final on = TickerMode.valuesOf(context).enabled && controller.tickPlaying;
+    if (on == _joined) return;
+    _joined = on;
+    if (on) {
+      MotionClock.instance.join(_onBeat);
+    } else {
+      MotionClock.instance.leave(_onBeat);
+    }
+  }
+
+  /// Every beat, NOT every step.
+  ///
+  /// The minimised bubble steps because it is a 60px disc in the corner. This
+  /// one is the middle of the player: at the step's ten a second, one turn per
+  /// 5.04s makes each update a 7° jump, and 7° on a disc this size is not a
+  /// slow spin — it is a stutter. On the beat it is 2.4° and reads as rotation.
+  ///
+  /// Three times the updates, and each one costs a matrix on a layer the
+  /// [RepaintBoundary] has already rasterised: nothing repaints, nothing
+  /// re-lays-out, and it runs only while the deck plays with this on screen.
+  void _onBeat() => _t.value = MotionClock.instance.seconds * 1000;
+
+  @override
+  void dispose() {
+    if (_joined) MotionClock.instance.leave(_onBeat);
+    _t.dispose();
+    super.dispose();
+  }
 
   /// Slint's viewbox. Everything below is in these units and scaled to fit.
   static const double _side = 222;
@@ -1173,20 +1245,27 @@ class _Vinyl extends StatelessWidget {
                     child: SizedBox(
                       width: label * u,
                       height: label * u,
-                      child: MusicArt(
-                        controller: controller,
-                        kind: 'track',
-                        artKey: '${now.itemId}',
-                        direct: now.art,
-                        size: label * u,
-                        radius: 0,
+                      child: RepaintBoundary(
+                        child: _Spin(
+                          tick: _t,
+                          spinning: controller.tickPlaying,
+                          child: MusicArt(
+                            controller: controller,
+                            kind: 'track',
+                            artKey: '${now.itemId}',
+                            direct: now.art,
+                            size: label * u,
+                            radius: 0,
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ),
-                // The spindle. Not spun — a record's hub does not turn.
-                dot(10, _side / 2, _side / 2, null,
-                    fill: t.nCard, edge: t.nInk3),
+                // No spindle. A real record needs the hole; this one is the
+                // album art, and a card-coloured dot punched through the middle
+                // of it reads as damage rather than as a turntable — more so now
+                // that the art is what turns.
                 // The arm, from the pivot to the needle.
                 Positioned.fill(
                   child: CustomPaint(

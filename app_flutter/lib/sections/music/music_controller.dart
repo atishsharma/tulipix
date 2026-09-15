@@ -814,7 +814,16 @@ class MusicController extends ChangeNotifier {
   int get activeLyric {
     final lines = state?.lyrics ?? const <LyricLine>[];
     if (lines.isEmpty) return -1;
-    final at = tickPos + (state?.lyricsOffsetMs ?? 0) / 1000.0;
+    // The deck's own position, not `tickPos`. The tick that feeds `tickPos` is
+    // throttled to one a second on the Dart side, which is right for a clock
+    // and wrong for a lyric: a line can be most of a second late, and since
+    // lines do not fall on second boundaries each one is late by a different
+    // amount — which reads as the words not following the song at all rather
+    // than as a fixed lag. `audioPositionS` is the same unthrottled source
+    // `SeekPill(smooth:)` reads for the progress edge.
+    final live =
+        tickPlaying && audioPositionS > 0 ? audioPositionS : tickPos;
+    final at = live + (state?.lyricsOffsetMs ?? 0) / 1000.0;
     var hit = -1;
     for (var i = 0; i < lines.length; i++) {
       if (lines[i].atMs / 1000.0 <= at) {
@@ -898,16 +907,28 @@ class MusicController extends ChangeNotifier {
   Future<void> randomRadio() async {
     const sources = ['bollywood', 'punjabi'];
     final nanos = DateTime.now().microsecondsSinceEpoch;
-    if (view != 'radio') await send(const MusicCmd.setView(name: 'radio'));
-    for (var k = 0; k < sources.length; k++) {
-      await send(MusicCmd.radioSearch(query: sources[(nanos + k) % 2]));
-      // `radioPlay` indexes the search result; page 0 is the window on it, so
-      // an index inside the first page is an index into the list.
-      final n = state?.radioStations.length ?? 0;
-      if (n > 0) {
-        await send(MusicCmd.radioPlay(index: (nanos ~/ 7) % n));
-        return;
+    // The view has to be on radio while this runs and cannot stay there.
+    // `fill_radio` is the only thing that puts stations on the snapshot and the
+    // bridge only calls it for `view == "radio"` (music.rs:9528), so without
+    // the switch the search lands and `radioStations` is still empty. But this
+    // is a launcher that starts a station playing, not a trip to the Radio tab
+    // — so whatever Music was showing is put back once a station is on the
+    // deck. Playback does not care which view is up; it keeps going.
+    final was = view;
+    if (was != 'radio') await send(const MusicCmd.setView(name: 'radio'));
+    try {
+      for (var k = 0; k < sources.length; k++) {
+        await send(MusicCmd.radioSearch(query: sources[(nanos + k) % 2]));
+        // `radioPlay` indexes the search result; page 0 is the window on it, so
+        // an index inside the first page is an index into the list.
+        final n = state?.radioStations.length ?? 0;
+        if (n > 0) {
+          await send(MusicCmd.radioPlay(index: (nanos ~/ 7) % n));
+          return;
+        }
       }
+    } finally {
+      if (was != 'radio') await send(MusicCmd.setView(name: was));
     }
   }
 

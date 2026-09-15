@@ -36,6 +36,7 @@ import 'package:tulipix/sections/music/music_controller.dart';
 import 'package:tulipix/sections/music/music_viz.dart' show visStyleNames;
 import 'package:tulipix/sections/music/music_widgets.dart';
 import 'package:tulipix/sections/music/my_music_tab.dart';
+import 'package:tulipix/sections/music/zen_player.dart';
 import 'package:tulipix/src/rust/api/music.dart';
 
 final Float64List _noBands = Float64List(0);
@@ -693,4 +694,64 @@ void main() {
       expect(libTabs.map((t) => t.id).toSet().length, libTabs.length);
     });
   });
+
+  /// Zen, with the visualizer off and a track that has words.
+  ///
+  /// `_ZenLyrics` returned an `Expanded` when `big`, and the caller wrapped it
+  /// in a `Padding` — so the `Expanded` landed under a `Padding` instead of
+  /// directly inside the `Column`, which throws `Incorrect use of
+  /// ParentDataWidget`. Debug shows a red band; RELEASE shows
+  /// `ErrorWidget.builder`'s plain grey rectangle, which is what ate the whole
+  /// page from the title down, seek bar and transport with it.
+  ///
+  /// `lyricsBig` is `lyricsShown && !vizShown`, and a podcast forces the
+  /// visualizer on (it is not a library track), so this only ever bit on the
+  /// first library track played after one.
+  testWidgets('zen draws its big lyrics without throwing', (tester) async {
+    final c = MusicController.instance;
+    addTearDown(() {
+      c.state = null;
+      c.tickPos = 0;
+    });
+    c.zenLyrics = true;
+    // Past the third line's stamp, so `activeLyric` lands on it.
+    c.tickPos = 9;
+    // `visOn` is `_visOn ?? state?.vizOn ?? true`, and nothing in this file
+    // touches `_visOn` — so the snapshot is enough to put the visualizer away
+    // and make the lyrics the big ones.
+    c.state = _state(
+      view: 'mymusic',
+      vizOn: false,
+      now: const NowPlaying(
+        mode: 'music',
+        itemId: 42,
+        key: '42',
+        title: 'Believer',
+        artist: 'Imagine Dragons',
+        album: 'Evolve',
+        art: '',
+        playing: true,
+        loaded: true,
+        pos: 30,
+        dur: 210,
+        volume: 80,
+        muted: false,
+        loved: false,
+        stars: 0,
+        streamTitle: '',
+      ),
+      lyrics: const [
+        LyricLine(atMs: 0, text: 'First they come to take my'),
+        LyricLine(atMs: 4000, text: 'Pain, you made me a, you made me a'),
+        LyricLine(atMs: 8000, text: 'Believer, believer'),
+      ],
+    );
+
+    await _at(tester, const Size(1600, 1000), ZenPlayer(controller: c));
+    expect(tester.takeException(), isNull);
+    // The words, and the controls under them — the grey box swallowed both.
+    expect(find.text('Believer, believer'), findsOneWidget);
+    expect(find.byType(ErrorWidget), findsNothing);
+  });
+
 }
