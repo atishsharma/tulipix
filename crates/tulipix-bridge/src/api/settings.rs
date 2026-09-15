@@ -285,9 +285,19 @@ const HOME_LAYOUT_KEY: &str = "home.layout";
 const HOME_CARD_PREFIX: &str = "home.card.";
 
 /// Every card the classic Home layout can draw, in the order it draws them.
-const HOME_CARDS: [(&str, &str); 12] = [
+/// Every card any layout can switch off, and what Settings calls it.
+///
+/// This list IS the contract. ui/main.slint declares one `hc-*` property per
+/// card and defaults them all to `true`, so a card missing from here still drew
+/// in the Slint build -- but the Flutter port models the same thing as a LIST
+/// of enabled keys, where a key nobody emits reads as off. `library` (Focused's
+/// Recently Added shelf and Timeline's counter table) and `hub` (Cinema's
+/// one-at-a-time carousel) were missing, and those blocks never drew there.
+const HOME_CARDS: [(&str, &str); 14] = [
     ("hero", "Greeting"),
     ("continue", "Continue"),
+    ("library", "Recently Added"),
+    ("hub", "My Hub"),
     ("player", "Music player"),
     ("quick", "Quick actions"),
     ("photos", "Photos"),
@@ -1980,5 +1990,44 @@ mod tests {
     fn home_cards_start_on() {
         let s = S::default();
         assert!(HOME_CARDS.iter().all(|(k, _)| s.flag(&format!("{HOME_CARD_PREFIX}{k}"), true)));
+    }
+
+    /// Every card the Slint pages can switch off has to be a card this list
+    /// knows about.
+    ///
+    /// The two builds disagree about what a missing key MEANS. ui/main.slint
+    /// declares one `hc-*` property per card and defaults it to `true`, so a
+    /// card this list forgot still drew there. The Flutter port sends the same
+    /// thing as a list of ENABLED keys, where a key nobody emits reads as off --
+    /// so `library` and `hub` silently took Focused's Recently Added shelf,
+    /// Timeline's counter table and Cinema's hub carousel off the page, and
+    /// nothing anywhere said so. This is the check that was missing.
+    #[test]
+    fn home_cards_cover_every_slint_flag() {
+        // Declared, threaded through Settings' live preview, and rendered by no
+        // page in either build. A toggle for it would switch off nothing.
+        const VESTIGIAL: [&str; 1] = ["ticker"];
+
+        let main = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/main.slint"),
+        )
+        .expect("ui/main.slint");
+        let declared: Vec<String> = main
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("in property <bool> hc-"))
+            .filter_map(|r| r.split(':').next())
+            .map(|s| s.trim().to_string())
+            .collect();
+        assert!(!declared.is_empty(), "no hc-* properties found -- did main.slint move?");
+        for name in declared {
+            if VESTIGIAL.contains(&name.as_str()) {
+                continue;
+            }
+            assert!(
+                HOME_CARDS.iter().any(|(k, _)| *k == name),
+                "ui/main.slint declares hc-{name} and HOME_CARDS does not carry it, \
+                 so that block never draws in the Flutter build"
+            );
+        }
     }
 }

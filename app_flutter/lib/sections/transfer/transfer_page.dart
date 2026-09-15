@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../design/skin.dart';
+import '../../shell/shell_controller.dart';
 import '../../src/rust/api/transfer.dart';
 import 'certificate_card.dart';
 import 'connection_card.dart';
@@ -77,6 +78,12 @@ class _TransferPageState extends State<TransferPage> {
     _c.addListener(_syncPairDialog);
     _c.setVisible(widget.visible);
     _c.start();
+    // Home's Stream rail carries a "Start sharing" key. `start()` above is only
+    // this page's poll clock — the server is `TransferCmd.start`, and the key
+    // says it starts sharing.
+    ShellController.instance.onOpen(Section.transfer, (raw) {
+      if (openArg(raw).verb == 'share') _c.send(const TransferCmd.start());
+    });
   }
 
   /// Follow `pairCode`: show the digits when they appear, take them away when

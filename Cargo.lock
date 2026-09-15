@@ -7972,8 +7972,12 @@ name = "tulipix-cli"
 version = "1.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "serde_json",
+ "sqlx",
+ "tokio",
  "tracing-subscriber",
+ "tulipix-core",
  "tulipix-tools",
 ]
 
@@ -8020,8 +8024,11 @@ name = "tulipix-core"
 version = "1.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "getrandom 0.4.3",
  "image",
  "keyring",
+ "libsqlite3-sys",
  "notify 8.2.0",
  "reqwest",
  "serde",
@@ -8032,6 +8039,7 @@ dependencies = [
  "tokio",
  "toml 1.1.5+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "walkdir",
 ]
 
@@ -8403,10 +8411,13 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.23.1",
+ "flate2",
  "futures-util",
  "hmac 0.13.0",
  "md-5",
+ "regex",
  "reqwest",
+ "roxmltree",
  "serde",
  "serde_json",
  "sha2 0.11.0",

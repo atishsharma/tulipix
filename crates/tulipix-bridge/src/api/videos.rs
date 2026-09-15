@@ -549,6 +549,10 @@ pub enum VideosCmd {
     ClearThumbs,
     /// Play the tile at this index in an mpv window.
     Play { index: i64 },
+    /// Play one item by its library id, wherever it is -- Home's cards and its
+    /// Continue rows hold an id and no grid position, and `Play` indexes the
+    /// grid that happens to be open.
+    PlayItem { id: i64 },
     /// star | archive | trash | restore | delete-forever | mark-watched |
     /// reveal | play. Which of them a tile offers depends on the tab.
     TileAction { index: i64, action: String },
@@ -1269,6 +1273,7 @@ async fn apply(cmd: VideosCmd) -> Result<()> {
             refresh_library().await?;
         }
         VideosCmd::Play { index } => play_at(index).await?,
+        VideosCmd::PlayItem { id } => play_item_id(id).await?,
         VideosCmd::TileAction { index, action } => tile_action(index, &action).await?,
         VideosCmd::OpenShow { show_id } => {
             let pool = pool().await?;
@@ -1662,6 +1667,31 @@ async fn play_at(index: i64) -> Result<()> {
         tracing::warn!(index, "play: no path for that tile");
         return Ok(());
     };
+    play_path(path, item_id).await
+}
+
+/// Play one item by its library id. The path is read from the row rather than
+/// from whatever grid is open, so Home can start a film the Videos page has
+/// never listed.
+async fn play_item_id(id: i64) -> Result<()> {
+    let pool = pool().await?;
+    let path: Option<String> = sqlx::query_scalar("SELECT abs_path FROM items WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    let Some(path) = path else {
+        tracing::warn!(id, "play: no such item");
+        return Ok(());
+    };
+    play_path(path, Some(id)).await
+}
+
+/// Resume where it was left, touch last-accessed, and hand it to mpv. Shared,
+/// because a film started from Home has to reach the Continue strip exactly the
+/// way one started from the grid does.
+async fn play_path(path: String, item_id: Option<i64>) -> Result<()> {
     let pool = pool().await?;
     let mut resume = None;
     if let Some(id) = item_id {

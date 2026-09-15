@@ -44,8 +44,16 @@ class _VideosPageState extends State<VideosPage> {
     _c.refresh();
     // Home's Stream and Live TV launchers land on a tab, not on the section's
     // front page. `SetKind` is both the switch and the fetch here.
-    ShellController.instance.onOpen(Section.videos, (tab) {
-      _c.send(VideosCmd.setKind(kind: tab));
+    ShellController.instance.onOpen(Section.videos, (raw) {
+      final (:verb, :arg) = openArg(raw);
+      // Home's cards and its Continue rows carry an item id, not a tab and not
+      // a position in whatever grid happens to be open.
+      final id = int.tryParse(arg);
+      if (verb == 'item' && id != null) {
+        _c.send(VideosCmd.playItem(id: id));
+        return;
+      }
+      _c.send(VideosCmd.setKind(kind: verb));
     });
   }
 

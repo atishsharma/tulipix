@@ -13,6 +13,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'dart:typed_data' show Float64List;
+// frb generates its own Int64List (a BigInt-strict wrapper), not the one in
+// dart:typed_data — the feed's thumb ids travel in that.
+import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
 import 'package:tulipix/design/tokens.dart';
 import 'package:tulipix/sections/home/home_controller.dart';
@@ -45,6 +48,15 @@ HomeState _state({
           'the code somebody else already wrote.',
       author: 'Nobody in particular',
     ),
+    // The shelf the hero walks a minute at a time.
+    quotes: const [
+      HomeQuote(
+        text: 'The best code is the code never written, and the second best is '
+            'the code somebody else already wrote.',
+        author: 'Nobody in particular',
+      ),
+      HomeQuote(text: 'Simplicity is a feature.', author: 'Also nobody'),
+    ],
     counts: const HomeCounts(
       photos: 12304,
       photosAlbums: 41,
@@ -138,6 +150,9 @@ HomeState _state({
           alarm: i % 5 == 0,
           id: i,
           path: '/tmp/e$i',
+          // A folded run keeps up to three; every third row here is one.
+          ids: Int64List.fromList(
+              i % 3 == 0 ? [i, i + 1, i + 2] : [i]),
         ),
     ],
     toolCount: 23,
@@ -146,6 +161,20 @@ HomeState _state({
     finSpent: spent,
     finMonths: Float64List.fromList(
         [0.1, 0.3, 0.2, 0.9, 0.4, 0.5, 1.0, 0.7, 0.3, 0.6, 0.8, 0.5]),
+    finMonthSpends: const [
+      '410.00',
+      '980.10',
+      '655.40',
+      '2910.00',
+      '1290.75',
+      '1610.20',
+      '3200.00',
+      '2240.90',
+      '980.00',
+      '1930.60',
+      '2580.30',
+      '1240.50',
+    ],
     finMonthLabels: const [
       'September',
       'October',

@@ -50,6 +50,13 @@ class _CinemaHomeState extends State<CinemaHome> {
   void initState() {
     super.initState();
     _armSlide();
+    _armHub();
+  }
+
+  /// Restarted, not merely reset, on a manual step — so stepping a card by hand
+  /// buys its full ten seconds instead of being overwritten half a second later.
+  void _armHub() {
+    _hubSlide?.cancel();
     _hubSlide = Timer.periodic(kCineRotate, (_) {
       if (mounted) setState(() => _hub += 1);
     });
@@ -116,7 +123,7 @@ class _CinemaHomeState extends State<CinemaHome> {
         // The hub band takes its slice off the TOP of the budget, not off
         // whatever the art happens to leave: the art is elastic, the tile is not.
         final hubCards = homeHubCards(st);
-        final hubBand = (colAvail >= 430) ? 152.0 : 0.0;
+        final hubBand = (_on('hub') && colAvail >= 430) ? 152.0 : 0.0;
         final plAvail =
             math.max(0.0, colAvail - (hubBand > 0 ? hubBand + 16 : 0));
         final plArt =
@@ -220,7 +227,9 @@ class _CinemaHomeState extends State<CinemaHome> {
               height: 34,
               child: Row(
                 children: [
-                  const AppMark(),
+                  AppMark(
+                      choice:
+                          ShellController.instance.state?.logoChoice ?? 0),
                   const SizedBox(width: 8),
                   Text('Tulipix',
                       style: TextStyle(
@@ -339,8 +348,12 @@ class _CinemaHomeState extends State<CinemaHome> {
                               : Icons.play_arrow,
                           primary: true,
                           fill: accent,
-                          onTap: () => ShellController.instance
-                              .go(title.isEmpty ? Section.photos : artSection),
+                          // The hero opens what the RAIL selected; with nothing
+                          // in progress it is the Browse Photos door instead.
+                          onTap: () => sel == null
+                              ? ShellController.instance.go(
+                                  title.isEmpty ? Section.photos : artSection)
+                              : continueOpen(sel),
                         ),
                         // Details is a BOOK affordance: only Books has a
                         // details panel to open. A film or an episode resumed
@@ -350,8 +363,10 @@ class _CinemaHomeState extends State<CinemaHome> {
                           HeroBtn(
                             label: 'Details',
                             icon: Icons.info_outline,
-                            onTap: () =>
-                                ShellController.instance.go(Section.books),
+                            // The panel, not the reader — and for the title the
+                            // rail selected, not the backend's own hero.
+                            onTap: () => ShellController.instance.goOpen(
+                                Section.books, 'detail', '${sel?.id ?? st.hero.id}'),
                           ),
                         ],
                       ],
@@ -383,7 +398,10 @@ class _CinemaHomeState extends State<CinemaHome> {
                 child: _HubCarousel(
                   cards: hubCards,
                   index: _hub,
-                  onStep: (d) => setState(() => _hub += d),
+                  onStep: (d) {
+                    setState(() => _hub += d);
+                    _armHub();
+                  },
                 ),
               ),
 

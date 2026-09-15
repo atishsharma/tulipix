@@ -32,10 +32,30 @@ class StreamHome extends StatefulWidget {
   State<StreamHome> createState() => _StreamHomeState();
 }
 
+/// The platform bar off, so the gutter one is the only bar on the page.
+class _NoBar extends MaterialScrollBehavior {
+  const _NoBar();
+
+  @override
+  Widget buildScrollbar(BuildContext context, Widget child, ScrollableDetails d) =>
+      child;
+}
+
 class _StreamHomeState extends State<StreamHome> {
   /// Which bar STANDING is reading. −1 means "the newest", which is the month
   /// `finSpent` / `finMonth` already describe.
   int _monSel = -1;
+
+  /// Both scrollers hand their position to a `SideScroll` in the gutter.
+  final ScrollController _feed = ScrollController();
+  final ScrollController _rail = ScrollController();
+
+  @override
+  void dispose() {
+    _feed.dispose();
+    _rail.dispose();
+    super.dispose();
+  }
 
   bool _on(String card) => widget.state.cards.contains(card);
 
@@ -69,7 +89,9 @@ class _StreamHomeState extends State<StreamHome> {
               height: 34,
               child: Row(
                 children: [
-                  const AppMark(),
+                  AppMark(
+                      choice:
+                          ShellController.instance.state?.logoChoice ?? 0),
                   const SizedBox(width: 8),
                   Text('Tulipix',
                       style: TextStyle(
@@ -133,7 +155,10 @@ class _StreamHomeState extends State<StreamHome> {
               height: math.max(0, box.maxHeight - headH - titleH - pad),
               child: st.events.isEmpty
                   ? const _EmptyFeed()
-                  : ListView.builder(
+                  : SideScroll(
+                      controller: _feed,
+                      child: ListView.builder(
+                      controller: _feed,
                       // The 3% a side is the LIST's, so the row plates
                       // themselves get narrower.
                       padding: EdgeInsets.fromLTRB(
@@ -157,10 +182,10 @@ class _StreamHomeState extends State<StreamHome> {
                           event: st.events[k],
                           rowW: feedW * 0.94,
                           last: k == st.events.length - 1,
-                          onAction: () => ShellController.instance
-                              .go(sectionOf(st.events[k].section)),
+                          onAction: () => eventAction(st.events[k]),
                         );
                       },
+                    ),
                     ),
             ),
 
@@ -257,7 +282,10 @@ class _StreamHomeState extends State<StreamHome> {
                     ),
                     // Scrolls: the queue drop-down and a long dues list can
                     // together outrun a short window.
-                    ListView(
+                    SideScroll(
+                      controller: _rail,
+                      child: ListView(
+                      controller: _rail,
                       padding: const EdgeInsets.only(bottom: 16),
                       children: [
                         if (_on('player')) ...[
@@ -279,12 +307,118 @@ class _StreamHomeState extends State<StreamHome> {
                         if (_on('library')) _Library(state: st),
                       ],
                     ),
+                    ),
                   ],
                 ),
               ),
           ],
         );
       },
+    );
+  }
+}
+
+// ── SideScroll — the bar in the page margin, on the LEFT ────────────────────
+
+/// `SideScroll` in ui/page_home_stream.slint.
+///
+/// A `Scrollbar` will only ever put itself on the right, where it was cutting
+/// the rail's own edge, so both of this page's scrollers hide theirs and hang
+/// this in the gutter instead. Track and thumb only, no arrows — drag it, or
+/// use the wheel over the view.
+class SideScroll extends StatefulWidget {
+  const SideScroll({super.key, required this.controller, required this.child});
+
+  final ScrollController controller;
+  final Widget child;
+
+  @override
+  State<SideScroll> createState() => _SideScrollState();
+}
+
+class _SideScrollState extends State<SideScroll> {
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onScroll);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onScroll);
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final c = widget.controller;
+    final ready = c.hasClients && c.position.hasContentDimensions;
+    final over = ready ? c.position.maxScrollExtent : 0.0;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        // The platform bar off, so the gutter one is the only bar on the page.
+        ScrollConfiguration(behavior: const _NoBar(), child: widget.child),
+        if (over > 0)
+          Positioned(
+            left: -18,
+            top: 0,
+            bottom: 0,
+            width: 6,
+            child: LayoutBuilder(
+              builder: (context, box) {
+                final visible = c.position.viewportDimension;
+                final thumb = math.max(
+                    34.0, box.maxHeight * (visible / (visible + over)));
+                final travel = math.max(0.0, box.maxHeight - thumb);
+                final frac = (c.position.pixels / over).clamp(0.0, 1.0);
+                // Wherever the pointer goes the middle of the thumb follows, so
+                // a click on the track jumps and a drag scrubs with one line.
+                void to(double y) => c.jumpTo(
+                    (over * ((y - thumb / 2) / math.max(1, travel)))
+                        .clamp(0.0, over));
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: (d) => to(d.localPosition.dy),
+                  onVerticalDragUpdate: (d) => to(d.localPosition.dy),
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: Stack(
+                      children: [
+                        Center(
+                          child: Container(
+                            width: 4,
+                            decoration: BoxDecoration(
+                              color: t.text.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          top: travel * frac,
+                          left: 0,
+                          width: 6,
+                          height: thumb,
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: t.text.withValues(alpha: 0.28),
+                              borderRadius: BorderRadius.circular(3),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+      ],
     );
   }
 }
@@ -483,24 +617,28 @@ class _FeedRow extends StatelessWidget {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        if (event.id >= 0 &&
-                            sectionOf(event.section) != Section.home) ...[
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(6),
-                            child: SizedBox(
-                              width: 54,
-                              height: 40,
-                              child: LazyCover(
-                                section: sectionOf(event.section),
-                                id: event.id,
-                                tint: tint,
-                                icon: sectionIcon(event.section),
-                                iconSize: 14,
+                        // Up to three, as the Slint row's t1 / t2 / t3 were —
+                        // a folded run ("34 photos added") shows what it folded.
+                        if (sectionOf(event.section) != Section.home)
+                          // frb's `Int64List` is a BigInt-strict wrapper, not
+                          // the one in dart:typed_data.
+                          for (final id in event.ids.map((v) => v.toInt())) ...[
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(6),
+                              child: SizedBox(
+                                width: 54,
+                                height: 40,
+                                child: LazyCover(
+                                  section: sectionOf(event.section),
+                                  id: id,
+                                  tint: tint,
+                                  icon: sectionIcon(event.section),
+                                  iconSize: 14,
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 6),
-                        ],
+                            const SizedBox(width: 6),
+                          ],
                         if (event.action.isNotEmpty)
                           Flexible(
                             child: _ActionPill(
@@ -734,7 +872,11 @@ class _Standing extends StatelessWidget {
     final label = i >= 0 && i < state.finMonthLabels.length
         ? state.finMonthLabels[i]
         : state.finMonth;
-    final spent = monthSpend(state, i) ?? '—';
+    // The bridge sends one figure per bar now, so nothing has to be divided
+    // back out of this month's.
+    final spent = i >= 0 && i < state.finMonthSpends.length
+        ? state.finMonthSpends[i]
+        : (state.finSpent.isEmpty ? '—' : state.finSpent);
     final late = state.finDues.isNotEmpty && state.finDues.first.late_;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -867,7 +1009,8 @@ class _Transfers extends StatelessWidget {
           child: Row(
             children: [
               Hover(
-                onTap: () => ShellController.instance.go(Section.transfer),
+                onTap: () => ShellController.instance
+                    .goOpen(Section.transfer, 'share'),
                 builder: (context, hov) => Container(
                   width: 134,
                   height: 34,

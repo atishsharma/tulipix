@@ -7,6 +7,7 @@ import '../../design/pick.dart';
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../design/skin.dart';
+import '../../shell/shell_controller.dart';
 import '../../src/rust/api/cloud.dart';
 import 'cloud_connect.dart';
 import 'cloud_controller.dart';
@@ -27,6 +28,14 @@ class _CloudPageState extends State<CloudPage> {
   void initState() {
     super.initState();
     _c.refresh();
+    // Home's Cloud card names a remote on every tile — landing on the section
+    // front page and making you find it again is not what the tile said.
+    ShellController.instance.onOpen(Section.cloud, (raw) async {
+      final (:verb, :arg) = openArg(raw);
+      if (verb != 'remote' || arg.isEmpty) return;
+      if (_c.state == null) await _c.refresh();
+      await _c.send(CloudCmd.openRemote(name: arg));
+    });
   }
 
   @override

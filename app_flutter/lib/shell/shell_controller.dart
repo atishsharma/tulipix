@@ -118,6 +118,14 @@ class ShellController extends ChangeNotifier {
     _openers[s]?.call(tab);
   }
 
+  /// Go to [s] and ask it to open one THING — a book by id, a remote by name,
+  /// a tool category. Home's cards all hold an id and a kind; what to do with
+  /// them belongs to the section's own controller, which Home cannot reach
+  /// (every page owns its own, and none is a singleton), so it travels as a
+  /// verb and a payload through the same registry the tab links use.
+  void goOpen(Section s, String verb, [String arg = '']) =>
+      goTab(s, arg.isEmpty ? verb : '$verb$kOpenSep$arg');
+
   /// light → dark → extra-dark → light, and stored.
   ///
   /// Two buttons cycle the app theme — the one in the sidebar's footer dock and
@@ -179,4 +187,17 @@ class ShellController extends ChangeNotifier {
     setWindowFullscreen(on);
     notifyListeners();
   }
+}
+
+/// The separator an opener argument is split on. One nul, because a path may
+/// contain anything else — the grammar `tools_page.dart` already carried.
+const String kOpenSep = '\u0000';
+
+/// The two halves of an opener argument, for the section on the receiving end.
+/// A bare tab name ("livetv", "genesis") comes back as the verb, with no arg.
+({String verb, String arg}) openArg(String raw) {
+  final cut = raw.indexOf(kOpenSep);
+  return cut < 0
+      ? (verb: raw, arg: '')
+      : (verb: raw.substring(0, cut), arg: raw.substring(cut + 1));
 }

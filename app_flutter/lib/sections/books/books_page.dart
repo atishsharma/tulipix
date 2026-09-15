@@ -66,9 +66,22 @@ class _BooksPageState extends State<BooksPage> {
   void initState() {
     super.initState();
     _c.refresh();
-    // Home's Genesis launcher opens the sub-page, not the shelf.
-    ShellController.instance.onOpen(Section.books, (tab) {
-      if (tab == 'genesis' && mounted) setState(() => _genesis = true);
+    // Home's Genesis launcher opens the sub-page, not the shelf; its book
+    // covers and its Continue rows open one title — `reader` for the covers
+    // and the resume rows, `detail` for Recently Added and Cinema's Details,
+    // which is the split ui/main.slint makes between `books-open-details` and
+    // `books-show-detail`.
+    ShellController.instance.onOpen(Section.books, (arg) async {
+      if (!mounted) return;
+      if (arg == 'genesis') return setState(() => _genesis = true);
+      final (:verb, arg: payload) = openArg(arg);
+      final id = int.tryParse(payload);
+      if (id == null || (verb != 'reader' && verb != 'detail')) return;
+      setState(() => _genesis = false);
+      if (_c.state == null) await _c.refresh();
+      await _c.send(verb == 'reader'
+          ? BooksCmd.openBook(id: id)
+          : BooksCmd.openDetail(id: id));
     });
   }
 

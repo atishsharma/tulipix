@@ -164,6 +164,11 @@ class _HeaderState extends State<_Header> {
   bool _viz = false;
   bool _lyrics = true;
 
+  String _meta(String date) {
+    final second = ShellController.instance.state?.user.secondary ?? '';
+    return second.isEmpty || second == '—' ? date : '$date · $second';
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
@@ -171,7 +176,10 @@ class _HeaderState extends State<_Header> {
     final c = MusicController.instance;
     return Row(
       children: [
-        const AppMark(size: 84, radius: 20),
+        AppMark(
+            size: 84,
+            radius: 20,
+            choice: ShellController.instance.state?.logoChoice ?? 0),
         const SizedBox(width: 16),
         Flexible(
           child: Column(
@@ -187,7 +195,10 @@ class _HeaderState extends State<_Header> {
                       fontWeight: FontWeight.w800,
                       color: t.text)),
               const SizedBox(height: 5),
-              Text(st.dateLine,
+              // `date-line + " · " + user-secondary` in ui/page_home.slint.
+              // The secondary is the library line, and it rides the shell
+              // snapshot rather than Home's — one count, one wording.
+              Text(_meta(st.dateLine),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 14, color: t.textDim)),
@@ -213,7 +224,7 @@ class _HeaderState extends State<_Header> {
             if (!c.tickPlaying || (mode != 'music' && mode != 'radio')) {
               return const SizedBox.shrink();
             }
-            return _VizMenu(
+            return VizMenu(
               on: _viz,
               lyrics: _lyrics,
               lyricsAllowed: mode == 'music',
@@ -224,99 +235,24 @@ class _HeaderState extends State<_Header> {
               },
               onOff: () => setState(() => _viz = false),
               onLyrics: () => setState(() => _lyrics = !_lyrics),
+              child: Container(
+                width: 30,
+                height: 30,
+                decoration: BoxDecoration(
+                  color: _viz ? Tokens.brand : t.panel2,
+                  shape: BoxShape.circle,
+                  border:
+                      Border.all(color: _viz ? Tokens.brand : t.outline),
+                ),
+                child: Icon(Icons.graphic_eq,
+                    size: 15, color: _viz ? Colors.white : t.text),
+              ),
             );
           },
         ),
         const SizedBox(width: 12),
-        const HomeAvatar(size: 56, dot: true),
+        const HomeAvatar(size: 56, dot: true, grow: 6),
       ],
-    );
-  }
-}
-
-class _VizMenu extends StatelessWidget {
-  const _VizMenu({
-    required this.on,
-    required this.lyrics,
-    required this.lyricsAllowed,
-    required this.style,
-    required this.onStyle,
-    required this.onOff,
-    required this.onLyrics,
-  });
-
-  final bool on;
-  final bool lyrics;
-  final bool lyricsAllowed;
-  final int style;
-  final ValueChanged<int> onStyle;
-  final VoidCallback onOff;
-  final VoidCallback onLyrics;
-
-  static const List<String> _names = [
-    'Bars',
-    'Mirror',
-    'Dots',
-    'Levels',
-    'Line'
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return PopupMenuButton<String>(
-      tooltip: 'Visualizer',
-      position: PopupMenuPosition.under,
-      color: t.panel,
-      onSelected: (v) {
-        if (v == 'off') return onOff();
-        if (v == 'lyrics') return onLyrics();
-        onStyle(int.parse(v));
-      },
-      itemBuilder: (context) => [
-        for (var i = 0; i < _names.length; i++)
-          PopupMenuItem(
-            value: '$i',
-            height: 26,
-            child: Text(_names[i],
-                style: TextStyle(
-                    fontSize: 12,
-                    fontWeight:
-                        on && style == i ? FontWeight.w700 : FontWeight.w500,
-                    color: on && style == i ? Tokens.brand : t.text)),
-          ),
-        const PopupMenuDivider(),
-        PopupMenuItem(
-          value: 'off',
-          height: 26,
-          child: Text('Off Viz',
-              style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: on ? FontWeight.w500 : FontWeight.w700,
-                  color: on ? t.text : Tokens.brand)),
-        ),
-        if (lyricsAllowed)
-          PopupMenuItem(
-            value: 'lyrics',
-            height: 26,
-            child: Text(lyrics ? 'Lyrics · on' : 'Lyrics · off',
-                style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: lyrics ? FontWeight.w700 : FontWeight.w500,
-                    color: lyrics ? Tokens.brand : t.text)),
-          ),
-      ],
-      child: Container(
-        width: 30,
-        height: 30,
-        decoration: BoxDecoration(
-          color: on ? Tokens.brand : t.panel2,
-          shape: BoxShape.circle,
-          border: Border.all(color: on ? Tokens.brand : t.outline),
-        ),
-        child:
-            Icon(Icons.graphic_eq, size: 15, color: on ? Colors.white : t.text),
-      ),
     );
   }
 }
@@ -572,8 +508,12 @@ class _PhotoSlideshowState extends State<PhotoSlideshow>
         child: GestureDetector(
           // Only the centre tile opens the item; anywhere else on the card is
           // the section, which the Hover above already handles.
-          onTap:
-              k != 0 ? null : () => ShellController.instance.go(widget.section),
+          // Only the centre tile opens the item; anywhere else on the card is
+          // the section, which the Hover above already handles.
+          onTap: k != 0
+              ? null
+              : () => ShellController.instance.goOpen(widget.section, 'item',
+                  '${widget.tiles[idx].id}'),
           child: Container(
             decoration: BoxDecoration(
               color: const Color(0xFF14161F),
@@ -593,6 +533,10 @@ class _PhotoSlideshowState extends State<PhotoSlideshow>
               tint: widget.accent,
               icon: widget.icon,
               fit: BoxFit.cover,
+              // `FanSlot`'s `top-crop`: a portrait photo keeps its top.
+              alignment: widget.topCrop
+                  ? Alignment.topCenter
+                  : Alignment.center,
             ),
           ),
         ),
@@ -646,6 +590,7 @@ class RowCard extends StatelessWidget {
     required this.onTap,
     required this.child,
     this.stat = '',
+    this.liftOverPill = false,
   });
 
   final IconData icon;
@@ -654,6 +599,12 @@ class RowCard extends StatelessWidget {
   final String stat;
   final VoidCallback onTap;
   final Widget child;
+
+  /// Books only. Its hovered cover lifts 12px, and in Slint a second copy is
+  /// drawn last so it clears the title pill and reads fully. Here the content
+  /// box is simply allowed to overflow and stack above the pill instead — one
+  /// tile, drawn once, rather than a tile and a copy of it.
+  final bool liftOverPill;
 
   @override
   Widget build(BuildContext context) => Hover(
@@ -667,9 +618,20 @@ class RowCard extends StatelessWidget {
             border: Border.all(
                 color: plateBorder(accent, true), width: plateBorderW(true)),
           ),
-          clipBehavior: Clip.antiAlias,
+          clipBehavior: liftOverPill ? Clip.none : Clip.antiAlias,
           child: Stack(
+            clipBehavior: liftOverPill ? Clip.none : Clip.hardEdge,
             children: [
+              // The pill is under the shelf on Books, so a pulled cover rides
+              // over it; on every other card the content sits below the pill
+              // and nothing overlaps at all.
+              if (liftOverPill)
+                Positioned(
+                  left: 14,
+                  top: 14,
+                  child: TitlePill(
+                      icon: icon, accent: accent, name: name, stat: stat),
+                ),
               // Content sits below the single-line pill so tiles never underlap.
               Positioned(
                 left: 16,
@@ -678,12 +640,13 @@ class RowCard extends StatelessWidget {
                 bottom: 16,
                 child: child,
               ),
-              Positioned(
-                left: 14,
-                top: 14,
-                child: TitlePill(
-                    icon: icon, accent: accent, name: name, stat: stat),
-              ),
+              if (!liftOverPill)
+                Positioned(
+                  left: 14,
+                  top: 14,
+                  child: TitlePill(
+                      icon: icon, accent: accent, name: name, stat: stat),
+                ),
             ],
           ),
         ),
@@ -712,6 +675,7 @@ class BookRow extends StatelessWidget {
       accent: Tokens.secBooks,
       name: 'Books',
       stat: stat,
+      liftOverPill: true,
       onTap: () => ShellController.instance.go(Section.books),
       child: LayoutBuilder(
         builder: (context, box) {
@@ -730,6 +694,7 @@ class BookRow extends StatelessWidget {
           final gap =
               slots > 1 ? (box.maxWidth - slots * tileW) / (slots - 1) : 0.0;
           return Stack(
+            clipBehavior: Clip.none,
             children: [
               for (var i = 0; i < shown; i++)
                 _tile(
@@ -737,6 +702,8 @@ class BookRow extends StatelessWidget {
                   w: tileW,
                   h: tileH,
                   boxH: box.maxHeight,
+                  onTap: () => ShellController.instance
+                      .goOpen(Section.books, 'reader', '${tiles[i].id}'),
                   child: LazyCover(
                     section: Section.books,
                     id: tiles[i].id,
@@ -771,6 +738,7 @@ class BookRow extends StatelessWidget {
     required double h,
     required double boxH,
     required Widget child,
+    VoidCallback? onTap,
   }) =>
       _LiftTile(
         x: x,
@@ -778,7 +746,9 @@ class BookRow extends StatelessWidget {
         height: h,
         boxHeight: boxH,
         accent: Tokens.secBooks,
-        onTap: () => ShellController.instance.go(Section.books),
+        // The cover opens THAT book in the reader; only the "+N" key, which
+        // passes its own onTap, opens the shelf.
+        onTap: onTap ?? () => ShellController.instance.go(Section.books),
         child: child,
       );
 }
@@ -915,7 +885,8 @@ class CloudRow extends StatelessWidget {
               for (final r in remotes) ...[
                 Expanded(
                   child: Hover(
-                    onTap: () => ShellController.instance.go(Section.cloud),
+                    onTap: () => ShellController.instance
+                        .goOpen(Section.cloud, 'remote', r.name),
                     builder: (context, hov) => AnimatedContainer(
                       duration: const Duration(milliseconds: 130),
                       padding: const EdgeInsets.all(8),
@@ -1002,12 +973,14 @@ class ToolRow extends StatelessWidget {
 
   final int total;
 
-  static const List<({IconData icon, String label})> _tools = [
-    (icon: Icons.folder_outlined, label: 'File ops'),
-    (icon: Icons.movie_outlined, label: 'Video'),
-    (icon: Icons.music_note_outlined, label: 'Audio'),
-    (icon: Icons.image_outlined, label: 'Photo'),
-    (icon: Icons.chat_bubble_outline, label: 'Subtitles'),
+  /// One representative category per disc — the same five `ToolRow` names in
+  /// ui/page_home.slint, each carrying the catalog tab it selects.
+  static const List<({IconData icon, String label, String cat})> _tools = [
+    (icon: Icons.folder_outlined, label: 'File ops', cat: 'fileops'),
+    (icon: Icons.movie_outlined, label: 'Video', cat: 'video'),
+    (icon: Icons.music_note_outlined, label: 'Audio', cat: 'audio'),
+    (icon: Icons.image_outlined, label: 'Photo', cat: 'photo'),
+    (icon: Icons.chat_bubble_outline, label: 'Subtitles', cat: 'subs'),
   ];
 
   @override
@@ -1026,7 +999,8 @@ class ToolRow extends StatelessWidget {
                 tint: Tokens.secTools,
                 disc: 70,
                 mono: true,
-                onTap: () => ShellController.instance.go(Section.tools),
+                onTap: () => ShellController.instance
+                    .goOpen(Section.tools, 'cat', t.cat),
               ),
             CircleAction(
               icon: Icons.add,
@@ -1235,7 +1209,7 @@ class ContinueCard extends StatelessWidget {
     final t = context.tokens;
     final accent = kindColor(row.kind);
     return Hover(
-      onTap: () => ShellController.instance.go(kindSection(row.kind)),
+      onTap: () => continueOpen(row),
       builder: (context, hov) => AnimatedContainer(
         duration: const Duration(milliseconds: 120),
         decoration: context.skin.surface(SurfaceRole.card, radius: 10) ??

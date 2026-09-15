@@ -17,6 +17,7 @@ import '../../design/tokens.dart';
 import '../../design/skin.dart';
 import '../../src/rust/api/photos.dart';
 import 'photo_tile.dart';
+import '../../shell/shell_controller.dart';
 import 'photo_viewer.dart';
 import 'photos_controller.dart';
 import 'places_map.dart';
@@ -44,6 +45,15 @@ class _PhotosPageState extends State<PhotosPage> {
     // Each photosEvents() call registers its own sink on the Rust side, so the
     // subscription has to be cancelled with the page, not left to the GC.
     _events = _c.events.listen(_onEvent);
+    // Home's Photos card opens the photo it centred, not the section — the
+    // viewer already takes an item id, so no bridge verb is needed for it.
+    ShellController.instance.onOpen(Section.photos, (raw) async {
+      final (:verb, :arg) = openArg(raw);
+      final id = int.tryParse(arg);
+      if (verb != 'item' || id == null || !mounted) return;
+      if (_c.state == null) await _c.refresh();
+      if (mounted) await openPhotoViewer(context, _c, id);
+    });
   }
 
   @override

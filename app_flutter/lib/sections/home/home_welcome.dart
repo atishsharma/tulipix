@@ -15,7 +15,9 @@ import 'package:flutter/material.dart';
 import '../../design/tokens.dart';
 import '../../design/skin.dart';
 import '../../shell/shell_controller.dart';
+import '../../src/rust/api/music.dart';
 import '../../src/rust/api/home.dart';
+import '../books/books_controller.dart' show coverHue;
 import '../music/music_controller.dart';
 import 'home_controller.dart';
 import 'home_player.dart';
@@ -54,6 +56,10 @@ class _WelcomeHomeState extends State<WelcomeHome> {
   int _emoji = 0;
   int _quote = 0;
 
+  /// The lyric pill rides the spectrum. A UI toggle, like Classic's — the deck
+  /// persists the spectrum itself, not this.
+  bool _lyrics = true;
+
   /// 0 Photos · 1 Videos · 2 Music · 3 Books, on one 20-second loop. Clicking a
   /// chip both selects it and restarts the clock, so a deliberate pick gets its
   /// full 20s.
@@ -86,6 +92,8 @@ class _WelcomeHomeState extends State<WelcomeHome> {
     _emojiTick = Timer.periodic(const Duration(minutes: 2), (_) {
       if (mounted) setState(() => _emoji += 1);
     });
+    // One a minute, walking the pre-shuffled shelf. The day decides where the
+    // shelf starts; this decides how far along it the page has got.
     _quoteTick = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() => _quote += 1);
     });
@@ -212,10 +220,13 @@ class _WelcomeHomeState extends State<WelcomeHome> {
                           child: _Hero(
                             state: st,
                             emoji: kGreetEmojis[_emoji % kGreetEmojis.length],
-                            quoteIndex: _quote,
                             heroH: heroH,
                             bodyW: bodyW,
                             music: _music,
+                            quoteIndex: _quote,
+                            lyrics: _lyrics,
+                            onLyrics: () =>
+                                setState(() => _lyrics = !_lyrics),
                           ),
                         ),
                         const SizedBox(height: gap),
@@ -376,18 +387,24 @@ class _Hero extends StatelessWidget {
   const _Hero({
     required this.state,
     required this.emoji,
-    required this.quoteIndex,
     required this.heroH,
     required this.bodyW,
     required this.music,
+    required this.quoteIndex,
+    required this.lyrics,
+    required this.onLyrics,
   });
 
   final HomeState state;
   final String emoji;
-  final int quoteIndex;
   final double heroH;
   final double bodyW;
   final MusicController music;
+
+  /// How far along the shelf the page has walked — one a minute.
+  final int quoteIndex;
+  final bool lyrics;
+  final VoidCallback onLyrics;
 
   @override
   Widget build(BuildContext context) {
@@ -405,10 +422,26 @@ class _Hero extends StatelessWidget {
         .min((heroH - hvizH - hvizPad) * 0.34, greetCol * 0.060)
         .clamp(22.0, 68.0)
         .toDouble();
+    // The chip, the spectrum and the quote shelf all read the deck, and the
+    // page's own listener only calls setState for the sinking bar — without
+    // this the chip could not repaint itself, let alone the row it drives.
+    return AnimatedBuilder(
+      animation: music,
+      builder: (context, _) => _body(context, t, hvizH, hvizPad, greetSize),
+    );
+  }
+
+  Widget _body(BuildContext context, Tokens t, double hvizH, double hvizPad,
+      double greetSize) {
     final mode = music.now?.mode ?? 'idle';
     final vizAllowed =
         music.tickPlaying && (mode == 'radio' || mode == 'music');
-
+    // The row exists whether or not audio is playing: the spectrum when it is,
+    // the quote shelf when it is not — and the shelf takes the row back when
+    // the spectrum is switched off with no lyric standing in its place.
+    final lyricsOk = mode == 'music';
+    final hvizOn = vizAllowed &&
+        (music.visOn || (lyrics && lyricsOk && music.activeLyric >= 0));
     return Stack(
       children: [
         // Right 40%: one drawn banner per theme. Both are transparent PNGs, so
@@ -447,7 +480,12 @@ class _Hero extends StatelessWidget {
                       const _HeroStatus(),
                       if (vizAllowed) ...[
                         const SizedBox(width: 10),
-                        _VizChip(music: music),
+                        _VizChip(
+                          music: music,
+                          lyricsAllowed: lyricsOk,
+                          lyrics: lyrics,
+                          onLyrics: onLyrics,
+                        ),
                       ],
                       const SizedBox(width: 10),
                       const HomeAvatar(size: 40),
@@ -525,10 +563,14 @@ class _Hero extends StatelessWidget {
                 // The spectrum runs 25% narrower than the column so it reads as
                 // an accent under the greeting rather than a second band; the
                 // quote shelf, which replaces it, takes the full width.
-                width: vizAllowed ? bodyW * 0.36 : double.infinity,
-                child: vizAllowed
-                    ? HeaderViz(controller: music, on: true, lyrics: true)
-                    : _HeroQuote(quote: state.quote),
+                width: hvizOn ? bodyW * 0.36 : double.infinity,
+                child: hvizOn
+                    ? HeaderViz(
+                        controller: music, on: music.visOn, lyrics: lyrics)
+                    : _HeroQuote(
+                        quote: state.quotes.isEmpty
+                            ? state.quote
+                            : state.quotes[quoteIndex % state.quotes.length]),
               ),
             ],
           ),
@@ -704,26 +746,44 @@ class _HeroStatusState extends State<_HeroStatus> {
   }
 }
 
+/// The waveform chip: five styles, Off, and the lyric toggle. Unlike Classic's,
+/// this one drives the deck's own `visOn` — Welcome's spectrum is on by default
+/// and the setting persists.
 class _VizChip extends StatelessWidget {
-  const _VizChip({required this.music});
+  const _VizChip({
+    required this.music,
+    required this.lyricsAllowed,
+    required this.lyrics,
+    required this.onLyrics,
+  });
 
   final MusicController music;
+  final bool lyricsAllowed;
+  final bool lyrics;
+  final VoidCallback onLyrics;
 
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    return Hover(
-      onTap: () => music.setVisOn(!music.visOn),
-      builder: (context, hov) => Container(
+    final on = music.visOn;
+    return VizMenu(
+      on: on,
+      lyrics: lyrics,
+      lyricsAllowed: lyricsAllowed,
+      style: music.visStyle,
+      onStyle: music.setVisStyle,
+      onOff: () => music.setVisOn(false),
+      onLyrics: onLyrics,
+      child: Container(
         width: 40,
         height: 40,
         decoration: BoxDecoration(
-          color: music.visOn ? music.accent : (hov ? t.panel2 : t.panel),
+          color: on ? music.accent : t.panel,
           shape: BoxShape.circle,
-          border: Border.all(color: music.visOn ? music.accent : t.outline),
+          border: Border.all(color: on ? music.accent : t.outline),
         ),
         child: Icon(Icons.graphic_eq,
-            size: 17, color: music.visOn ? Colors.white : t.textDim),
+            size: 17, color: on ? Colors.white : t.textDim),
       ),
     );
   }
@@ -875,7 +935,7 @@ class _ContinueRow extends StatelessWidget {
     final accent = kindColor(row.kind);
     final cw = (height - 8) * 3 / 4;
     return Hover(
-      onTap: () => ShellController.instance.go(kindSection(row.kind)),
+      onTap: () => continueOpen(row),
       builder: (context, hov) => AnimatedContainer(
         duration: const Duration(milliseconds: 130),
         padding: const EdgeInsets.symmetric(horizontal: 7),
@@ -889,7 +949,34 @@ class _ContinueRow extends StatelessWidget {
           border: Border.all(
               color: hov ? accent.withValues(alpha: 0.45) : t.outline),
         ),
-        child: Row(
+        // The armed inner outline, held 5px off the row's own edge — the same
+        // second ring `HubTile` draws, and the reason the row reads as a button
+        // that is armed rather than one that merely lit up. Last child and
+        // ignored by the pointer, so it rides over the cover and the pills
+        // instead of being cut by them.
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: Padding(
+                padding: const EdgeInsets.all(5),
+                child: IgnorePointer(
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 130),
+                    curve: Curves.easeOut,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(7),
+                      border: Border.all(
+                        color: hov
+                            ? accent.withValues(alpha: 0.75)
+                            : Colors.transparent,
+                        width: hov ? 2 : 0,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Row(
           children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
@@ -936,6 +1023,8 @@ class _ContinueRow extends StatelessWidget {
               child: ProgressPill(sub: row.sub, frac: row.frac, accent: accent),
             ),
             const SizedBox(width: 2),
+          ],
+            ),
           ],
         ),
       ),
@@ -1078,6 +1167,7 @@ class _RecentlyAdded extends StatelessWidget {
             child: _RaTile(
               tile: tiles[i],
               section: section,
+              tab: tab,
               accent: accent,
               // Music and Books carry a title line under the art; the two
               // picture tabs do not — a filename under a photo is noise.
@@ -1094,6 +1184,7 @@ class _RaTile extends StatelessWidget {
   const _RaTile({
     required this.tile,
     required this.section,
+    required this.tab,
     required this.accent,
     required this.withLabel,
     required this.play,
@@ -1101,23 +1192,59 @@ class _RaTile extends StatelessWidget {
 
   final HomeTile tile;
   final Section section;
+
+  /// 0 Photos · 1 Videos · 2 Music · 3 Books — what a click means differs per
+  /// tab, which is why `RaSong` and `RaBook` are separate components in Slint.
+  final int tab;
   final Color accent;
   final bool withLabel;
   final bool play;
 
+  /// Music plays the track; Books opens the DETAIL panel, not the reader —
+  /// the split ui/page_home_welcome.slint makes with `open-book-detail`.
+  void _open() {
+    switch (tab) {
+      case 2:
+        MusicController.instance
+            .send(MusicCmd.songPlayDefault(itemId: tile.id));
+      case 3:
+        ShellController.instance
+            .goOpen(Section.books, 'detail', '${tile.id}');
+      default:
+        ShellController.instance.goOpen(section, 'item', '${tile.id}');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    // Books glow in the title's OWN hue, the colour the Books section outlines
+    // everything with — four covers hovered in turn read as four books, not as
+    // four of one thing. Derived here, the way `coverHue` derives it there.
+    //
+    // ponytail: the `_book5` hardcover bake is still missing. `BookMockup`
+    // warps it on the GPU already, but it wants a whole `Book` and a
+    // `BooksController`; extracting its face painter is the next step up.
+    final hue = tab == 3 ? coverHue(tile.label) : accent;
     return Hover(
-      onTap: () => ShellController.instance.go(section),
+      onTap: _open,
       builder: (context, hov) {
         final art = AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOut,
           decoration: BoxDecoration(
             color: accent.withValues(alpha: 0.14),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-                color: hov ? accent : Colors.transparent, width: hov ? 2 : 0),
+                color: hov ? hue : Colors.transparent, width: hov ? 2 : 0),
+            boxShadow: hov && tab == 3
+                ? [
+                    BoxShadow(
+                        color: hue.withValues(alpha: 0.55),
+                        blurRadius: 26,
+                        offset: const Offset(0, 8)),
+                  ]
+                : null,
           ),
           clipBehavior: Clip.antiAlias,
           child: Stack(
@@ -1155,7 +1282,17 @@ class _RaTile extends StatelessWidget {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(child: art),
+            // Books lift out of the shelf under the cursor; songs sit still.
+            Expanded(
+              child: tab == 3
+                  ? AnimatedPadding(
+                      duration: const Duration(milliseconds: 160),
+                      curve: Curves.easeOut,
+                      padding: EdgeInsets.only(top: hov ? 0 : 10),
+                      child: art,
+                    )
+                  : art,
+            ),
             const SizedBox(height: 8),
             Text(tile.label,
                 maxLines: 1,

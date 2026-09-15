@@ -415,6 +415,7 @@ class LazyCover extends StatefulWidget {
     this.icon,
     this.fit = BoxFit.cover,
     this.iconSize = 20,
+    this.alignment = Alignment.center,
   });
 
   final Section section;
@@ -424,30 +425,49 @@ class LazyCover extends StatefulWidget {
   final BoxFit fit;
   final double iconSize;
 
+  /// Which part of the art the crop keeps. Photos anchor to the TOP — that is
+  /// where the faces are, and a centre crop cuts them off.
+  final Alignment alignment;
+
   @override
   State<LazyCover> createState() => _LazyCoverState();
 }
 
+/// Paths already resolved, for the session.
+///
+/// Classic's coverflow steps every few seconds and hands all SIX of its slots a
+/// new id on each step. Without this, every step blanked the whole fan to its
+/// plate and asked the bridge again for the same ten paths it had resolved a
+/// moment earlier — so the card spent most of its life showing tinted squares
+/// rather than the photos, which is not a slideshow. A resolved path is stable
+/// for the life of the app; the thumbnail file keeps its name.
+final Map<String, String> _coverPaths = {};
+
 class _LazyCoverState extends State<LazyCover> {
   String? _path;
+
+  String get _key => '${widget.section.name}/${widget.id}';
 
   @override
   void initState() {
     super.initState();
-    _ask();
+    _path = _coverPaths[_key];
+    if (_path == null) _ask();
   }
 
   @override
   void didUpdateWidget(LazyCover old) {
     super.didUpdateWidget(old);
     if (old.id != widget.id || old.section != widget.section) {
-      _path = null;
-      _ask();
+      // A hit lands in this same frame, so the fan never shows a hole.
+      _path = _coverPaths[_key];
+      if (_path == null) _ask();
     }
   }
 
   Future<void> _ask() async {
     final id = widget.id;
+    final key = _key;
     if (id < 0) return;
     try {
       // Every section that has thumbnails has a resolver; Music's takes a
@@ -459,9 +479,9 @@ class _LazyCoverState extends State<LazyCover> {
         Section.music => await musicEnsureArt(kind: 'track', key: '$id'),
         _ => null,
       };
-      if (mounted && path != null && widget.id == id) {
-        setState(() => _path = path);
-      }
+      if (path == null) return;
+      _coverPaths[key] = path;
+      if (mounted && widget.id == id) setState(() => _path = path);
     } catch (_) {
       // No art is a plate, not an error worth a banner over a landing page.
     }
@@ -480,7 +500,56 @@ class _LazyCoverState extends State<LazyCover> {
     final path = _path;
     if (path == null) return plate;
     return Image.file(File(path),
-        fit: widget.fit, errorBuilder: (_, __, ___) => plate);
+        fit: widget.fit,
+        alignment: widget.alignment,
+        errorBuilder: (_, __, ___) => plate);
+  }
+}
+
+// ── Opening what a Home card points at ──────────────────────────────────────
+
+/// What a feed row's action pill does — `on_home_event_action` in
+/// crates/tulipix-app/src/main.rs, arm for arm.
+///
+/// Only two kinds carry an id worth acting on. Everything else falls through to
+/// the section, which is what the row click already does — and those rows carry
+/// no pill, so the fall-through is for safety rather than for use.
+void eventAction(HomeEvent e) {
+  final section = sectionOf(e.section);
+  switch ((e.section, e.kind)) {
+    case ('books', 'resumed'):
+      ShellController.instance.goOpen(Section.books, 'reader', '${e.id}');
+    case ('music', 'episode'):
+      MusicController.instance.send(MusicCmd.podPlay(episodeId: e.id));
+    case ('videos', _) when e.id >= 0:
+      ShellController.instance.goOpen(Section.videos, 'item', '${e.id}');
+    default:
+      ShellController.instance.go(section);
+  }
+}
+
+
+
+/// Resume one Continue row, kind by kind — `continue-open` in ui/main.slint.
+///
+/// A book opens in the reader, a podcast episode just starts playing (you stay
+/// on Home, which is what the Slint page does), and an audiobook goes to the
+/// Music section's Audiobooks tab, which is as far as the original takes it.
+///
+/// ponytail: video falls back to the section. `VideosCmd.play` takes an INDEX
+/// into the open grid, not an item id, so resuming one by id needs a bridge
+/// verb (`VideosCmd.playItem { id, resume }`) that does not exist yet.
+void continueOpen(HomeContinue row) {
+  switch (row.kind) {
+    case 'book':
+      ShellController.instance
+          .goOpen(Section.books, 'reader', '${row.id}');
+    case 'podcast':
+      MusicController.instance.send(MusicCmd.podPlay(episodeId: row.id));
+    case 'audiobook':
+      ShellController.instance.goTab(Section.music, 'audiobooks');
+    default:
+      ShellController.instance.go(kindSection(row.kind));
   }
 }
 
@@ -846,13 +915,60 @@ class LauncherPills extends StatelessWidget {
               padding: EdgeInsets.only(left: l == kLaunchers.first ? 0 : 10),
               child: TopPill(
                 solid: true,
-                label: l.label == 'Genesis Books' ? 'Genesis' : l.label,
+                // The header row shortens two of the six — a 34px line has no
+                // width for the long forms Welcome's own launch bar keeps.
+                label: switch (l.label) {
+                  'Genesis Books' => 'Genesis',
+                  'Random Radio' => 'Radio',
+                  _ => l.label,
+                },
                 icon: l.icon,
                 accent: l.accent,
                 onTap: () => launch(l.id),
               ),
             ),
         ],
+      );
+}
+
+// ── WelTip — the label that floats over what it names ───────────────────────
+
+/// `WelTip` in ui/page_home_welcome.slint: a small accent pill 27px above
+/// whatever it is attached to, white and bold, with a cast under it.
+///
+/// A `Tooltip` rather than a hand-placed overlay — the platform already owns
+/// the "show it above, get it out of the way, don't clip it at the window
+/// edge" problem, and Welcome's bar sits on the window floor where all three
+/// of those bite.
+class WelTip extends StatelessWidget {
+  const WelTip({
+    super.key,
+    required this.label,
+    required this.accent,
+    required this.child,
+  });
+
+  final String label;
+  final Color accent;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: label,
+        preferBelow: false,
+        verticalOffset: 27,
+        waitDuration: const Duration(milliseconds: 240),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        textStyle: const TextStyle(
+            fontSize: 11, fontWeight: FontWeight.w700, color: Colors.white),
+        decoration: BoxDecoration(
+          color: accent,
+          borderRadius: BorderRadius.circular(11),
+          boxShadow: const [
+            BoxShadow(color: Color(0x88000000), blurRadius: 10),
+          ],
+        ),
+        child: child,
       );
 }
 
@@ -866,6 +982,7 @@ class CineBtn extends StatelessWidget {
     required this.accent,
     this.primary = false,
     this.lit = false,
+    this.ink,
   });
 
   final IconData icon;
@@ -878,10 +995,17 @@ class CineBtn extends StatelessWidget {
   /// shuffle on / repeat on.
   final bool lit;
 
+  /// Welcome's `WelBtn`: the bar carries its own ink (dark over the artwork's
+  /// accent on light themes, white over pink on dark), so its keys are drawn
+  /// transparent-at-rest with an outline in THAT ink rather than in the page's
+  /// glass. Its primary key is 48px, not 53.
+  final Color? ink;
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final size = primary ? 53.0 : 32.0;
+    final wel = ink != null;
+    final size = primary ? (wel ? 48.0 : 53.0) : 32.0;
     final skin = context.skin;
     return Hover(
       onTap: onTap,
@@ -901,14 +1025,19 @@ class CineBtn extends StatelessWidget {
                 radius: size / 2,
               ) ??
               BoxDecoration(
-                color: on ? accent : t.glass,
+                color: on ? accent : (wel ? Colors.transparent : t.glass),
                 shape: BoxShape.circle,
-                border: Border.all(color: on ? accent : t.glassBorder),
+                border: Border.all(
+                  color: on
+                      ? accent
+                      : (wel ? ink!.withValues(alpha: 0.45) : t.glassBorder),
+                  width: wel ? 1.5 : 1,
+                ),
               ),
           child: Icon(skin.icon(icon),
-              size: primary ? 22 : 14,
+              size: primary ? (wel ? 19 : 22) : 14,
               color: skin.isStandard
-                  ? (on ? Colors.white : t.text)
+                  ? (on ? Colors.white : (ink ?? t.text))
                   : primary
                       ? (skin.onProminent ?? accent)
                       : lit
@@ -1030,60 +1159,107 @@ class KindTag extends StatelessWidget {
 /// port draws the default mark. Kept as one widget so plumbing the choice
 /// later is one edit rather than four.
 /// The header avatar, with the online dot on its edge.
+///
+/// The profile photo when there is one, the profile emoji when there is not,
+/// and the brand glyph when there is neither — the same three-way fallback the
+/// sidebar's user card draws, off the same `ShellState.user`.
 class HomeAvatar extends StatelessWidget {
-  const HomeAvatar({super.key, this.size = 40, this.dot = false});
+  const HomeAvatar({super.key, this.size = 40, this.dot = false, this.grow = 0});
 
   final double size;
   final bool dot;
 
+  /// Classic's avatar swells by this much under the cursor (56 → 62 there);
+  /// Welcome's hero disc does not move.
+  final double grow;
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    return Hover(
-      onTap: () => ShellController.instance.go(Section.settings),
-      builder: (context, hov) => SizedBox(
-        width: size + (dot ? 4 : 0),
-        height: size + (dot ? 4 : 0),
-        child: Stack(
-          children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 140),
-              width: size,
-              height: size,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Tokens.brand, Tokens.brand2],
-                ),
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: Tokens.brand.withValues(alpha: 0.6),
-                  width: hov ? 2 : 0,
-                ),
-              ),
-              child: Icon(Icons.person_outline,
-                  size: size * 0.42, color: Colors.white),
-            ),
-            if (dot)
-              Positioned(
-                right: 0,
-                bottom: 0,
-                child: Container(
-                  width: 14,
-                  height: 14,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF22C55E),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: t.panel, width: 2),
+    final shell = ShellController.instance;
+    return AnimatedBuilder(
+      animation: shell,
+      builder: (context, _) {
+        final u = shell.state?.user;
+        final photo = u?.avatarPath ?? '';
+        final emoji = u?.avatarEmoji ?? '';
+        // The box never changes size, so the grow is a paint change rather
+        // than a reflow of the header row beside it.
+        final box = size + grow + (dot ? 4 : 0);
+        return Hover(
+          onTap: () => shell.go(Section.settings),
+          builder: (context, hov) {
+            final d = hov ? size + grow : size;
+            return SizedBox(
+              width: box,
+              height: box,
+              child: Stack(
+                children: [
+                  AnimatedPositioned(
+                    duration: const Duration(milliseconds: 140),
+                    curve: Curves.easeOut,
+                    left: 0,
+                    top: 0,
+                    width: d,
+                    height: d,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 140),
+                      decoration: BoxDecoration(
+                        gradient: photo.isEmpty
+                            ? const LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [Tokens.brand, Tokens.brand2],
+                              )
+                            : null,
+                        color: photo.isEmpty ? null : t.panel2,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: Tokens.brand.withValues(alpha: 0.6),
+                          width: hov ? 2 : 0,
+                        ),
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: photo.isEmpty
+                          ? _face(emoji, d, t)
+                          : Image.file(
+                              File(photo),
+                              // The file keeps its name across a re-crop, so
+                              // anything drawing it keys on the epoch.
+                              key: ValueKey(shell.pictureEpoch),
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => _face(emoji, d, t),
+                            ),
+                    ),
                   ),
-                ),
+                  if (dot)
+                    Positioned(
+                      left: size - 14,
+                      top: size - 14,
+                      child: Container(
+                        width: 14,
+                        height: 14,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF22C55E),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: t.panel, width: 2),
+                        ),
+                      ),
+                    ),
+                ],
               ),
-          ],
-        ),
-      ),
+            );
+          },
+        );
+      },
     );
   }
+
+  Widget _face(String emoji, double d, Tokens t) => Center(
+        child: emoji.isEmpty
+            ? Icon(Icons.person_outline, size: d * 0.42, color: Colors.white)
+            : Text(emoji, style: TextStyle(fontSize: d * 0.42)),
+      );
 }
 
 /// The section a Stream feed row came from.
@@ -1138,3 +1314,93 @@ String? monthSpend(HomeState st, int i) {
   if (newest == null) return null;
   return (months[i] * (newest / last)).toStringAsFixed(2);
 }
+
+// ── VizMenu — the waveform chip's menu ──────────────────────────────────────
+
+/// Five styles, Off, and the lyric toggle — `viz-menu` in ui/page_home.slint
+/// and ui/page_home_welcome.slint, which spell the same popup twice.
+///
+/// The chip itself is the caller's: Classic wears a 30px disc in the header
+/// gap, Welcome a 40px one above the banner.
+class VizMenu extends StatelessWidget {
+  const VizMenu({
+    super.key,
+    required this.on,
+    required this.lyrics,
+    required this.lyricsAllowed,
+    required this.style,
+    required this.onStyle,
+    required this.onOff,
+    required this.onLyrics,
+    required this.child,
+  });
+
+  final bool on;
+  final bool lyrics;
+
+  /// Radio has no synced lyrics — the row is hidden there.
+  final bool lyricsAllowed;
+  final int style;
+  final ValueChanged<int> onStyle;
+  final VoidCallback onOff;
+  final VoidCallback onLyrics;
+  final Widget child;
+
+  static const List<String> names = [
+    'Bars',
+    'Mirror',
+    'Dots',
+    'Levels',
+    'Line',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return PopupMenuButton<String>(
+      tooltip: 'Visualizer',
+      position: PopupMenuPosition.under,
+      color: t.panel,
+      onSelected: (v) {
+        if (v == 'off') return onOff();
+        if (v == 'lyrics') return onLyrics();
+        onStyle(int.parse(v));
+      },
+      itemBuilder: (context) => [
+        for (var i = 0; i < names.length; i++)
+          PopupMenuItem(
+            value: '$i',
+            height: 26,
+            child: Text(names[i],
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight:
+                        on && style == i ? FontWeight.w700 : FontWeight.w500,
+                    color: on && style == i ? Tokens.brand : t.text)),
+          ),
+        const PopupMenuDivider(),
+        PopupMenuItem(
+          value: 'off',
+          height: 26,
+          child: Text('Off Viz',
+              style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: on ? FontWeight.w500 : FontWeight.w700,
+                  color: on ? t.text : Tokens.brand)),
+        ),
+        if (lyricsAllowed)
+          PopupMenuItem(
+            value: 'lyrics',
+            height: 26,
+            child: Text(lyrics ? 'Lyrics · on' : 'Lyrics · off',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: lyrics ? FontWeight.w700 : FontWeight.w500,
+                    color: lyrics ? Tokens.brand : t.text)),
+          ),
+      ],
+      child: child,
+    );
+  }
+}
+

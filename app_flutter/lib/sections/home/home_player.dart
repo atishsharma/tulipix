@@ -8,6 +8,7 @@
 // what is playing is the bug this avoids.
 
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -81,7 +82,7 @@ void openPlayingTab(MusicController c) {
 
 /// Click to jump; NOT drag — every move event would be one more mpv IPC
 /// command, and mpv logs a broken pipe for each dead client the burst leaves.
-class HomeSeek extends StatelessWidget {
+class HomeSeek extends StatefulWidget {
   const HomeSeek({
     super.key,
     required this.pos,
@@ -91,6 +92,7 @@ class HomeSeek extends StatelessWidget {
     this.height = 22,
     this.ink,
     this.dim,
+    this.cursorPill = false,
   });
 
   final double pos;
@@ -103,9 +105,30 @@ class HomeSeek extends StatelessWidget {
   final Color? ink;
   final Color? dim;
 
+  /// Welcome's bar floats the time the pointer is over, riding the cursor.
+  /// Cinema's and Stream's seek bars do not — the panel is too narrow to carry
+  /// a pill over it without covering the title.
+  final bool cursorPill;
+
+  @override
+  State<HomeSeek> createState() => _HomeSeekState();
+}
+
+class _HomeSeekState extends State<HomeSeek> {
+  /// Where the pointer is on the track, or null when it is not on it. Local,
+  /// so moving over the bar never reaches the deck.
+  double? _at;
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    final pos = widget.pos;
+    final dur = widget.dur;
+    final accent = widget.accent;
+    final height = widget.height;
+    final onSeek = widget.onSeek;
+    final ink = widget.ink;
+    final dim = widget.dim;
     final base = ink ?? t.text;
     final faint = dim ?? t.textDim;
     final frac = dur > 0 ? (pos / dur).clamp(0.0, 1.0) : 0.0;
@@ -116,7 +139,15 @@ class HomeSeek extends StatelessWidget {
             onSeek(dur * (d.localPosition.dx / box.maxWidth).clamp(0.0, 1.0)),
         child: MouseRegion(
           cursor: SystemMouseCursors.click,
-          child: Container(
+          onHover: widget.cursorPill
+              ? (e) => setState(() => _at = e.localPosition.dx)
+              : null,
+          onExit:
+              widget.cursorPill ? (_) => setState(() => _at = null) : null,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+          Container(
             height: height,
             decoration: BoxDecoration(
               color: base.withValues(alpha: 0.13),
@@ -173,10 +204,51 @@ class HomeSeek extends StatelessWidget {
               ],
             ),
           ),
+          // Outside the track, which clips — a pill parented to it would be
+          // cut in half.
+          if (_at != null && dur > 0)
+            Positioned(
+              left: (_at! - 26).clamp(0.0, math.max(0.0, box.maxWidth - 52)),
+              top: -28,
+              child: _CursorPill(
+                label: clock(dur * (_at! / box.maxWidth).clamp(0.0, 1.0)),
+                accent: accent,
+              ),
+            ),
+            ],
+          ),
         ),
       ),
     );
   }
+}
+
+/// The value under the pointer, riding it — the seek bar's time and the volume
+/// track's percentage wear the same pill.
+class _CursorPill extends StatelessWidget {
+  const _CursorPill({required this.label, required this.accent});
+
+  final String label;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        height: 22,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: accent,
+          borderRadius: BorderRadius.circular(11),
+          boxShadow: const [
+            BoxShadow(color: Color(0x88000000), blurRadius: 10),
+          ],
+        ),
+        child: Text(label,
+            style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Colors.white)),
+      );
 }
 
 // ── The volume track, with the knob on it ───────────────────────────────────
@@ -191,6 +263,7 @@ class HomeVolume extends StatefulWidget {
     required this.accent,
     required this.onVolume,
     this.ink,
+    this.cursorPill = false,
   });
 
   /// mpv's 0–130 percent, not a fraction. The track spans 0–100; the boost
@@ -201,12 +274,19 @@ class HomeVolume extends StatefulWidget {
   final ValueChanged<double> onVolume;
   final Color? ink;
 
+  /// Welcome's bar floats the percentage the pointer is over — the value a
+  /// click would take, or the one being dragged out right now.
+  final bool cursorPill;
+
   @override
   State<HomeVolume> createState() => _HomeVolumeState();
 }
 
 class _HomeVolumeState extends State<HomeVolume> {
   double? _drag;
+
+  /// Where the pointer is on the track, or null when it is not on it.
+  double? _at;
 
   @override
   Widget build(BuildContext context) {
@@ -234,6 +314,11 @@ class _HomeVolumeState extends State<HomeVolume> {
           },
           child: MouseRegion(
             cursor: SystemMouseCursors.click,
+            onHover: widget.cursorPill
+                ? (e) => setState(() => _at = e.localPosition.dx)
+                : null,
+            onExit:
+                widget.cursorPill ? (_) => setState(() => _at = null) : null,
             child: SizedBox(
               height: 32,
               child: Stack(
@@ -271,6 +356,17 @@ class _HomeVolumeState extends State<HomeVolume> {
                       ),
                     ),
                   ),
+                  if (_at != null || (_drag != null && widget.cursorPill))
+                    Positioned(
+                      left: ((_drag != null ? 8 + w * _drag! : _at!) - 22)
+                          .clamp(0.0, math.max(0.0, box.maxWidth - 44)),
+                      top: -20,
+                      child: _CursorPill(
+                        label:
+                            '${(100 * (_drag ?? ((_at! - 8) / w).clamp(0.0, 1.0))).round()}%',
+                        accent: widget.accent,
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -463,6 +559,7 @@ class HomeTransport extends StatelessWidget {
     required this.accent,
     this.spacing = 8,
     this.alignment = MainAxisAlignment.center,
+    this.ink,
   });
 
   final MusicController controller;
@@ -470,32 +567,38 @@ class HomeTransport extends StatelessWidget {
   final double spacing;
   final MainAxisAlignment alignment;
 
+  /// Welcome's bar carries its own ink, and so do its five keys. It also wants
+  /// a hover label on each, which is what its `WelBtn`s had.
+  final Color? ink;
+
   @override
   Widget build(BuildContext context) {
     final st = controller.state;
     final now = controller.now;
     final loaded = (now?.title ?? '').isNotEmpty;
+    final shuffle = st?.shuffle ?? false;
+    final repeat = st?.repeat ?? 'off';
     return Row(
       mainAxisAlignment: alignment,
       mainAxisSize: MainAxisSize.min,
       children: [
-        CineBtn(
+        _key(
           icon: Icons.shuffle,
-          lit: st?.shuffle ?? false,
-          accent: accent,
+          lit: shuffle,
+          tip: shuffle ? 'Shuffle on' : 'Shuffle off',
           onTap: () => controller.send(const MusicCmd.toggleShuffle()),
         ),
         SizedBox(width: spacing),
-        CineBtn(
+        _key(
           icon: Icons.skip_previous,
-          accent: accent,
+          tip: 'Previous',
           onTap: () => controller.send(const MusicCmd.prev()),
         ),
         SizedBox(width: spacing),
-        CineBtn(
+        _key(
           icon: controller.tickPlaying ? Icons.pause : Icons.play_arrow,
           primary: true,
-          accent: accent,
+          tip: controller.tickPlaying ? 'Pause' : 'Play',
           // Nothing loaded and there is no shuffle-all on the bridge, so the
           // key is a door into Music rather than a button that does nothing.
           onTap: () => loaded
@@ -503,21 +606,44 @@ class HomeTransport extends StatelessWidget {
               : ShellController.instance.go(Section.music),
         ),
         SizedBox(width: spacing),
-        CineBtn(
+        _key(
           icon: Icons.skip_next,
-          accent: accent,
+          tip: 'Next',
           onTap: () => controller.send(const MusicCmd.next()),
         ),
         SizedBox(width: spacing),
-        CineBtn(
-          icon:
-              (st?.repeat ?? 'off') == 'one' ? Icons.repeat_one : Icons.repeat,
-          lit: (st?.repeat ?? 'off') != 'off',
-          accent: accent,
+        _key(
+          icon: repeat == 'one' ? Icons.repeat_one : Icons.repeat,
+          lit: repeat != 'off',
+          tip: repeat == 'one'
+              ? 'Repeat track'
+              : (repeat == 'off' ? 'Repeat off' : 'Repeat all'),
           onTap: () => controller.send(const MusicCmd.cycleRepeat()),
         ),
       ],
     );
+  }
+
+  /// One key. The label only shows where the bar asked for ink — Cinema's and
+  /// Stream's panels name their controls by position, not by tooltip.
+  Widget _key({
+    required IconData icon,
+    required String tip,
+    required VoidCallback onTap,
+    bool primary = false,
+    bool lit = false,
+  }) {
+    final btn = CineBtn(
+      icon: icon,
+      primary: primary,
+      lit: lit,
+      accent: accent,
+      ink: ink,
+      onTap: onTap,
+    );
+    return ink == null
+        ? btn
+        : WelTip(label: tip, accent: accent, child: btn);
   }
 }
 
@@ -575,6 +701,38 @@ class HomePlayerBar extends StatelessWidget {
   }
 }
 
+// ── A queue panel that keeps up ─────────────────────────────────────────────
+
+/// Home never asks the backend to build Up-next on its own — only the Music
+/// section's panels do — so the panel asks on open. It has to ask again while
+/// it is showing, too: a track change consumes a row, and the list keeps
+/// offering what already played otherwise. `changed np-title` and
+/// `changed np-index` in ui/page_home_cinema.slint and ui/page_home_stream.slint.
+mixin _QueueFollows<T extends StatefulWidget> on State<T> {
+  /// What was playing last time the deck spoke. A radio stream or a repeat
+  /// keeps the title while the queue underneath has already moved on, so the
+  /// item id is watched beside it.
+  String _lastTitle = '';
+  int _lastItem = -1;
+
+  /// Whether this page's queue panel is on screen right now.
+  bool get queueShowing;
+
+  void watchQueue() => MusicController.instance.addListener(_queueTick);
+
+  void unwatchQueue() => MusicController.instance.removeListener(_queueTick);
+
+  void _queueTick() {
+    final c = MusicController.instance;
+    final title = c.now?.title ?? '';
+    final item = c.now?.itemId ?? -1;
+    final moved = title != _lastTitle || item != _lastItem;
+    _lastTitle = title;
+    _lastItem = item;
+    if (moved && queueShowing) c.refresh();
+  }
+}
+
 // ── Cinema: the right glass column ──────────────────────────────────────────
 
 /// The panel is CONTENT tall, not column tall: stretched to the full column it
@@ -597,10 +755,13 @@ class CinemaPlayer extends StatefulWidget {
 // whether or not anything shows it.
 
 class _CinemaPlayerState extends State<CinemaPlayer>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, _QueueFollows {
   /// The queue lives on the BACK of the artwork: the button turns the square
   /// over rather than dropping a dialog on top of the card.
   bool _flipped = false;
+
+  @override
+  bool get queueShowing => _flipped;
   late final AnimationController _turn = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 320),
@@ -614,6 +775,7 @@ class _CinemaPlayerState extends State<CinemaPlayer>
   void initState() {
     super.initState();
     MusicController.instance.addListener(_syncPulse);
+    watchQueue();
   }
 
   @override
@@ -629,6 +791,7 @@ class _CinemaPlayerState extends State<CinemaPlayer>
   @override
   void dispose() {
     MusicController.instance.removeListener(_syncPulse);
+    unwatchQueue();
     _turn.dispose();
     _pulse.dispose();
     super.dispose();
@@ -858,8 +1021,12 @@ class StreamRailPlayer extends StatefulWidget {
   State<StreamRailPlayer> createState() => _StreamRailPlayerState();
 }
 
-class _StreamRailPlayerState extends State<StreamRailPlayer> {
+class _StreamRailPlayerState extends State<StreamRailPlayer>
+    with _QueueFollows {
   bool _queue = false;
+
+  @override
+  bool get queueShowing => _queue;
   final Breath _pulse = Breath();
   bool _visible = true;
 
@@ -867,6 +1034,7 @@ class _StreamRailPlayerState extends State<StreamRailPlayer> {
   void initState() {
     super.initState();
     MusicController.instance.addListener(_syncPulse);
+    watchQueue();
   }
 
   @override
@@ -882,6 +1050,7 @@ class _StreamRailPlayerState extends State<StreamRailPlayer> {
   @override
   void dispose() {
     MusicController.instance.removeListener(_syncPulse);
+    unwatchQueue();
     _pulse.dispose();
     super.dispose();
   }
@@ -1092,8 +1261,12 @@ class WelcomePlayerBar extends StatefulWidget {
   State<WelcomePlayerBar> createState() => _WelcomePlayerBarState();
 }
 
-class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
+class _WelcomePlayerBarState extends State<WelcomePlayerBar>
+    with _QueueFollows {
   bool _queue = false;
+
+  @override
+  bool get queueShowing => _queue;
   final Breath _pulse = Breath();
   bool _visible = true;
 
@@ -1101,6 +1274,7 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
   void initState() {
     super.initState();
     MusicController.instance.addListener(_syncPulse);
+    watchQueue();
   }
 
   @override
@@ -1116,6 +1290,7 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
   @override
   void dispose() {
     MusicController.instance.removeListener(_syncPulse);
+    unwatchQueue();
     _pulse.dispose();
     super.dispose();
   }
@@ -1168,7 +1343,10 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
             child: Row(
               children: [
                 // Artwork — opens the app-wide mini player.
-                Hover(
+                WelTip(
+                  label: 'Open mini player',
+                  accent: accent,
+                  child: Hover(
                   onTap: c.toggleMini,
                   builder: (context, hov) => Container(
                     width: 50,
@@ -1187,8 +1365,12 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
                                 size: 22, color: accent)),
                   ),
                 ),
+                ),
                 const SizedBox(width: 12),
-                SizedBox(
+                WelTip(
+                  label: 'Now playing',
+                  accent: accent,
+                  child: SizedBox(
                   width: 176,
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -1218,8 +1400,9 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
                     ],
                   ),
                 ),
+                ),
                 const SizedBox(width: 12),
-                HomeTransport(controller: c, accent: accent),
+                HomeTransport(controller: c, accent: accent, ink: ink),
                 const SizedBox(width: 12),
                 // One row, so the seek bar gets to be thick and wide enough to
                 // carry both times inside it.
@@ -1232,6 +1415,7 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
                       accent: accent,
                       ink: ink,
                       dim: dim,
+                      cursorPill: true,
                       onSeek: (v) => c.send(MusicCmd.seek(secs: v)),
                     ),
                   ),
@@ -1242,25 +1426,37 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
                   width: 246,
                   child: Row(
                     children: [
-                      CineBtn(
-                        icon: Icons.queue_music,
-                        lit: _queue,
+                      WelTip(
+                        label: 'Queue · ${c.state?.queue.length ?? 0} tracks',
                         accent: accent,
-                        onTap: () {
-                          setState(() => _queue = !_queue);
-                          if (_queue) {
-                            c.refresh();
-                            _showQueue(context, c, accent);
-                          }
-                        },
+                        child: CineBtn(
+                          icon: Icons.queue_music,
+                          lit: _queue,
+                          accent: accent,
+                          ink: ink,
+                          onTap: () {
+                            setState(() => _queue = !_queue);
+                            if (_queue) {
+                              c.refresh();
+                              _showQueue(context, c, accent);
+                            }
+                          },
+                        ),
                       ),
                       const SizedBox(width: 6),
-                      CineBtn(
-                        icon: (MusicController.instance.muted)
-                            ? Icons.volume_off
-                            : Icons.volume_up,
+                      WelTip(
+                        label: MusicController.instance.muted
+                            ? 'Unmute'
+                            : 'Mute',
                         accent: accent,
-                        onTap: () => c.send(const MusicCmd.toggleMute()),
+                        child: CineBtn(
+                          icon: (MusicController.instance.muted)
+                              ? Icons.volume_off
+                              : Icons.volume_up,
+                          accent: accent,
+                          ink: ink,
+                          onTap: () => c.send(const MusicCmd.toggleMute()),
+                        ),
                       ),
                       const SizedBox(width: 6),
                       SizedBox(
@@ -1270,15 +1466,21 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar> {
                           muted: MusicController.instance.muted,
                           accent: accent,
                           ink: ink,
+                          cursorPill: true,
                           onVolume: (v) =>
                               c.setVolume(v),
                         ),
                       ),
                       const SizedBox(width: 6),
-                      CineBtn(
-                        icon: Icons.keyboard_arrow_up,
+                      WelTip(
+                        label: 'Zen mode',
                         accent: accent,
-                        onTap: c.openZen,
+                        child: CineBtn(
+                          icon: Icons.keyboard_arrow_up,
+                          accent: accent,
+                          ink: ink,
+                          onTap: c.openZen,
+                        ),
                       ),
                     ],
                   ),

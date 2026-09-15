@@ -108,6 +108,10 @@ pub struct HomeEvent {
     pub alarm: bool,
     pub id: i64,
     pub path: String,
+    /// Up to three ids to draw as thumbnails, `id` first. A folded run -- "34
+    /// photos added" -- keeps the first three of the rows it swallowed, which
+    /// is what the Slint row's `t1` / `t2` / `t3` were.
+    pub ids: Vec<i64>,
 }
 
 /// One obligation on Cinema's money panel.
@@ -124,7 +128,12 @@ pub struct HomeState {
     pub date_line: String,
     /// "12,304 items · 41 GB".
     pub library_line: String,
+    /// The quote the shelf opens on -- the first of `quotes`, kept so nothing
+    /// that only wants one has to index.
     pub quote: HomeQuote,
+    /// The whole shelf, already shuffled. Welcome walks it a minute at a time;
+    /// sending one quote left that clock with nothing to turn.
+    pub quotes: Vec<HomeQuote>,
     pub counts: HomeCounts,
     /// "all" | "video" | "book" | "podcast" | "audiobook".
     pub continue_filter: String,
@@ -152,6 +161,9 @@ pub struct HomeState {
     /// Twelve months of spend as 0..1 heights, oldest first.
     pub fin_months: Vec<f64>,
     pub fin_month_labels: Vec<String>,
+    /// One figure per bar, same order -- so picking a month restates the block
+    /// without a round trip, and without Dart dividing to recover it.
+    pub fin_month_spends: Vec<String>,
     pub fin_dues: Vec<HomeDue>,
     pub busy: bool,
 }
@@ -196,6 +208,7 @@ async fn snapshot() -> Result<HomeState> {
         money(),
     );
     let filter = filter();
+    let quotes = quotes();
     let settings = crate::api::shell::load();
     let shown = filtered(rows, &filter);
     Ok(HomeState {
@@ -215,11 +228,13 @@ async fn snapshot() -> Result<HomeState> {
         fin_spent: money.spent,
         fin_months: money.months,
         fin_month_labels: money.labels,
+        fin_month_spends: money.spends,
         fin_dues: money.dues,
         greeting: greeting(),
         date_line: chrono::Local::now().format("%A, %B %-d").to_string(),
         library_line: library_line().await,
-        quote: quote(),
+        quote: first_quote(&quotes),
+        quotes,
         counts,
         continue_rows: shown,
         continue_filter: filter,
@@ -247,21 +262,40 @@ fn greeting() -> String {
     }
 }
 
+/// How many quotes the shelf carries. Welcome turns one a minute, so an hour
+/// on the page is an hour before a repeat -- more than that is bytes across the
+/// bridge nobody reads.
+const QUOTES: usize = 60;
+
 /// The quote shelf, shuffled once per run rather than per landing -- walking
 /// back to Home should not restart the rotation.
-fn quote() -> HomeQuote {
+///
+/// The page turns one a minute; the day only decides where the shelf STARTS, so
+/// the first quote of a session is a fixture you can come to like while the
+/// rotation behind it still moves.
+/// The one the shelf opens on. Nothing in this file derives `Clone` -- these
+/// are wire structs, and a copy of one is two strings.
+fn first_quote(shelf: &[HomeQuote]) -> HomeQuote {
+    match shelf.first() {
+        Some(q) => HomeQuote { text: q.text.clone(), author: q.author.clone() },
+        None => HomeQuote { text: String::new(), author: String::new() },
+    }
+}
+
+fn quotes() -> Vec<HomeQuote> {
     use std::sync::OnceLock;
     static SHELF: OnceLock<Vec<(&'static str, &'static str)>> = OnceLock::new();
     let all = SHELF.get_or_init(tulipix_common::quotes::shuffled);
     if all.is_empty() {
-        return HomeQuote { text: String::new(), author: String::new() };
+        return Vec::new();
     }
-    // One a day, from a shelf that is already in a random order: the same quote
-    // all day is a fixture you can come to like, and a new one per repaint is
-    // noise.
     let day = (now_secs() / 86_400) as usize;
-    let (text, author) = all[day % all.len()];
-    HomeQuote { text: text.to_string(), author: author.to_string() }
+    (0..QUOTES.min(all.len()))
+        .map(|i| {
+            let (text, author) = all[(day + i) % all.len()];
+            HomeQuote { text: text.to_string(), author: author.to_string() }
+        })
+        .collect()
 }
 
 pub(crate) fn now_secs() -> i64 {
@@ -519,6 +553,9 @@ struct Money {
     month: String,
     spent: String,
     months: Vec<f64>,
+    /// One printed figure per bar, so picking a month does not mean dividing
+    /// this month's by its own bar height to recover the other eleven.
+    spends: Vec<String>,
     labels: Vec<String>,
     dues: Vec<HomeDue>,
 }
@@ -531,6 +568,7 @@ async fn money() -> Money {
         month: String::new(),
         spent: String::new(),
         months: Vec::new(),
+        spends: Vec::new(),
         labels: Vec::new(),
         dues: Vec::new(),
     };
@@ -560,6 +598,7 @@ async fn money() -> Money {
     }
     let peak = spends.iter().copied().max().unwrap_or(0).max(1);
     out.months = spends.iter().map(|v| *v as f64 / peak as f64).collect();
+    out.spends = spends.iter().map(|v| minor(*v)).collect();
     out.spent = minor(*spends.last().unwrap_or(&0));
 
     let dues = sqlx::query_as::<_, (String, i64, String, String)>(
@@ -974,7 +1013,7 @@ async fn feed() -> Vec<HomeEvent> {
     let today = chrono::Local::now().date_naive();
     let mut last = String::new();
     rows.into_iter()
-        .map(|r| {
+        .map(|(r, ids)| {
             let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(r.at, 0)
                 .map(|t| t.with_timezone(&chrono::Local));
             let group = if now - r.at < 1800 {
@@ -1001,15 +1040,21 @@ async fn feed() -> Vec<HomeEvent> {
                 alarm: r.alarm,
                 id: r.id,
                 path: r.path,
+                ids,
             }
         })
         .collect()
 }
 
-/// Fold runs of the same section and kind, and resolve the "one|many" titles.
-fn collapse(rows: Vec<Raw>) -> Vec<Raw> {
+/// How many thumbnails one feed row draws. The Slint row had three boxes.
+const THUMBS: usize = 3;
+
+/// Fold runs of the same section and kind, resolve the "one|many" titles, and
+/// keep the first few ids of every run so a folded row can show what it folded.
+fn collapse(rows: Vec<Raw>) -> Vec<(Raw, Vec<i64>)> {
     let mut out: Vec<Raw> = Vec::new();
     let mut counts: Vec<usize> = Vec::new();
+    let mut ids: Vec<Vec<i64>> = Vec::new();
     for r in rows {
         let fold = out
             .last()
@@ -1018,8 +1063,14 @@ fn collapse(rows: Vec<Raw>) -> Vec<Raw> {
             if let Some(n) = counts.last_mut() {
                 *n += 1;
             }
+            if let Some(g) = ids.last_mut() {
+                if g.len() < THUMBS && r.id >= 0 {
+                    g.push(r.id);
+                }
+            }
             continue;
         }
+        ids.push(if r.id >= 0 { vec![r.id] } else { Vec::new() });
         out.push(r);
         counts.push(1);
     }
@@ -1036,7 +1087,7 @@ fn collapse(rows: Vec<Raw>) -> Vec<Raw> {
             None => {}
         }
     }
-    out
+    out.into_iter().zip(ids).collect()
 }
 
 /// Newly scanned files in a section that keeps the common `items` table.

@@ -53,15 +53,19 @@ class _ToolsPageState extends State<ToolsPage> {
     //
     // The argument is `kind` or `kind\u0000path` — one nul, because a path may
     // contain anything else.
-    ShellController.instance.onOpen(Section.tools, (arg) async {
-      final cut = arg.indexOf('\u0000');
-      final kind = cut < 0 ? arg : arg.substring(0, cut);
-      final input = cut < 0 ? '' : arg.substring(cut + 1);
-      if (kind.isEmpty) return;
+    ShellController.instance.onOpen(Section.tools, (raw) async {
+      final (:verb, :arg) = openArg(raw);
+      if (verb.isEmpty) return;
       if (_c.state == null) await _c.refresh();
-      await _c.send(ToolsCmd.openTool(kind: kind));
-      if (input.isNotEmpty) {
-        await _c.send(ToolsCmd.setField(key: 'input', value: input));
+      // Home's Tools card names a CATEGORY, not an operation: its five discs
+      // are five catalog tabs, and picking one selects that tab.
+      if (verb == 'cat') {
+        if (arg.isNotEmpty) await _c.send(ToolsCmd.setCategory(name: arg));
+        return;
+      }
+      await _c.send(ToolsCmd.openTool(kind: verb));
+      if (arg.isNotEmpty) {
+        await _c.send(ToolsCmd.setField(key: 'input', value: arg));
       }
     });
   }
