@@ -15,12 +15,13 @@ import 'package:flutter/material.dart';
 import '../../design/motion_clock.dart';
 import '../../design/tokens.dart';
 import '../../design/skin.dart';
+import '../../playback/audio_deck.dart' show audioPositionS;
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/music.dart';
 import '../music/mini_player.dart';
 import '../music/music_controller.dart';
 import '../music/music_viz.dart';
-import '../music/player_widgets.dart' show Marquee;
+import '../music/player_widgets.dart' show Marquee, SeekPill;
 import 'home_shared.dart';
 
 /// The tab the sound is coming from, by name and by colour: the card says where
@@ -82,6 +83,36 @@ void openPlayingTab(MusicController c) {
 
 /// Click to jump; NOT drag — every move event would be one more mpv IPC
 /// command, and mpv logs a broken pipe for each dead client the burst leaves.
+/// My Music's seek bar, wherever Home needs one.
+///
+/// `SeekPill` draws the track's loudness envelope, follows the deck's
+/// unthrottled position rather than lurching once a second with the snapshot
+/// tick, and commits a scrub on release rather than seeking mpv sixty times a
+/// second. Home carried a second, plainer bar of its own for a while; there is
+/// no reason for two, and the design language gets first refusal here exactly
+/// as it does at the bottom of Music.
+Widget homeSeekBar(BuildContext context, MusicController c, Color accent) =>
+    context.skin.seekBar(SeekSlot(
+      pos: c.tickPos,
+      dur: c.tickDur,
+      playing: c.tickPlaying,
+      onSeek: (v) => c.send(MusicCmd.seek(secs: v)),
+      deck: () => audioPositionS,
+    )) ??
+    SeekPill(
+      pos: c.tickPos,
+      dur: c.tickDur,
+      accent: accent,
+      smooth: true,
+      playing: c.tickPlaying,
+      // Only a library track has a file to decode a shape from — the same rule
+      // the heart follows. A stream has no end to draw against.
+      wave: (c.now?.itemId ?? 0) != 0 && c.now?.mode == 'music'
+          ? c.waveFor(c.now!.itemId)
+          : null,
+      onSeek: (v) => c.send(MusicCmd.seek(secs: v)),
+    );
+
 class HomeSeek extends StatefulWidget {
   const HomeSeek({
     super.key,
@@ -142,79 +173,79 @@ class _HomeSeekState extends State<HomeSeek> {
           onHover: widget.cursorPill
               ? (e) => setState(() => _at = e.localPosition.dx)
               : null,
-          onExit:
-              widget.cursorPill ? (_) => setState(() => _at = null) : null,
+          onExit: widget.cursorPill ? (_) => setState(() => _at = null) : null,
           child: Stack(
             clipBehavior: Clip.none,
             children: [
-          Container(
-            height: height,
-            decoration: BoxDecoration(
-              color: base.withValues(alpha: 0.13),
-              borderRadius: BorderRadius.circular(height / 2),
-              border: Border.all(color: base.withValues(alpha: 0.22)),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Stack(
-              children: [
-                FractionallySizedBox(
-                  widthFactor: frac,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: t.dark
-                            ? [accent, brighter(accent, 0.45), Colors.white]
-                            : [accent, Tokens.brand],
-                        stops: t.dark ? const [0, 0.55, 1] : null,
+              Container(
+                height: height,
+                decoration: BoxDecoration(
+                  color: base.withValues(alpha: 0.13),
+                  borderRadius: BorderRadius.circular(height / 2),
+                  border: Border.all(color: base.withValues(alpha: 0.22)),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Stack(
+                  children: [
+                    FractionallySizedBox(
+                      widthFactor: frac,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: t.dark
+                                ? [accent, brighter(accent, 0.45), Colors.white]
+                                : [accent, Tokens.brand],
+                            stops: t.dark ? const [0, 0.55, 1] : null,
+                          ),
+                        ),
                       ),
                     ),
-                  ),
-                ),
-                // Elapsed rides the fill, so it flips to white once the fill
-                // has actually reached it.
-                Positioned(
-                  left: 10,
-                  top: 0,
-                  bottom: 0,
-                  child: Center(
-                    child: Text(
-                      clock(pos),
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        color: frac > 0.14 ? Colors.white : faint,
+                    // Elapsed rides the fill, so it flips to white once the fill
+                    // has actually reached it.
+                    Positioned(
+                      left: 10,
+                      top: 0,
+                      bottom: 0,
+                      child: Center(
+                        child: Text(
+                          clock(pos),
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: frac > 0.14 ? Colors.white : faint,
+                          ),
+                        ),
                       ),
                     ),
-                  ),
-                ),
-                Positioned(
-                  right: 10,
-                  top: 0,
-                  bottom: 0,
-                  child: Center(
-                    child: Text(
-                      clock(dur),
-                      style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: faint),
+                    Positioned(
+                      right: 10,
+                      top: 0,
+                      bottom: 0,
+                      child: Center(
+                        child: Text(
+                          clock(dur),
+                          style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: faint),
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
-            ),
-          ),
-          // Outside the track, which clips — a pill parented to it would be
-          // cut in half.
-          if (_at != null && dur > 0)
-            Positioned(
-              left: (_at! - 26).clamp(0.0, math.max(0.0, box.maxWidth - 52)),
-              top: -28,
-              child: _CursorPill(
-                label: clock(dur * (_at! / box.maxWidth).clamp(0.0, 1.0)),
-                accent: accent,
               ),
-            ),
+              // Outside the track, which clips — a pill parented to it would be
+              // cut in half.
+              if (_at != null && dur > 0)
+                Positioned(
+                  left:
+                      (_at! - 26).clamp(0.0, math.max(0.0, box.maxWidth - 52)),
+                  top: -28,
+                  child: _CursorPill(
+                    label: clock(dur * (_at! / box.maxWidth).clamp(0.0, 1.0)),
+                    accent: accent,
+                  ),
+                ),
             ],
           ),
         ),
@@ -499,7 +530,7 @@ class HomeQueue extends StatelessWidget {
 
 /// The window Cinema draws beside Continue and Stream draws under its seek bar:
 /// the line before, the line now, the line next.
-class HomeLyrics extends StatelessWidget {
+class HomeLyrics extends StatefulWidget {
   const HomeLyrics({
     super.key,
     required this.controller,
@@ -512,6 +543,68 @@ class HomeLyrics extends StatelessWidget {
 
   /// Cinema's is 19px in the shelf's spare 30%; Stream's is 13px in a rail.
   final bool big;
+
+  @override
+  State<HomeLyrics> createState() => _HomeLyricsState();
+}
+
+/// Reads the line on the motion clock's step rather than on the controller.
+///
+/// [MusicController.activeLyric] is computed from the deck's live position, but
+/// it is only READ when something rebuilds — and every Home layout wraps this in
+/// an `AnimatedBuilder` on the controller, which fires once a second. So the
+/// index was live and the widget still changed line at 1 Hz, landing up to a
+/// second late and by a different amount each time.
+///
+/// The step is ten a second: 100ms granularity on a line that lasts seconds is
+/// under what anyone can see, and it is the rate everything else on this page
+/// that moves by itself already uses. Joined only while the deck plays and this
+/// is on screen.
+class _HomeLyricsState extends State<HomeLyrics> {
+  bool _joined = false;
+
+  MusicController get controller => widget.controller;
+  Color get accent => widget.accent;
+  bool get big => widget.big;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(covariant HomeLyrics old) {
+    super.didUpdateWidget(old);
+    _sync();
+  }
+
+  void _sync() {
+    final on = TickerMode.valuesOf(context).enabled && controller.tickPlaying;
+    if (on == _joined) return;
+    _joined = on;
+    if (on) {
+      MotionClock.instance.join(_onBeat);
+    } else {
+      MotionClock.instance.leave(_onBeat);
+    }
+  }
+
+  int _line = -1;
+
+  void _onBeat() {
+    if (!MotionClock.instance.onStep) return;
+    final i = controller.activeLyric;
+    // Only when the LINE changes — ten no-op rebuilds a second for a line that
+    // lasts four seconds is the cost this is meant to avoid.
+    if (i != _line && mounted) setState(() => _line = i);
+  }
+
+  @override
+  void dispose() {
+    if (_joined) MotionClock.instance.leave(_onBeat);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -560,12 +653,19 @@ class HomeTransport extends StatelessWidget {
     this.spacing = 8,
     this.alignment = MainAxisAlignment.center,
     this.ink,
+    this.extended = false,
   });
 
   final MusicController controller;
   final Color accent;
   final double spacing;
   final MainAxisAlignment alignment;
+
+  /// Seven keys instead of five: the heart in front and Stop after Next, the
+  /// shape the Music bar has. Welcome's bar is the full width of the window and
+  /// has the room; Cinema's glass column and Stream's 396px rail do not — two
+  /// more keys there overflow the panel by 21px.
+  final bool extended;
 
   /// Welcome's bar carries its own ink, and so do its five keys. It also wants
   /// a hover label on each, which is what its `WelBtn`s had.
@@ -578,10 +678,29 @@ class HomeTransport extends StatelessWidget {
     final loaded = (now?.title ?? '').isNotEmpty;
     final shuffle = st?.shuffle ?? false;
     final repeat = st?.repeat ?? 'off';
+    // A library track can be liked; a stream, a chapter and an empty deck
+    // cannot — the same rule `PlayerBar` uses, and the same reason: `Love`
+    // takes an item id and a stream has none.
+    final likeable = loaded && (now?.itemId ?? 0) != 0 && now?.mode == 'music';
+    final loved = likeable && (now?.loved ?? false);
     return Row(
       mainAxisAlignment: alignment,
       mainAxisSize: MainAxisSize.min,
       children: [
+        // Heart, then the six. It leads rather than trails for the reason the
+        // Music bar gives: with it here the row reads as three, the play
+        // circle, and three — behind it, it is six and a stray.
+        if (extended) ...[
+          _key(
+            icon: loved ? Icons.favorite : Icons.favorite_border,
+            lit: loved,
+            tip: !likeable ? 'Nothing to like' : (loved ? 'Unlike' : 'Like'),
+            onTap: !likeable
+                ? null
+                : () => controller.send(MusicCmd.love(itemId: now!.itemId)),
+          ),
+          SizedBox(width: spacing),
+        ],
         _key(
           icon: Icons.shuffle,
           lit: shuffle,
@@ -612,6 +731,14 @@ class HomeTransport extends StatelessWidget {
           onTap: () => controller.send(const MusicCmd.next()),
         ),
         SizedBox(width: spacing),
+        if (extended) ...[
+          _key(
+            icon: Icons.stop,
+            tip: 'Stop',
+            onTap: loaded ? () => controller.send(const MusicCmd.stop()) : null,
+          ),
+          SizedBox(width: spacing),
+        ],
         _key(
           icon: repeat == 'one' ? Icons.repeat_one : Icons.repeat,
           lit: repeat != 'off',
@@ -629,21 +756,28 @@ class HomeTransport extends StatelessWidget {
   Widget _key({
     required IconData icon,
     required String tip,
-    required VoidCallback onTap,
+    // Null = there is nothing for this key to do on what is loaded. Disabled
+    // rather than dropped: a transport that changes shape between one track
+    // and the next moves the play button under the pointer.
+    required VoidCallback? onTap,
     bool primary = false,
     bool lit = false,
   }) {
-    final btn = CineBtn(
+    final Widget btn = CineBtn(
       icon: icon,
       primary: primary,
       lit: lit,
       accent: accent,
       ink: ink,
-      onTap: onTap,
+      onTap: onTap ?? () {},
     );
-    return ink == null
-        ? btn
-        : WelTip(label: tip, accent: accent, child: btn);
+    // Dimmed here rather than through a flag on `CineBtn`: two of seven keys
+    // can be dead and every other caller of that button always has something
+    // for it to do.
+    final key = onTap == null
+        ? Opacity(opacity: 0.40, child: IgnorePointer(child: btn))
+        : btn;
+    return ink == null ? key : WelTip(label: tip, accent: accent, child: key);
   }
 }
 
@@ -676,7 +810,9 @@ class HomePlayerBar extends StatelessWidget {
         ),
         const SizedBox(width: 8),
         CineBtn(
-          icon: (MusicController.instance.muted) ? Icons.volume_off : Icons.volume_up,
+          icon: (MusicController.instance.muted)
+              ? Icons.volume_off
+              : Icons.volume_up,
           accent: accent,
           onTap: () => controller.send(const MusicCmd.toggleMute()),
         ),
@@ -737,7 +873,11 @@ mixin _QueueFollows<T extends StatefulWidget> on State<T> {
 
 /// The panel is CONTENT tall, not column tall: stretched to the full column it
 /// opened a dead band above and below the artwork.
-const double kCinemaChrome = 238;
+///
+/// 246, not 238, since the column took My Music's seek bar: `SeekPill` is 30px
+/// where the plain line it replaced was 22, and this figure is what both the
+/// page's art budget and the panel's own side length are measured against.
+const double kCinemaChrome = 246;
 
 class CinemaPlayer extends StatefulWidget {
   const CinemaPlayer({super.key, required this.height});
@@ -825,21 +965,21 @@ class _CinemaPlayerState extends State<CinemaPlayer>
                 // without one each of those re-recorded the page under it.
                 child: RepaintBoundary(
                   child: AnimatedBuilder(
-                  animation: _pulse,
-                  builder: (context, _) => DecoratedBox(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(23),
-                      border: Border.all(
-                        width: 4,
-                        color: mix(
-                                accent,
-                                t.dark ? Colors.white : Tokens.brand2,
-                                1 - _pulse.value)
-                            .withValues(alpha: 0.35 + 0.5 * _pulse.value),
+                    animation: _pulse,
+                    builder: (context, _) => DecoratedBox(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(23),
+                        border: Border.all(
+                          width: 4,
+                          color: mix(
+                                  accent,
+                                  t.dark ? Colors.white : Tokens.brand2,
+                                  1 - _pulse.value)
+                              .withValues(alpha: 0.35 + 0.5 * _pulse.value),
+                        ),
                       ),
                     ),
                   ),
-                ),
                 ),
               ),
             Container(
@@ -950,12 +1090,7 @@ class _CinemaPlayerState extends State<CinemaPlayer>
                         ),
                       ),
                       const SizedBox(height: 8),
-                      HomeSeek(
-                        pos: c.tickPos,
-                        dur: c.tickDur,
-                        accent: accent,
-                        onSeek: (v) => c.send(MusicCmd.seek(secs: v)),
-                      ),
+                      homeSeekBar(context, c, accent),
                       const SizedBox(height: 12),
                       SizedBox(
                         height: 53,
@@ -1195,12 +1330,7 @@ class _StreamRailPlayerState extends State<StreamRailPlayer>
                 ),
               ),
               const SizedBox(height: 10),
-              HomeSeek(
-                pos: c.tickPos,
-                dur: c.tickDur,
-                accent: accent,
-                onSeek: (v) => c.send(MusicCmd.seek(secs: v)),
-              ),
+              homeSeekBar(context, c, accent),
               // Only while there is a synced lyric to show — an empty band
               // under the seek bar was dead space.
               if (c.tickPlaying && c.activeLyric >= 0) ...[
@@ -1252,6 +1382,11 @@ class _StreamRailPlayerState extends State<StreamRailPlayer>
 const double kWelcomeBarH = 67;
 const double kWelcomeStubH = 26;
 
+/// The width at which Welcome's transport can carry the heart and Stop as well
+/// as the five. Two keys and their gaps are 80px, and the bar has about that
+/// much slack at 900.
+const double kWelcomeSevenKeys = 1000;
+
 class WelcomePlayerBar extends StatefulWidget {
   const WelcomePlayerBar({super.key, required this.width});
 
@@ -1264,6 +1399,10 @@ class WelcomePlayerBar extends StatefulWidget {
 class _WelcomePlayerBarState extends State<WelcomePlayerBar>
     with _QueueFollows {
   bool _queue = false;
+
+  /// The queue button's own box, so the panel can open off it rather than off
+  /// the middle of the window.
+  final GlobalKey _queueKey = GlobalKey();
 
   @override
   bool get queueShowing => _queue;
@@ -1317,216 +1456,239 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar>
         // page, the inner one keeps it off the bar's contents.
         return RepaintBoundary(
           child: AnimatedBuilder(
-          animation: _pulse,
-          builder: (context, child) => Container(
-            width: widget.width,
-            height: kWelcomeBarH,
-            decoration: BoxDecoration(
-              color: t.dark ? t.panel2 : t.panel,
-              borderRadius: BorderRadius.circular(kCardRadius),
-              // ONE outline, doing both jobs: the hairline IS the live ring —
-              // it thickens and breathes while something plays.
-              border: Border.all(
-                width: c.tickPlaying ? 2.5 : 1,
-                color: c.tickPlaying
-                    ? mix(accent, t.dark ? Colors.white : Tokens.brand2,
-                            _pulse.value)
-                        .withValues(alpha: 0.45 + 0.45 * _pulse.value)
-                    : accent.withValues(alpha: t.dark ? 0.45 : 0.30),
+            animation: _pulse,
+            builder: (context, child) => Container(
+              width: widget.width,
+              height: kWelcomeBarH,
+              decoration: BoxDecoration(
+                color: t.dark ? t.panel2 : t.panel,
+                borderRadius: BorderRadius.circular(kCardRadius),
+                // ONE outline, doing both jobs: the hairline IS the live ring —
+                // it thickens and breathes while something plays.
+                border: Border.all(
+                  width: c.tickPlaying ? 2.5 : 1,
+                  color: c.tickPlaying
+                      ? mix(accent, t.dark ? Colors.white : Tokens.brand2,
+                              _pulse.value)
+                          .withValues(alpha: 0.45 + 0.45 * _pulse.value)
+                      : accent.withValues(alpha: t.dark ? 0.45 : 0.30),
+                ),
+              ),
+              child: child,
+            ),
+            child: RepaintBoundary(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 16, 0),
+                child: Row(
+                  children: [
+                    // Artwork — opens the app-wide mini player.
+                    WelTip(
+                      label: 'Open mini player',
+                      accent: accent,
+                      child: Hover(
+                        onTap: c.toggleMini,
+                        builder: (context, hov) => Container(
+                          width: 50,
+                          height: 50,
+                          decoration: BoxDecoration(
+                            color: accent.withValues(alpha: 0.25),
+                            borderRadius: BorderRadius.circular(12),
+                            border:
+                                Border.all(color: accent, width: hov ? 2 : 0),
+                          ),
+                          clipBehavior: Clip.antiAlias,
+                          child: (now?.art ?? '').isEmpty
+                              ? Icon(Icons.music_note, size: 22, color: accent)
+                              : Image.file(File(now!.art),
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => Icon(
+                                      Icons.music_note,
+                                      size: 22,
+                                      color: accent)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    WelTip(
+                      label: 'Now playing',
+                      accent: accent,
+                      child: SizedBox(
+                        width: 176,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            SizedBox(
+                              height: 17,
+                              child: Marquee(
+                                text: live ? 'Nothing playing' : now!.title,
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: ink),
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            SizedBox(
+                              height: 14,
+                              child: Marquee(
+                                text: live ? '' : now!.artist,
+                                style: TextStyle(
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w500,
+                                    color: dim),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    HomeTransport(
+                        controller: c,
+                        accent: accent,
+                        ink: ink,
+                        // Seven keys where the bar is wide enough, five where it is
+                        // not — the rule `PlayerBar` already follows with its own
+                        // `compact`, and for the same reason: the heart and Stop
+                        // are the two the row can lose without moving the play
+                        // button. Below this they overflow a 900px bar by 78px.
+                        extended: widget.width >= kWelcomeSevenKeys),
+                    const SizedBox(width: 12),
+                    // No 0.9 inset here any more: that was breathing room for
+                    // `HomeSeek`, which drew a bare line. The pill has its own
+                    // padding, and squeezing it cost the clock and the duration the
+                    // 6px they need at a 900px bar.
+                    Expanded(child: homeSeekBar(context, c, accent)),
+                    const SizedBox(width: 12),
+                    // Queue · mute · volume · zen, at the end of the row.
+                    SizedBox(
+                      width: 246,
+                      child: Row(
+                        children: [
+                          WelTip(
+                            label:
+                                'Queue · ${c.state?.queue.length ?? 0} tracks',
+                            accent: accent,
+                            child: CineBtn(
+                              key: _queueKey,
+                              icon: Icons.queue_music,
+                              lit: _queue,
+                              accent: accent,
+                              ink: ink,
+                              onTap: () {
+                                setState(() => _queue = !_queue);
+                                if (_queue) {
+                                  c.refresh();
+                                  _showQueue(context, c, accent);
+                                }
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          WelTip(
+                            label: MusicController.instance.muted
+                                ? 'Unmute'
+                                : 'Mute',
+                            accent: accent,
+                            child: CineBtn(
+                              icon: (MusicController.instance.muted)
+                                  ? Icons.volume_off
+                                  : Icons.volume_up,
+                              accent: accent,
+                              ink: ink,
+                              onTap: () => c.send(const MusicCmd.toggleMute()),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          SizedBox(
+                            width: 126,
+                            child: HomeVolume(
+                              volume: MusicController.instance.volume,
+                              muted: MusicController.instance.muted,
+                              accent: accent,
+                              ink: ink,
+                              cursorPill: true,
+                              onVolume: (v) => c.setVolume(v),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          WelTip(
+                            label: 'Zen mode',
+                            accent: accent,
+                            child: CineBtn(
+                              icon: Icons.keyboard_arrow_up,
+                              accent: accent,
+                              ink: ink,
+                              onTap: c.openZen,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-            child: child,
-          ),
-          child: RepaintBoundary(
-            child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 16, 0),
-            child: Row(
-              children: [
-                // Artwork — opens the app-wide mini player.
-                WelTip(
-                  label: 'Open mini player',
-                  accent: accent,
-                  child: Hover(
-                  onTap: c.toggleMini,
-                  builder: (context, hov) => Container(
-                    width: 50,
-                    height: 50,
-                    decoration: BoxDecoration(
-                      color: accent.withValues(alpha: 0.25),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: accent, width: hov ? 2 : 0),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: (now?.art ?? '').isEmpty
-                        ? Icon(Icons.music_note, size: 22, color: accent)
-                        : Image.file(File(now!.art),
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => Icon(Icons.music_note,
-                                size: 22, color: accent)),
-                  ),
-                ),
-                ),
-                const SizedBox(width: 12),
-                WelTip(
-                  label: 'Now playing',
-                  accent: accent,
-                  child: SizedBox(
-                  width: 176,
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      SizedBox(
-                        height: 17,
-                        child: Marquee(
-                          text: live ? 'Nothing playing' : now!.title,
-                          style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              color: ink),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      SizedBox(
-                        height: 14,
-                        child: Marquee(
-                          text: live ? '' : now!.artist,
-                          style: TextStyle(
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.w500,
-                              color: dim),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                ),
-                const SizedBox(width: 12),
-                HomeTransport(controller: c, accent: accent, ink: ink),
-                const SizedBox(width: 12),
-                // One row, so the seek bar gets to be thick and wide enough to
-                // carry both times inside it.
-                Expanded(
-                  child: FractionallySizedBox(
-                    widthFactor: 0.90,
-                    child: HomeSeek(
-                      pos: c.tickPos,
-                      dur: c.tickDur,
-                      accent: accent,
-                      ink: ink,
-                      dim: dim,
-                      cursorPill: true,
-                      onSeek: (v) => c.send(MusicCmd.seek(secs: v)),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                // Queue · mute · volume · zen, at the end of the row.
-                SizedBox(
-                  width: 246,
-                  child: Row(
-                    children: [
-                      WelTip(
-                        label: 'Queue · ${c.state?.queue.length ?? 0} tracks',
-                        accent: accent,
-                        child: CineBtn(
-                          icon: Icons.queue_music,
-                          lit: _queue,
-                          accent: accent,
-                          ink: ink,
-                          onTap: () {
-                            setState(() => _queue = !_queue);
-                            if (_queue) {
-                              c.refresh();
-                              _showQueue(context, c, accent);
-                            }
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      WelTip(
-                        label: MusicController.instance.muted
-                            ? 'Unmute'
-                            : 'Mute',
-                        accent: accent,
-                        child: CineBtn(
-                          icon: (MusicController.instance.muted)
-                              ? Icons.volume_off
-                              : Icons.volume_up,
-                          accent: accent,
-                          ink: ink,
-                          onTap: () => c.send(const MusicCmd.toggleMute()),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      SizedBox(
-                        width: 126,
-                        child: HomeVolume(
-                          volume: MusicController.instance.volume,
-                          muted: MusicController.instance.muted,
-                          accent: accent,
-                          ink: ink,
-                          cursorPill: true,
-                          onVolume: (v) =>
-                              c.setVolume(v),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      WelTip(
-                        label: 'Zen mode',
-                        accent: accent,
-                        child: CineBtn(
-                          icon: Icons.keyboard_arrow_up,
-                          accent: accent,
-                          ink: ink,
-                          onTap: c.openZen,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          ),
           ),
         );
       },
     );
   }
 
-  /// The queue drops UP out of the bar. A dialog rather than a hand-placed
-  /// overlay: the bar is already at the window floor, and an anchored popup
-  /// that has to dodge the edge is more geometry than the list is worth.
+  /// The queue drops UP out of the queue button.
+  ///
+  /// It used to be `Alignment.bottomCenter`, which put a 316px panel in the
+  /// middle of the bar — nowhere near the control that opened it, and over the
+  /// artwork and the seek bar. It is placed off the button's own box now: its
+  /// right edge on the button's, its foot 10px above the button's head, and
+  /// clamped into the window so a narrow one cannot push it off the left.
+  static const Size _queuePanel = Size(316, 330);
+
   void _showQueue(BuildContext context, MusicController c, Color accent) {
     final t = context.tokens;
+    final box = _queueKey.currentContext?.findRenderObject() as RenderBox?;
+    final overlay =
+        Navigator.of(context).overlay?.context.findRenderObject() as RenderBox?;
+    if (box == null || overlay == null || !box.hasSize) return;
+    final anchor = box.localToGlobal(Offset.zero, ancestor: overlay);
+    final right = (anchor.dx + box.size.width)
+        .clamp(_queuePanel.width + 8.0, overlay.size.width - 8.0);
+    final top =
+        (anchor.dy - _queuePanel.height - 10).clamp(8.0, double.infinity);
+
     showDialog<void>(
       context: context,
       barrierColor: Colors.transparent,
-      builder: (context) => Align(
-        alignment: Alignment.bottomCenter,
-        child: Padding(
-          padding: const EdgeInsets.only(bottom: 96),
-          child: Material(
-            color: t.dark ? t.panel2 : t.panel,
-            borderRadius: BorderRadius.circular(14),
-            elevation: 12,
-            child: Container(
-              width: 316,
-              height: 330,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: t.outline),
-              ),
-              child: AnimatedBuilder(
-                animation: c.live,
-                builder: (context, _) =>
-                    HomeQueue(controller: c, accent: accent, dense: false),
+      builder: (context) => Stack(
+        children: [
+          Positioned(
+            left: right - _queuePanel.width,
+            top: top,
+            width: _queuePanel.width,
+            height: _queuePanel.height,
+            child: Material(
+              // `panel` is 82% white on the light theme. A queue floating over
+              // the artwork needs to be opaque or the track titles read through
+              // it, so compose it over the page ground.
+              color: Color.alphaBlend(t.dark ? t.panel2 : t.panel, t.bg),
+              borderRadius: BorderRadius.circular(14),
+              elevation: 12,
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: t.outline),
+                ),
+                child: AnimatedBuilder(
+                  animation: c.live,
+                  builder: (context, _) =>
+                      HomeQueue(controller: c, accent: accent, dense: false),
+                ),
               ),
             ),
           ),
-        ),
+        ],
       ),
     ).then((_) {
       if (mounted) setState(() => _queue = false);
@@ -1564,19 +1726,19 @@ class ClassicMusicCard extends StatelessWidget {
         };
         final src = playingSource(mode);
         return Container(
-          decoration: context.skin
-                  .surface(SurfaceRole.card, radius: kCardRadius) ??
-              BoxDecoration(
-            // Pink reads far brighter than the other section accents, so this
-            // card sits at a third of the standard fill to land at the same
-            // perceived darkness.
-            color: plateQuiet(Tokens.secMusic),
-            borderRadius: BorderRadius.circular(kCardRadius),
-            border: Border.all(
-              color: plateBorder(Tokens.secMusic, false),
-              width: plateBorderW(false),
-            ),
-          ),
+          decoration:
+              context.skin.surface(SurfaceRole.card, radius: kCardRadius) ??
+                  BoxDecoration(
+                    // Pink reads far brighter than the other section accents, so this
+                    // card sits at a third of the standard fill to land at the same
+                    // perceived darkness.
+                    color: plateQuiet(Tokens.secMusic),
+                    borderRadius: BorderRadius.circular(kCardRadius),
+                    border: Border.all(
+                      color: plateBorder(Tokens.secMusic, false),
+                      width: plateBorderW(false),
+                    ),
+                  ),
           padding: const EdgeInsets.all(12),
           child: Column(
             children: [
@@ -1590,16 +1752,16 @@ class ClassicMusicCard extends StatelessWidget {
               // The player floats on the card's canvas in its own well.
               Expanded(
                 child: Container(
-                  decoration: context.skin
-                          .surface(SurfaceRole.card, radius: 12) ??
-                      BoxDecoration(
-                    // Theme-aware fill: white-cream on light themes, the panel
-                    // surface on dark — the fixed cream glared.
-                    color: t.dark ? t.panel2 : const Color(0xFFFAFAF7),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                        color: Tokens.secMusic.withValues(alpha: 0.60)),
-                  ),
+                  decoration:
+                      context.skin.surface(SurfaceRole.card, radius: 12) ??
+                          BoxDecoration(
+                            // Theme-aware fill: white-cream on light themes, the panel
+                            // surface on dark — the fixed cream glared.
+                            color: t.dark ? t.panel2 : const Color(0xFFFAFAF7),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                                color: Tokens.secMusic.withValues(alpha: 0.60)),
+                          ),
                   clipBehavior: Clip.antiAlias,
                   // The mini's own layout is a fixed 300 x 470 frame times its
                   // scale; a short window would leave the well shorter than
@@ -1622,9 +1784,11 @@ class ClassicMusicCard extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               // The five sources, as circular tinted discs. The one that is
-              // playing reads brightest.
+              // playing reads brightest. 48 is the disc itself — the row was
+              // 72 to clear a caption pill that is a tooltip now, and those 24
+              // go to the player above (`_discRow` in home_classic.dart).
               SizedBox(
-                height: 72,
+                height: 48,
                 child: Row(
                   children: [
                     for (final s in const [
@@ -1685,8 +1849,13 @@ class ClassicMusicCard extends StatelessWidget {
   }
 }
 
-/// One circular source button — a tinted icon disc with a solid pill under it.
+/// One circular source button — a tinted icon disc, named on hover.
 /// Active = solid fill and a white inner ring; idle = a tinted wash.
+///
+/// The name used to ride a pill under the disc. Five of those across a 300px
+/// rail left "Audiobooks" as "Audiobo…" and cost the player 23px of height for
+/// a caption nobody needs twice — the icon already says which source it is, and
+/// the tooltip says it again for anyone who wants it spelled out.
 class HomeCircleTab extends StatelessWidget {
   const HomeCircleTab({
     super.key,
@@ -1704,13 +1873,13 @@ class HomeCircleTab extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Hover(
-        onTap: onTap,
-        builder: (context, hov) => Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            AnimatedContainer(
+  Widget build(BuildContext context) => WelTip(
+        label: label,
+        accent: tint,
+        child: Hover(
+          onTap: onTap,
+          builder: (context, hov) => Center(
+            child: AnimatedContainer(
               duration: const Duration(milliseconds: 120),
               width: 48,
               height: 48,
@@ -1721,22 +1890,22 @@ class HomeCircleTab extends StatelessWidget {
                     radius: 24,
                   ) ??
                   BoxDecoration(
-                color: active ? tint : wash(tint, hov ? 0.30 : 0.15),
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: active
-                      ? darker(tint, 0.45)
-                      : tint.withValues(alpha: 0.40),
-                  width: active ? 2 : 1,
-                ),
-                boxShadow: active
-                    ? [
-                        BoxShadow(
-                            color: tint.withValues(alpha: 0.45),
-                            blurRadius: 14),
-                      ]
-                    : null,
-              ),
+                    color: active ? tint : wash(tint, hov ? 0.30 : 0.15),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: active
+                          ? darker(tint, 0.45)
+                          : tint.withValues(alpha: 0.40),
+                      width: active ? 2 : 1,
+                    ),
+                    boxShadow: active
+                        ? [
+                            BoxShadow(
+                                color: tint.withValues(alpha: 0.45),
+                                blurRadius: 14),
+                          ]
+                        : null,
+                  ),
               child: Center(
                 child: Container(
                   width: 40,
@@ -1760,29 +1929,7 @@ class HomeCircleTab extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(height: 5),
-            Container(
-              height: 18,
-              padding: const EdgeInsets.symmetric(horizontal: 9),
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: tint,
-                borderRadius: BorderRadius.circular(9),
-                border:
-                    Border.all(color: Colors.white, width: active ? 1.5 : 0),
-              ),
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: active ? FontWeight.w800 : FontWeight.w700,
-                  color: Colors.white,
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
       );
 }

@@ -90,6 +90,20 @@ String kindLabel(String kind) => switch (kind) {
 
 /// Which section a Continue row belongs to — where a click lands and which
 /// resolver draws the cover.
+/// Where a Continue row's picture actually lives.
+///
+/// Null for a book or a video — those ids ARE the thing with the cover, and the
+/// section's own thumbnail store has it. The other two do not: a podcast row's
+/// id is an episode and the art belongs to the show, an audiobook row's id is a
+/// chapter and the cover belongs to the book. Both carry the key they need in
+/// `path` — the show's image URL, the book's folder.
+({String kind, String key})? continueArt(HomeContinue row) =>
+    switch (row.kind) {
+      'podcast' when row.path.isNotEmpty => (kind: 'podcast', key: row.path),
+      'audiobook' when row.path.isNotEmpty => (kind: 'book', key: row.path),
+      _ => null,
+    };
+
 Section kindSection(String kind) => switch (kind) {
       'video' => Section.videos,
       'book' => Section.books,
@@ -175,8 +189,8 @@ class HomeChip extends StatelessWidget {
         // A skin draws the chip as its own control, latched in the kind's
         // colour when on.
         final skin = context.skin;
-        final skinned = skin.control(
-            active: on, hovered: hov, tint: accent, radius: 15);
+        final skinned =
+            skin.control(active: on, hovered: hov, tint: accent, radius: 15);
         return AnimatedContainer(
           duration: const Duration(milliseconds: 120),
           height: 30,
@@ -339,18 +353,18 @@ class ProgressPill extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(9, 4, 9, 5),
       decoration: well ??
           BoxDecoration(
-        color: t.dark
-            ? darker(accent, 0.30)
-            : (compact ? Colors.white : accent.withValues(alpha: 0.12)),
-        borderRadius: BorderRadius.circular(9),
-        border: Border.all(
-          color: t.dark
-              ? Colors.white.withValues(alpha: 0.80)
-              : (compact
-                  ? Colors.black.withValues(alpha: 0.53)
-                  : accent.withValues(alpha: 0.55)),
-        ),
-      ),
+            color: t.dark
+                ? darker(accent, 0.30)
+                : (compact ? Colors.white : accent.withValues(alpha: 0.12)),
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(
+              color: t.dark
+                  ? Colors.white.withValues(alpha: 0.80)
+                  : (compact
+                      ? Colors.black.withValues(alpha: 0.53)
+                      : accent.withValues(alpha: 0.55)),
+            ),
+          ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -416,6 +430,7 @@ class LazyCover extends StatefulWidget {
     this.fit = BoxFit.cover,
     this.iconSize = 20,
     this.alignment = Alignment.center,
+    this.art,
   });
 
   final Section section;
@@ -424,6 +439,21 @@ class LazyCover extends StatefulWidget {
   final IconData? icon;
   final BoxFit fit;
   final double iconSize;
+
+  /// Resolve the art through `music_ensure_art` with this (kind, key) rather
+  /// than looking [id] up in a section's thumbnail store.
+  ///
+  /// Two kinds of row hold an id that is not the thing with the picture. A
+  /// podcast row's id is an EPISODE and the artwork belongs to the show — and
+  /// an episode's own `image_url` is empty on every row of a real library, so
+  /// as a music track it resolved to nothing and the timeline drew tinted
+  /// plates where the channel thumbs should be. An audiobook row's id is a
+  /// CHAPTER and the cover belongs to the book, in `audiobook_covers`, which
+  /// is where the scraper puts what it fetched.
+  ///
+  /// `('podcast', url)` caches a remote image to disk once; `('book', folder)`
+  /// reads the fetched cover with the Audiobooks tab's own fallbacks behind it.
+  final ({String kind, String key})? art;
 
   /// Which part of the art the crop keeps. Photos anchor to the TOP — that is
   /// where the faces are, and a centre crop cuts them off.
@@ -446,7 +476,9 @@ final Map<String, String> _coverPaths = {};
 class _LazyCoverState extends State<LazyCover> {
   String? _path;
 
-  String get _key => '${widget.section.name}/${widget.id}';
+  String get _key => widget.art != null
+      ? '${widget.art!.kind}/${widget.art!.key}'
+      : '${widget.section.name}/${widget.id}';
 
   @override
   void initState() {
@@ -458,7 +490,9 @@ class _LazyCoverState extends State<LazyCover> {
   @override
   void didUpdateWidget(LazyCover old) {
     super.didUpdateWidget(old);
-    if (old.id != widget.id || old.section != widget.section) {
+    if (old.id != widget.id ||
+        old.section != widget.section ||
+        old.art != widget.art) {
       // A hit lands in this same frame, so the fan never shows a hole.
       _path = _coverPaths[_key];
       if (_path == null) _ask();
@@ -468,8 +502,20 @@ class _LazyCoverState extends State<LazyCover> {
   Future<void> _ask() async {
     final id = widget.id;
     final key = _key;
-    if (id < 0) return;
+    final art = widget.art;
+    if (art == null && id < 0) return;
     try {
+      // Resolved by the bridge, not fetched here: two front-ends fetching the
+      // same artwork would keep two copies of it in two caches, and the Slint
+      // one is already on disk.
+      if (art != null) {
+        if (art.key.isEmpty) return;
+        final found = await musicEnsureArt(kind: art.kind, key: art.key);
+        if (found == null || found.isEmpty) return;
+        _coverPaths[key] = found;
+        if (mounted && widget.art == art) setState(() => _path = found);
+        return;
+      }
       // Every section that has thumbnails has a resolver; Music's takes a
       // kind and a key rather than a bare id.
       final path = switch (widget.section) {
@@ -498,11 +544,32 @@ class _LazyCoverState extends State<LazyCover> {
                   Icon(widget.icon, size: widget.iconSize, color: widget.tint)),
     );
     final path = _path;
-    if (path == null) return plate;
-    return Image.file(File(path),
-        fit: widget.fit,
-        alignment: widget.alignment,
-        errorBuilder: (_, __, ___) => plate);
+    // Cross-faded, not swapped. Classic's coverflow hands all six slots a new
+    // id at the end of every roll, and painting the new file straight over the
+    // old one cut all six at once — the "slam" that made a slideshow read as a
+    // stack of photos being dealt rather than a wheel turning. 320ms against a
+    // 1400ms roll dissolves inside the movement.
+    //
+    // `gaplessPlayback` holds the last frame while the next file decodes, so
+    // the outgoing image never blinks to the plate mid-fade, and the key is the
+    // path so an unchanged cover is not re-faded on every rebuild.
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 320),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeOut,
+      layoutBuilder: (current, previous) => Stack(
+        fit: StackFit.expand,
+        children: [...previous, if (current != null) current],
+      ),
+      child: path == null
+          ? plate
+          : Image.file(File(path),
+              key: ValueKey(path),
+              fit: widget.fit,
+              alignment: widget.alignment,
+              gaplessPlayback: true,
+              errorBuilder: (_, __, ___) => plate),
+    );
   }
 }
 
@@ -528,8 +595,6 @@ void eventAction(HomeEvent e) {
   }
 }
 
-
-
 /// Resume one Continue row, kind by kind — `continue-open` in ui/main.slint.
 ///
 /// A book opens in the reader, a podcast episode just starts playing (you stay
@@ -542,8 +607,7 @@ void eventAction(HomeEvent e) {
 void continueOpen(HomeContinue row) {
   switch (row.kind) {
     case 'book':
-      ShellController.instance
-          .goOpen(Section.books, 'reader', '${row.id}');
+      ShellController.instance.goOpen(Section.books, 'reader', '${row.id}');
     case 'podcast':
       MusicController.instance.send(MusicCmd.podPlay(episodeId: row.id));
     case 'audiobook':
@@ -593,14 +657,16 @@ class HubTile extends StatelessWidget {
         // answers the hover.
         decoration: context.skin.surface(SurfaceRole.card, radius: 16) ??
             BoxDecoration(
-          color: accent.withValues(
-              alpha: hov
-                  ? (t.dark ? 0.28 : 0.18 * washScale)
-                  : (t.dark ? 0.16 : 0.10 * washScale)),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-              color: hov ? accent.withValues(alpha: 0.45) : Colors.transparent),
-        ),
+              color: accent.withValues(
+                  alpha: hov
+                      ? (t.dark ? 0.28 : 0.18 * washScale)
+                      : (t.dark ? 0.16 : 0.10 * washScale)),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                  color: hov
+                      ? accent.withValues(alpha: 0.45)
+                      : Colors.transparent),
+            ),
         // The armed inner ring, held off the tile's own edge — a button that is
         // armed rather than one that merely lit up.
         child: Padding(
@@ -652,24 +718,28 @@ class HubTile extends StatelessWidget {
                   ),
                 ),
                 SizedBox(height: 7 * s),
+                // Hugs the count. See the note on `KindTag` below: an
+                // `alignment` here took the tile's whole width.
                 Container(
                   height: 19 * s,
                   padding: EdgeInsets.symmetric(horizontal: 9 * s),
-                  alignment: Alignment.center,
                   decoration: BoxDecoration(
                     color: accent,
                     borderRadius: BorderRadius.circular(9.5 * s),
                     border: Border.all(color: darker(accent, 0.25)),
                   ),
-                  child: Text(
-                    count,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: 10 * s,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white),
-                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Flexible(
+                        child: Text(
+                      count,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 10 * s,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white),
+                    )),
+                  ]),
                 ),
               ],
             ),
@@ -824,7 +894,9 @@ void launch(String id) {
     case 'genesis':
       shell.goTab(Section.books, 'genesis');
     case 'radio':
-      shell.go(Section.music);
+      // No `go(Section.music)`: a station is something you start, not somewhere
+      // you go. It comes up on whatever player is on screen — the Classic rail,
+      // Welcome's bar — and Home stays put.
       MusicController.instance.randomRadio();
   }
 }
@@ -866,12 +938,12 @@ class TopPill extends StatelessWidget {
                 : context.skin.control(
                     active: false, hovered: hov, tint: accent, radius: 16)) ??
             BoxDecoration(
-          color: solid
-              ? (hov ? accent.withValues(alpha: 0.85) : accent)
-              : (hov ? t.glassStrong : t.glass),
-          borderRadius: BorderRadius.circular(16),
-          border: solid ? null : Border.all(color: t.glassBorder),
-        ),
+              color: solid
+                  ? (hov ? accent.withValues(alpha: 0.85) : accent)
+                  : (hov ? t.glassStrong : t.glass),
+              borderRadius: BorderRadius.circular(16),
+              border: solid ? null : Border.all(color: t.glassBorder),
+            ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1084,12 +1156,12 @@ class HeroBtn extends StatelessWidget {
                 : context.skin
                     .control(active: false, hovered: hov, radius: 21)) ??
             BoxDecoration(
-          color: primary
-              ? (hov ? fill.withValues(alpha: 0.88) : fill)
-              : (hov ? t.glassStrong : t.glass),
-          borderRadius: BorderRadius.circular(21),
-          border: primary ? null : Border.all(color: t.glassBorder),
-        ),
+              color: primary
+                  ? (hov ? fill.withValues(alpha: 0.88) : fill)
+                  : (hov ? t.glassStrong : t.glass),
+              borderRadius: BorderRadius.circular(21),
+              border: primary ? null : Border.all(color: t.glassBorder),
+            ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1129,25 +1201,33 @@ class KindTag extends StatelessWidget {
   final double height;
 
   @override
+  // No `alignment`: a `Container` that has one wraps its child in an `Align`,
+  // and an `Align` with no size factor takes `constraints.biggest` — so every
+  // one of these tags stretched to the width of whatever held it rather than
+  // wrapping its word. A min-size Row hugs and still centres in the height.
   Widget build(BuildContext context) => Container(
         height: height,
         padding: EdgeInsets.symmetric(horizontal: filled ? 8 : 7),
-        alignment: Alignment.center,
         decoration: BoxDecoration(
           color: filled ? accent : wash(accent, 0.15),
           borderRadius: BorderRadius.circular(filled ? 6 : height / 2),
           border:
               filled ? null : Border.all(color: accent.withValues(alpha: 0.55)),
         ),
-        child: Text(
-          kindLabel(kind),
-          style: TextStyle(
-            fontSize: filled ? 8.5 : 8,
-            fontWeight: FontWeight.w800,
-            letterSpacing: filled ? 0.7 : 0.6,
-            color: filled ? Colors.white : accent,
-          ),
-        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Flexible(
+              child: Text(
+            kindLabel(kind),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: filled ? 8.5 : 8,
+              fontWeight: FontWeight.w800,
+              letterSpacing: filled ? 0.7 : 0.6,
+              color: filled ? Colors.white : accent,
+            ),
+          )),
+        ]),
       );
 }
 
@@ -1164,7 +1244,8 @@ class KindTag extends StatelessWidget {
 /// and the brand glyph when there is neither — the same three-way fallback the
 /// sidebar's user card draws, off the same `ShellState.user`.
 class HomeAvatar extends StatelessWidget {
-  const HomeAvatar({super.key, this.size = 40, this.dot = false, this.grow = 0});
+  const HomeAvatar(
+      {super.key, this.size = 40, this.dot = false, this.grow = 0});
 
   final double size;
   final bool dot;
@@ -1187,7 +1268,10 @@ class HomeAvatar extends StatelessWidget {
         // than a reflow of the header row beside it.
         final box = size + grow + (dot ? 4 : 0);
         return Hover(
-          onTap: () => shell.go(Section.settings),
+          // Always the Profile tab, from every layout. `go(Section.settings)`
+          // landed on whichever tab Settings was left on, so the picture of you
+          // opened Storage or Security depending on where you had last been.
+          onTap: () => shell.goTab(Section.settings, 'profile'),
           builder: (context, hov) {
             final d = hov ? size + grow : size;
             return SizedBox(
@@ -1354,13 +1438,37 @@ class VizMenu extends StatelessWidget {
     'Line',
   ];
 
+  /// One menu row. Every `PopupMenuItem` below is built at this height.
+  static const double _row = 26;
+
+  /// How tall the menu comes out, from the same constants that build it.
+  ///
+  /// `PopupMenuPosition` has no "above": the route's `y` is `position.top`,
+  /// and `_fitInsideScreen` only clamps it to the screen — it never flips the
+  /// menu to the other side of its button. So the lift has to be measured, and
+  /// measuring it here means it stays right when a row is added.
+  double _height() =>
+      names.length * _row + // the five styles
+      16 + // PopupMenuDivider
+      _row + // Off Viz
+      (lyricsAllowed ? _row : 0) +
+      16; // _kMenuVerticalPadding, top and bottom
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
     return PopupMenuButton<String>(
       tooltip: 'Visualizer',
-      position: PopupMenuPosition.under,
-      color: t.panel,
+      // Opens with its foot on the chip's head rather than hanging below it.
+      position: PopupMenuPosition.over,
+      offset: Offset(0, -_height() - 8),
+      // `Tokens.panel` is 82% white on the light theme — right for a panel
+      // lying on the page, wrong for a menu floating over a photo wall, where
+      // whatever is behind it reads straight through the labels. Composed over
+      // the page ground it keeps the hue and stops being see-through; the
+      // surface tint would put the M3 elevation wash back on top of it.
+      color: Color.alphaBlend(t.panel, t.bg),
+      surfaceTintColor: Colors.transparent,
       onSelected: (v) {
         if (v == 'off') return onOff();
         if (v == 'lyrics') return onLyrics();
@@ -1370,7 +1478,7 @@ class VizMenu extends StatelessWidget {
         for (var i = 0; i < names.length; i++)
           PopupMenuItem(
             value: '$i',
-            height: 26,
+            height: _row,
             child: Text(names[i],
                 style: TextStyle(
                     fontSize: 12,
@@ -1381,7 +1489,7 @@ class VizMenu extends StatelessWidget {
         const PopupMenuDivider(),
         PopupMenuItem(
           value: 'off',
-          height: 26,
+          height: _row,
           child: Text('Off Viz',
               style: TextStyle(
                   fontSize: 12,
@@ -1391,7 +1499,7 @@ class VizMenu extends StatelessWidget {
         if (lyricsAllowed)
           PopupMenuItem(
             value: 'lyrics',
-            height: 26,
+            height: _row,
             child: Text(lyrics ? 'Lyrics · on' : 'Lyrics · off',
                 style: TextStyle(
                     fontSize: 12,
@@ -1403,4 +1511,3 @@ class VizMenu extends StatelessWidget {
     );
   }
 }
-

@@ -11,6 +11,8 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+// frb's own Int64List, which is BigInt-strict and NOT the dart:typed_data one.
+import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
 import '../../design/tokens.dart';
 import '../../design/skin.dart';
@@ -225,8 +227,7 @@ class _WelcomeHomeState extends State<WelcomeHome> {
                             music: _music,
                             quoteIndex: _quote,
                             lyrics: _lyrics,
-                            onLyrics: () =>
-                                setState(() => _lyrics = !_lyrics),
+                            onLyrics: () => setState(() => _lyrics = !_lyrics),
                           ),
                         ),
                         const SizedBox(height: gap),
@@ -369,8 +370,7 @@ class _WelCard extends StatelessWidget {
     final t = context.tokens;
     return Container(
       padding: padding,
-      decoration: context.skin
-              .surface(SurfaceRole.card, radius: kCardRadius) ??
+      decoration: context.skin.surface(SurfaceRole.card, radius: kCardRadius) ??
           BoxDecoration(
             color: t.panel,
             borderRadius: BorderRadius.circular(kCardRadius),
@@ -477,9 +477,10 @@ class _Hero extends StatelessWidget {
                   height: 44,
                   child: Row(
                     children: [
-                      const _HeroStatus(),
+                      // No health lamp here: the sidebar carries the one that
+                      // reports it, and a second copy beside the avatar said the
+                      // same thing twice on the same screen.
                       if (vizAllowed) ...[
-                        const SizedBox(width: 10),
                         _VizChip(
                           music: music,
                           lyricsAllowed: lyricsOk,
@@ -537,25 +538,32 @@ class _Hero extends StatelessWidget {
               // page, so they are given the one loud colour in the hero. The
               // pill is only as wide as its text — a full-width band would read
               // as an error banner.
+              // A `Container` with an `alignment` wraps its child in an
+              // `Align`, and an `Align` with no size factor takes
+              // `constraints.biggest` — so under a bounded parent this pill
+              // stretched edge to edge instead of wrapping its words. A
+              // min-size Row hugs, and still centres the text in the height.
               Container(
                 height: greetSize * 0.26 * 2.1,
                 padding: const EdgeInsets.symmetric(horizontal: 12),
-                alignment: Alignment.center,
                 decoration: BoxDecoration(
                   color: const Color(0xFFEF4444).withValues(alpha: 0.82),
                   borderRadius: BorderRadius.circular(greetSize * 0.26 * 1.05),
                 ),
-                child: Text(
-                  state.libraryLine.isEmpty
-                      ? state.dateLine
-                      : '${state.dateLine}  ·  ${state.libraryLine}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                      fontSize: greetSize * 0.26,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white),
-                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Flexible(
+                      child: Text(
+                    state.libraryLine.isEmpty
+                        ? state.dateLine
+                        : '${state.dateLine}  ·  ${state.libraryLine}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: greetSize * 0.26,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white),
+                  )),
+                ]),
               ),
               SizedBox(height: hvizPad),
               SizedBox(
@@ -623,125 +631,6 @@ class _HeroQuote extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-/// The sidebar's health key, rebuilt to hero scale. Two differences, both
-/// because this one does not leave the app: single click, and it opens the
-/// in-window Status page rather than the loopback dashboard.
-class _HeroStatus extends StatefulWidget {
-  const _HeroStatus();
-
-  @override
-  State<_HeroStatus> createState() => _HeroStatusState();
-}
-
-class _HeroStatusState extends State<_HeroStatus> {
-  bool _pulse = true;
-  Timer? _tick;
-
-  @override
-  void initState() {
-    super.initState();
-    // A pulse means "something is happening": idle and OK are steady, so the
-    // page stops repainting once the app settles.
-    _tick = Timer.periodic(const Duration(milliseconds: 900), (_) {
-      final level = ShellController.instance.statusLevel;
-      if (!mounted) return;
-      if (level == 'busy' || level == 'problem') {
-        setState(() => _pulse = !_pulse);
-      } else if (!_pulse) {
-        setState(() => _pulse = true);
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _tick?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    final shell = ShellController.instance;
-    return AnimatedBuilder(
-      animation: shell,
-      builder: (context, _) {
-        // Busy is green — a scan running is the app working, not a warning.
-        final lamp = switch (shell.statusLevel) {
-          'ok' => const Color(0xFF22C55E),
-          'busy' => const Color(0xFF10B981),
-          'problem' => Tokens.error,
-          _ => Tokens.secSettings,
-        };
-        return Hover(
-          onTap: () => shell.goTab(Section.settings, 'status'),
-          builder: (context, hov) => AnimatedContainer(
-            duration: const Duration(milliseconds: 140),
-            width: 162,
-            height: 40,
-            padding: const EdgeInsets.only(left: 11, right: 24),
-            decoration: BoxDecoration(
-              color: lamp.withValues(alpha: hov ? 0.16 : 0.09),
-              borderRadius: BorderRadius.circular(10),
-              border:
-                  Border.all(color: lamp.withValues(alpha: hov ? 0.62 : 0.38)),
-            ),
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Status',
-                        style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: t.text)),
-                    Text(shell.statusNote,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 10, color: t.textDim)),
-                  ],
-                ),
-                // The lamp breathes on its own timer with a fixed glow ring:
-                // the fill fades, the ring does not, so it reads as a lamp
-                // turning up and down rather than as something appearing.
-                Positioned(
-                  right: -13,
-                  top: 0,
-                  bottom: 0,
-                  child: Center(
-                    child: Container(
-                      width: 15,
-                      height: 15,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: lamp.withValues(alpha: 0.3)),
-                      ),
-                      child: Center(
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 850),
-                          width: 9,
-                          height: 9,
-                          decoration: BoxDecoration(
-                            color: lamp.withValues(alpha: _pulse ? 1.0 : 0.25),
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
     );
   }
 }
@@ -937,96 +826,90 @@ class _ContinueRow extends StatelessWidget {
     return Hover(
       onTap: () => continueOpen(row),
       builder: (context, hov) => AnimatedContainer(
-        duration: const Duration(milliseconds: 130),
+        duration: const Duration(milliseconds: 120),
         padding: const EdgeInsets.symmetric(horizontal: 7),
-        decoration: BoxDecoration(
-          // Hover fills with the row's own kind accent and takes an accent
-          // edge — a panel-to-panel lift was invisible on a page of panels.
-          color: hov
-              ? accent.withValues(alpha: t.dark ? 0.28 : 0.18)
-              : t.panel.withValues(alpha: 0.55),
+        // Classic's `ContinueCard` decoration, laid out as a row instead of a
+        // tile. Two things were wrong with the one this replaces.
+        //
+        // It never asked the design language for a surface — it painted
+        // `Tokens.panel` at 55% directly — so on every language but Standard it
+        // was a token colour dropped onto a card it did not match.
+        //
+        // And hover filled the whole row with the kind accent at 28% on dark.
+        // Over a dark card that reads as a pale wash, and the title on it is
+        // `Tokens.text`, which on dark is very nearly white: white text on a
+        // pale fill. The accent belongs on the EDGE, which is where Classic
+        // puts it and where it cannot fight the words.
+        decoration: context.skin.surface(SurfaceRole.card, radius: 12) ??
+            BoxDecoration(
+              color: hov ? t.panel : t.panel.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                  color: hov ? accent.withValues(alpha: 0.6) : t.outline),
+            ),
+        // The armed ring, drawn OVER the child rather than as a positioned
+        // sibling — which is also what makes hover survive a skin. Classic's
+        // card loses its hover entirely under a language, because the skin
+        // decoration it falls back from is the same whether the pointer is on
+        // it or not; a foreground border is not the skin's to override.
+        foregroundDecoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-              color: hov ? accent.withValues(alpha: 0.45) : t.outline),
+            color: hov ? accent.withValues(alpha: 0.75) : Colors.transparent,
+            width: hov ? 2 : 0,
+          ),
         ),
-        // The armed inner outline, held 5px off the row's own edge — the same
-        // second ring `HubTile` draws, and the reason the row reads as a button
-        // that is armed rather than one that merely lit up. Last child and
-        // ignored by the pointer, so it rides over the cover and the pills
-        // instead of being cut by them.
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: Padding(
-                padding: const EdgeInsets.all(5),
-                child: IgnorePointer(
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 130),
-                    curve: Curves.easeOut,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(7),
-                      border: Border.all(
-                        color: hov
-                            ? accent.withValues(alpha: 0.75)
-                            : Colors.transparent,
-                        width: hov ? 2 : 0,
-                      ),
+        child: Row(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: SizedBox(
+                    width: cw,
+                    height: height - 8,
+                    child: LazyCover(
+                      section: kindSection(row.kind),
+                      id: row.id,
+                      tint: accent,
+                      icon: kindIcon(row.kind),
+                      iconSize: 15,
+                      art: continueArt(row),
                     ),
                   ),
                 ),
-              ),
-            ),
-            Row(
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: SizedBox(
-                width: cw,
-                height: height - 8,
-                child: LazyCover(
-                  section: kindSection(row.kind),
-                  id: row.id,
-                  tint: accent,
-                  icon: kindIcon(row.kind),
-                  iconSize: 15,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(row.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800,
+                              color: t.text)),
+                      Text(row.author.isEmpty ? row.sub : row.author,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 10.5, color: t.textDim)),
+                    ],
+                  ),
                 ),
-              ),
+                const SizedBox(width: 8),
+                KindTag(
+                    kind: row.kind,
+                    accent: accent,
+                    height: math.min(34, height - 8)),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 172,
+                  child: ProgressPill(
+                      sub: row.sub, frac: row.frac, accent: accent),
+                ),
+                const SizedBox(width: 2),
+              ],
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(row.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w800,
-                          color: t.text)),
-                  Text(row.author.isEmpty ? row.sub : row.author,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 10.5, color: t.textDim)),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            KindTag(
-                kind: row.kind,
-                accent: accent,
-                height: math.min(34, height - 8)),
-            const SizedBox(width: 8),
-            SizedBox(
-              width: 172,
-              child: ProgressPill(sub: row.sub, frac: row.frac, accent: accent),
-            ),
-            const SizedBox(width: 2),
-          ],
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -1166,6 +1049,11 @@ class _RecentlyAdded extends StatelessWidget {
             height: cellH,
             child: _RaTile(
               tile: tiles[i],
+              // The shelf IS the queue for a song click: picking the third of
+              // four starts there and the other three follow, which is what
+              // clicking a row in a list means everywhere else in Music.
+              shelf: tiles.take(max).toList(),
+              index: i,
               section: section,
               tab: tab,
               accent: accent,
@@ -1183,6 +1071,8 @@ class _RecentlyAdded extends StatelessWidget {
 class _RaTile extends StatelessWidget {
   const _RaTile({
     required this.tile,
+    required this.shelf,
+    required this.index,
     required this.section,
     required this.tab,
     required this.accent,
@@ -1191,6 +1081,10 @@ class _RaTile extends StatelessWidget {
   });
 
   final HomeTile tile;
+
+  /// The whole row, and where this tile sits in it.
+  final List<HomeTile> shelf;
+  final int index;
   final Section section;
 
   /// 0 Photos · 1 Videos · 2 Music · 3 Books — what a click means differs per
@@ -1205,11 +1099,18 @@ class _RaTile extends StatelessWidget {
   void _open() {
     switch (tab) {
       case 2:
-        MusicController.instance
-            .send(MusicCmd.songPlayDefault(itemId: tile.id));
+        // NOT `songPlayDefault`. That command is `fm::open_default` — it hands
+        // the file to the desktop's default handler, which on this machine is
+        // the browser, so tapping a song opened Chrome instead of playing it.
+        // `playList` is what a row click means: the shelf becomes the queue and
+        // the deck starts on the one that was tapped.
+        MusicController.instance.send(MusicCmd.playList(
+          itemIds: Int64List.fromList([for (final s in shelf) s.id]),
+          index: index,
+          source: 'Recently added',
+        ));
       case 3:
-        ShellController.instance
-            .goOpen(Section.books, 'detail', '${tile.id}');
+        ShellController.instance.goOpen(Section.books, 'detail', '${tile.id}');
       default:
         ShellController.instance.goOpen(section, 'item', '${tile.id}');
     }

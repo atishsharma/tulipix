@@ -634,6 +634,13 @@ class _FeedRow extends StatelessWidget {
                                   tint: tint,
                                   icon: sectionIcon(event.section),
                                   iconSize: 14,
+                                  // An episode row's id is an episode and
+                                  // there is no episode thumbnail to find;
+                                  // `path` carries the show's art URL.
+                                  art: event.kind == 'episode' &&
+                                          event.path.isNotEmpty
+                                      ? (kind: 'podcast', key: event.path)
+                                      : null,
                                 ),
                               ),
                             ),

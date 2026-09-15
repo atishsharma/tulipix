@@ -17,7 +17,8 @@
 
 import 'dart:async';
 
-import 'package:flutter/gestures.dart' show kPrimaryButton;
+import 'package:flutter/gestures.dart'
+    show kDoubleTapSlop, kDoubleTapTimeout, kPrimaryButton;
 import 'package:flutter/material.dart';
 
 import '../design/app_mark.dart';
@@ -44,6 +45,11 @@ class AppTitleRow extends StatefulWidget {
 }
 
 class _AppTitleRowState extends State<AppTitleRow> {
+  /// When and where the last primary press on the drag surface landed, so a
+  /// second one can be read as a double-click before the drag swallows it.
+  DateTime? _lastDown;
+  Offset _lastDownAt = Offset.zero;
+
   final MusicController _music = MusicController.instance;
   final WindowChrome _chrome = WindowChrome.instance;
 
@@ -155,11 +161,28 @@ class _AppTitleRowState extends State<AppTitleRow> {
                     // release never comes back and a Flutter gesture arena
                     // waiting for one would stay armed.
                     onPointerDown: (e) {
-                      if (e.buttons == kPrimaryButton) beginWindowDrag();
+                      if (e.buttons != kPrimaryButton) return;
+                      // The double-click has to be recognised HERE, not by a
+                      // GestureDetector underneath. `beginWindowDrag` hands the
+                      // pointer to the compositor on the way down, so the
+                      // release never comes back and no gesture arena ever
+                      // resolves — which is why the `onDoubleTap` that used to
+                      // sit below this never once fired. Two downs inside the
+                      // double-tap window and within slop is the whole test.
+                      final now = DateTime.now();
+                      final again = _lastDown != null &&
+                          now.difference(_lastDown!) < kDoubleTapTimeout &&
+                          (e.position - _lastDownAt).distance < kDoubleTapSlop;
+                      _lastDown = again ? null : now;
+                      _lastDownAt = e.position;
+                      if (again) {
+                        toggleMaximizeWindow();
+                      } else {
+                        beginWindowDrag();
+                      }
                     },
-                    child: GestureDetector(
-                      onDoubleTap: toggleMaximizeWindow,
-                      child: Row(
+                    child: Builder(
+                      builder: (context) => Row(
                         children: [
                           const SizedBox(width: 12),
                           // The mark at rest, a note in the record's own colour

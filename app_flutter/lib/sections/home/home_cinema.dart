@@ -102,7 +102,13 @@ class _CinemaHomeState extends State<CinemaHome> {
         // ── Geometry, from ui/page_home_cinema.slint ───────────────────────
         const pad = 34.0;
         const stackW = 300.0;
-        final railOn = _on('continue') && rows.isNotEmpty;
+        // The strip stays up while a filter is on, even a filter with nothing
+        // in it. Gated on `rows.isNotEmpty` alone it collapsed to zero height
+        // the moment you picked an empty tab — taking the tab strip with it, so
+        // there was no way back to All short of restarting. An empty library
+        // with no filter still hides it, which is the case this was written for.
+        final filtering = st.continueFilter != 'all';
+        final railOn = _on('continue') && (rows.isNotEmpty || filtering);
         // The Continue row is 70% of the page — at half, four tabs were
         // narrower than their own titles.
         final railW = (box.maxWidth - 2 * pad) * 0.7;
@@ -167,6 +173,19 @@ class _CinemaHomeState extends State<CinemaHome> {
                   section: artSection,
                   id: artId,
                   tint: accent,
+                  // The backdrop is whichever row is selected, so it follows
+                  // the same rule the rail tiles do. `HomeHero` carries the
+                  // same `kind` and `path` a row does.
+                  art: continueArt(sel ??
+                      HomeContinue(
+                        kind: kind,
+                        title: title,
+                        author: '',
+                        sub: '',
+                        frac: frac,
+                        id: artId,
+                        path: st.hero.path,
+                      )),
                   fit: BoxFit.cover,
                 ),
               )
@@ -463,7 +482,17 @@ class _CinemaHomeState extends State<CinemaHome> {
                             // there are they all fit.
                             SizedBox(
                               height: railH,
-                              child: Row(
+                              child: rows.isEmpty
+                                  ? Align(
+                                      alignment: Alignment.topLeft,
+                                      child: Text(
+                                          'Nothing in progress here — pick '
+                                          'another tab.',
+                                          style: TextStyle(
+                                              fontSize: 12,
+                                              color: t.textDim)),
+                                    )
+                                  : Row(
                                 children: [
                                   for (var i = 0; i < rows.length; i++) ...[
                                     if (i > 0) const SizedBox(width: 8),
@@ -562,6 +591,7 @@ class RailTile extends StatelessWidget {
                   tint: accent,
                   icon: kindIcon(data.kind),
                   iconSize: 18,
+                  art: continueArt(data),
                 ),
               ),
             ),

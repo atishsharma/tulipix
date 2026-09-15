@@ -46,8 +46,14 @@ class ClassicHome extends StatelessWidget {
         // Scale the mini so its content fits the slot with the disc row clear
         // beneath it: the real content runs ~590px at scale 1, so reserve the
         // chrome and never upscale past 1.25.
+        //
+        // `_discRow` is the five source buttons plus the MUSIC cap and the gaps
+        // around them. The buttons lost their caption pills — a tooltip now —
+        // and the 24px that freed goes to the player rather than to slack, so
+        // the disc it spins comes out bigger in the same rail.
+        const discRow = 131.0;
         final playerScale =
-            ((railH - qaH - 10 - 155) / 505).clamp(0.9, 1.25).toDouble();
+            ((railH - qaH - 10 - discRow) / 505).clamp(0.9, 1.25).toDouble();
         final musicW = (300 * playerScale + 40) * 1.05;
         // The 30px gutter holds the divider.
         final leftW = box.maxWidth - 32 - musicW - 30;
@@ -174,85 +180,93 @@ class _HeaderState extends State<_Header> {
     final t = context.tokens;
     final st = widget.state;
     final c = MusicController.instance;
-    return Row(
-      children: [
-        AppMark(
-            size: 84,
-            radius: 20,
-            choice: ShellController.instance.state?.logoChoice ?? 0),
-        const SizedBox(width: 16),
-        Flexible(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(st.greeting,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                      fontSize: 30,
-                      fontWeight: FontWeight.w800,
-                      color: t.text)),
-              const SizedBox(height: 5),
-              // `date-line + " · " + user-secondary` in ui/page_home.slint.
-              // The secondary is the library line, and it rides the shell
-              // snapshot rather than Home's — one count, one wording.
-              Text(_meta(st.dateLine),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 14, color: t.textDim)),
-            ],
+    return LayoutBuilder(
+      builder: (context, box) => Row(
+        children: [
+          AppMark(
+              size: 84,
+              radius: 20,
+              choice: ShellController.instance.state?.logoChoice ?? 0),
+          const SizedBox(width: 16),
+          // `horizontal-stretch: 0` on the greeting in ui/page_home.slint: it
+          // takes the width it needs and elides past a cap, so the spectrum
+          // gap gets every remaining pixel and the chip and avatar sit on the
+          // right edge. A `Flexible` here claimed a flex slot it did not fill,
+          // and Row leaves that unused slack AFTER the last child — which is
+          // what pushed both controls ~240px in from the edge.
+          ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: box.maxWidth * 0.42),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(st.greeting,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 30,
+                        fontWeight: FontWeight.w800,
+                        color: t.text)),
+                const SizedBox(height: 5),
+                // `date-line + " · " + user-secondary` in ui/page_home.slint.
+                // The secondary is the library line, and it rides the shell
+                // snapshot rather than Home's — one count, one wording.
+                Text(_meta(st.dateLine),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 14, color: t.textDim)),
+              ],
+            ),
           ),
-        ),
-        const SizedBox(width: 16),
-        // The spectrum spans the header gap — borderless, so it reads as part
-        // of the header rather than a boxed card.
-        Expanded(
-          child: AnimatedBuilder(
+          const SizedBox(width: 16),
+          // The spectrum spans the header gap — borderless, so it reads as part
+          // of the header rather than a boxed card.
+          Expanded(
+            child: AnimatedBuilder(
+              animation: c,
+              builder: (context, _) =>
+                  HeaderViz(controller: c, on: _viz, lyrics: _lyrics),
+            ),
+          ),
+          const SizedBox(width: 16),
+          // The waveform chip: five styles, Off, and the lyric toggle.
+          AnimatedBuilder(
             animation: c,
-            builder: (context, _) =>
-                HeaderViz(controller: c, on: _viz, lyrics: _lyrics),
-          ),
-        ),
-        const SizedBox(width: 16),
-        // The waveform chip: five styles, Off, and the lyric toggle.
-        AnimatedBuilder(
-          animation: c,
-          builder: (context, _) {
-            final mode = c.now?.mode ?? 'idle';
-            if (!c.tickPlaying || (mode != 'music' && mode != 'radio')) {
-              return const SizedBox.shrink();
-            }
-            return VizMenu(
-              on: _viz,
-              lyrics: _lyrics,
-              lyricsAllowed: mode == 'music',
-              style: c.visStyle,
-              onStyle: (i) {
-                setState(() => _viz = true);
-                c.setVisStyle(i);
-              },
-              onOff: () => setState(() => _viz = false),
-              onLyrics: () => setState(() => _lyrics = !_lyrics),
-              child: Container(
-                width: 30,
-                height: 30,
-                decoration: BoxDecoration(
-                  color: _viz ? Tokens.brand : t.panel2,
-                  shape: BoxShape.circle,
-                  border:
-                      Border.all(color: _viz ? Tokens.brand : t.outline),
+            builder: (context, _) {
+              final mode = c.now?.mode ?? 'idle';
+              if (!c.tickPlaying || (mode != 'music' && mode != 'radio')) {
+                return const SizedBox.shrink();
+              }
+              return VizMenu(
+                on: _viz,
+                lyrics: _lyrics,
+                lyricsAllowed: mode == 'music',
+                style: c.visStyle,
+                onStyle: (i) {
+                  setState(() => _viz = true);
+                  c.setVisStyle(i);
+                },
+                onOff: () => setState(() => _viz = false),
+                onLyrics: () => setState(() => _lyrics = !_lyrics),
+                child: Container(
+                  width: 30,
+                  height: 30,
+                  decoration: BoxDecoration(
+                    color: _viz ? Tokens.brand : t.panel2,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: _viz ? Tokens.brand : t.outline),
+                  ),
+                  child: Icon(Icons.graphic_eq,
+                      size: 15, color: _viz ? Colors.white : t.text),
                 ),
-                child: Icon(Icons.graphic_eq,
-                    size: 15, color: _viz ? Colors.white : t.text),
-              ),
-            );
-          },
-        ),
-        const SizedBox(width: 12),
-        const HomeAvatar(size: 56, dot: true, grow: 6),
-      ],
+              );
+            },
+          ),
+          const SizedBox(width: 12),
+          const HomeAvatar(size: 56, dot: true, grow: 6),
+        ],
+      ),
     );
   }
 }
@@ -512,8 +526,8 @@ class _PhotoSlideshowState extends State<PhotoSlideshow>
           // the section, which the Hover above already handles.
           onTap: k != 0
               ? null
-              : () => ShellController.instance.goOpen(widget.section, 'item',
-                  '${widget.tiles[idx].id}'),
+              : () => ShellController.instance
+                  .goOpen(widget.section, 'item', '${widget.tiles[idx].id}'),
           child: Container(
             decoration: BoxDecoration(
               color: const Color(0xFF14161F),
@@ -534,9 +548,8 @@ class _PhotoSlideshowState extends State<PhotoSlideshow>
               icon: widget.icon,
               fit: BoxFit.cover,
               // `FanSlot`'s `top-crop`: a portrait photo keeps its top.
-              alignment: widget.topCrop
-                  ? Alignment.topCenter
-                  : Alignment.center,
+              alignment:
+                  widget.topCrop ? Alignment.topCenter : Alignment.center,
             ),
           ),
         ),
@@ -610,14 +623,15 @@ class RowCard extends StatelessWidget {
   Widget build(BuildContext context) => Hover(
         onTap: onTap,
         builder: (context, hov) => Container(
-          decoration: context.skin
-                  .surface(SurfaceRole.card, radius: kCardRadius) ??
-              BoxDecoration(
-            color: plate(accent),
-            borderRadius: BorderRadius.circular(kCardRadius),
-            border: Border.all(
-                color: plateBorder(accent, true), width: plateBorderW(true)),
-          ),
+          decoration:
+              context.skin.surface(SurfaceRole.card, radius: kCardRadius) ??
+                  BoxDecoration(
+                    color: plate(accent),
+                    borderRadius: BorderRadius.circular(kCardRadius),
+                    border: Border.all(
+                        color: plateBorder(accent, true),
+                        width: plateBorderW(true)),
+                  ),
           clipBehavior: liftOverPill ? Clip.none : Clip.antiAlias,
           child: Stack(
             clipBehavior: liftOverPill ? Clip.none : Clip.hardEdge,
@@ -669,7 +683,10 @@ class BookRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final shown = math.min(3, tiles.length);
+    // Every cover, not three: the gap below goes negative once the row holds
+    // more slots than fit, and that overlap IS the stacked-deck look --
+    // `BookRow`'s `shown: root.covers.length` in ui/page_home.slint.
+    final shown = tiles.length;
     return RowCard(
       icon: Icons.menu_book_outlined,
       accent: Tokens.secBooks,
@@ -796,22 +813,22 @@ class _LiftTile extends StatelessWidget {
             // A cover's mat in the skin; the lift above still answers hover.
             decoration: context.skin.surface(SurfaceRole.art, radius: 10) ??
                 BoxDecoration(
-              color: hov ? t.panel : t.panel2,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                  color: hov ? accent : t.outline.withValues(alpha: 0.9),
-                  width: hov ? 2 : 1.5),
-              boxShadow: hov
-                  ? [
-                      BoxShadow(
-                          color: t.dark
-                              ? const Color(0x99000000)
-                              : const Color(0x33000000),
-                          blurRadius: 16,
-                          offset: const Offset(0, 5)),
-                    ]
-                  : null,
-            ),
+                  color: hov ? t.panel : t.panel2,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                      color: hov ? accent : t.outline.withValues(alpha: 0.9),
+                      width: hov ? 2 : 1.5),
+                  boxShadow: hov
+                      ? [
+                          BoxShadow(
+                              color: t.dark
+                                  ? const Color(0x99000000)
+                                  : const Color(0x33000000),
+                              blurRadius: 16,
+                              offset: const Offset(0, 5)),
+                        ]
+                      : null,
+                ),
             clipBehavior: Clip.antiAlias,
             child: child,
           ),
@@ -864,21 +881,25 @@ class CloudRow extends StatelessWidget {
                   color: Tokens.secCloud.withValues(alpha: 0.55)),
             );
           }
+          // Hugs its text — see `KindTag`: an `alignment` here took the
+          // whole tile, so a remote called "drive" wore a full-width band.
           Widget pill(String text, Color colour, double size) => Container(
                 height: size + 7,
                 padding: const EdgeInsets.symmetric(horizontal: 8),
-                alignment: Alignment.center,
                 decoration: BoxDecoration(
                   color: colour.withValues(alpha: t.dark ? 0.30 : 0.18),
                   borderRadius: BorderRadius.circular((size + 7) / 2),
                 ),
-                child: Text(text,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: size,
-                        fontWeight: FontWeight.w800,
-                        color: colour)),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Flexible(
+                      child: Text(text,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: size,
+                              fontWeight: FontWeight.w800,
+                              color: colour))),
+                ]),
               );
           return Row(
             children: [
@@ -1064,8 +1085,7 @@ class CircleAction extends StatelessWidget {
                       : (mono && !t.dark ? monoFill : wash(tint, 0.15)),
                   shape: BoxShape.circle,
                   border: Border.all(
-                      color:
-                          mono ? monoOutline : tint.withValues(alpha: 0.40)),
+                      color: mono ? monoOutline : tint.withValues(alpha: 0.40)),
                 ),
             child: Icon(context.skin.icon(icon),
                 size: disc * 0.44,
@@ -1076,10 +1096,10 @@ class CircleAction extends StatelessWidget {
                         : (mono ? monoIcon : tint)),
           ),
           const SizedBox(height: 7),
+          // Hugs its label — see `KindTag`.
           Container(
             height: 22,
             padding: const EdgeInsets.symmetric(horizontal: 11),
-            alignment: Alignment.center,
             decoration: BoxDecoration(
               color:
                   mono && !t.dark ? monoFill : wash(tint, mono ? 0.15 : 0.12),
@@ -1087,11 +1107,16 @@ class CircleAction extends StatelessWidget {
               border: Border.all(
                   color: mono ? monoOutline : tint.withValues(alpha: 0.30)),
             ),
-            child: Text(label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 10, fontWeight: FontWeight.w700, color: t.text)),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Flexible(
+                  child: Text(label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: t.text))),
+            ]),
           ),
         ],
       ),
@@ -1118,8 +1143,7 @@ class ContinueStrip extends StatelessWidget {
     final t = context.tokens;
     final st = state;
     return Container(
-      decoration: context.skin
-              .surface(SurfaceRole.card, radius: kCardRadius) ??
+      decoration: context.skin.surface(SurfaceRole.card, radius: kCardRadius) ??
           BoxDecoration(
             color: plateQuiet(Tokens.secMusic),
             borderRadius: BorderRadius.circular(kCardRadius),
@@ -1214,11 +1238,11 @@ class ContinueCard extends StatelessWidget {
         duration: const Duration(milliseconds: 120),
         decoration: context.skin.surface(SurfaceRole.card, radius: 10) ??
             BoxDecoration(
-          color: hov ? t.panel : t.panel.withValues(alpha: 0.6),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-              color: hov ? accent.withValues(alpha: 0.6) : t.outline),
-        ),
+              color: hov ? t.panel : t.panel.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: hov ? accent.withValues(alpha: 0.6) : t.outline),
+            ),
         child: Stack(
           // Expand, or the row inside takes the height of its own shortest
           // child and the progress pill is squeezed off the bottom.
@@ -1246,6 +1270,7 @@ class ContinueCard extends StatelessWidget {
                         tint: accent,
                         icon: kindIcon(row.kind),
                         iconSize: 22,
+                        art: continueArt(row),
                       ),
                     ),
                   ),
@@ -1402,16 +1427,16 @@ class _QuickLaunch extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        decoration: context.skin
-                .surface(SurfaceRole.card, radius: kCardRadius) ??
-            BoxDecoration(
-          // The same pink splash as the player card above it.
-          color: plateQuiet(Tokens.secMusic),
-          borderRadius: BorderRadius.circular(kCardRadius),
-          border: Border.all(
-              color: plateBorder(Tokens.secVideos, false),
-              width: plateBorderW(false)),
-        ),
+        decoration:
+            context.skin.surface(SurfaceRole.card, radius: kCardRadius) ??
+                BoxDecoration(
+                  // The same pink splash as the player card above it.
+                  color: plateQuiet(Tokens.secMusic),
+                  borderRadius: BorderRadius.circular(kCardRadius),
+                  border: Border.all(
+                      color: plateBorder(Tokens.secVideos, false),
+                      width: plateBorderW(false)),
+                ),
         padding: const EdgeInsets.all(14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
