@@ -13,7 +13,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../../design/app_mark.dart';
+import '../../design/app_theme.dart' show themeFor;
 import '../../design/tokens.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/home.dart';
@@ -91,8 +91,40 @@ class _CinemaHomeState extends State<CinemaHome> {
 
   bool _on(String card) => widget.state.cards.contains(card);
 
+  /// The app theme Cinema first came up under, this run.
+  ///
+  /// Cinema opens DARK whatever the app is: it is a full-bleed backdrop with
+  /// type standing on it, and the light palette puts near-black text on a
+  /// half-white scrim over someone's artwork — which of those wins depends
+  /// entirely on the picture. It is the opening state, not a lock: the moment
+  /// the app theme is cycled (the sidebar's dock, the zen button, Settings)
+  /// the page follows the app, and keeps following it.
+  ///
+  /// Both are static because they are a property of the app run, not of this
+  /// widget. Held on the State they reset every time Cinema is rebuilt from
+  /// scratch — switch layouts and come back, and a theme the user had just
+  /// chosen was read as "the theme it opened under" and overridden with dark
+  /// again.
+  static String? _openedUnder;
+  static bool _userPicked = false;
+
   @override
   Widget build(BuildContext context) {
+    final theme = ShellController.instance.theme;
+    _openedUnder ??= theme;
+    if (theme != _openedUnder) _userPicked = true;
+    return Theme(
+      data: _userPicked
+          ? Theme.of(context)
+          : themeFor(
+              ShellController.instance.designLanguage,
+              Tokens.dark(reduceMotion: context.tokens.reduceMotion),
+            ),
+      child: Builder(builder: _page),
+    );
+  }
+
+  Widget _page(BuildContext context) {
     final t = context.tokens;
     final st = widget.state;
     final rows = st.continueRows;
@@ -246,16 +278,9 @@ class _CinemaHomeState extends State<CinemaHome> {
               height: 34,
               child: Row(
                 children: [
-                  AppMark(
-                      choice:
-                          ShellController.instance.state?.logoChoice ?? 0),
-                  const SizedBox(width: 8),
-                  Text('Tulipix',
-                      style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: t.text)),
-                  const SizedBox(width: 10),
+                  // No mark and no wordmark: the sidebar carries both, and on
+                  // a full-bleed backdrop they were app chrome sitting on
+                  // someone's artwork. The greeting leads.
                   // One solid pill: greeting and name are one line, and the
                   // date said nothing the rest of the page did not.
                   Container(
@@ -273,7 +298,18 @@ class _CinemaHomeState extends State<CinemaHome> {
                             color: Colors.white)),
                   ),
                   const SizedBox(width: 10),
-                  if (_on('quick')) const Expanded(child: LauncherPills()),
+                  // The same profile button Classic and Focused carry, and the
+                  // same destination: Settings, on the Profile tab. It sits
+                  // beside the greeting, which is the line that names the
+                  // person it belongs to.
+                  const HomeAvatar(size: 30, dot: true),
+                  const SizedBox(width: 10),
+                  // `Spacer` when the launchers are off, so the row still
+                  // spans and the pills still start where they would.
+                  if (_on('quick'))
+                    const Expanded(child: LauncherPills())
+                  else
+                    const Spacer(),
                 ],
               ),
             ),

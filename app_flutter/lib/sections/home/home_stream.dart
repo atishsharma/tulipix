@@ -9,7 +9,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../../design/app_mark.dart';
 import '../../design/tokens.dart';
 import '../../design/skin.dart';
 import '../../shell/shell_controller.dart';
@@ -89,16 +88,8 @@ class _StreamHomeState extends State<StreamHome> {
               height: 34,
               child: Row(
                 children: [
-                  AppMark(
-                      choice:
-                          ShellController.instance.state?.logoChoice ?? 0),
-                  const SizedBox(width: 8),
-                  Text('Tulipix',
-                      style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: t.text)),
-                  const SizedBox(width: 10),
+                  // No mark and no wordmark: the sidebar carries both, and the
+                  // feed's own title plate below already names the page.
                   // Black plate, white ink — the same pill the group captions
                   // in the feed wear, inverted.
                   Container(
@@ -116,7 +107,18 @@ class _StreamHomeState extends State<StreamHome> {
                             color: Colors.white)),
                   ),
                   const SizedBox(width: 10),
-                  if (_on('quick')) const Expanded(child: LauncherPills()),
+                  // The same profile button Classic and Focused carry, and the
+                  // same destination: Settings, on the Profile tab. It sits
+                  // beside the greeting, which is the line that names the
+                  // person it belongs to.
+                  const HomeAvatar(size: 30, dot: true),
+                  const SizedBox(width: 10),
+                  // `Spacer` when the launchers are off, so the row still
+                  // spans and the pills still start where they would.
+                  if (_on('quick'))
+                    const Expanded(child: LauncherPills())
+                  else
+                    const Spacer(),
                 ],
               ),
             ),
@@ -559,7 +561,7 @@ class _FeedRow extends StatelessWidget {
                                 border: Border.all(
                                     color: context.skin.isStandard
                                         ? fill
-                                        : Color.alphaBlend(t.panel, t.bg),
+                                        : t.panelSolid,
                                     width: 4),
                               ),
                             ),
