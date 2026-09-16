@@ -264,7 +264,7 @@ class _YtSearchFieldState extends State<YtSearchField> {
               border: InputBorder.none,
               hintText: _offline
                   ? 'Search offline copies'
-                  : 'Search YouTube, or paste a link  ( / )',
+                  : 'Search YouTube',
               hintStyle: widget.hintStyle,
             ),
           ),

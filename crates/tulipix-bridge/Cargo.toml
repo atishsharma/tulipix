@@ -69,8 +69,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # The viewer's info panel. Feature lists match tulipix-photos exactly: cargo
 # unifies features across a dependency graph, so asking for a wider set here
 # would pull the AVIF/EXR encoders into a build that already compiles `image`.
+# `ico` is the one addition: a decoder only, for radio station favicons.
 kamadak-exif = "0.6"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff", "ico"] }
+# The generated radio station tile (`name_tile`): letters rasterised from the
+# bundled Sora, as tulipix-sec-music already does for its now-playing tile.
+ab_glyph = "0.2"
 
 # Transfer. The QR is a module matrix, not an image: Dart paints the squares,
 # which is a twentieth of the bytes and stays crisp when the code is enlarged.

@@ -67,7 +67,8 @@ class _YtChannelState extends State<YtChannel> {
           padding: const EdgeInsets.fromLTRB(24, 16, 24, 12),
           child: Row(
             children: [
-              if (videos.isNotEmpty)
+              const Spacer(),
+              if (videos.isNotEmpty) ...[
                 FilledButton.icon(
                   style: musicFilledStyle(fill: ytRose),
                   icon: const Icon(Icons.play_arrow_rounded, size: 18),
@@ -75,8 +76,7 @@ class _YtChannelState extends State<YtChannel> {
                   onPressed: () => c.send(MusicCmd.ytPlayAll(
                       videoIds: [for (final v in videos) v.videoId])),
                 ),
-              const Spacer(),
-              if (videos.isNotEmpty)
+                const SizedBox(width: 8),
                 FilledButton.icon(
                   style: ytDownloadStyle(),
                   icon: const Icon(Icons.download_rounded, size: 16),
@@ -84,6 +84,7 @@ class _YtChannelState extends State<YtChannel> {
                   onPressed: () => showFormatSheet(context, c, videos.first,
                       mode: FormatMode.download, batch: videos),
                 ),
+              ],
               // One page further than is loaded while YouTube has more:
               // going there fetches the next block, and it shows on arrival.
               Padding(
@@ -219,8 +220,7 @@ class _Banner extends StatelessWidget {
                               fontWeight: FontWeight.w800,
                               letterSpacing: -0.6,
                               color: t.nInk)),
-                      // "142 videos · 4.2M subscribers" -- the two numbers
-                      // that say whether a channel is worth following.
+                      // "@handle · 4.2M subscribers".
                       if (st.ytChannelSub.isNotEmpty)
                         Text(st.ytChannelSub,
                             style: TextStyle(fontSize: 12, color: t.nInk2)),
@@ -238,7 +238,11 @@ class _Banner extends StatelessWidget {
                 ),
                 const SizedBox(width: 6),
                 if (st.ytChannelSubscribed)
-                  OutlinedButton.icon(
+                  FilledButton.icon(
+                    style: musicFilledStyle(fill: const Color(0xFFDC2626))
+                        .copyWith(
+                            foregroundColor:
+                                const WidgetStatePropertyAll(Colors.white)),
                     icon: const Icon(Icons.check, size: 16),
                     label: const Text('Subscribed'),
                     onPressed: () =>

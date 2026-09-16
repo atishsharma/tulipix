@@ -5512,6 +5512,7 @@ dependencies = [
 name = "tulipix_bridge"
 version = "1.0.1"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "chrono",
  "fast_qr",

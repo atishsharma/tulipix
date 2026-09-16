@@ -335,18 +335,25 @@ class _CountPill extends StatelessWidget {
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: Center(
-            child: Text(
-              text,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontFamily: Tokens.fontFamily,
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: t.dark ? t.nInk2 : Colors.white,
+          // A min-size Row, not a Center: Center fills the width it is
+          // offered, which stretched the pill across the whole tile.
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text(
+                  text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: Tokens.fontFamily,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: t.dark ? t.nInk2 : Colors.white,
+                  ),
+                ),
               ),
-            ),
+            ],
           ),
         ),
       ),
@@ -470,8 +477,10 @@ class _StationRow extends StatelessWidget {
     return ListTile(
       leading: MusicArt(
         controller: controller,
-        kind: 'yt',
-        artKey: s.favicon,
+        // The bridge checks the favicon and caches it, or draws a tile from
+        // the name when there is none that decodes.
+        kind: 'radio',
+        artKey: '${s.name}\n${s.favicon}',
         size: 40,
         radius: 8,
         fallback: Icons.radio,

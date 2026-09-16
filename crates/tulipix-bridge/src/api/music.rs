@@ -3531,6 +3531,12 @@ pub async fn music_ensure_art(kind: String, key: String) -> Result<Option<String
                     .unwrap_or_default();
             Ok(book_cover(pool, &key, stored.as_deref()).await)
         }
+        // Key is "name\nfavicon", so a station with no usable favicon still
+        // gets a tile drawn from its name.
+        "radio" => {
+            let (name, favicon) = key.split_once('\n').unwrap_or((key.as_str(), ""));
+            Ok(radio_art(name, favicon).await)
+        }
         "yt" | "podcast" => {
             // A remote URL cached to disk once. Dart could fetch these itself,
             // but then two builds would hold two copies of the same artwork in
@@ -3710,6 +3716,198 @@ async fn cache_remote(src: &str) -> Option<String> {
         .ok()?;
     std::fs::write(&dest, &bytes).ok()?;
     Some(dest.to_string_lossy().into_owned())
+}
+
+/// A station's picture: its favicon, checked and cached as a 256px PNG, or a
+/// tile drawn from its name. Never `None` for a named station.
+///
+/// `cache_remote` wrote whatever came back, and radio-browser favicons are the
+/// worst case for that: 404 pages, ICO bytes behind a `.png` URL, dead hosts.
+/// Each of those was cached as a "picture" that failed to draw, forever. Here
+/// a favicon is kept only if it decodes, and a miss is remembered for a week so
+/// a dead host is not asked again on every page.
+async fn radio_art(name: &str, favicon: &str) -> Option<String> {
+    let dir = tulipix_core::paths::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("radio_art");
+    let _ = std::fs::create_dir_all(&dir);
+    if favicon.starts_with("http") {
+        let key = art_key(favicon);
+        let dest = dir.join(format!("{key}.png"));
+        if dest.exists() {
+            return Some(dest.to_string_lossy().into_owned());
+        }
+        let miss = dir.join(format!("{key}.miss"));
+        let fresh_miss = std::fs::metadata(&miss)
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t.elapsed().is_ok_and(|e| e.as_secs() < 7 * 86_400));
+        if !fresh_miss {
+            let response = tulipix_core::net::http()
+                .get(favicon)
+                .header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await;
+            // No answer at all is the network, not the station: no miss is
+            // written, so an offline session does not blank a week of icons.
+            let Ok(response) = response else {
+                return radio_name_art(&dir, name).await;
+            };
+            let bytes = match response.status().is_success() {
+                true => response.bytes().await.ok(),
+                false => None,
+            };
+            let out = dest.clone();
+            let saved = tokio::task::spawn_blocking(move || {
+                let img = image::load_from_memory(&bytes?).ok()?;
+                // A 1px tracking gif is not a logo.
+                if img.width() < 16 || img.height() < 16 {
+                    return None;
+                }
+                let img = if img.width() > 256 || img.height() > 256 {
+                    img.thumbnail(256, 256)
+                } else {
+                    img
+                };
+                img.save_with_format(&out, image::ImageFormat::Png).ok()
+            })
+            .await
+            .ok()
+            .flatten();
+            if saved.is_some() {
+                return Some(dest.to_string_lossy().into_owned());
+            }
+            let _ = std::fs::write(&miss, b"");
+        }
+    }
+    radio_name_art(&dir, name).await
+}
+
+/// The name tile for [`radio_art`], drawn once and kept.
+async fn radio_name_art(dir: &Path, name: &str) -> Option<String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    // `v1` in the name: a change to the drawing gets new files, not stale ones.
+    let dest = dir.join(format!("name-v1-{}.png", art_key(&name)));
+    if dest.exists() {
+        return Some(dest.to_string_lossy().into_owned());
+    }
+    let out = dest.clone();
+    tokio::task::spawn_blocking(move || name_tile(&name).save(&out).ok())
+        .await
+        .ok()
+        .flatten()?;
+    Some(dest.to_string_lossy().into_owned())
+}
+
+/// Up to two letters for a station: the first of its first two words, skipping
+/// the ones that say nothing ("Radio", "FM", "The").
+fn station_initials(name: &str) -> String {
+    const FILLER: [&str; 6] = ["radio", "fm", "am", "the", "la", "le"];
+    let words: Vec<&str> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let picked: Vec<&str> = match words
+        .iter()
+        .filter(|w| !FILLER.contains(&w.to_lowercase().as_str()))
+        .copied()
+        .collect::<Vec<_>>()
+    {
+        kept if !kept.is_empty() => kept,
+        _ => words,
+    };
+    picked
+        .iter()
+        .take(2)
+        .filter_map(|w| w.chars().next())
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+/// The generated station tile: one of the Browse page's six gradients, picked
+/// by the name so a station always wears the same one, two soft discs for
+/// depth, and the initials in heavy Sora, centred on their ink.
+fn name_tile(name: &str) -> image::RgbaImage {
+    use ab_glyph::{Font, ScaleFont, VariableFont};
+    const FONT_SORA: &[u8] = include_bytes!("../../../../resources/fonts/Sora[wght].ttf");
+    const S: u32 = 256;
+    // `_CategoryTile._grads` in radio_tab.dart.
+    const GRADS: [([u8; 3], [u8; 3]); 6] = [
+        ([0x14, 0xB8, 0xA6], [0x0E, 0xA5, 0xE9]),
+        ([0xF5, 0x9E, 0x0B], [0xEF, 0x44, 0x44]),
+        ([0x8B, 0x5C, 0xF6], [0xEC, 0x48, 0x99]),
+        ([0x22, 0xC5, 0x5E], [0x14, 0xB8, 0xA6]),
+        ([0x3B, 0x82, 0xF6], [0x8B, 0x5C, 0xF6]),
+        ([0xEC, 0x48, 0x99], [0xF5, 0x9E, 0x0B]),
+    ];
+    let hash = u64::from_str_radix(&art_key(name), 16).unwrap_or(0);
+    let (a, b) = GRADS[(hash % 6) as usize];
+    let lerp = |x: u8, y: u8, t: f32| x as f32 + (y as f32 - x as f32) * t;
+    let blend = |p: &mut image::Rgba<u8>, v: f32, alpha: f32| {
+        for i in 0..3 {
+            p[i] = (v * alpha + p[i] as f32 * (1.0 - alpha)) as u8;
+        }
+    };
+    // Discs: one large up-right in white, one lower-left in black, both faint.
+    let discs = [(200.0, 40.0, 120.0, 255.0, 0.14), (30.0, 250.0, 110.0, 0.0, 0.10)];
+    let mut img = image::RgbaImage::new(S, S);
+    for (x, y, p) in img.enumerate_pixels_mut() {
+        let t = (x + y) as f32 / (2 * (S - 1)) as f32;
+        *p = image::Rgba([lerp(a[0], b[0], t) as u8, lerp(a[1], b[1], t) as u8, lerp(a[2], b[2], t) as u8, 255]);
+        for (cx, cy, r, v, alpha) in discs {
+            let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt();
+            // One pixel of falloff, so the edge is smooth rather than stepped.
+            let cover = (r - d + 0.5).clamp(0.0, 1.0);
+            if cover > 0.0 {
+                blend(p, v, alpha * cover);
+            }
+        }
+    }
+    let text = station_initials(name);
+    let Ok(mut font) = ab_glyph::FontRef::try_from_slice(FONT_SORA) else { return img };
+    font.set_variation(b"wght", 700.0);
+    let size = if text.chars().count() > 1 { 108.0 } else { 132.0 };
+    let sf = font.as_scaled(size);
+    let mut caret = 0.0;
+    let mut prev = None;
+    let outlines: Vec<_> = text
+        .chars()
+        .filter_map(|ch| {
+            let id = sf.glyph_id(ch);
+            if let Some(p) = prev {
+                caret += sf.kern(p, id);
+            }
+            let g = id.with_scale_and_position(size, ab_glyph::point(caret, 0.0));
+            caret += sf.h_advance(id);
+            prev = Some(id);
+            font.outline_glyph(g)
+        })
+        .collect();
+    let Some(first) = outlines.first() else { return img };
+    let mut bb = first.px_bounds();
+    for o in &outlines[1..] {
+        let r = o.px_bounds();
+        bb.min.x = bb.min.x.min(r.min.x);
+        bb.min.y = bb.min.y.min(r.min.y);
+        bb.max.x = bb.max.x.max(r.max.x);
+        bb.max.y = bb.max.y.max(r.max.y);
+    }
+    let ox = (S as f32 - bb.width()) / 2.0 - bb.min.x;
+    let oy = (S as f32 - bb.height()) / 2.0 - bb.min.y;
+    for o in &outlines {
+        let r = o.px_bounds();
+        o.draw(|gx, gy, c| {
+            let x = r.min.x + ox + gx as f32;
+            let y = r.min.y + oy + gy as f32;
+            if x >= 0.0 && y >= 0.0 && x < S as f32 && y < S as f32 {
+                blend(img.get_pixel_mut(x as u32, y as u32), 255.0, c * 0.95);
+            }
+        });
+    }
+    img
 }
 
 /// `NoWindow` for `std::process::Command`, spelled locally so this module does
@@ -4537,7 +4735,7 @@ async fn play_station(index: usize) -> Result<()> {
         title: station.name.clone(),
         artist: station.country.clone(),
         album: station.tags.clone(),
-        art: cache_remote(&station.favicon).await.unwrap_or_default(),
+        art: radio_art(&station.name, &station.favicon).await.unwrap_or_default(),
         key: station.stationuuid.clone(),
     });
     if let Ok(pool) = radio_pool().await {
@@ -12846,8 +13044,8 @@ async fn fill_youtube_lists(
             .filter(|n| *n >= 0)
             .or_else(|| sub.as_ref().and_then(|x| x.sub_count));
         st.yt_channel_sub = [
+            // No video count: the hero is who the channel is, not a tally.
             handle,
-            sub.as_ref().and_then(|x| x.video_count).map(|n| format!("{n} videos")),
             followers.map(|n| format!("{} subscribers", yt_fmt_count(n))),
         ]
         .into_iter()
@@ -12885,6 +13083,25 @@ async fn yt_playlist_rows(pool: &sqlx::SqlitePool) -> Vec<YtPlaylist> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn station_tiles_skip_filler_words_and_draw_letters() {
+        assert_eq!(station_initials("Radio Paradise"), "P");
+        assert_eq!(station_initials("BBC World Service"), "BW");
+        assert_eq!(station_initials("the  jazz.fm groove"), "JG");
+        assert_eq!(station_initials("Radio FM"), "RF");
+        assert_eq!(station_initials("  "), "");
+        // Letters are white on a gradient: some pixel in the middle is lighter
+        // than both corners.
+        let img = name_tile("Radio Paradise");
+        let lum = |p: &image::Rgba<u8>| p[0] as u32 + p[1] as u32 + p[2] as u32;
+        let peak = (100..156)
+            .flat_map(|y| (60..196).map(move |x| (x, y)))
+            .map(|(x, y)| lum(img.get_pixel(x, y)))
+            .max()
+            .unwrap();
+        assert!(peak > 700, "no glyph ink in the tile centre ({peak})");
+    }
 
     /// A track with no duration tag must not take the rail down with it.
     ///

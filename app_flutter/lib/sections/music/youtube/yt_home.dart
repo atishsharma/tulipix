@@ -323,8 +323,8 @@ class _Side extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final c = controller;
-    // Three in all: the big card, and two beside it.
-    final rest = st.ytContinue.skip(1).take(2).toList();
+    // Four in all: the big card, and three beside it.
+    final rest = st.ytContinue.skip(1).take(3).toList();
     Widget panel(String title, Widget child,
             {(String, VoidCallback)? action}) =>
         DecoratedBox(

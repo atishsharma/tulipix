@@ -206,9 +206,9 @@ class _YtPlaylistPageState extends State<YtPlaylistPage> {
                 ),
               ),
               const SizedBox(width: 12),
-              // Right-aligned, and wrapping onto a second line rather than
-              // pushing the pager off a narrow window.
-              Flexible(
+              // Pinned right: Expanded makes the Wrap span its share, `end`
+              // pushes the buttons over, and a narrow window wraps them.
+              Expanded(
                 flex: 2,
                 child: Wrap(
                   alignment: WrapAlignment.end,
