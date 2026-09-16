@@ -381,8 +381,25 @@ async fn counts() -> HomeCounts {
         c.videos_shows = n(p, "SELECT COUNT(*) FROM shows").await;
     }
     if let Ok(p) = crate::db::music_pool().await {
-        c.songs = n(p, "SELECT COUNT(*) FROM items WHERE missing_since IS NULL").await;
-        c.audiobooks = n(p, "SELECT COUNT(DISTINCT folder) FROM track_meta WHERE folder IS NOT NULL").await;
+        // My Music only, on `MUSIC_WHERE`'s filter: the card says "N songs"
+        // next to Audiobooks saying "M books", and a chapter counted in both
+        // makes neither number mean anything. Every other count on this
+        // dashboard is one section's own.
+        c.songs = n(
+            p,
+            "SELECT COUNT(*) FROM items i JOIN track_meta tm ON tm.item_id = i.id \
+             WHERE i.section = 'music' AND i.missing_since IS NULL \
+             AND COALESCE(tm.is_audiobook, 0) = 0",
+        )
+        .await;
+        // A folder is only a book when what is in it is marked as one. Without
+        // the flag this counted the music folders too.
+        c.audiobooks = n(
+            p,
+            "SELECT COUNT(DISTINCT folder) FROM track_meta \
+             WHERE folder IS NOT NULL AND COALESCE(is_audiobook, 0) <> 0",
+        )
+        .await;
     }
     if let Ok(p) = crate::db::podcasts_pool().await {
         c.podcasts = n(p, "SELECT COUNT(*) FROM podcasts").await;

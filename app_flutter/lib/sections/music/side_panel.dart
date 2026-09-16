@@ -23,6 +23,7 @@ import 'music_widgets.dart';
 import 'player_widgets.dart';
 import 'music_motion.dart';
 import 'word_search.dart';
+import 'youtube/yt_card.dart' show YtThumb, ytRose;
 
 /// The docked width. 432 in ui/page_music.slint.
 const double kSidePanelWidth = 432;
@@ -183,6 +184,11 @@ class _Queue extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    // YouTube keeps its own queue: video ids, not library tracks.
+    if (controller.now?.mode == 'youtube' &&
+        (controller.state?.ytQueue.isNotEmpty ?? false)) {
+      return _YtQueue(controller: controller);
+    }
     final queue = controller.state?.queue ?? const <Track>[];
     if (queue.isEmpty) {
       return Column(
@@ -301,6 +307,121 @@ class _Queue extends StatelessWidget {
                     .send(MusicCmd.queueRemove(itemId: queue[i].itemId)),
               ),
             ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// The YouTube queue: what "Play all", Play next and Add to queue built.
+/// Rows before the one playing are what already played; the playing one
+/// cannot be removed here, which is Next's job.
+class _YtQueue extends StatelessWidget {
+  const _YtQueue({required this.controller});
+
+  final MusicController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final st = controller.state!;
+    final queue = st.ytQueue;
+    final at = st.ytQueuePos.toInt();
+    return Column(
+      children: [
+        Row(
+          children: [
+            Text(
+              'YouTube queue · ${at + 1} of ${queue.length}',
+              style: TextStyle(
+                fontFamily: Tokens.fontFamily,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: t.nInk2,
+              ),
+            ),
+            const Spacer(),
+            TextButton(
+              onPressed: queue.length > 1
+                  ? () => controller.send(const MusicCmd.ytQueueClear())
+                  : null,
+              child: const Text('Clear'),
+            ),
+          ],
+        ),
+        Expanded(
+          child: ReorderableListView.builder(
+            buildDefaultDragHandles: true,
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            itemCount: queue.length,
+            onReorderItem: (from, to) =>
+                controller.send(MusicCmd.ytQueueMove(from: from, to: to)),
+            itemBuilder: (_, i) {
+              final v = queue[i];
+              final current = i == at;
+              return Padding(
+                key: ValueKey('yt-$i-${v.videoId}'),
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Material(
+                  color: current
+                      ? ytRose.withValues(alpha: 0.12)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(Tokens.radiusSm),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(Tokens.radiusSm),
+                    onTap: current
+                        ? null
+                        : () => controller
+                            .send(MusicCmd.ytQueuePlayAt(index: i)),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(6, 4, 28, 4),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 80,
+                            height: 45,
+                            child: YtThumb(controller: controller, video: v),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(v.title,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: current
+                                            ? ytRose
+                                            : i < at
+                                                ? t.nInk3
+                                                : t.nInk)),
+                                Text(v.channel,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        fontSize: 11, color: t.nInk3)),
+                              ],
+                            ),
+                          ),
+                          if (!current)
+                            IconButton(
+                              tooltip: 'Remove',
+                              iconSize: 16,
+                              icon: const Icon(Icons.close),
+                              onPressed: () => controller
+                                  .send(MusicCmd.ytQueueRemove(index: i)),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ],

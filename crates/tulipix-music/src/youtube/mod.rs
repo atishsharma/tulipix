@@ -5,6 +5,12 @@
 //! section like podcasts/radio.
 
 pub mod store;
+pub mod formats;
+pub mod dl_args;
+pub mod progress;
+pub mod links;
+pub mod suggest;
 pub mod piped;
 pub mod subscriptions;
 pub mod thumbs;
+pub mod sponsor;

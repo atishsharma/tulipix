@@ -5361,10 +5361,6 @@ pub fn clock_now() -> String {
 // YouTube section (np.p4.music.youtube) — helpers, in-memory state, populators.
 // ════════════════════════════════════════════════════════════════════════════
 
-const YT_CACHE_KEEP: i64 = 60;   // newest N auto-cached videos kept; rest evicted
-/// Hard disk bound on the same cache. 60 audio-only entries land well under
-/// this; 60 video ones would not, which is the case the count rule misses.
-const YT_CACHE_CAP_BYTES: i64 = 5 * 1024 * 1024 * 1024; // 5 GB
 pub const YT_PAGE: usize = 5;        // Home search results revealed per "Load more"
 
 /// Send-safe video row gathered off the UI thread (thumb is a file path).
@@ -6694,6 +6690,9 @@ pub fn yt_play_audio(weak: slint::Weak<MainWindow>, id: String) {
         };
         let cached = dir.join(format!("{id}.opus"));
         if cached.exists() {
+            if let Ok(pool) = pool_for("youtube").await {
+                let _ = tulipix_music::youtube::store::touch_cached(&pool, &id).await;
+            }
             let (p2, id2, t, c, th) = (cached.to_string_lossy().into_owned(), id.clone(), title.clone(), channel.clone(), thumb.clone());
             let _ = weak.upgrade_in_event_loop(move |w| yt_play_inapp(&w, id2, p2, t, c, th, resume));
             return;
@@ -6702,19 +6701,26 @@ pub fn yt_play_audio(weak: slint::Weak<MainWindow>, id: String) {
             let (u2, id2, t, c, th) = (stream_url, id.clone(), title.clone(), channel.clone(), thumb.clone());
             let _ = weak.upgrade_in_event_loop(move |w| yt_play_inapp(&w, id2, u2, t, c, th, resume));
         }
+        // The cache policy is shared with the Flutter build's Cached page:
+        // "never" means stream only.
+        if tulipix_music::yt_prefs::cache_mode() == "never" {
+            return;
+        }
         let weak2 = weak.clone();
         tokio::runtime::Handle::current().spawn(async move {
             if let Some(path) = yt_dlp_fetch_audio(&id, &dir).await {
                 if let Ok(pool) = pool_for("youtube").await {
                     let _ = tulipix_music::youtube::store::record_cached(
                         &pool, &id, &meta.title, &meta.channel, &meta.thumb, &path, meta.dur_s).await;
-                    // Two caps, because one of them alone is not a bound: the
-                    // count keeps the list short, the byte cap keeps the disk
-                    // honest when the cached files are video rather than audio.
-                    for (_v, p) in tulipix_music::youtube::store::evict_cached_over(&pool, YT_CACHE_KEEP).await.unwrap_or_default() {
-                        let _ = std::fs::remove_file(&p);
-                    }
-                    for (_v, p) in tulipix_music::youtube::store::evict_cached_over_bytes(&pool, YT_CACHE_CAP_BYTES).await.unwrap_or_default() {
+                    // The budget, order and idle days set on the Flutter build's
+                    // Cached page; the file just fetched is never the one to go.
+                    for (_v, p) in tulipix_music::youtube::store::evict_cached(
+                        &pool,
+                        tulipix_music::yt_prefs::cache_cap_bytes(),
+                        tulipix_music::yt_prefs::cache_evict(),
+                        Some(tulipix_music::yt_prefs::cache_idle_days()),
+                        Some(&id),
+                    ).await.unwrap_or_default() {
                         let _ = std::fs::remove_file(&p);
                     }
                 }

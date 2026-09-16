@@ -231,6 +231,11 @@ pub fn parse_rss_date(s: &str) -> Option<i64> {
 }
 
 pub fn parse_feed(xml: &str) -> ParsedFeed {
+    // A web page has a <title> too: without this, a pasted Spotify or Apple
+    // page "subscribes" as an empty show named after the page.
+    if !xml.contains("<rss") && !xml.contains("<channel") {
+        return ParsedFeed::default();
+    }
     // Channel-level metadata is everything before the first <item>.
     let channel = xml.split("<item").next().unwrap_or(xml);
     let title = tag_text(channel, "title").map(uncdata);
@@ -267,6 +272,93 @@ pub fn parse_feed(xml: &str) -> ParsedFeed {
         rest = &after[e + "</item>".len()..];
     }
     ParsedFeed { title, author, image_url, category, description, episodes }
+}
+
+/// Whatever the user pasted, as an RSS URL. Apple Podcasts and Spotify links
+/// name a show but are web pages; both resolve through Apple's public
+/// directory, which carries each show's `feedUrl`. Anything else is returned
+/// as given, on the assumption it already is a feed.
+pub async fn resolve_feed_url(client: &reqwest::Client, url: &str) -> Result<String> {
+    let url = url.trim();
+    let Ok(parsed) = reqwest::Url::parse(url) else { return Ok(url.to_string()) };
+    let host = parsed.host_str().unwrap_or_default();
+
+    if host == "podcasts.apple.com" || host == "itunes.apple.com" {
+        let id = apple_podcast_id(&parsed)
+            .ok_or_else(|| anyhow::anyhow!("that Apple Podcasts link names no show"))?;
+        let v: serde_json::Value = client
+            .get("https://itunes.apple.com/lookup")
+            .query(&[("id", id), ("entity", "podcast")])
+            .send().await?.error_for_status()?.json().await?;
+        return v["results"].as_array()
+            .and_then(|r| r.iter().find_map(|r| r["feedUrl"].as_str()))
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("Apple lists no public feed for that show"));
+    }
+
+    // spotify.link / spotify.app.link are short links that redirect to open.spotify.com.
+    if host == "open.spotify.com" || host == "spotify.link" || host == "spotify.app.link" {
+        // The plain UA is what gets the server-rendered page with meta tags;
+        // a full browser UA gets the empty web-player shell.
+        let resp = client.get(url).header(reqwest::header::USER_AGENT, "Mozilla/5.0")
+            .send().await?.error_for_status()?;
+        let path = resp.url().path().to_string();
+        if !path.contains("/show/") && !path.contains("/episode/") {
+            anyhow::bail!("that Spotify link is not a podcast show or episode");
+        }
+        let html = resp.text().await?;
+        let name = spotify_show_name(&html)
+            .ok_or_else(|| anyhow::anyhow!("could not read the show name off that Spotify page"))?;
+        let v: serde_json::Value = client
+            .get("https://itunes.apple.com/search")
+            .query(&[("term", name.as_str()), ("entity", "podcast"), ("limit", "25")])
+            .send().await?.error_for_status()?.json().await?;
+        return feed_for_name(&v, &name).ok_or_else(|| anyhow::anyhow!(
+            "no public feed found for “{name}” — it may be a Spotify exclusive"));
+    }
+
+    Ok(url.to_string())
+}
+
+/// `1200361736` out of `…/podcast/the-daily/id1200361736` (episode links keep it too).
+fn apple_podcast_id(url: &reqwest::Url) -> Option<&str> {
+    url.path_segments()?.rev().find_map(|s| {
+        s.strip_prefix("id").filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+/// `content` of `<meta property="{prop}" content="…">`.
+fn og_meta(html: &str, prop: &str) -> Option<String> {
+    let at = html.find(&format!("property=\"{prop}\""))?;
+    let start = html[..at].rfind('<')?;
+    let end = html[at..].find('>')? + at;
+    xml_attr(&html[start..end], "content")
+}
+
+/// The show a Spotify page belongs to. A show page titles itself with the
+/// show; an episode page titles itself with the episode and describes itself
+/// as `Show · Episode`.
+fn spotify_show_name(html: &str) -> Option<String> {
+    let desc = og_meta(html, "og:description").unwrap_or_default();
+    let segs: Vec<&str> = desc.split(" · ").map(str::trim).collect();
+    let name = if segs.len() >= 2 && segs[1] == "Episode" {
+        segs[0].to_string()
+    } else {
+        og_meta(html, "og:title")?
+    };
+    let name = name.trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The `feedUrl` of the search result whose name is exactly `name`. Apple's
+/// search is fuzzy — "The Daily" also returns The Journal and Up First — so
+/// the first hit is not good enough.
+// ponytail: two shows with the identical name pick the first; compare the
+// Spotify page's author against artistName if that ever bites.
+fn feed_for_name(v: &serde_json::Value, name: &str) -> Option<String> {
+    v["results"].as_array()?.iter()
+        .filter(|r| r["collectionName"].as_str().is_some_and(|n| n.trim().eq_ignore_ascii_case(name)))
+        .find_map(|r| r["feedUrl"].as_str().map(String::from))
 }
 
 fn now() -> i64 {
@@ -399,6 +491,44 @@ mod tests {
         assert_eq!(f.episodes[0].audio_url, "https://x/1.mp3");
         assert_eq!(f.episodes[0].duration_s, Some(3723.0));
         assert_eq!(f.episodes[1].guid, "g2");
+    }
+
+    #[test]
+    fn web_page_is_not_a_feed() {
+        let f = parse_feed("<html><head><title>The Daily | Podcast on Spotify</title></head></html>");
+        assert_eq!(f, ParsedFeed::default());
+    }
+
+    #[test]
+    fn apple_id_from_show_and_episode_links() {
+        let id = |u: &str| apple_podcast_id(&reqwest::Url::parse(u).unwrap()).map(String::from);
+        assert_eq!(id("https://podcasts.apple.com/us/podcast/the-daily/id1200361736").as_deref(), Some("1200361736"));
+        assert_eq!(id("https://podcasts.apple.com/us/podcast/x/id1200361736?i=1000123").as_deref(), Some("1200361736"));
+        assert_eq!(id("https://podcasts.apple.com/us/browse"), None);
+    }
+
+    #[test]
+    fn spotify_show_name_from_show_and_episode_pages() {
+        // Shapes as served to a `Mozilla/5.0` UA, September 2026.
+        let show = r#"<meta property="og:title" content="The Daily"/>
+            <meta property="og:description" content="Podcast · The New York Times · This is what the news should sound like."/>"#;
+        let episode = r#"<meta property="og:title" content="48 Days Until the Midterms"/>
+            <meta property="og:description" content="The Daily · Episode"/>"#;
+        let escaped = r#"<meta property="og:title" content="Tom &amp; Jerry"/>"#;
+        assert_eq!(spotify_show_name(show).as_deref(), Some("The Daily"));
+        assert_eq!(spotify_show_name(episode).as_deref(), Some("The Daily"));
+        assert_eq!(spotify_show_name(escaped).as_deref(), Some("Tom & Jerry"));
+        assert_eq!(spotify_show_name("<title>Spotify – Web Player</title>"), None);
+    }
+
+    #[test]
+    fn feed_for_name_wants_the_exact_show() {
+        let v = serde_json::json!({"results": [
+            {"collectionName": "The Journal.", "feedUrl": "https://j/rss"},
+            {"collectionName": "The Daily", "feedUrl": "https://d/rss"},
+        ]});
+        assert_eq!(feed_for_name(&v, "the daily").as_deref(), Some("https://d/rss"));
+        assert_eq!(feed_for_name(&v, "Up First"), None);
     }
 
     #[test]

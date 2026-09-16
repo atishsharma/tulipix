@@ -20,6 +20,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -56,6 +57,9 @@ class VideoRequest {
     required this.props,
     this.onStarted,
     this.onEnded,
+    this.onProgress,
+    this.level,
+    this.onVolume,
   });
 
   final int token;
@@ -69,6 +73,16 @@ class VideoRequest {
   /// Fired on every way out: end of file, Escape, the close button, or Rust
   /// replacing the source. This is what writes the position back.
   final Future<void> Function(int token, double pos, double dur)? onEnded;
+
+  /// Every position and play/pause change, for a player bar that follows the
+  /// picture (a YouTube video watched from the Music section).
+  final void Function(double pos, double dur, bool playing)? onProgress;
+
+  /// A volume to follow, 0..100 with mute as 0: the music deck's, so the bar's
+  /// slider and the picture's are one control. Changes made on the picture go
+  /// back through [onVolume].
+  final ValueListenable<({double volume, bool muted})?>? level;
+  final void Function(double volume)? onVolume;
 }
 
 /// What is on screen, set by the videos controller from the bridge's events.
@@ -99,6 +113,18 @@ final ValueNotifier<bool> videoPlaying = ValueNotifier(false);
 /// JPEG, and the way to carry on after unlocking.
 Future<Uint8List?> Function()? videoFrame;
 VoidCallback? videoResume;
+
+/// Pause or play the picture, for a transport outside the player: the music
+/// bar while a YouTube video is on screen.
+VoidCallback? videoPlayPause;
+
+/// Seek the picture, for a seek bar outside the player.
+void Function(double secs)? videoSeek;
+
+/// Stretches to jump over, as start, end pairs in seconds, for the picture
+/// with this token (SponsorBlock, for a YouTube video). They can arrive after
+/// the picture starts.
+final ValueNotifier<(int, List<double>)> videoSkips = ValueNotifier((0, const []));
 
 /// Which player set the two above, so only that one clears them — a new
 /// source's player can open before the old one has gone.
@@ -326,7 +352,13 @@ class _VideoLayerState extends State<VideoLayer> {
               excluding: covered,
               child: TickerMode(
                 enabled: !covered,
-                child: Offstage(offstage: covered, child: widget.child),
+                // Its own layer: with the picture docked in a corner, each
+                // video frame composites the app's last picture rather than
+                // asking the app to paint again.
+                child: Offstage(
+                  offstage: covered,
+                  child: RepaintBoundary(child: widget.child),
+                ),
               ),
             ),
             if (request != null)
@@ -385,7 +417,16 @@ class _VideoStageState extends State<_VideoStage> {
     _player,
     configuration: VideoControllerConfiguration(hwdec: _hwdec()),
   );
-  late final VideoOps _ops = VideoOps(_player, source: widget.request.src);
+  late final VideoOps _ops = VideoOps(
+    _player,
+    source: widget.request.src,
+    title: _prop(widget.request.props, 'force-media-title'),
+  );
+
+  static String? _prop(List<String> props, String name) => props
+      .where((p) => p.startsWith('$name='))
+      .map((p) => p.substring(name.length + 1))
+      .firstOrNull;
   final FocusNode _focus = FocusNode();
   final List<StreamSubscription<dynamic>> _subs = [];
 
@@ -408,6 +449,9 @@ class _VideoStageState extends State<_VideoStage> {
   /// same switch, so the way out has to be "undo what I did" rather than
   /// "turn it off".
   bool _fullscreen = false;
+
+  /// Stops following [VideoRequest.level].
+  VoidCallback? _unfollow;
 
   /// Whether the pointer is over the docked card.
   bool _hover = false;
@@ -506,6 +550,11 @@ class _VideoStageState extends State<_VideoStage> {
       final value = p.substring(i + 1);
       if (name == 'sub-file') {
         await _native.command(['sub-add', value, 'auto']);
+      } else if (name == 'audio-file') {
+        // A split YouTube stream: the picture is `src`, this is its sound.
+        // `audio-files` is a path list whose separator is `:` on Linux, which
+        // every URL contains, so it is appended as one item rather than set.
+        await _native.command(['change-list', 'audio-files', 'append', value]);
       } else {
         await _native.setProperty(name, value);
       }
@@ -519,6 +568,8 @@ class _VideoStageState extends State<_VideoStage> {
     );
     _subs.add(_player.stream.position.listen((p) {
       _pos = p.inMilliseconds / 1000.0;
+      r.onProgress?.call(_pos, _dur, _player.state.playing);
+      _skipSegment();
       if (!_reportedStart && _pos > 0) {
         _reportedStart = true;
         final started = r.onStarted;
@@ -543,7 +594,33 @@ class _VideoStageState extends State<_VideoStage> {
     videoResume = () {
       _player.play();
     };
+    videoPlayPause = _player.playOrPause;
+    videoSeek = (secs) =>
+        _player.seek(Duration(milliseconds: (secs * 1000).round()));
+    final level = r.level;
+    if (level != null) {
+      // One volume for the picture and the bar: take the deck's now and on
+      // every change, and hand a change made here back to it. Equal values
+      // stop the round trip.
+      double want() {
+        final l = level.value;
+        return l == null ? _player.state.volume : (l.muted ? 0 : l.volume.clamp(0.0, 100.0));
+      }
+      void follow() {
+        final v = want();
+        if ((v - _player.state.volume).abs() > 0.5) _player.setVolume(v);
+      }
+      follow();
+      level.addListener(follow);
+      _unfollow = () => level.removeListener(follow);
+      _subs.add(_player.stream.volume.listen((v) {
+        // Not before the clock runs: mpv's default arriving while the source
+        // opens is not a change anyone made.
+        if (_reportedStart && (v - want()).abs() > 0.5) r.onVolume?.call(v);
+      }));
+    }
     _subs.add(_player.stream.playing.listen((playing) {
+      r.onProgress?.call(_pos, _dur, playing);
       videoPlaying.value = playing;
       // Pausing brings the chrome back and keeps it; playing starts the clock
       // that takes it away again.
@@ -606,8 +683,11 @@ class _VideoStageState extends State<_VideoStage> {
       _hooksOwner = null;
       videoFrame = null;
       videoResume = null;
+      videoPlayPause = null;
+      videoSeek = null;
       videoPlaying.value = false;
     }
+    _unfollow?.call();
     _player.dispose();
     super.dispose();
   }
@@ -622,6 +702,23 @@ class _VideoStageState extends State<_VideoStage> {
         setState(() => _chrome = false);
       }
     });
+  }
+
+  /// Inside a segment to skip: jump to its end, once per segment, and say so.
+  /// The last half second is left alone, so a seek that lands just short does
+  /// not ask again.
+  final Set<int> _skipped = {};
+
+  void _skipSegment() {
+    final (token, segs) = videoSkips.value;
+    if (token != widget.request.token) return;
+    for (var i = 0; i + 1 < segs.length; i += 2) {
+      if (_pos >= segs[i] && _pos < segs[i + 1] - 0.5 && _skipped.add(i)) {
+        _player.seek(Duration(milliseconds: (segs[i + 1] * 1000).round()));
+        if (mounted) _flashMessage('Skipped a sponsor segment');
+        return;
+      }
+    }
   }
 
   void _flashMessage(String message) {

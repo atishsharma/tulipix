@@ -25,12 +25,46 @@ import '../../design/pick.dart';
 import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../playback/audio_deck.dart' show audioPositionS;
+import '../../playback/video_layer.dart' show videoPlayPause, videoPlaying;
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
 import 'music_motion.dart';
 import 'music_dialogs.dart';
 import 'music_widgets.dart';
 import 'player_widgets.dart';
+import 'youtube/yt_details.dart';
+import 'youtube/yt_format_sheet.dart';
+
+/// Chapter starts per YouTube video, asked once a session. The format lookup
+/// is cached for six hours in SQLite, so a replay costs nothing; a failure
+/// (offline, yt-dlp missing) is no chapters, not an error.
+// ponytail: one entry per video played, never pruned; bound it if sessions
+// ever run to thousands of videos.
+final Map<String, Future<List<double>>> _chapters = {};
+
+Future<List<double>> _chaptersOf(String videoId) => _chapters.putIfAbsent(
+      videoId,
+      () => musicYtFormats(videoId: videoId).then(
+            (i) => [for (final ch in i.chapters) ch.startS],
+            onError: (_) => const <double>[],
+          ),
+    );
+
+/// What is playing, as the format panel wants a video.
+YtVideo _nowVideo(NowPlaying now) => YtVideo(
+      videoId: now.key,
+      title: now.title,
+      channel: now.artist,
+      thumb: now.art,
+      duration: now.dur.round(),
+      mediaPath: '',
+      meta: '',
+      progress: 0,
+      quality: '',
+      channelId: '',
+      offline: '',
+      bytes: -1,
+    );
 
 class PlayerBar extends StatelessWidget {
   const PlayerBar({super.key, required this.controller});
@@ -175,7 +209,7 @@ class _LyricLine extends StatelessWidget {
     final lines = controller.state?.lyrics ?? const <LyricLine>[];
     final a = controller.activeLyric;
     final shown = controller.tickPlaying && a >= 0 && a < lines.length;
-    if (!shown) return const SizedBox(height: 16);
+    if (!shown) return _YtFormat(controller: controller);
     Widget quiet(String text) => Text(
           text,
           maxLines: 1,
@@ -204,6 +238,59 @@ class _LyricLine extends StatelessWidget {
           const SizedBox(width: 16),
           if (a + 1 < lines.length) Flexible(child: quiet(lines[a + 1].text)),
         ],
+      ),
+    );
+  }
+}
+
+/// A YouTube track has no lyrics, so its line names the streams playing:
+/// "Opus 160k", or "1080p60 avc1 + Opus 160k" while the picture is up. Tapping
+/// it opens the format panel.
+class _YtFormat extends StatelessWidget {
+  const _YtFormat({required this.controller});
+
+  final MusicController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final st = controller.state;
+    final now = st?.now;
+    if (st == null || now == null || now.mode != 'youtube' || st.ytFormatFor != now.key) {
+      return const SizedBox(height: 16);
+    }
+    final label = st.ytWatching && st.ytPictureFormat.isNotEmpty
+        ? st.ytPictureFormat
+        : st.ytSoundFormat;
+    if (label.isEmpty) return const SizedBox(height: 16);
+    final color = context.skin.inkDim ?? context.tokens.nInk3;
+    return SizedBox(
+      height: 16,
+      child: Center(
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => showFormatSheet(context, controller, _nowVideo(now)),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                    st.ytWatching
+                        ? Icons.smart_display_outlined
+                        : Icons.graphic_eq,
+                    size: 12,
+                    color: color),
+                const SizedBox(width: 6),
+                Text(label,
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: color,
+                        fontFeatures: const [FontFeature.tabularFigures()])),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -264,29 +351,12 @@ class _SeekRow extends StatelessWidget {
                       ],
                     ),
                   )
-                : skin.seekBar(SeekSlot(
-                      pos: controller.tickPos,
-                      dur: controller.tickDur,
-                      playing: controller.tickPlaying,
-                      onSeek: (v) => controller.send(MusicCmd.seek(secs: v)),
-                      deck: () => audioPositionS,
-                    )) ??
-                    SeekPill(
-                    pos: controller.tickPos,
-                    dur: controller.tickDur,
-                    accent: controller.accent,
-                    // This one is the live deck, so the bar follows the
-                    // unthrottled position rather than the once-a-second tick.
-                    smooth: true,
-                    playing: controller.tickPlaying,
-                    // Only a library track gets one -- the same rule the bar
-                    // uses for the heart. A stream has no file to decode and no
-                    // end to draw a shape against.
-                    wave: now.itemId != 0 && now.mode == 'music'
-                        ? controller.waveFor(now.itemId)
-                        : null,
-                    onSeek: (v) => controller.send(MusicCmd.seek(secs: v)),
-                  ),
+                : now.mode == 'youtube' && now.key.isNotEmpty
+                    ? FutureBuilder<List<double>>(
+                        future: _chaptersOf(now.key),
+                        builder: (_, snap) => _pill(context, now, snap.data),
+                      )
+                    : _pill(context, now, null),
           ),
           const SizedBox(width: 12),
           PlayerBtn(
@@ -310,6 +380,32 @@ class _SeekRow extends StatelessWidget {
       ),
     );
   }
+
+  Widget _pill(BuildContext context, NowPlaying now, List<double>? marks) =>
+      context.skin.seekBar(SeekSlot(
+        pos: controller.tickPos,
+        dur: controller.tickDur,
+        playing: controller.tickPlaying,
+        onSeek: (v) => controller.send(MusicCmd.seek(secs: v)),
+        deck: () => audioPositionS,
+      )) ??
+      SeekPill(
+        pos: controller.tickPos,
+        dur: controller.tickDur,
+        accent: controller.accent,
+        // This one is the live deck, so the bar follows the unthrottled
+        // position rather than the once-a-second tick.
+        smooth: true,
+        playing: controller.tickPlaying,
+        // Only a library track gets one -- the same rule the bar uses for the
+        // heart. A stream has no file to decode and no end to draw a shape
+        // against.
+        wave: now.itemId != 0 && now.mode == 'music'
+            ? controller.waveFor(now.itemId)
+            : null,
+        marks: marks ?? const [],
+        onSeek: (v) => controller.send(MusicCmd.seek(secs: v)),
+      );
 }
 
 /// Art, the two title lines, the visualizer, the transport, the extras.
@@ -489,6 +585,23 @@ class _ControlsState extends State<_Controls> {
                       },
                     ),
                   ),
+                if (now.mode == 'youtube') ...[
+                  // Audio | Video: the picture opens where the sound had got
+                  // to, and closing it resumes the sound where it stopped.
+                  _YtModeSwitch(controller: c, accent: accent),
+                  PlayerBtn(
+                    icon: Icons.video_settings_outlined,
+                    tip: 'Formats and download',
+                    accent: accent,
+                    onTap: () => showFormatSheet(context, c, _nowVideo(now)),
+                  ),
+                  PlayerBtn(
+                    icon: Icons.info_outline,
+                    tip: 'Description and chapters',
+                    accent: accent,
+                    onTap: () => showYtDetails(context, c, _nowVideo(now)),
+                  ),
+                ],
                 _SleepButton(controller: c),
                 _CastButton(controller: c),
                 PlayerBtn(
@@ -561,7 +674,10 @@ class Transport extends StatelessWidget {
     final accent = controller.accent;
     final book = mode == 'book';
     final podcast = mode == 'podcast';
-    final ordered = !live && !book;
+    // A YouTube video on screen: the deck is stopped, so play and pause
+    // reach the picture, Stop closes it, and stepping waits until it is shut.
+    final watching = st?.ytWatching ?? false;
+    final ordered = !live && !book && !watching;
     final s = scale;
 
     // Slint's controls row is one `HorizontalLayout { spacing: 12px }`, so
@@ -607,20 +723,33 @@ class Transport extends StatelessWidget {
         size: 44 * s,
         iconSize: 24 * s,
         accent: accent,
-        onTap: () => controller.send(
-          podcast
-              ? const MusicCmd.podSkip(secs: -30)
-              : book
-                  ? const MusicCmd.bookChapter(delta: -1)
-                  : const MusicCmd.prev(),
+        onTap: watching
+            ? null
+            : () => controller.send(
+                  podcast
+                      ? const MusicCmd.podSkip(secs: -30)
+                      : book
+                          ? const MusicCmd.bookChapter(delta: -1)
+                          : const MusicCmd.prev(),
+                ),
+      ),
+      if (watching)
+        ValueListenableBuilder<bool>(
+          valueListenable: videoPlaying,
+          builder: (_, on, __) => BigPlayButton(
+            playing: on,
+            accent: accent,
+            size: 56 * s,
+            onTap: () => videoPlayPause?.call(),
+          ),
+        )
+      else
+        BigPlayButton(
+          playing: playing,
+          accent: accent,
+          size: 56 * s,
+          onTap: () => controller.send(const MusicCmd.playPause()),
         ),
-      ),
-      BigPlayButton(
-        playing: playing,
-        accent: accent,
-        size: 56 * s,
-        onTap: () => controller.send(const MusicCmd.playPause()),
-      ),
       PlayerBtn(
         icon: podcast ? Icons.forward_30 : Icons.skip_next,
         tip: book
@@ -631,13 +760,15 @@ class Transport extends StatelessWidget {
         size: 44 * s,
         iconSize: 24 * s,
         accent: accent,
-        onTap: () => controller.send(
-          podcast
-              ? const MusicCmd.podSkip(secs: 30)
-              : book
-                  ? const MusicCmd.bookChapter(delta: 1)
-                  : const MusicCmd.next(),
-        ),
+        onTap: watching
+            ? null
+            : () => controller.send(
+                  podcast
+                      ? const MusicCmd.podSkip(secs: 30)
+                      : book
+                          ? const MusicCmd.bookChapter(delta: 1)
+                          : const MusicCmd.next(),
+                ),
       ),
       if (!compact)
         PlayerBtn(
@@ -989,6 +1120,66 @@ class _EqPanelState extends State<_EqPanel> {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Audio | Video for the YouTube video playing, as one two-part switch: which
+/// half is lit says how it is playing, the other half switches.
+class _YtModeSwitch extends StatelessWidget {
+  const _YtModeSwitch({required this.controller, required this.accent});
+
+  final MusicController controller;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final watching = controller.state?.ytWatching ?? false;
+    Widget half(IconData icon, String label, bool on, MusicCmd cmd) => Tooltip(
+          message: on ? 'Playing as ${label.toLowerCase()}' : 'Switch to $label',
+          child: Material(
+            color: on ? accent.withValues(alpha: 0.18) : Colors.transparent,
+            borderRadius: BorderRadius.circular(9),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(9),
+              onTap: on ? null : () => controller.send(cmd),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, size: 15, color: on ? accent : t.nInk2),
+                    const SizedBox(width: 5),
+                    Text(label,
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: on ? accent : t.nInk2)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+    return Container(
+      height: 38,
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: t.nHair),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          half(Icons.headphones_outlined, 'Audio', !watching,
+              const MusicCmd.ytStopWatching()),
+          const SizedBox(width: 2),
+          half(Icons.smart_display_outlined, 'Video', watching,
+              const MusicCmd.ytWatchCurrent()),
         ],
       ),
     );

@@ -11873,6 +11873,19 @@ fn wire_music_podcasts(window: &MainWindow) {
             };
             let Ok(pool) = pool_for("podcasts").await else { fail(weak.clone(), "Database error"); return; };
             let client = tulipix_core::net::http().clone();
+            // Apple Podcasts / Spotify show links → the show's RSS URL.
+            let url = match tulipix_music::podcasts::resolve_feed_url(&client, &url).await {
+                Ok(u) => u,
+                Err(e) => {
+                    let msg = e.to_string();
+                    let _ = weak.upgrade_in_event_loop(move |w| {
+                        w.set_music_podcast_add_busy(false);
+                        w.set_music_podcast_add_frac(0.0);
+                        w.set_music_podcast_add_status(msg.into());
+                    });
+                    return;
+                }
+            };
             let Ok(resp) = client.get(url.trim()).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await
                 else { fail(weak.clone(), "Network error — check the URL"); return; };
             let Ok(xml) = resp.text().await else { fail(weak.clone(), "Could not read the feed"); return; };

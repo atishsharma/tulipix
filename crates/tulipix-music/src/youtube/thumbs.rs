@@ -144,6 +144,36 @@ pub fn open_capped(path: &Path) -> Result<image::DynamicImage> {
     Ok(small)
 }
 
+/// YouTube's own still for a video, for rows stored without a thumbnail (an
+/// imported playlist, a cache entry written before its metadata was known).
+pub fn video_thumb_url(video_id: &str) -> String {
+    format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")
+}
+
+/// A channel listing's avatar and banner URLs, from the `thumbnails` yt-dlp
+/// puts on a channel tab. Either may be missing (a channel with no banner).
+pub fn channel_art(j: &serde_json::Value) -> (Option<String>, Option<String>) {
+    let thumbs = j["thumbnails"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let url = |t: &serde_json::Value| t["url"].as_str().filter(|u| !u.is_empty()).map(String::from);
+    let by_id = |id: &str| thumbs.iter().find(|t| t["id"].as_str() == Some(id)).and_then(url);
+    let size = |t: &serde_json::Value| (t["width"].as_u64().unwrap_or(0), t["height"].as_u64().unwrap_or(0));
+    // The sized copies: square ones are avatars, wide ones banners.
+    let largest = |wide: bool| {
+        thumbs
+            .iter()
+            .filter(|t| {
+                let (w, h) = size(t);
+                h > 0 && if wide { w > h * 3 } else { w == h }
+            })
+            .max_by_key(|t| size(t).0)
+            .and_then(url)
+    };
+    (
+        by_id("avatar_uncropped").or_else(|| largest(false)),
+        by_id("banner_uncropped").or_else(|| largest(true)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +212,26 @@ mod tests {
 
         let _ = std::fs::remove_file(&jpg);
         let _ = std::fs::remove_file(&png);
+    }
+
+    #[test]
+    fn channel_art_prefers_the_uncropped_originals() {
+        let j = serde_json::json!({"thumbnails": [
+            {"url": "https://b/1060", "width": 1060, "height": 175, "id": "0"},
+            {"url": "https://b/2560", "width": 2560, "height": 424, "id": "1"},
+            {"url": "https://b/orig", "id": "banner_uncropped"},
+            {"url": "https://a/900", "width": 900, "height": 900, "id": "7"},
+            {"url": "https://a/orig", "id": "avatar_uncropped"}
+        ]});
+        assert_eq!(channel_art(&j), (Some("https://a/orig".into()), Some("https://b/orig".into())));
+
+        let sized = serde_json::json!({"thumbnails": [
+            {"url": "https://b/1060", "width": 1060, "height": 175, "id": "0"},
+            {"url": "https://b/2560", "width": 2560, "height": 424, "id": "1"},
+            {"url": "https://a/88", "width": 88, "height": 88, "id": "6"},
+            {"url": "https://a/900", "width": 900, "height": 900, "id": "7"}
+        ]});
+        assert_eq!(channel_art(&sized), (Some("https://a/900".into()), Some("https://b/2560".into())));
+        assert_eq!(channel_art(&serde_json::json!({})), (None, None));
     }
 }

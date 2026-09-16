@@ -190,6 +190,7 @@ class SeekPill extends StatefulWidget {
     this.scale = 1.0,
     this.smooth = false,
     this.playing = false,
+    this.marks = const [],
   });
 
   final double pos;
@@ -215,6 +216,9 @@ class SeekPill extends StatefulWidget {
   /// should not: at 1 Hz it lurches. When this is set the bar reads the deck's
   /// unthrottled position every frame instead, and only the bar does.
   final bool smooth;
+
+  /// Chapter starts, in seconds: a notch in the bar at each.
+  final List<double> marks;
 
   @override
   State<SeekPill> createState() => _SeekPillState();
@@ -380,20 +384,35 @@ class _SeekPillState extends State<SeekPill> {
                   },
                   child: SizedBox(
                     height: 30 * s,
-                    child: Center(
-                      child: widget.wave == null || widget.wave!.isEmpty
-                          ? TrackBar(
-                              frac: (shown / dur).clamp(0.0, 1.0),
-                              accent: accent,
-                              scale: s,
-                            )
-                          : WaveBar(
-                              wave: widget.wave!,
-                              frac: (shown / dur).clamp(0.0, 1.0),
-                              live: widget.smooth ? _frac : null,
-                              accent: accent,
-                              scale: s,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        Center(
+                          child: widget.wave == null || widget.wave!.isEmpty
+                              ? TrackBar(
+                                  frac: (shown / dur).clamp(0.0, 1.0),
+                                  accent: accent,
+                                  scale: s,
+                                )
+                              : WaveBar(
+                                  wave: widget.wave!,
+                                  frac: (shown / dur).clamp(0.0, 1.0),
+                                  live: widget.smooth ? _frac : null,
+                                  accent: accent,
+                                  scale: s,
+                                ),
+                        ),
+                        for (final m in widget.marks)
+                          if (m > 0 && m < dur)
+                            Positioned(
+                              left: m / dur * box.maxWidth - 1,
+                              child: Container(
+                                width: 2,
+                                height: 10 * s,
+                                color: t.nCanvas.withValues(alpha: 0.85),
+                              ),
                             ),
+                      ],
                     ),
                   ),
                 );

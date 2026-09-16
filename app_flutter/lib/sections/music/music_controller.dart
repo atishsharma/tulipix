@@ -166,6 +166,30 @@ class MusicController extends ChangeNotifier {
   /// re-add the page we are returning to.
   bool _restoring = false;
 
+  /// Whether the YouTube picture just stopped was filling the window, so the
+  /// next one in the queue opens at that size rather than back in the corner.
+  bool _ytWatchFull = false;
+  int _ytWatchToken = 0;
+
+  bool get _watchingYt =>
+      _ytWatchToken != 0 && videoRequest.value?.token == _ytWatchToken;
+
+  /// The picture's clock, as the deck's tick would have reported it: the seek
+  /// bar keeps moving in video mode, so switching back to audio is a glance.
+  void _followVideo(double pos, double dur, bool playing) {
+    audioPositionS = pos;
+    final changed = playing != tickPlaying || dur != tickDur;
+    final second = pos.floor() != tickPos.floor();
+    tickPos = pos;
+    tickDur = dur;
+    tickPlaying = playing;
+    if (changed) {
+      notifyListeners();
+    } else if (second) {
+      _tickOnly();
+    }
+  }
+
   bool get canGoBack => _trail.isNotEmpty;
 
   /// The pages behind this one and this one, oldest first.
@@ -395,7 +419,9 @@ class MusicController extends ChangeNotifier {
 
   void _onEvent(MusicEvent event) {
     switch (event) {
-      case MusicEvent_Tick(:final pos, :final dur, :final playing):
+      case MusicEvent_Tick(:final pos, :final dur, :final playing)
+          // A picture on screen keeps the clock (see [_followVideo]).
+          when !_watchingYt:
         final changed = playing != tickPlaying || dur != tickDur;
         tickPos = pos;
         tickDur = dur;
@@ -404,6 +430,8 @@ class MusicController extends ChangeNotifier {
         // then land in a frame the motion is drawing anyway, rather than in
         // one of their own between two beats.
         MotionClock.instance.onNextBeat(changed ? notifyListeners : _tickOnly);
+      case MusicEvent_Tick():
+        break;
       case MusicEvent_TrackChanged():
         // The track changed under us — the loved state, the artwork and the
         // queue position are all now wrong in the held snapshot.
@@ -450,6 +478,9 @@ class MusicController extends ChangeNotifier {
         AudioDeck.instance.setProperty(name, value);
       case MusicEvent_AudioSeek(:final secs):
         AudioDeck.instance.seek(secs);
+        // The deck is stopped while a picture plays; the bar's seek is the
+        // picture's then.
+        if (_watchingYt) videoSeek?.call(secs);
       // The picture. Same layer the Videos section uses -- it wraps the whole
       // app, so a music video keeps playing while you look at Photos, and a
       // film and a music video are the one player rather than two.
@@ -459,11 +490,25 @@ class MusicController extends ChangeNotifier {
           :final startAt,
           :final props
         ):
+        // A YouTube video opens as the corner card, the way the tab's Video
+        // buttons promise; the card's expand button fills the window. One
+        // already filling it (the queue moving on) stays that size.
+        videoDocked.value = !_ytWatchFull;
+        _ytWatchFull = false;
+        _ytWatchToken = token;
         videoRequest.value = VideoRequest(
           token: token,
           src: src,
           startAt: startAt,
           props: props,
+          // The bar follows the picture: its clock, its seek bar and its
+          // volume are this video's while it is on screen.
+          onProgress: _followVideo,
+          level: audioLevel,
+          onVolume: (v) {
+            if (muted && v > 0) send(const MusicCmd.toggleMute());
+            setVolume(v);
+          },
           // Reports go to the music half of the bridge, which resumes the
           // audio at whatever frame the picture stopped on.
           onEnded: (t, pos, dur) async {
@@ -473,8 +518,14 @@ class MusicController extends ChangeNotifier {
         );
         notifyListeners();
       case MusicEvent_VideoStop():
+        // Sent just before every VideoPlay, so this is where the size of the
+        // picture being replaced is still known.
+        _ytWatchFull = videoRequest.value?.token == _ytWatchToken &&
+            !videoDocked.value;
         clearVideo();
         notifyListeners();
+      case MusicEvent_VideoSkips(:final token, :final segments):
+        videoSkips.value = (token, segments.toList());
       case MusicEvent_Remote(:final action, :final value):
         _remote(action, value);
     }
@@ -563,9 +614,13 @@ class MusicController extends ChangeNotifier {
         _trailLabels.clear();
       }
       final n = state!.now;
-      tickPos = n.pos;
-      tickDur = n.dur;
-      tickPlaying = n.playing;
+      // While a picture plays the clock is its own (see [_followVideo]); the
+      // snapshot holds where the stopped deck was.
+      if (!_watchingYt) {
+        tickPos = n.pos;
+        tickDur = n.dur;
+        tickPlaying = n.playing;
+      }
       unawaited(_followTrack());
     } catch (e) {
       error = e;

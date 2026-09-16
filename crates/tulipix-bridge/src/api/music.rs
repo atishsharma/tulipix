@@ -54,9 +54,6 @@ const LIST_PAGE: i64 = 30;
 const RAIL: i64 = 14;
 /// How many search hits a YouTube query asks for.
 const YT_HITS: usize = 20;
-/// Cached YouTube audio files kept before the oldest is evicted. Matches the
-/// Slint build's `YT_CACHE_KEEP`.
-const YT_CACHE_KEEP: i64 = 60;
 
 // ---------------------------------------------------------------- state ----
 
@@ -493,6 +490,49 @@ pub struct YtVideo {
     /// 0..1 watch position, from `yt_progress`.
     pub progress: f64,
     pub quality: String,
+    /// "" when unknown: rows stored before the column existed, and videos in
+    /// a playlist, which may come from any channel.
+    pub channel_id: String,
+    /// "" | "audio" | "video": plays without the network, and as what; with a
+    /// ":dl" suffix when the copy is a download rather than the cache.
+    pub offline: String,
+    /// File size for cached and downloaded rows; -1 where there is no file.
+    pub bytes: i64,
+}
+
+/// What streaming keeps, and how the cache stays inside its budget.
+#[derive(Debug, Clone)]
+pub struct YtCachePolicy {
+    /// audio | all | never
+    pub mode: String,
+    pub cap_bytes: i64,
+    /// lru | oldest | largest
+    pub evict: String,
+    /// 0 = never drop for being unplayed.
+    pub idle_days: i64,
+}
+
+fn yt_cache_policy() -> YtCachePolicy {
+    use tulipix_music::yt_prefs;
+    YtCachePolicy {
+        mode: yt_prefs::cache_mode(),
+        cap_bytes: yt_prefs::cache_cap_bytes(),
+        evict: yt_prefs::cache_evict().key().to_string(),
+        idle_days: yt_prefs::cache_idle_days() as i64,
+    }
+}
+
+/// Bytes on disk, for the Cached page's bar and the Downloads page's total.
+#[derive(Debug, Clone)]
+pub struct YtStorage {
+    pub cache_audio_bytes: i64,
+    pub cache_video_bytes: i64,
+    pub cap_bytes: i64,
+    pub downloads_audio_bytes: i64,
+    pub downloads_video_bytes: i64,
+    /// Thumbnails and avatars the tab shows. Not counted against the budget:
+    /// eviction removes media, and art is shared with the rest of the section.
+    pub thumbs_bytes: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -503,6 +543,8 @@ pub struct YtSub {
     pub videos: i64,
     pub subs: i64,
     pub subscribed: bool,
+    /// Listed since the channel was last looked at.
+    pub new_videos: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -512,6 +554,126 @@ pub struct YtPlaylist {
     pub count: i64,
     pub cover: String,
     pub source_url: String,
+}
+
+/// One picture stream of a video, as the format panel lists it.
+#[derive(Debug, Clone)]
+pub struct YtVideoFormat {
+    pub id: String,
+    pub height: i64,
+    pub fps: i64,
+    pub codec: String,
+    pub ext: String,
+    pub kbps: i64,
+    pub hdr: bool,
+    /// -1 when yt-dlp does not know.
+    pub bytes: i64,
+}
+
+/// One sound stream.
+#[derive(Debug, Clone)]
+pub struct YtAudioFormat {
+    pub id: String,
+    pub codec: String,
+    pub ext: String,
+    pub kbps: i64,
+    pub rate_hz: i64,
+    pub bytes: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct YtChapter {
+    pub start_s: f64,
+    pub title: String,
+}
+
+/// Everything the format panel needs for one video, plus the saved watch
+/// default so the panel can pre-select the row it would have played anyway.
+#[derive(Debug, Clone)]
+pub struct YtStreamInfo {
+    pub title: String,
+    pub channel: String,
+    pub channel_id: String,
+    pub description: String,
+    /// `YYYYMMDD`, or "".
+    pub upload_date: String,
+    /// -1 when YouTube does not say.
+    pub views: i64,
+    pub likes: i64,
+    pub video: Vec<YtVideoFormat>,
+    pub audio: Vec<YtAudioFormat>,
+    pub chapters: Vec<YtChapter>,
+    pub duration_s: f64,
+    pub watch_height: i64,
+    pub watch_codec: String,
+    /// Every download preset with its size estimated against these streams.
+    pub presets: Vec<YtPreset>,
+}
+
+impl YtStreamInfo {
+    fn from_domain(
+        i: &tulipix_music::youtube::formats::StreamInfo,
+        pref: &tulipix_music::youtube::formats::WatchPref,
+    ) -> Self {
+        let bytes = |b: Option<u64>| b.map(|b| b as i64).unwrap_or(-1);
+        YtStreamInfo {
+            title: i.title.clone(),
+            channel: i.channel.clone(),
+            channel_id: i.channel_id.clone(),
+            description: i.description.clone(),
+            upload_date: i.upload_date.clone(),
+            views: i.views,
+            likes: i.likes,
+            video: i
+                .video
+                .iter()
+                .map(|f| YtVideoFormat {
+                    id: f.id.clone(),
+                    height: f.height as i64,
+                    fps: f.fps as i64,
+                    codec: f.vcodec.clone(),
+                    ext: f.ext.clone(),
+                    kbps: f.tbr_kbps as i64,
+                    hdr: f.hdr,
+                    bytes: bytes(f.bytes),
+                })
+                .collect(),
+            audio: i
+                .audio
+                .iter()
+                .map(|f| YtAudioFormat {
+                    id: f.id.clone(),
+                    codec: f.acodec.clone(),
+                    ext: f.ext.clone(),
+                    kbps: f.abr_kbps as i64,
+                    rate_hz: f.rate_hz as i64,
+                    bytes: bytes(f.bytes),
+                })
+                .collect(),
+            chapters: i
+                .chapters
+                .iter()
+                .map(|c| YtChapter { start_s: c.start_s, title: c.title.clone() })
+                .collect(),
+            duration_s: i.duration_s,
+            watch_height: pref.height as i64,
+            watch_codec: pref.codec.clone(),
+            presets: tulipix_music::youtube::dl_args::Preset::all()
+                .iter()
+                .map(|p| YtPreset {
+                    key: p.key(),
+                    audio: p.is_audio(),
+                    name: p.name().into(),
+                    detail: p.detail(),
+                    note: p.note().into(),
+                    bytes: tulipix_music::youtube::dl_args::estimate_bytes(p, i)
+                        .map(|b| b as i64)
+                        .unwrap_or(-1),
+                    embeds_cover: p.embeds_cover(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// What the player bar shows, wherever the user is. Survives a tab switch on
@@ -827,6 +989,9 @@ pub struct MusicState {
     pub yt_channel_id: String,
     pub yt_channel_title: String,
     pub yt_channel_avatar: String,
+    /// The channel's banner, a local copy; "" when it has none or it is not
+    /// fetched yet.
+    pub yt_channel_banner: String,
     pub yt_channel_subscribed: bool,
     /// latest | popular — which list `yt_channel_videos` holds.
     pub yt_channel_mode: String,
@@ -840,8 +1005,13 @@ pub struct MusicState {
     /// from each subscribed channel. Without it Home was an empty box until
     /// you typed something, which is not what a subscriptions feed is for.
     pub yt_recommended: Vec<YtVideo>,
+    /// Part-watched videos, most recent first: Home's hero and Continue list.
+    pub yt_continue: Vec<YtVideo>,
     /// A further page of search hits exists.
     pub yt_results_more: bool,
+    /// What the Results view is showing results for.
+    pub yt_search_q: String,
+    pub yt_search_offline: bool,
     /// new | old | az
     pub yt_dl_sort: String,
     /// name | videos | subscribers
@@ -850,17 +1020,22 @@ pub struct MusicState {
     pub yt_subs_dir: String,
     /// sub | unsub — which half of the channel table the page lists.
     pub yt_subs_filter: String,
+    /// Subscriptions: the channel beside the list, "" = all of them.
+    pub yt_subs_sel: String,
+    /// Its listing, new videos first; the first `yt_subs_feed_new` are new.
+    pub yt_subs_feed: Vec<YtVideo>,
+    pub yt_subs_feed_new: i64,
     /// default | title | duration
     pub yt_playlist_sort: String,
     /// "142 videos · 4.2M subscribers", when the channel row knows.
     pub yt_channel_sub: String,
-    /// Downloads in flight or waiting, oldest first. `frac` is only meaningful
-    /// on the first one — yt-dlp runs one at a time.
+    /// Downloads in flight, waiting, or failed, oldest first.
     pub yt_jobs: Vec<YtJob>,
     pub yt_busy: bool,
-    /// Preferred download height. 0 = best video, < 0 = audio only,
-    /// `-999` = no default, so the picker asks.
-    pub yt_default_res: i64,
+    /// The download panel's defaults: the last preset of each kind, the
+    /// extras and the file-name template.
+    pub yt_dl_prefs: YtDownloadPrefs,
+    pub yt_cache_policy: YtCachePolicy,
     /// Channel ids pinned to the Home rail, newest first.
     pub yt_home_channels: Vec<String>,
     /// The pinned channels themselves, resolved and in pin order. Falls back to
@@ -883,21 +1058,130 @@ pub struct MusicState {
     /// A video is on screen rather than on the deck. The player bar drops its
     /// transport while this is true — the picture carries its own.
     pub yt_watching: bool,
+    /// The streams playing for `yt_format_for`, named: "Opus 160k",
+    /// "1080p60 avc1 + Opus 160k", "Cached Opus". Empty when not known.
+    pub yt_format_for: String,
+    pub yt_sound_format: String,
+    pub yt_picture_format: String,
     /// The playlist currently being played through, so its card can show it.
     /// -1 = none.
     pub yt_playing_pl_id: i64,
     /// Gradient outline on the Home rails. On by default, off for people who
     /// find it loud.
     pub yt_home_connect: bool,
+    /// History: what was played, newest first. Filled on the History tab.
+    pub yt_history: Vec<YtVideo>,
+    /// Watched videos are left out of the feeds and channel pages.
+    pub yt_hide_watched: bool,
+    /// Sponsor segments are skipped while playing.
+    pub yt_sponsor_skip: bool,
+    /// Caption language offered while watching.
+    pub yt_caption_lang: String,
+    /// The YouTube queue, as rows, while there is one.
+    pub yt_queue: Vec<YtVideo>,
+    pub yt_queue_pos: i64,
 }
 
 #[derive(Debug, Clone)]
 pub struct YtJob {
     pub video_id: String,
     pub title: String,
-    /// 0..1 for the running job, 0 for anything still queued.
+    /// 0..1 of the current stream. A video downloads picture then sound, so it
+    /// runs to 1 twice; a post-processing stage leaves it at 1.
     pub frac: f64,
     pub running: bool,
+    /// "MP3 · 320 kbps" — what this job will produce.
+    pub label: String,
+    /// "Downloading", "Merging picture and sound", "Embedding cover" … ;
+    /// empty until yt-dlp says something.
+    pub stage: String,
+    /// -1 until known.
+    pub total_bytes: i64,
+    /// 0 when unknown or not downloading.
+    pub speed_bps: f64,
+    /// -1 when unknown.
+    pub eta_s: i64,
+    /// Set when the job failed; the row stays until Retry or Dismiss.
+    pub error: String,
+    /// Stopped by Pause; Resume carries on from the partial file.
+    pub paused: bool,
+}
+
+/// One download preset as the format panel shows it.
+#[derive(Debug, Clone)]
+pub struct YtPreset {
+    /// `mp3`, `mp4-1080`, … — what `YtDownloadSpec.preset` takes.
+    pub key: String,
+    pub audio: bool,
+    pub name: String,
+    pub detail: String,
+    /// A caution worth reading before picking it; empty for most.
+    pub note: String,
+    /// Estimated size; -1 when it cannot be estimated.
+    pub bytes: i64,
+    /// False where yt-dlp refuses a cover (WAV, WebM).
+    pub embeds_cover: bool,
+}
+
+/// A download as the panel asks for it.
+#[derive(Debug, Clone)]
+pub struct YtDownloadSpec {
+    pub preset: String,
+    pub cover: bool,
+    pub tags: bool,
+    pub chapters: bool,
+    pub sponsorblock: bool,
+    pub subs: bool,
+    /// yt-dlp `-o` template; `~` allowed. Empty = the default.
+    pub template: String,
+}
+
+impl YtDownloadSpec {
+    fn to_domain(&self) -> Result<tulipix_music::youtube::dl_args::DownloadSpec> {
+        use tulipix_music::youtube::dl_args::{DownloadSpec, Extras, Preset, DEFAULT_TEMPLATE};
+        let preset = Preset::parse(&self.preset)
+            .ok_or_else(|| anyhow::anyhow!("unknown download format \"{}\"", self.preset))?;
+        let template = self.template.trim();
+        Ok(DownloadSpec {
+            preset,
+            extras: Extras {
+                cover: self.cover,
+                tags: self.tags,
+                chapters: self.chapters,
+                sponsorblock: self.sponsorblock,
+                subs: self.subs,
+            },
+            template: if template.is_empty() { DEFAULT_TEMPLATE.into() } else { template.into() },
+        })
+    }
+}
+
+/// The download panel's starting point: the last choices made.
+#[derive(Debug, Clone)]
+pub struct YtDownloadPrefs {
+    pub audio_preset: String,
+    pub video_preset: String,
+    pub cover: bool,
+    pub tags: bool,
+    pub chapters: bool,
+    pub sponsorblock: bool,
+    pub subs: bool,
+    pub template: String,
+}
+
+fn yt_download_prefs() -> YtDownloadPrefs {
+    use tulipix_music::yt_prefs;
+    let x = yt_prefs::download_extras();
+    YtDownloadPrefs {
+        audio_preset: yt_prefs::download_preset(true).key(),
+        video_preset: yt_prefs::download_preset(false).key(),
+        cover: x.cover,
+        tags: x.tags,
+        chapters: x.chapters,
+        sponsorblock: x.sponsorblock,
+        subs: x.subs,
+        template: yt_prefs::download_template(),
+    }
 }
 
 // -------------------------------------------------------------- commands ----
@@ -1193,14 +1477,55 @@ pub enum MusicCmd {
 
     // --- YouTube ---
     YtSetTab { name: String },
-    YtSearch { query: String },
+    /// Words search YouTube (or, with `offline_only`, the library's cached and
+    /// downloaded videos). A pasted video or playlist link lists that; a
+    /// channel link or `@handle` opens the channel.
+    YtSearch { query: String, offline_only: bool },
     YtClearRecent,
-    YtPlay { video_id: String },
+    /// `format_id` is a row from `music_yt_formats`; empty = best audio, and
+    /// the cached Opus when there is one.
+    YtPlay { video_id: String, format_id: String },
     YtPlayLocal { media_path: String, video_id: String },
-    YtDownload { video_id: String, quality: String },
+    /// Watch a video file on disk (a download) in the in-app player.
+    YtWatchLocal { media_path: String, video_id: String },
+    YtDownload { video_id: String, spec: YtDownloadSpec },
+    /// Run a failed download again with the spec it was queued with.
+    YtRetryJob { video_id: String },
+    /// Drop a failed download's row.
+    YtDismissJob { video_id: String },
     YtRemoveCached { video_id: String },
-    YtRemoveDownload { video_id: String },
+    /// One downloaded file: a video can be kept at several qualities.
+    YtRemoveDownload { media_path: String },
     YtClearCached,
+    /// Drop cached videos not played for `days`, whatever the idle setting.
+    YtClearUnplayed { days: i64 },
+    /// Mark a video watched or not; watched videos can be hidden.
+    YtMarkWatched { video_id: String, watched: bool },
+    YtRemoveHistory { video_id: String },
+    YtClearHistory,
+    YtToggleHideWatched,
+    YtToggleSponsorSkip,
+    /// A language code; "" goes back to the system's.
+    YtSetCaptionLang { lang: String },
+    /// The YouTube queue: jump, drop, move, clear everything but what plays,
+    /// and add (`next` = right after what plays, else at the end).
+    YtQueuePlayAt { index: i64 },
+    YtQueueRemove { index: i64 },
+    YtQueueMove { from: i64, to: i64 },
+    YtQueueClear,
+    YtQueueAdd { video_id: String, next: bool },
+    YtRenamePlaylist { playlist_id: i64, name: String },
+    /// Move a video to just before `before` ("" = the end). By id, so a
+    /// filtered or partial list on screen moves the right rows.
+    YtMovePlaylistItem { playlist_id: i64, video_id: String, before: String },
+    /// Pull an imported playlist's new videos from YouTube.
+    YtSyncPlaylist { playlist_id: i64 },
+    /// Stop a running download, keeping the partial file.
+    YtPauseJob { video_id: String },
+    YtResumeJob { video_id: String },
+    /// Narrow the open YouTube page's list (subscriptions, playlists, cached,
+    /// downloads, a playlist) to titles and channels containing `query`.
+    YtFilter { query: String },
     YtClearDownloads,
     YtSetDlPage { page: i64 },
     YtOpenChannel { channel_id: String },
@@ -1210,6 +1535,13 @@ pub enum MusicCmd {
     YtSubscribe { channel_id: String, title: String },
     YtUnsub { channel_id: String },
     YtSetSubsPage { page: i64 },
+    /// Put a channel's listing beside the Subscriptions list ("" = every
+    /// channel's new videos) and count it as seen.
+    YtSubsSelect { channel_id: String },
+    /// Pull every subscribed channel's newest videos, for the new counts.
+    YtCheckNew,
+    /// Play these videos in order, as a queue.
+    YtPlayAll { video_ids: Vec<String> },
     YtRefreshSubs,
     YtImportSubs { path: String },
     YtCreatePlaylist { name: String },
@@ -1231,10 +1563,17 @@ pub enum MusicCmd {
     YtAddChannelUrl { url: String },
     /// Import a YouTube playlist URL as a local playlist.
     YtImportPlaylistUrl { url: String },
-    /// Remember a download height. 0 = best video, < 0 = audio only.
-    YtSetDefaultRes { height: i64 },
-    /// Forget it, so the picker comes back.
+    /// Forget the watch default and the download defaults.
     YtResetVideoPrefs,
+    /// Save the cache policy and apply it at once. `mode` audio | all | never,
+    /// `evict` lru | oldest | largest, `idle_days` 0 = never.
+    YtSetCachePolicy { mode: String, cap_bytes: i64, evict: String, idle_days: i64 },
+    /// Keep a cached file: move it to the download folder and list it there.
+    YtPromoteCached { video_id: String },
+    /// Apply the cache policy now rather than at the next cache write.
+    YtCleanCache,
+    /// Open the folder a file is in, in the desktop's file manager.
+    YtShowInFolder { path: String },
     YtPinHome { channel_id: String },
     YtUnpinHome { channel_id: String },
     /// auto | piped | ytdlp
@@ -1243,10 +1582,13 @@ pub enum MusicCmd {
     YtChannelSearch { query: String },
     /// Pull another 30 videos onto the open channel's listing.
     YtChannelLoadMore,
-    /// Watch a video rather than hearing it. `height` follows the same spelling
-    /// as the download picker: 0 = best, < 0 is meaningless here and is treated
-    /// as best, anything else is a cap.
-    YtWatch { video_id: String, height: i64 },
+    /// Watch a video rather than hearing it. `format_id` is a picture row from
+    /// `music_yt_formats`, played with the best sound; empty = the saved watch
+    /// default (`yt_prefs::watch_pref`).
+    YtWatch { video_id: String, format_id: String },
+    /// Save the watch default. `height` 0 = no cap, < 0 = forget it.
+    /// `codec` is `any`, `avc1`, `vp09` or `av01`.
+    YtSetWatchPref { height: i64, codec: String },
     /// Watch whatever is playing as audio right now, from where it has got to.
     YtWatchCurrent,
     /// Close the picture without waiting for the end of the video.
@@ -1294,6 +1636,9 @@ pub enum MusicEvent {
     VideoPlay { token: i64, src: String, start_at: f64, props: Vec<String> },
     /// Close the picture. Also sent immediately before every `VideoPlay`.
     VideoStop,
+    /// Stretches of the picture `token` to jump over, as start, end pairs in
+    /// seconds. Sent when SponsorBlock answers, which can be after it starts.
+    VideoSkips { token: i64, segments: Vec<f64> },
 
     /// A command from outside the app: a media key, the desktop's media applet,
     /// a Bluetooth remote, or the tray menu.
@@ -1397,6 +1742,7 @@ struct Session {
     yt_channel_id: String,
     yt_channel_title: String,
     yt_channel_avatar: String,
+    yt_channel_banner: String,
     yt_channel_mode: String,
     yt_channel_subscribed: bool,
     yt_channel_videos: Vec<YtVideo>,
@@ -1412,10 +1758,21 @@ struct Session {
     yt_recommended: Vec<YtVideo>,
     yt_results_more: bool,
     yt_search_q: String,
+    yt_search_offline: bool,
     yt_dl_sort: String,
     yt_subs_sort: String,
     yt_subs_dir: String,
     yt_subs_filter: String,
+    yt_subs_sel: String,
+    /// How many of the selected channel's videos were new when it was picked;
+    /// picking it marks them seen, so the store can no longer say.
+    yt_subs_sel_new: i64,
+    /// The header search on a page that filters rather than searches.
+    yt_filter: String,
+    /// The open channel's @handle and follower count, from its listing; kept
+    /// here because a channel you are not subscribed to has no row for them.
+    yt_channel_handle: String,
+    yt_channel_followers: i64,
     yt_playlist_sort: String,
     yt_channel_query: String,
     yt_channel_results: Vec<YtVideo>,
@@ -1510,6 +1867,7 @@ impl Default for Session {
             yt_channel_id: String::new(),
             yt_channel_title: String::new(),
             yt_channel_avatar: String::new(),
+            yt_channel_banner: String::new(),
             yt_channel_mode: "latest".into(),
             yt_channel_subscribed: false,
             yt_channel_videos: Vec::new(),
@@ -1522,10 +1880,16 @@ impl Default for Session {
             yt_recommended: Vec::new(),
             yt_results_more: false,
             yt_search_q: String::new(),
+            yt_search_offline: false,
             yt_dl_sort: "new".into(),
             yt_subs_sort: "subscribers".into(),
             yt_subs_dir: "desc".into(),
             yt_subs_filter: tulipix_music::yt_prefs::subs_filter(),
+            yt_subs_sel: String::new(),
+            yt_subs_sel_new: 0,
+            yt_filter: String::new(),
+            yt_channel_handle: String::new(),
+            yt_channel_followers: -1,
             yt_playlist_sort: "default".into(),
             yt_channel_query: String::new(),
             yt_channel_results: Vec::new(),
@@ -1623,13 +1987,29 @@ pub async fn music_video_ended(token: i64, pos: f64, dur: f64) {
         return;
     }
     // Past the end is a finished video, not a place to resume from.
-    let resume = if dur > 0.0 && pos >= dur - 1.0 { 0.0 } else { pos };
+    let finished = dur > 0.0 && pos >= dur - 1.0;
+    let resume = if finished { 0.0 } else { pos };
     if let Ok(pool) = youtube_pool().await {
         let _ = tulipix_music::youtube::store::save_progress(pool, &id, resume, dur).await;
     }
+    // Watched to the end: the queue's next video, or nothing. Resuming the
+    // sound here started the same video over from 0:00.
+    if finished {
+        let in_queue = {
+            let s = lock();
+            s.yt_queue.get(s.yt_queue_pos as usize) == Some(&id)
+        };
+        if in_queue {
+            if let Err(e) = step_youtube(true).await {
+                tracing::warn!(error = %e, "could not play the next video after the last one ended");
+            }
+        }
+        emit(MusicEvent::TrackChanged);
+        return;
+    }
     // `play_youtube` reads `progress_of` itself, so writing the position above
     // IS the handoff -- seeking again here would fight it.
-    if let Err(e) = play_youtube(&id).await {
+    if let Err(e) = play_youtube(&id, "").await {
         tracing::warn!(error = %e, video = %id, "could not resume audio after the video");
     }
 }
@@ -2429,6 +2809,177 @@ pub async fn music_lyric_search(query: String) -> Result<Vec<LyricMatch>> {
         .collect())
 }
 
+// ------------------------------------------------------------ yt formats --
+
+/// The format panel's rows for one video.
+///
+/// `yt-dlp -J` takes a few seconds, so the answer is kept for six hours. The
+/// stream URLs in a dump expire long before the list of formats changes.
+pub async fn music_yt_formats(video_id: String) -> Result<YtStreamInfo> {
+    const FRESH_S: i64 = 6 * 3600;
+    let pool = youtube_pool().await?;
+    let cached = tulipix_music::youtube::store::get_formats(pool, &video_id, FRESH_S).await?;
+    let info = match cached {
+        Some(info) => info,
+        None => {
+            let url = format!("https://www.youtube.com/watch?v={video_id}");
+            let out = tokio::process::Command::new(tulipix_core::ytdlp::bin())
+                .args(["-J", "--no-playlist"])
+                .args(tulipix_core::ytdlp::common_args())
+                .arg(&url)
+                .no_window_async()
+                .output()
+                .await
+                .map_err(|e| anyhow::anyhow!("yt-dlp could not be launched: {e}"))?;
+            if !out.status.success() {
+                anyhow::bail!(
+                    "{}",
+                    tulipix_core::ytdlp::friendly_error(&String::from_utf8_lossy(&out.stderr))
+                );
+            }
+            let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+            let info = tulipix_music::youtube::formats::parse_info(&json);
+            if info.video.is_empty() && info.audio.is_empty() {
+                anyhow::bail!("yt-dlp listed no playable formats for this video");
+            }
+            // A failed write only costs the next open another `-J`.
+            let _ = tulipix_music::youtube::store::put_formats(pool, &video_id, &info).await;
+            info
+        }
+    };
+    Ok(YtStreamInfo::from_domain(
+        &info,
+        &tulipix_music::yt_prefs::watch_pref(),
+    ))
+}
+
+// ------------------------------------------------------------ yt suggest --
+
+/// What the search box offers from the library as you type.
+#[derive(Debug, Clone)]
+pub struct YtSuggestLocal {
+    pub channels: Vec<YtSub>,
+    pub videos: Vec<YtVideo>,
+    pub playlists: Vec<YtPlaylist>,
+    pub recent: Vec<String>,
+}
+
+/// Library matches for `query`: subscribed channels, known videos, playlists
+/// and recent searches. SQLite only, so it answers while typing and offline.
+pub async fn music_yt_suggest_local(query: String, offline_only: bool) -> Result<YtSuggestLocal> {
+    use tulipix_music::youtube::store;
+    let q = query.trim().to_lowercase();
+    let pool = youtube_pool().await?;
+    let recent: Vec<String> = store::list_recent_searches(pool, 20)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| q.is_empty() || (r.to_lowercase().starts_with(&q) && r.to_lowercase() != q))
+        .take(if q.is_empty() { 6 } else { 3 })
+        .collect();
+    if q.is_empty() {
+        return Ok(YtSuggestLocal { channels: Vec::new(), videos: Vec::new(), playlists: Vec::new(), recent });
+    }
+    let channels = if offline_only {
+        Vec::new()
+    } else {
+        let mut subs: Vec<_> = store::list_subs(pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|x| x.subscribed && x.title.to_lowercase().contains(&q))
+            .collect();
+        subs.sort_by(|a, b| b.sub_count.unwrap_or(0).cmp(&a.sub_count.unwrap_or(0)));
+        subs.iter().take(3).map(into_sub).collect()
+    };
+    let kinds = store::offline_kinds(pool).await.unwrap_or_default();
+    let videos = store::find_videos(pool, &q, offline_only, 5)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| {
+            let mut y = into_yt(v, 0.0);
+            y.offline = kinds.get(&y.video_id).cloned().unwrap_or_default();
+            y
+        })
+        .collect();
+    let playlists = store::list_playlists(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.name.to_lowercase().contains(&q))
+        .take(2)
+        .map(|p| YtPlaylist {
+            id: p.id,
+            name: p.name,
+            count: p.count,
+            cover: p.cover.unwrap_or_default(),
+            source_url: p.source_url.unwrap_or_default(),
+        })
+        .collect();
+    Ok(YtSuggestLocal { channels, videos, playlists, recent })
+}
+
+/// YouTube's own query suggestions. Best-effort by design: a slow, refused or
+/// reshaped answer is no suggestions, and the library half never waits on it.
+pub async fn music_yt_suggest_remote(query: String) -> Vec<String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let resp = tulipix_core::net::http()
+        .get(tulipix_music::youtube::suggest::SUGGEST_URL)
+        .query(&[("client", "firefox"), ("ds", "yt"), ("q", q)])
+        .header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA)
+        .timeout(std::time::Duration::from_millis(1500))
+        .send()
+        .await;
+    match resp {
+        Ok(r) => match r.text().await {
+            Ok(body) => tulipix_music::youtube::suggest::parse_suggest(&body, 6),
+            Err(_) => Vec::new(),
+        },
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Cache and download sizes on disk, with the cache's budget beside them.
+pub async fn music_yt_storage() -> Result<YtStorage> {
+    let pool = youtube_pool().await?;
+    let (ca, cv, da, dv) = tulipix_music::youtube::store::storage_totals(pool).await?;
+    // Wherever each picture is on disk: a local path the Slint build wrote, or
+    // the art cache's copy of a URL. One stat per distinct file.
+    let mut seen = std::collections::HashSet::new();
+    let mut thumbs = 0i64;
+    for src in tulipix_music::youtube::store::art_sources(pool).await? {
+        let path = if src.starts_with("http") {
+            art_cache_path(&src)
+        } else {
+            PathBuf::from(&src)
+        };
+        if seen.insert(path.clone()) {
+            thumbs += std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
+        }
+    }
+    Ok(YtStorage {
+        thumbs_bytes: thumbs,
+        cache_audio_bytes: ca,
+        cache_video_bytes: cv,
+        cap_bytes: tulipix_music::yt_prefs::cache_cap_bytes(),
+        downloads_audio_bytes: da,
+        downloads_video_bytes: dv,
+    })
+}
+
+/// `video` | `playlist` | `channel` when `text` is a YouTube link, else "".
+/// Synchronous: the search box asks on every keystroke.
+#[frb(sync)]
+pub fn music_yt_link_kind(text: String) -> String {
+    tulipix_music::youtube::links::parse_link(&text)
+        .map(|l| l.kind().to_string())
+        .unwrap_or_default()
+}
+
 // ----------------------------------------------------------- resume albums --
 
 /// Albums left part-way through, most recently abandoned first.
@@ -3110,6 +3661,22 @@ fn folder_cover(dir: &Path) -> Option<String> {
 /// Download a remote artwork URL once and hand back the local path. A key that
 /// is already a local file is passed straight through — podcast shows can carry
 /// a user-picked thumbnail rather than a feed URL.
+/// Where [cache_remote] keeps its copy of a URL. YouTube's pictures go to the
+/// YouTube folder, where the sweep can find them; everything else shares the
+/// section's art cache.
+fn art_cache_path(src: &str) -> PathBuf {
+    let ext = src
+        .rsplit('.')
+        .next()
+        .filter(|e| e.len() <= 4 && !e.contains('/'))
+        .unwrap_or("jpg");
+    let youtube = ["ytimg.com/", "ggpht.com/", "yt3.googleusercontent.com/"]
+        .iter()
+        .any(|host| src.contains(host));
+    let dir = if youtube { yt_thumb_dir() } else { art_cache_dir() };
+    dir.join(format!("{}.{ext}", art_key(src)))
+}
+
 async fn cache_remote(src: &str) -> Option<String> {
     if src.is_empty() {
         return None;
@@ -3121,14 +3688,16 @@ async fn cache_remote(src: &str) -> Option<String> {
     if !src.starts_with("http") {
         return None;
     }
-    let ext = src
-        .rsplit('.')
-        .next()
-        .filter(|e| e.len() <= 4 && !e.contains('/'))
-        .unwrap_or("jpg");
-    let dest = art_cache_dir().join(format!("{}.{ext}", art_key(src)));
+    let dest = art_cache_path(src);
     if dest.exists() {
         return Some(dest.to_string_lossy().into_owned());
+    }
+    // A YouTube picture fetched before they had their own folder.
+    if let Some(name) = dest.file_name() {
+        let old = art_cache_dir().join(name);
+        if old != dest && std::fs::rename(&old, &dest).is_ok() {
+            return Some(dest.to_string_lossy().into_owned());
+        }
     }
     let bytes = tulipix_core::net::http()
         .get(src)
@@ -3712,7 +4281,7 @@ async fn step_youtube(forward: bool) -> Result<()> {
     };
     lock().yt_queue_pos = next as i64;
     let id = queue[next].clone();
-    play_youtube(&id).await
+    play_youtube(&id, "").await
 }
 
 /// Where offline podcast episodes and YouTube media live. Same directories the
@@ -3731,6 +4300,21 @@ fn yt_media_dir() -> PathBuf {
         .join("youtube_cache");
     let _ = std::fs::create_dir_all(&d);
     d
+}
+
+/// The user's home, for `~` in download templates. The app's own download
+/// directory stands in on the rare system with neither variable.
+fn yt_home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(yt_download_dir)
+}
+
+/// Where a video cached from watching lives. Beside the audio cache, named so
+/// the audio and video copies of one id cannot collide.
+fn yt_cached_video_path(video_id: &str) -> PathBuf {
+    yt_media_dir().join(format!("{video_id}.video.mkv"))
 }
 
 fn yt_download_dir() -> PathBuf {
@@ -3963,91 +4547,174 @@ async fn play_station(index: usize) -> Result<()> {
     Ok(())
 }
 
-async fn play_youtube(video_id: &str) -> Result<()> {
+async fn play_youtube(video_id: &str, format_id: &str) -> Result<()> {
     let pool = youtube_pool().await?;
-    let meta: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT COALESCE(title, ''), COALESCE(channel, ''), COALESCE(thumb_path, '') \
-         FROM yt_cached WHERE video_id = ? \
-         UNION ALL \
-         SELECT COALESCE(title, ''), COALESCE(channel, ''), COALESCE(thumb_path, '') \
-         FROM yt_downloaded WHERE video_id = ? LIMIT 1",
-    )
-    .bind(video_id)
-    .bind(video_id)
-    .fetch_optional(pool)
-    .await?;
-    let (title, channel, thumb) = meta.unwrap_or_else(|| {
-        // Not in the store yet: this is a search hit, so take what the results
-        // list already has rather than a second network round trip.
-        let s = lock();
-        s.yt_results
-            .iter()
-            .chain(s.yt_channel_videos.iter())
-            .find(|v| v.video_id == video_id)
-            .map(|v| (v.title.clone(), v.channel.clone(), v.thumb.clone()))
-            .unwrap_or_default()
-    });
     let resume = tulipix_music::youtube::store::progress_of(pool, video_id)
         .await
         .unwrap_or(0.0);
 
-    let cached = yt_media_dir().join(format!("{video_id}.opus"));
-    let src = if cached.exists() {
-        cached.to_string_lossy().into_owned()
+    // A picked audio format is honoured even when a cached Opus exists: the
+    // user asked for that stream, and the cache is the default, not a rule.
+    let cached_audio = yt_media_dir().join(format!("{video_id}.opus"));
+    let cached_video = yt_cached_video_path(video_id);
+    let mut hint = None;
+    // A cached video is sound too: the deck plays it with `vid=no`.
+    let local = [cached_audio, cached_video].into_iter().find(|p| format_id.is_empty() && p.exists());
+    let src = if let Some(path) = local {
+        let _ = tulipix_music::youtube::store::touch_cached(pool, video_id).await;
+        path.to_string_lossy().into_owned()
     } else {
-        let url = format!("https://www.youtube.com/watch?v={video_id}");
-        let out = tokio::process::Command::new(tulipix_core::ytdlp::bin())
-            .args(["-g", "-f", "bestaudio/best", "--no-playlist"])
-            .args(tulipix_core::ytdlp::common_args())
-            .arg(&url)
-            .no_window_async()
-            .output()
-            .await;
-        // Keep the stderr: "could not resolve a stream for dQw4w9WgXcQ" named
-        // the video and nothing the user could do about it, and a refusal is
-        // the overwhelmingly common reason this fails.
-        let out = out.map_err(|e| anyhow::anyhow!("yt-dlp could not be launched: {e}"))?;
-        let resolved = out.status.success().then(|| {
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .map(|l| l.trim().to_string())
-                .find(|l| !l.is_empty())
-        }).flatten();
-        match resolved {
+        let selector = tulipix_music::youtube::formats::audio_selector(format_id);
+        let resolved = yt_resolve(video_id, &selector).await?;
+        hint = resolved.meta;
+        match resolved.urls.0 {
             Some(u) => u,
-            None => anyhow::bail!(
-                "{}",
-                tulipix_core::ytdlp::friendly_error(&String::from_utf8_lossy(&out.stderr))
-            ),
+            None => anyhow::bail!("yt-dlp resolved no stream for this video"),
         }
     };
 
+    let label = match tulipix_music::youtube::formats::itag_of(&src) {
+        Some(itag) => yt_stream_label(video_id, &itag).await,
+        None if src.ends_with(".opus") => "Cached Opus".to_string(),
+        None => "Cached video, sound only".to_string(),
+    };
+    yt_set_format(video_id, Some(label), None);
+
     let mut args = audio_args(false);
     args.push(format!("--user-agent={}", tulipix_core::net::BROWSER_UA));
+    let skip_id = video_id.to_string();
     mpv::play(
         &src,
         mpv::Slot::Youtube,
         &args,
         Some(resume),
-        |obs| {
+        move |obs| {
             emit(MusicEvent::Tick {
                 pos: obs.pos,
                 dur: obs.dur,
                 playing: !obs.paused,
-            })
+            });
+            yt_sponsor_skip_audio(&skip_id, obs.pos);
         },
         || emit(MusicEvent::Ended),
     );
-    mpv::set_now_playing(mpv::NowPlaying {
-        item_id: 0,
-        title,
-        artist: channel,
-        album: String::new(),
-        art: cache_remote(&thumb).await.unwrap_or_default(),
-        key: video_id.to_string(),
+    // The segments arrive behind the sound; the reports check for them.
+    let id = video_id.to_string();
+    tokio::spawn(async move {
+        yt_sponsor_segments(&id).await;
     });
+    yt_set_now_playing(video_id, hint).await;
     emit(MusicEvent::TrackChanged);
     Ok(())
+}
+
+/// Resolve `selector` for a video with one `yt-dlp -J`, which answers with the
+/// stream URLs and everything else about the video at once. The format list
+/// is saved (the player bar's format name and chapter marks read it) and the
+/// title, channel and length fill in wherever the video was stored without
+/// them. `((picture or only stream, sound), what yt-dlp said about it)`.
+struct YtResolved {
+    /// `(picture or the only stream, sound)`.
+    urls: (Option<String>, Option<String>),
+    /// What yt-dlp said about the video; None when it gave no title.
+    meta: Option<tulipix_music::youtube::store::VideoMeta>,
+    /// Caption tracks, with URLs fresh enough to open now.
+    captions: Vec<tulipix_music::youtube::formats::Caption>,
+}
+
+async fn yt_resolve(video_id: &str, selector: &str) -> Result<YtResolved> {
+    let out = tokio::process::Command::new(tulipix_core::ytdlp::bin())
+        .args(["-J", "-f", selector, "--no-playlist"])
+        .args(tulipix_core::ytdlp::common_args())
+        .arg(format!("https://www.youtube.com/watch?v={video_id}"))
+        .no_window_async()
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("yt-dlp could not be launched: {e}"))?;
+    // Keep the stderr: "could not resolve a stream for dQw4w9WgXcQ" named the
+    // video and nothing the user could do about it, and a refusal is the
+    // overwhelmingly common reason this fails.
+    let json = out
+        .status
+        .success()
+        .then(|| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok())
+        .flatten()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{}",
+                tulipix_core::ytdlp::friendly_error(&String::from_utf8_lossy(&out.stderr))
+            )
+        })?;
+    let urls = tulipix_music::youtube::formats::resolved_urls(&json);
+    let str_of = |k: &str| json[k].as_str().unwrap_or("").to_string();
+    let meta = tulipix_music::youtube::store::VideoMeta {
+        title: str_of("title"),
+        channel: json["channel"].as_str().or(json["uploader"].as_str()).unwrap_or("").to_string(),
+        channel_id: str_of("channel_id"),
+        thumb_path: str_of("thumbnail"),
+        duration: json["duration"].as_f64().unwrap_or(0.0).round() as i64,
+    };
+    let info = tulipix_music::youtube::formats::parse_info(&json);
+    if let Ok(pool) = youtube_pool().await {
+        if !info.video.is_empty() || !info.audio.is_empty() {
+            let _ = tulipix_music::youtube::store::put_formats(pool, video_id, &info).await;
+        }
+        if !meta.title.is_empty() {
+            let _ = tulipix_music::youtube::store::fill_video_meta(pool, video_id, &meta).await;
+            let _ = tulipix_music::youtube::store::set_channel_id(pool, video_id, &meta.channel_id).await;
+        }
+    }
+    Ok(YtResolved {
+        urls,
+        meta: (!meta.title.is_empty()).then_some(meta),
+        captions: info.captions,
+    })
+}
+
+/// SponsorBlock segments per video, once a session. Only filled while skipping
+/// is on; turning it off empties it.
+fn yt_sponsor_cache() -> &'static Mutex<HashMap<String, Vec<(f64, f64)>>> {
+    static C: std::sync::OnceLock<Mutex<HashMap<String, Vec<(f64, f64)>>>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// A video's segments to skip, asked of SponsorBlock the first time. Offline
+/// or refused is none, and asked again next time.
+async fn yt_sponsor_segments(video_id: &str) -> Vec<(f64, f64)> {
+    if !tulipix_music::yt_prefs::sponsor_skip() {
+        return Vec::new();
+    }
+    if let Some(s) = yt_sponsor_cache().lock().ok().and_then(|g| g.get(video_id).cloned()) {
+        return s;
+    }
+    use tulipix_music::youtube::sponsor;
+    let resp = tulipix_core::net::http()
+        .get(sponsor::API)
+        .query(&[("videoID", video_id), ("categories", sponsor::CATEGORIES)])
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await;
+    let Ok(r) = resp else { return Vec::new() };
+    // 404 is "nobody tagged this video", an answer worth remembering.
+    if !r.status().is_success() && r.status() != reqwest::StatusCode::NOT_FOUND {
+        return Vec::new();
+    }
+    let segments = sponsor::parse_segments(&r.text().await.unwrap_or_default());
+    if let Ok(mut g) = yt_sponsor_cache().lock() {
+        g.insert(video_id.to_string(), segments.clone());
+    }
+    segments
+}
+
+/// On the audio deck's report: jump out of a sponsor segment.
+fn yt_sponsor_skip_audio(video_id: &str, pos: f64) {
+    let end = yt_sponsor_cache()
+        .lock()
+        .ok()
+        .and_then(|g| g.get(video_id).and_then(|s| tulipix_music::youtube::sponsor::skip_to(s, pos)));
+    if let Some(end) = end {
+        mpv::seek_absolute(end);
+    }
 }
 
 /// `NoWindow` for the tokio Command, same reason as the std one above.
@@ -4672,6 +5339,16 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             // from the resume point should reach the tracks already heard.
             tulipix_music::queue::replace(pool, &ids, "album").await?;
             play_track(pool, ids[at]).await?;
+        }
+        // A video on screen has its own controls; the bar's button reaches it
+        // from Dart. Here the deck is stopped, and a play would start the
+        // queue under the picture.
+        MusicCmd::PlayPause | MusicCmd::Next | MusicCmd::Prev if yt_watching() => {}
+        MusicCmd::Stop if yt_watching() => {
+            if let Ok(mut g) = yt_watch().lock() {
+                *g = (0, String::new());
+            }
+            emit(MusicEvent::VideoStop);
         }
         MusicCmd::PlayPause => {
             let obs = mpv::observe();
@@ -5493,14 +6170,169 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             s.yt_tab = name;
             s.yt_dl_page = 0;
             s.yt_subs_page = 0;
+            // The tab row shows over a channel or a playlist too; a tab is a
+            // way out of either.
+            s.yt_channel_open = false;
+            s.yt_channel_videos.clear();
+            s.yt_playlist_open = false;
         }
-        MusicCmd::YtSearch { query } => {
-            lock().yt_search_q = query.trim().to_string();
-            yt_search(&query, false).await?
+        MusicCmd::YtMarkWatched { video_id, watched } => {
+            let pool = youtube_pool().await?;
+            let meta = yt_video_meta(&video_id).await;
+            tulipix_music::youtube::store::mark_watched(pool, &video_id, watched, &meta).await?;
+        }
+        MusicCmd::YtRemoveHistory { video_id } => {
+            tulipix_music::youtube::store::remove_history(youtube_pool().await?, &video_id).await?;
+        }
+        MusicCmd::YtClearHistory => {
+            tulipix_music::youtube::store::clear_history(youtube_pool().await?).await?;
+        }
+        MusicCmd::YtToggleHideWatched => {
+            tulipix_music::yt_prefs::store_hide_watched(!tulipix_music::yt_prefs::hide_watched());
+        }
+        MusicCmd::YtToggleSponsorSkip => {
+            let on = !tulipix_music::yt_prefs::sponsor_skip();
+            tulipix_music::yt_prefs::store_sponsor_skip(on);
+            if let Ok(mut g) = yt_sponsor_cache().lock() {
+                g.clear();
+            }
+        }
+        MusicCmd::YtSetCaptionLang { lang } => {
+            let lang = lang.trim().to_lowercase();
+            if !lang.is_empty() && !lang.chars().all(|c| c.is_ascii_alphabetic() || c == '-') {
+                anyhow::bail!("a caption language is a code like en, de or pt-BR");
+            }
+            tulipix_music::yt_prefs::store_caption_lang(&lang);
+        }
+        MusicCmd::YtQueuePlayAt { index } => {
+            let id = {
+                let mut s = lock();
+                let id = s.yt_queue.get(index.max(0) as usize).cloned();
+                if id.is_some() {
+                    s.yt_queue_pos = index;
+                }
+                id
+            };
+            if let Some(id) = id {
+                play_youtube(&id, "").await?;
+                cache_youtube_audio(&id).await;
+            }
+        }
+        MusicCmd::YtQueueRemove { index } => {
+            let mut s = lock();
+            let i = index.max(0) as usize;
+            // What is playing stays: removing it is Next's job.
+            if i < s.yt_queue.len() && index != s.yt_queue_pos {
+                s.yt_queue.remove(i);
+                if index < s.yt_queue_pos {
+                    s.yt_queue_pos -= 1;
+                }
+            }
+        }
+        MusicCmd::YtQueueMove { from, to } => {
+            let mut s = lock();
+            let (from, to) = (from.max(0) as usize, to.max(0) as usize);
+            if from < s.yt_queue.len() {
+                let current = s.yt_queue.get(s.yt_queue_pos as usize).cloned();
+                let id = s.yt_queue.remove(from);
+                let to = to.min(s.yt_queue.len());
+                s.yt_queue.insert(to, id);
+                if let Some(cur) = current {
+                    s.yt_queue_pos = s.yt_queue.iter().position(|x| *x == cur).unwrap_or(0) as i64;
+                }
+            }
+        }
+        MusicCmd::YtQueueClear => {
+            let mut s = lock();
+            let current = s.yt_queue.get(s.yt_queue_pos as usize).cloned();
+            s.yt_queue = current.into_iter().collect();
+            s.yt_queue_pos = 0;
+            s.yt_playing_pl_id = -1;
+        }
+        MusicCmd::YtQueueAdd { video_id, next } => {
+            let mut s = lock();
+            let current = s.yt_queue.get(s.yt_queue_pos as usize).cloned();
+            if current.as_deref() == Some(video_id.as_str()) {
+                return Ok(());
+            }
+            s.yt_queue.retain(|x| *x != video_id);
+            let pos = current
+                .and_then(|cur| s.yt_queue.iter().position(|x| *x == cur))
+                .unwrap_or(0);
+            s.yt_queue_pos = pos as i64;
+            if next && !s.yt_queue.is_empty() {
+                s.yt_queue.insert(pos + 1, video_id);
+            } else {
+                s.yt_queue.push(video_id);
+            }
+            s.yt_status = if next { "Plays next".into() } else { "Added to the queue".into() };
+        }
+        MusicCmd::YtRenamePlaylist { playlist_id, name } => {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                anyhow::bail!("a playlist needs a name");
+            }
+            tulipix_music::youtube::store::rename_playlist(youtube_pool().await?, playlist_id, &name).await?;
+            let mut s = lock();
+            if s.yt_playlist_id == playlist_id {
+                s.yt_playlist_title = name;
+            }
+        }
+        MusicCmd::YtMovePlaylistItem { playlist_id, video_id, before } => {
+            let pool = youtube_pool().await?;
+            let mut ids: Vec<String> = tulipix_music::youtube::store::playlist_items(pool, playlist_id)
+                .await?
+                .into_iter()
+                .map(|i| i.video_id)
+                .collect();
+            let Some(from) = ids.iter().position(|x| *x == video_id) else { return Ok(()) };
+            ids.remove(from);
+            let to = ids.iter().position(|x| *x == before).unwrap_or(ids.len());
+            tulipix_music::youtube::store::move_playlist_item(pool, playlist_id, from, to).await?;
+        }
+        MusicCmd::YtSyncPlaylist { playlist_id } => yt_sync_playlist(playlist_id).await?,
+        MusicCmd::YtPauseJob { video_id } => {
+            if let Some(n) = yt_job_cancels().lock().ok().and_then(|g| g.get(&video_id).cloned()) {
+                n.notify_one();
+            }
+        }
+        MusicCmd::YtResumeJob { video_id } => {
+            let spec = yt_job_specs().lock().ok().and_then(|g| g.get(&video_id).cloned());
+            if let Some(spec) = spec {
+                yt_download_job(&video_id, spec).await?;
+            }
+        }
+        MusicCmd::YtFilter { query } => {
+            let mut s = lock();
+            let q = query.trim().to_lowercase();
+            if s.yt_filter != q {
+                s.yt_filter = q;
+                s.yt_dl_page = 0;
+                s.yt_subs_page = 0;
+            }
+        }
+        MusicCmd::YtSearch { query, offline_only } => {
+            let q = query.trim().to_string();
+            {
+                let mut s = lock();
+                s.yt_search_q = q.clone();
+                s.yt_search_offline = offline_only;
+            }
+            match tulipix_music::youtube::links::parse_link(&q) {
+                Some(link) => yt_open_link(link).await?,
+                None if offline_only => yt_search_offline(&q).await?,
+                None => {
+                    lock().yt_tab = "results".into();
+                    yt_search(&q, false).await?
+                }
+            }
         }
         MusicCmd::YtSearchMore => {
-            let q = lock().yt_search_q.clone();
-            if !q.is_empty() {
+            let (q, offline) = {
+                let s = lock();
+                (s.yt_search_q.clone(), s.yt_search_offline)
+            };
+            if !q.is_empty() && !offline {
                 yt_search(&q, true).await?;
             }
         }
@@ -5549,7 +6381,7 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                 s.yt_queue_pos = 0;
                 s.yt_playing_pl_id = playlist_id;
             }
-            play_youtube(&first).await?;
+            play_youtube(&first, "").await?;
             cache_youtube_audio(&first).await;
         }
         MusicCmd::YtAddChannelUrl { url } => {
@@ -5558,17 +6390,32 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             tulipix_music::youtube::store::import_subs(
                 pool,
                 &[tulipix_music::youtube::subscriptions::ImportedSub {
-                    channel_id: id,
+                    channel_id: id.clone(),
                     title,
                 }],
             )
             .await?;
+            // Its avatar, banner and first uploads, without waiting for them.
+            tokio::spawn(async move {
+                yt_fetch_listing(&id, false, 1, CHANNEL_PAGE).await;
+                if let Ok(pool) = youtube_pool().await {
+                    let _ = tulipix_music::youtube::store::mark_seen(pool, &id, true).await;
+                }
+                emit(MusicEvent::Stale);
+            });
         }
         MusicCmd::YtImportPlaylistUrl { url } => yt_import_playlist_url(&url).await?,
-        MusicCmd::YtSetDefaultRes { height } => {
-            tulipix_music::yt_prefs::store_default_res(Some(height));
+        MusicCmd::YtResetVideoPrefs => {
+            tulipix_music::yt_prefs::store_default_res(None);
+            tulipix_music::yt_prefs::store_watch_pref(None);
+            tulipix_music::yt_prefs::store_download_spec(None);
         }
-        MusicCmd::YtResetVideoPrefs => tulipix_music::yt_prefs::store_default_res(None),
+        MusicCmd::YtSetWatchPref { height, codec } => {
+            let pref = (height >= 0).then(|| {
+                tulipix_music::youtube::formats::WatchPref::parse(&format!("{height}/{codec}"))
+            });
+            tulipix_music::yt_prefs::store_watch_pref(pref.as_ref());
+        }
         MusicCmd::YtPinHome { channel_id } => {
             tulipix_music::yt_prefs::add_home_channel(&channel_id);
         }
@@ -5577,7 +6424,7 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
         }
         MusicCmd::YtSetFetcher { name } => tulipix_music::yt_prefs::store_fetcher(&name),
         MusicCmd::YtChannelSearch { query } => yt_channel_search(&query).await?,
-        MusicCmd::YtWatch { video_id, height } => {
+        MusicCmd::YtWatch { video_id, format_id } => {
             // If this same video is on the deck, hand its position over.
             let start = if mpv::current_slot() == mpv::Slot::Youtube
                 && mpv::now_playing().key == video_id
@@ -5589,7 +6436,24 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                     .await
                     .unwrap_or(0.0)
             };
-            yt_watch_video(&video_id, height, start).await?;
+            yt_watch_video(&video_id, &format_id, start, None).await?;
+        }
+        MusicCmd::YtWatchLocal { media_path, video_id } => {
+            let file = Path::new(&media_path);
+            if !file.exists() {
+                anyhow::bail!("that download is no longer on disk");
+            }
+            let start = if mpv::current_slot() == mpv::Slot::Youtube
+                && mpv::now_playing().key == video_id
+            {
+                mpv::observe().pos
+            } else {
+                let pool = youtube_pool().await?;
+                tulipix_music::youtube::store::progress_of(pool, &video_id)
+                    .await
+                    .unwrap_or(0.0)
+            };
+            yt_watch_video(&video_id, "", start, Some(file)).await?;
         }
         MusicCmd::YtWatchCurrent => {
             if mpv::current_slot() != mpv::Slot::Youtube {
@@ -5599,11 +6463,7 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             if id.is_empty() {
                 anyhow::bail!("nothing from YouTube is playing");
             }
-            let height = match tulipix_music::yt_prefs::default_res() {
-                h if h > 0 => h,
-                _ => 0,
-            };
-            yt_watch_video(&id, height, mpv::observe().pos).await?;
+            yt_watch_video(&id, "", mpv::observe().pos, None).await?;
         }
         MusicCmd::YtStopWatching => {
             if let Ok(mut g) = yt_watch().lock() {
@@ -5611,20 +6471,12 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             }
             emit(MusicEvent::VideoStop);
         }
-        MusicCmd::YtChannelLoadMore => {
-            let (id, page) = {
-                let s = lock();
-                (s.yt_channel_id.clone(), s.yt_channel_page)
-            };
-            if !id.is_empty() {
-                yt_open_channel_pages(&id, page + 1).await?;
-            }
-        }
+        MusicCmd::YtChannelLoadMore => yt_channel_load_more().await?,
         MusicCmd::YtClearRecent => {
             let pool = youtube_pool().await?;
             tulipix_music::youtube::store::clear_recent_searches(pool).await?;
         }
-        MusicCmd::YtPlay { video_id } => {
+        MusicCmd::YtPlay { video_id, format_id } => {
             {
                 let mut s = lock();
                 // A single tap is no longer "playing that playlist", however
@@ -5640,7 +6492,7 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                     .unwrap_or(0) as i64;
                 s.yt_queue_pos = at;
             }
-            play_youtube(&video_id).await?;
+            play_youtube(&video_id, &format_id).await?;
             cache_youtube_audio(&video_id).await;
         }
         MusicCmd::YtPlayLocal {
@@ -5650,6 +6502,11 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             if !Path::new(&media_path).exists() {
                 anyhow::bail!("that download is no longer on disk");
             }
+            let ext = Path::new(&media_path)
+                .extension()
+                .map(|e| e.to_string_lossy().to_uppercase())
+                .unwrap_or_default();
+            yt_set_format(&video_id, Some(format!("Local {ext}")), None);
             let args = audio_args(false);
             mpv::play(
                 &media_path,
@@ -5665,42 +6522,58 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                 },
                 || emit(MusicEvent::Ended),
             );
-            let pool = youtube_pool().await?;
-            let meta: Option<(String, String, String)> = sqlx::query_as(
-                "SELECT COALESCE(title, ''), COALESCE(channel, ''), COALESCE(thumb_path, '') \
-                 FROM yt_downloaded WHERE video_id = ? LIMIT 1",
-            )
-            .bind(&video_id)
-            .fetch_optional(pool)
-            .await?;
-            let (title, channel, thumb) = meta.unwrap_or_default();
-            mpv::set_now_playing(mpv::NowPlaying {
-                item_id: 0,
-                title,
-                artist: channel,
-                album: String::new(),
-                art: cache_remote(&thumb).await.unwrap_or_default(),
-                key: video_id,
-            });
+            yt_set_now_playing(&video_id, None).await;
             emit(MusicEvent::TrackChanged);
         }
-        MusicCmd::YtDownload { video_id, quality } => {
-            // The card knows the title; the job list is drawn before yt-dlp has
-            // said anything, so take it from what is already on screen.
-            let title = {
-                let s = lock();
-                s.yt_results
-                    .iter()
-                    .chain(s.yt_channel_videos.iter())
-                    .chain(s.yt_recommended.iter())
-                    .find(|v| v.video_id == video_id)
-                    .map(|v| v.title.clone())
-                    .unwrap_or_else(|| video_id.clone())
+        MusicCmd::YtDownload { video_id, spec } => yt_download_job(&video_id, spec).await?,
+        MusicCmd::YtRetryJob { video_id } => {
+            let spec = yt_job_specs().lock().ok().and_then(|g| g.get(&video_id).cloned());
+            if let Some(spec) = spec {
+                yt_download_job(&video_id, spec).await?;
+            }
+        }
+        MusicCmd::YtDismissJob { video_id } => yt_job_done(&video_id),
+        MusicCmd::YtSetCachePolicy { mode, cap_bytes, evict, idle_days } => {
+            let mode = match mode.as_str() {
+                "all" | "never" => mode.as_str(),
+                _ => "audio",
             };
-            yt_job_push(&video_id, &title);
-            let r = yt_download(&video_id, &quality).await;
-            yt_job_done(&video_id);
-            r?;
+            tulipix_music::yt_prefs::store_cache_policy(
+                mode,
+                // A budget smaller than one film is a cache that holds nothing.
+                cap_bytes.max(256 * 1024 * 1024),
+                tulipix_music::youtube::store::Evict::parse(&evict),
+                idle_days.clamp(0, 3650) as u32,
+            );
+            yt_evict_now().await;
+        }
+        MusicCmd::YtCleanCache => yt_evict_now().await,
+        MusicCmd::YtPromoteCached { video_id } => {
+            let pool = youtube_pool().await?;
+            let row = tulipix_music::youtube::store::list_cached(pool, 100_000)
+                .await?
+                .into_iter()
+                .find(|v| v.video_id == video_id)
+                .ok_or_else(|| anyhow::anyhow!("that video is no longer in the cache"))?;
+            let ext = Path::new(&row.media_path)
+                .extension()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "opus".into());
+            let dest = tulipix_music::youtube::dl_args::render_path(
+                &tulipix_music::yt_prefs::download_template(),
+                &yt_home_dir(),
+                &row.channel,
+                &row.title,
+                &video_id,
+                &ext,
+            );
+            let label = if row.kind == "video" { "Video · kept from cache" } else { "Audio · kept from cache" };
+            tulipix_music::youtube::store::promote_cached(pool, &video_id, &dest, label).await?;
+        }
+        MusicCmd::YtShowInFolder { path } => {
+            let p = Path::new(&path);
+            let dir = if p.is_dir() { p } else { p.parent().unwrap_or(p) };
+            crate::api::transfer::open_url(&dir.to_string_lossy());
         }
         MusicCmd::YtRemoveCached { video_id } => {
             let pool = youtube_pool().await?;
@@ -5708,13 +6581,33 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                 let _ = std::fs::remove_file(&p);
             }
         }
-        MusicCmd::YtRemoveDownload { video_id } => {
+        MusicCmd::YtRemoveDownload { media_path } => {
             let pool = youtube_pool().await?;
             if let Some(p) =
-                tulipix_music::youtube::store::remove_download(pool, &video_id).await?
+                tulipix_music::youtube::store::remove_download_by_path(pool, &media_path).await?
             {
                 let _ = std::fs::remove_file(&p);
             }
+        }
+        MusicCmd::YtClearUnplayed { days } => {
+            let pool = youtube_pool().await?;
+            let victims = tulipix_music::youtube::store::evict_cached(
+                pool,
+                i64::MAX,
+                tulipix_music::yt_prefs::cache_evict(),
+                Some(days.clamp(1, 3650) as u32),
+                yt_playing_id().as_deref(),
+            )
+            .await?;
+            let n = victims.len();
+            for (_id, path) in victims {
+                let _ = std::fs::remove_file(&path);
+            }
+            lock().yt_status = match n {
+                0 => format!("Everything cached was played in the last {days} days"),
+                1 => "Removed 1 unplayed video".into(),
+                n => format!("Removed {n} unplayed videos"),
+            };
         }
         MusicCmd::YtClearCached => {
             let pool = youtube_pool().await?;
@@ -5755,6 +6648,23 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                 }],
             )
             .await?;
+            // Subscribed from its page: the art on screen is the channel's.
+            let art = {
+                let s = lock();
+                (s.yt_channel_id == channel_id)
+                    .then(|| (s.yt_channel_avatar.clone(), s.yt_channel_banner.clone()))
+            };
+            if let Some((avatar, banner)) = art {
+                tulipix_music::youtube::store::set_channel_art(
+                    pool,
+                    &channel_id,
+                    Some(avatar.as_str()).filter(|x| !x.is_empty()),
+                    Some(banner.as_str()).filter(|x| !x.is_empty()),
+                    None,
+                    None,
+                )
+                .await?;
+            }
             let mut s = lock();
             if s.yt_channel_id == channel_id {
                 s.yt_channel_subscribed = true;
@@ -5770,6 +6680,21 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
         }
         MusicCmd::YtSetSubsPage { page } => lock().yt_subs_page = page.max(0),
         MusicCmd::YtRefreshSubs => yt_refresh_subs().await?,
+        MusicCmd::YtSubsSelect { channel_id } => yt_subs_select(&channel_id).await?,
+        MusicCmd::YtCheckNew => yt_check_new(None).await?,
+        MusicCmd::YtPlayAll { video_ids } => {
+            let Some(first) = video_ids.first().cloned() else {
+                anyhow::bail!("nothing to play");
+            };
+            {
+                let mut s = lock();
+                s.yt_queue = video_ids;
+                s.yt_queue_pos = 0;
+                s.yt_playing_pl_id = -1;
+            }
+            play_youtube(&first, "").await?;
+            cache_youtube_audio(&first).await;
+        }
         MusicCmd::YtImportSubs { path } => {
             let body = std::fs::read_to_string(&path)?;
             let subs = tulipix_music::youtube::subscriptions::parse(&body)?;
@@ -5825,6 +6750,9 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                 meta: String::new(),
                 progress: 0.0,
                 quality: String::new(),
+                channel_id: String::new(),
+                offline: String::new(),
+                bytes: -1,
             });
             tulipix_music::youtube::store::add_to_playlist(
                 pool,
@@ -7051,6 +7979,9 @@ async fn subscribe_podcast(url: &str) -> Result<()> {
     if !url.starts_with("http") {
         anyhow::bail!("that is not a feed URL");
     }
+    // Apple Podcasts / Spotify show links become the show's RSS URL here, so
+    // the feed URL stored (and refreshed later) is the real one.
+    let url = &tulipix_music::podcasts::resolve_feed_url(tulipix_core::net::http(), url).await?;
     let body = tulipix_core::net::http()
         .get(url)
         .header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA)
@@ -7341,6 +8272,13 @@ fn yt_entry(e: &serde_json::Value) -> YtVideo {
         },
         progress: 0.0,
         quality: String::new(),
+        channel_id: e
+            .get("channel_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        offline: String::new(),
+        bytes: -1,
     }
 }
 
@@ -7370,6 +8308,9 @@ fn yt_from_data(v: &tulipix_music::youtube_data::YtVideo) -> YtVideo {
         meta: meta.join(" · "),
         progress: 0.0,
         quality: String::new(),
+        channel_id: v.channel_id.clone(),
+        offline: String::new(),
+        bytes: -1,
     }
 }
 
@@ -7389,6 +8330,73 @@ fn drop_shorts(v: Vec<YtVideo>) -> Vec<YtVideo> {
 /// next page is a bigger N with what we already have trimmed off the front --
 /// which is exactly what the Slint build does and is why "Load more" is a
 /// button rather than an infinite scroll.
+/// The library's own matches, as the whole result list: offline search has no
+/// further page to load.
+async fn yt_search_offline(q: &str) -> Result<()> {
+    let pool = youtube_pool().await?;
+    let found = tulipix_music::youtube::store::find_videos(pool, q, true, 200).await?;
+    let hits: Vec<YtVideo> = found.into_iter().map(|v| into_yt(v, 0.0)).collect();
+    let mut s = lock();
+    s.yt_tab = "results".into();
+    s.yt_status = if hits.is_empty() {
+        "Nothing offline matches — search everywhere to look on YouTube".into()
+    } else {
+        String::new()
+    };
+    s.yt_results_more = false;
+    s.yt_results = hits;
+    Ok(())
+}
+
+/// A pasted link: a video or a playlist becomes the result list, a channel or
+/// a handle opens the channel page. The query is cleared so Load more does
+/// not go searching for a URL as words.
+async fn yt_open_link(link: tulipix_music::youtube::links::YtLink) -> Result<()> {
+    use tulipix_music::youtube::links::YtLink;
+    let (url, is_list) = match link {
+        YtLink::Channel { id } => return yt_open_channel(&id).await,
+        YtLink::Handle { handle } => {
+            let (id, _) = yt_channel_from_url(&format!("https://www.youtube.com/@{handle}")).await?;
+            return yt_open_channel(&id).await;
+        }
+        YtLink::Video { id } => (format!("https://www.youtube.com/watch?v={id}"), false),
+        YtLink::Playlist { list } => (format!("https://www.youtube.com/playlist?list={list}"), true),
+    };
+    {
+        let mut s = lock();
+        s.yt_tab = "results".into();
+        s.yt_status = if is_list { "Reading playlist…".into() } else { "Reading link…".into() };
+    }
+    let json = ytdlp_json(vec![
+        "--flat-playlist".into(),
+        "-J".into(),
+        "--no-warnings".into(),
+        "--no-playlist".into(),
+        url,
+    ])
+    .await;
+    let hits: Vec<YtVideo> = match &json {
+        Some(j) if is_list => j
+            .get("entries")
+            .and_then(|e| e.as_array())
+            .map(|arr| arr.iter().map(yt_entry).collect())
+            .unwrap_or_default(),
+        Some(j) => vec![yt_entry(j)],
+        None => Vec::new(),
+    };
+    let hits: Vec<YtVideo> = hits.into_iter().filter(|v| !v.video_id.is_empty()).collect();
+    let mut s = lock();
+    s.yt_search_q.clear();
+    s.yt_results_more = false;
+    s.yt_status = if hits.is_empty() {
+        "yt-dlp could not read that link".into()
+    } else {
+        String::new()
+    };
+    s.yt_results = hits;
+    Ok(())
+}
+
 async fn yt_search(query: &str, more: bool) -> Result<()> {
     let q = query.trim().to_string();
     if q.is_empty() {
@@ -7521,30 +8529,151 @@ async fn yt_import_playlist_url(url: &str) -> Result<()> {
     )
     .await?;
     tulipix_music::youtube::store::add_playlist_ids(pool, id, &ids).await?;
+    yt_playlist_entry_meta(pool, &json).await;
     lock().yt_status = format!("Imported {} videos", ids.len());
     Ok(())
 }
 
-/// `pages` is how many 30-video blocks to pull. Opening a channel asks for one;
-/// Load more re-asks for one more and replaces the list, because yt-dlp's
-/// `--playlist-end` has no cursor to continue from.
-async fn yt_open_channel_pages(channel_id: &str, pages: i64) -> Result<()> {
-    let mode = lock().yt_channel_mode.clone();
-    let url = if mode == "popular" {
+/// Name a playlist's rows from the flat listing that listed them: title,
+/// channel, length and still ride on each entry, so they need not be asked
+/// for one video at a time afterwards.
+async fn yt_playlist_entry_meta(pool: &sqlx::SqlitePool, json: &serde_json::Value) {
+    let Some(entries) = json.get("entries").and_then(|e| e.as_array()) else { return };
+    for e in entries {
+        let v = yt_entry(e);
+        if v.video_id.is_empty() || v.title.is_empty() {
+            continue;
+        }
+        let _ = tulipix_music::youtube::store::fill_video_meta(
+            pool,
+            &v.video_id,
+            &tulipix_music::youtube::store::VideoMeta {
+                title: v.title,
+                channel: v.channel,
+                channel_id: v.channel_id,
+                thumb_path: v.thumb,
+                duration: v.duration,
+            },
+        )
+        .await;
+    }
+}
+
+/// Bring an imported playlist up to date: videos added on YouTube are added
+/// here, at the end. Nothing is removed -- a video gone from YouTube's copy,
+/// or one added here by hand, stays.
+async fn yt_sync_playlist(playlist_id: i64) -> Result<()> {
+    let pool = youtube_pool().await?;
+    let (_, source, _) = tulipix_music::youtube::store::get_playlist(pool, playlist_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("that playlist no longer exists"))?;
+    let url = source
+        .filter(|u| u.starts_with("http"))
+        .ok_or_else(|| anyhow::anyhow!("this playlist was made here, not imported"))?;
+    lock().yt_status = "Checking the playlist on YouTube…".into();
+    let json = ytdlp_json(vec!["--flat-playlist".into(), "-J".into(), "--no-warnings".into(), url])
+        .await
+        .ok_or_else(|| anyhow::anyhow!("yt-dlp could not read that playlist"))?;
+    let remote: Vec<String> = json
+        .get("entries")
+        .and_then(|e| e.as_array())
+        .map(|arr| arr.iter().filter_map(|e| e.get("id")?.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let have: std::collections::HashSet<String> =
+        tulipix_music::youtube::store::playlist_items(pool, playlist_id)
+            .await?
+            .into_iter()
+            .map(|i| i.video_id)
+            .collect();
+    let new: Vec<String> = remote.iter().filter(|id| !have.contains(*id)).cloned().collect();
+    tulipix_music::youtube::store::add_playlist_ids(pool, playlist_id, &new).await?;
+    yt_playlist_entry_meta(pool, &json).await;
+    tulipix_music::youtube::store::set_playlist_count(pool, playlist_id, remote.len() as i64).await?;
+    lock().yt_status = match new.len() {
+        0 => "Up to date".into(),
+        1 => "1 new video".into(),
+        n => format!("{n} new videos"),
+    };
+    Ok(())
+}
+
+/// What one fetch of a channel's listing says about the channel.
+struct YtListing {
+    title: String,
+    /// Empty when YouTube could not be reached.
+    videos: Vec<YtVideo>,
+    /// Local paths; "" when the channel has none or the fetch failed.
+    avatar: String,
+    banner: String,
+    /// "@name", or "".
+    handle: String,
+    followers: Option<i64>,
+    /// Entries YouTube listed, before Shorts were dropped: a full block means
+    /// there may be another.
+    listed: usize,
+}
+
+/// Block `page` (1-based, `per` videos) of one channel's listing, dated where
+/// YouTube's "3 days ago" allows. The first block replaces the channel cache
+/// that re-opening the channel and the Subscriptions feed read, and brings the
+/// channel's avatar, banner, @handle and follower count, saved with it; a later
+/// block is appended. Only that block is asked for: Load more used to fetch
+/// every block again from the top.
+///
+/// `per` = 1 is the background check: its one video goes on top of the cached
+/// listing instead of replacing it.
+async fn yt_fetch_listing(channel_id: &str, popular: bool, page: i64, per: i64) -> YtListing {
+    let page = page.max(1);
+    let per = per.max(1);
+    let url = if popular {
         format!("https://www.youtube.com/channel/{channel_id}/videos?view=0&sort=p&flow=grid")
     } else {
         format!("https://www.youtube.com/channel/{channel_id}/videos")
     };
-    lock().yt_status = "Loading channel…".into();
     let json = ytdlp_json(vec![
         "--flat-playlist".into(),
         "-J".into(),
         "--no-warnings".into(),
+        // Upload times read off the listing's "3 days ago"; approximate, and
+        // the only date a flat listing can carry.
+        "--extractor-args".into(),
+        "youtubetab:approximate_date".into(),
+        "--playlist-start".into(),
+        ((page - 1) * per + 1).to_string(),
         "--playlist-end".into(),
-        (pages.max(1) * CHANNEL_PAGE).to_string(),
+        (page * per).to_string(),
         url,
     ])
     .await;
+    let listed = json
+        .as_ref()
+        .and_then(|j| j.get("entries"))
+        .and_then(|e| e.as_array())
+        .map_or(0, Vec::len);
+    let dates: Vec<(String, i64)> = json
+        .as_ref()
+        .and_then(|j| j.get("entries"))
+        .and_then(|e| e.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| {
+                    let id = e.get("id")?.as_str()?.to_string();
+                    Some((id, tulipix_music::youtube::formats::entry_published(e)?))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let handle = json
+        .as_ref()
+        .and_then(|j| j.get("uploader_id"))
+        .and_then(|x| x.as_str())
+        .filter(|h| h.starts_with('@'))
+        .unwrap_or("")
+        .to_string();
+    let followers = json
+        .as_ref()
+        .and_then(|j| j.get("channel_follower_count"))
+        .and_then(|x| x.as_i64());
     let title = json
         .as_ref()
         .and_then(|j| j.get("channel").or_else(|| j.get("title")))
@@ -7557,10 +8686,48 @@ async fn yt_open_channel_pages(channel_id: &str, pages: i64) -> Result<()> {
         .and_then(|e| e.as_array())
         .map(|arr| arr.iter().map(yt_entry).collect::<Vec<_>>())
         .unwrap_or_default();
-    let videos = drop_shorts(videos);
+    // A channel's flat listing leaves `channel_id` off its entries; it is the
+    // channel we asked for.
+    let videos: Vec<YtVideo> = drop_shorts(videos)
+        .into_iter()
+        .map(|mut v| {
+            if v.channel_id.is_empty() {
+                v.channel_id = channel_id.to_string();
+            }
+            v
+        })
+        .collect();
+
+    let (mut avatar, mut banner) = (String::new(), String::new());
+    if let Some(j) = json.as_ref().filter(|_| page == 1) {
+        let (a, b) = tulipix_music::youtube::thumbs::channel_art(j);
+        let dir = yt_thumb_dir();
+        for (url, out) in [(a, &mut avatar), (b, &mut banner)] {
+            if let Some(u) = url {
+                if let Ok(path) =
+                    tulipix_music::youtube::thumbs::fetch_thumb(tulipix_core::net::http(), &dir, &u).await
+                {
+                    *out = path;
+                }
+            }
+        }
+    }
 
     // Cache it, so re-opening the channel is instant and works offline.
     if let Ok(pool) = youtube_pool().await {
+        // Only an answer counts as a refresh: offline, the channel stays stale
+        // and the next background check asks again.
+        if json.is_some() && page == 1 {
+            let _ = tulipix_music::youtube::store::set_channel_art(
+                pool,
+                channel_id,
+                Some(avatar.as_str()).filter(|x| !x.is_empty()),
+                Some(banner.as_str()).filter(|x| !x.is_empty()),
+                followers,
+                Some(handle.as_str()).filter(|x| !x.is_empty()),
+            )
+            .await;
+        }
         let cache: Vec<tulipix_music::youtube::store::ChannelVid> = videos
             .iter()
             .map(|v| tulipix_music::youtube::store::ChannelVid {
@@ -7573,12 +8740,147 @@ async fn yt_open_channel_pages(channel_id: &str, pages: i64) -> Result<()> {
                 duration: v.duration,
             })
             .collect();
-        if !cache.is_empty() {
-            let _ = if mode == "popular" {
-                tulipix_music::youtube::store::set_channel_popular(pool, channel_id, &cache).await
-            } else {
-                tulipix_music::youtube::store::set_channel_cache(pool, channel_id, &cache).await
-            };
+        if page > 1 {
+            let _ = tulipix_music::youtube::store::append_channel_listing(pool, popular, channel_id, &cache, &dates)
+                .await;
+        } else if per == 1 {
+            if let Some(v) = cache.first() {
+                let ts = dates.iter().find(|(id, _)| *id == v.video_id).map(|(_, ts)| *ts);
+                let _ = tulipix_music::youtube::store::prepend_channel_video(pool, channel_id, v, ts).await;
+            }
+        } else if !cache.is_empty() {
+            if popular {
+                let _ = tulipix_music::youtube::store::set_channel_popular(pool, channel_id, &cache).await;
+            } else if tulipix_music::youtube::store::set_channel_cache(pool, channel_id, &cache).await.is_ok() {
+                let _ = tulipix_music::youtube::store::set_listing_dates(pool, channel_id, &dates).await;
+            }
+        }
+    }
+    YtListing { title, videos, avatar, banner, handle, followers, listed }
+}
+
+/// Channel art and other stills, resized, one file per URL. The Slint build
+/// keeps its thumbnails in the same folder.
+fn yt_thumb_dir() -> PathBuf {
+    let d = tulipix_core::paths::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("youtube_thumbs");
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
+/// Show one channel's listing beside the Subscriptions list, or every
+/// channel's new videos for `""`. The cached listing shows at once; a fresh
+/// one follows, and from then the channel counts as seen.
+async fn yt_subs_select(channel_id: &str) -> Result<()> {
+    let pool = youtube_pool().await?;
+    let known = tulipix_music::youtube::store::new_counts(pool)
+        .await?
+        .get(channel_id)
+        .copied()
+        .unwrap_or(0);
+    {
+        let mut s = lock();
+        s.yt_subs_sel = channel_id.to_string();
+        s.yt_subs_sel_new = known;
+    }
+    if channel_id.is_empty() {
+        return Ok(());
+    }
+    let id = channel_id.to_string();
+    tokio::spawn(async move {
+        let Ok(pool) = youtube_pool().await else { return };
+        use tulipix_music::youtube::store::{mark_seen, new_counts};
+        // Baseline from the old listing first, so a channel never looked at
+        // does not call its whole first listing new.
+        let _ = mark_seen(pool, &id, true).await;
+        // The feed shows a channel's 30 newest, whatever a channel page or a
+        // check left cached.
+        yt_fetch_listing(&id, false, 1, 30).await;
+        let _ = mark_seen(pool, &id, true).await;
+        let fresh = new_counts(pool)
+            .await
+            .ok()
+            .and_then(|m| m.get(&id).copied())
+            .unwrap_or(0);
+        let _ = mark_seen(pool, &id, false).await;
+        {
+            let mut s = lock();
+            if s.yt_subs_sel == id {
+                s.yt_subs_sel_new = fresh;
+            }
+        }
+        emit(MusicEvent::Stale);
+    });
+    Ok(())
+}
+
+/// Pull subscribed channels' newest videos so the Subscriptions list can count
+/// what arrived since each was last looked at; the listing brings the
+/// follower count and dates with it. `max_age_s` limits it to channels not
+/// refreshed for that long. One yt-dlp spawn per channel, one run at a time.
+async fn yt_check_new(max_age_s: Option<i64>) -> Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tulipix_music::youtube::store::mark_seen;
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            RUNNING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _done = Done;
+    let pool = youtube_pool().await?;
+    let now = tulipix_core::util::unix_secs_i64();
+    let subs: Vec<_> = tulipix_music::youtube::store::list_subs(pool)
+        .await?
+        .into_iter()
+        .filter(|x| x.subscribed)
+        .filter(|x| max_age_s.is_none_or(|age| x.fetched_at.is_none_or(|t| now - t > age)))
+        .collect();
+    if subs.is_empty() {
+        return Ok(());
+    }
+    let total = subs.len();
+    for (i, sub) in subs.iter().enumerate() {
+        yt_wait_while_watching().await;
+        yt_fetch_set(
+            true,
+            i as f64 / total.max(1) as f64,
+            &format!("New videos: {} ({}/{total})", sub.title, i + 1),
+        );
+        mark_seen(pool, &sub.channel_id, true).await?;
+        // Just the newest: All channels shows one video a channel, and picking
+        // a channel fetches its listing properly.
+        yt_fetch_listing(&sub.channel_id, false, 1, 1).await;
+        mark_seen(pool, &sub.channel_id, true).await?;
+    }
+    yt_fetch_set(false, 1.0, "");
+    Ok(())
+}
+
+/// Open a channel on its first block; Load more appends the next.
+async fn yt_open_channel_page_one(channel_id: &str) -> Result<()> {
+    let mode = lock().yt_channel_mode.clone();
+    lock().yt_status = "Loading channel…".into();
+    let YtListing { title, videos, avatar, banner, handle, followers, listed } =
+        yt_fetch_listing(channel_id, mode == "popular", 1, CHANNEL_PAGE).await;
+    // Offline, or YouTube refused: the art saved last time.
+    let (avatar, banner) = match (avatar.is_empty(), youtube_pool().await) {
+        (true, Ok(pool)) => {
+            let (a, b) = tulipix_music::youtube::store::channel_art(pool, channel_id)
+                .await
+                .unwrap_or_default();
+            (a, if banner.is_empty() { b } else { banner })
+        }
+        _ => (avatar, banner),
+    };
+    if mode != "popular" && !videos.is_empty() {
+        if let Ok(pool) = youtube_pool().await {
+            let _ = tulipix_music::youtube::store::mark_seen(pool, channel_id, false).await;
         }
     }
 
@@ -7608,18 +8910,112 @@ async fn yt_open_channel_pages(channel_id: &str, pages: i64) -> Result<()> {
     s.yt_channel_open = true;
     s.yt_channel_id = channel_id.to_string();
     s.yt_channel_title = heading;
+    s.yt_channel_avatar = avatar;
+    s.yt_channel_banner = banner;
+    s.yt_channel_handle = handle;
+    s.yt_channel_followers = followers.unwrap_or(-1);
     s.yt_channel_subscribed = subscribed;
     s.yt_status = status;
-    // A block that came back short is the end of the channel, whatever we
-    // asked for -- which is the only signal yt-dlp gives us.
-    s.yt_channel_has_next = videos.len() as i64 >= pages.max(1) * CHANNEL_PAGE;
-    s.yt_channel_page = pages.max(1);
+    // A block that came back short is the end of the channel -- the only
+    // signal yt-dlp gives us.
+    s.yt_channel_has_next = listed as i64 >= CHANNEL_PAGE;
+    s.yt_channel_page = 1;
     s.yt_channel_videos = videos;
     Ok(())
 }
 
-/// Videos per block on a channel page.
-const CHANNEL_PAGE: i64 = 30;
+/// The open channel's next block, appended. A video that went up since the
+/// last block pushes one down into this one; it is not listed twice.
+async fn yt_channel_load_more() -> Result<()> {
+    let (id, page, popular) = {
+        let s = lock();
+        (s.yt_channel_id.clone(), s.yt_channel_page, s.yt_channel_mode == "popular")
+    };
+    if id.is_empty() {
+        return Ok(());
+    }
+    lock().yt_status = "Loading more…".into();
+    let listing = yt_fetch_listing(&id, popular, page + 1, CHANNEL_PAGE).await;
+    let mut s = lock();
+    if s.yt_channel_id != id {
+        return Ok(());
+    }
+    if listing.listed == 0 {
+        s.yt_status = "Could not reach YouTube".into();
+        return Ok(());
+    }
+    s.yt_status.clear();
+    s.yt_channel_page = page + 1;
+    s.yt_channel_has_next = listing.listed as i64 >= CHANNEL_PAGE;
+    for v in listing.videos {
+        if !s.yt_channel_videos.iter().any(|x| x.video_id == v.video_id) {
+            s.yt_channel_videos.push(v);
+        }
+    }
+    Ok(())
+}
+
+/// Refresh channels not refreshed for twelve hours, behind the page, once a
+/// session: the new counts, follower counts and Home's latest keep up without
+/// anyone reaching for the menu. The fetch bar shows it running.
+fn yt_auto_check_once() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        tokio::spawn(async {
+            if let Err(e) = yt_check_new(Some(12 * 3600)).await {
+                tracing::warn!(error = %e, "youtube: background check for new videos failed");
+            }
+            emit(MusicEvent::Stale);
+        });
+    });
+}
+
+/// "3 days ago", for an approximate upload or cache time; "" for 0.
+fn yt_ago(ts: i64) -> String {
+    if ts <= 0 {
+        return String::new();
+    }
+    let days = (tulipix_core::util::unix_secs_i64() - ts).max(0) / 86_400;
+    let n = |v: i64, unit: &str| format!("{v} {unit}{} ago", if v == 1 { "" } else { "s" });
+    match days {
+        0 => "today".into(),
+        1 => "yesterday".into(),
+        2..=13 => n(days, "day"),
+        14..=59 => n(days / 7, "week"),
+        60..=729 => n(days / 30, "month"),
+        _ => n(days / 365, "year"),
+    }
+}
+
+/// Home's "New from your channels".
+const HOME_NEW: i64 = 12;
+
+/// Fetch a channel's listing in the background, once per session per channel.
+fn yt_fetch_listing_once(channel_id: &str) {
+    static TRIED: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let fresh = TRIED
+        .get_or_init(Default::default)
+        .lock()
+        .map(|mut g| g.insert(channel_id.to_string()))
+        .unwrap_or(false);
+    if !fresh {
+        return;
+    }
+    let id = channel_id.to_string();
+    tokio::spawn(async move {
+        let videos = yt_fetch_listing(&id, false, 1, CHANNEL_PAGE).await.videos;
+        if let Ok(pool) = youtube_pool().await {
+            let _ = tulipix_music::youtube::store::mark_seen(pool, &id, true).await;
+        }
+        if !videos.is_empty() {
+            emit(MusicEvent::Stale);
+        }
+    });
+}
+
+/// Videos per block on a channel page: three rows of six cards.
+const CHANNEL_PAGE: i64 = 18;
 
 async fn yt_open_channel(channel_id: &str) -> Result<()> {
     {
@@ -7627,7 +9023,7 @@ async fn yt_open_channel(channel_id: &str) -> Result<()> {
         s.yt_channel_query.clear();
         s.yt_channel_results.clear();
     }
-    yt_open_channel_pages(channel_id, 1).await
+    yt_open_channel_page_one(channel_id).await
 }
 
 /// Search within one channel. yt-dlp has no channel-scoped search, so this is
@@ -7658,7 +9054,15 @@ async fn yt_channel_search(query: &str) -> Result<()> {
         .and_then(|e| e.as_array())
         .map(|arr| arr.iter().map(yt_entry).collect::<Vec<_>>())
         .unwrap_or_default();
-    let hits = drop_shorts(hits);
+    let hits: Vec<YtVideo> = drop_shorts(hits)
+        .into_iter()
+        .map(|mut v| {
+            if v.channel_id.is_empty() {
+                v.channel_id = id.clone();
+            }
+            v
+        })
+        .collect();
     let mut s = lock();
     s.yt_status = if hits.is_empty() {
         "Nothing in this channel matched".into()
@@ -7681,8 +9085,9 @@ fn urlish(q: &str) -> String {
         .collect()
 }
 
-/// Re-fetch subscriber and video counts for every channel. Manual only: it is
-/// one yt-dlp spawn per channel and nothing about it is urgent.
+/// Re-fetch subscriber and video counts for every channel. Manual: it is one
+/// yt-dlp spawn per channel. Follower counts also arrive with every listing,
+/// so the background check keeps those current without it.
 async fn yt_refresh_subs() -> Result<()> {
     let pool = youtube_pool().await?;
     let subs = tulipix_music::youtube::store::list_subs(pool).await?;
@@ -7748,13 +9153,23 @@ async fn yt_refresh_subs() -> Result<()> {
     Ok(())
 }
 
-/// Download one video at the asked-for quality. "audio" extracts Opus;
-/// anything else is a height cap on the muxed file.
-/// Downloads in flight or waiting. yt-dlp runs one at a time, so the head of
-/// this list is the running one and the rest are queued.
+/// Downloads in flight, waiting, or failed and waiting for Retry or Dismiss.
 fn yt_jobs() -> &'static Mutex<Vec<YtJob>> {
     static C: std::sync::OnceLock<Mutex<Vec<YtJob>>> = std::sync::OnceLock::new();
     C.get_or_init(Default::default)
+}
+
+fn yt_watching() -> bool {
+    yt_watch().lock().map(|g| g.0 != 0).unwrap_or(false)
+}
+
+/// Background yt-dlp work (a cache download, a channel check) holds off while
+/// a video is on screen. Decoding the picture is what needs the CPU then, and
+/// yt-dlp plus ffmpeg merging beside it is what made watching stutter.
+async fn yt_wait_while_watching() {
+    while yt_watching() {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
 }
 
 /// The video on screen: `(token, video_id)`. `token` is what makes a report
@@ -7766,36 +9181,64 @@ fn yt_watch() -> &'static Mutex<(i64, String)> {
 
 /// Resolve a watchable stream and hand it to the in-app player.
 ///
+/// YouTube serves picture and sound apart above 360p, so the selector asks for
+/// both and `-g` answers with two URLs: the picture becomes the source, the
+/// sound an `audio-file` the player attaches. One URL is a muxed fallback and
+/// plays as it is.
+///
 /// Audio stops first: libmpv playing the soundtrack twice, once per deck, is
-/// the obvious failure and there is no reason to keep the audio around when
-/// the picture carries it. `start` is where the audio had got to, so the video
+/// the obvious failure. `start` is where the audio had got to, so the video
 /// opens on the same frame you were listening to.
-async fn yt_watch_video(video_id: &str, height: i64, start: f64) -> Result<()> {
-    let fmt = if height <= 0 {
-        "best".to_string()
+/// `file` watches that file (a download) instead of anything cached or remote.
+async fn yt_watch_video(
+    video_id: &str,
+    format_id: &str,
+    start: f64,
+    file: Option<&Path>,
+) -> Result<()> {
+    let fmt = tulipix_music::youtube::formats::watch_selector(
+        format_id,
+        &tulipix_music::yt_prefs::watch_pref(),
+    );
+    // A copy on disk wins unless a specific stream was picked.
+    let local = file
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| yt_cached_video_path(video_id));
+    let from_disk = file.is_some() || (format_id.is_empty() && local.exists());
+    let mut hint = None;
+    // A cached or downloaded file has no fresh caption URL to offer.
+    let mut caption = None;
+    let (src, sound) = if from_disk {
+        // A no-op for a download, which has no cache row.
+        if let Ok(pool) = youtube_pool().await {
+            let _ = tulipix_music::youtube::store::touch_cached(pool, video_id).await;
+        }
+        (local.to_string_lossy().into_owned(), None)
     } else {
-        // `best[height<=N]` alone fails on videos with no muxed stream at that
-        // cap; the `/best` fallback is what keeps those playable.
-        format!("best[height<={height}]/best")
+        let resolved = yt_resolve(video_id, &fmt).await?;
+        hint = resolved.meta;
+        caption = tulipix_music::youtube::formats::pick_caption(
+            &resolved.captions,
+            &tulipix_music::yt_prefs::caption_lang(),
+        )
+        .map(|c| c.url.clone());
+        let (picture, sound) = resolved.urls;
+        let src = picture.ok_or_else(|| anyhow::anyhow!("yt-dlp resolved no stream for this video"))?;
+        (src, sound)
     };
-    let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let out = tokio::process::Command::new(tulipix_core::ytdlp::bin())
-        .args(["-g", "-f", fmt.as_str(), "--no-playlist"])
-        .args(tulipix_core::ytdlp::common_args())
-        .arg(&url)
-        .no_window_async()
-        .output()
-        .await?;
-    let src = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .find(|l| !l.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "{}",
-                tulipix_core::ytdlp::friendly_error(&String::from_utf8_lossy(&out.stderr))
-            )
-        })?;
+
+    let picture = match tulipix_music::youtube::formats::itag_of(&src) {
+        Some(v) => {
+            let p = yt_stream_label(video_id, &v).await;
+            match sound.as_deref().and_then(tulipix_music::youtube::formats::itag_of) {
+                Some(a) => format!("{p} + {}", yt_stream_label(video_id, &a).await),
+                None => p,
+            }
+        }
+        None if file.is_some() => "Downloaded file".to_string(),
+        None => "Cached video".to_string(),
+    };
+    yt_set_format(video_id, None, Some(picture));
 
     mpv::stop();
     let token = {
@@ -7811,17 +9254,77 @@ async fn yt_watch_video(video_id: &str, height: i64, start: f64) -> Result<()> {
         *g = (token, video_id.to_string());
         token
     };
+    // The player's title bar names the video, not the stream URL or file.
+    let title = match hint.as_ref().filter(|h| !h.title.is_empty()) {
+        Some(h) => h.title.clone(),
+        None => yt_video_meta(video_id).await.title,
+    };
     emit(MusicEvent::VideoStop);
     emit(MusicEvent::VideoPlay {
         token,
         src,
         start_at: start.max(0.0),
         // A remote stream URL is bound to the agent that resolved it; the
-        // default one gets 403 from Google's CDN.
-        props: vec![format!("user-agent={}", tulipix_core::net::BROWSER_UA)],
+        // default one gets 403 from Google's CDN. Both streams share it.
+        // The caption track is added, not turned on: the player's subtitle
+        // menu turns it on, or mpv does when it matches the preferred language.
+        props: std::iter::once(format!("user-agent={}", tulipix_core::net::BROWSER_UA))
+            .chain(sound.map(|a| format!("audio-file={a}")))
+            .chain(caption.map(|c| format!("sub-file={c}")))
+            .chain((!title.is_empty()).then(|| format!("force-media-title={title}")))
+            .collect(),
     });
+    let id = video_id.to_string();
+    tokio::spawn(async move {
+        let segments = yt_sponsor_segments(&id).await;
+        let current = yt_watch().lock().map(|g| g.0 == token).unwrap_or(false);
+        if current && !segments.is_empty() {
+            emit(MusicEvent::VideoSkips {
+                token,
+                segments: segments.into_iter().flat_map(|(a, b)| [a, b]).collect(),
+            });
+        }
+    });
+    // The player bar names the picture too, not whatever played before it.
+    yt_set_now_playing(video_id, hint).await;
     emit(MusicEvent::TrackChanged);
+    if !from_disk {
+        cache_youtube_video(video_id, &fmt).await;
+    }
     Ok(())
+}
+
+/// What is playing, named for the player bar: `(video_id, sound, picture)`.
+fn yt_now_format() -> &'static Mutex<(String, String, String)> {
+    static C: std::sync::OnceLock<Mutex<(String, String, String)>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// Name the sound or the picture now playing. Another video clears both.
+fn yt_set_format(video_id: &str, sound: Option<String>, picture: Option<String>) {
+    if let Ok(mut g) = yt_now_format().lock() {
+        if g.0 != video_id {
+            *g = (video_id.to_string(), String::new(), String::new());
+        }
+        if let Some(v) = sound {
+            g.1 = v;
+        }
+        if let Some(v) = picture {
+            g.2 = v;
+        }
+    }
+}
+
+/// An itag named from the video's saved format list, when there is one.
+async fn yt_stream_label(video_id: &str, itag: &str) -> String {
+    let info = match youtube_pool().await {
+        Ok(pool) => tulipix_music::youtube::store::get_formats(pool, video_id, 30 * 86_400)
+            .await
+            .ok()
+            .flatten(),
+        Err(_) => None,
+    };
+    tulipix_music::youtube::formats::stream_label(info.as_ref(), itag)
 }
 
 /// The counts-refresh bar. Same shape as `pod_job` and for the same reason:
@@ -7842,29 +9345,70 @@ fn yt_job_list() -> Vec<YtJob> {
     yt_jobs().lock().map(|g| g.clone()).unwrap_or_default()
 }
 
-fn yt_job_push(video_id: &str, title: &str) {
+/// What each job was asked to produce, so Retry can ask again. Kept apart from
+/// `YtJob` because the UI has no use for it.
+fn yt_job_specs() -> &'static Mutex<HashMap<String, YtDownloadSpec>> {
+    static C: std::sync::OnceLock<Mutex<HashMap<String, YtDownloadSpec>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// Add a job, or reset a failed one being retried.
+fn yt_job_push(video_id: &str, title: &str, label: &str) {
     if let Ok(mut g) = yt_jobs().lock() {
-        if !g.iter().any(|j| j.video_id == video_id) {
-            g.push(YtJob {
-                video_id: video_id.to_string(),
-                title: title.to_string(),
-                frac: 0.0,
-                running: false,
-            });
+        let fresh = YtJob {
+            video_id: video_id.to_string(),
+            title: title.to_string(),
+            frac: 0.0,
+            running: false,
+            label: label.to_string(),
+            stage: String::new(),
+            total_bytes: -1,
+            speed_bps: 0.0,
+            eta_s: -1,
+            error: String::new(),
+            paused: false,
+        };
+        match g.iter_mut().find(|j| j.video_id == video_id) {
+            Some(j) => *j = fresh,
+            None => g.push(fresh),
         }
     }
     emit(MusicEvent::Stale);
 }
 
 /// yt-dlp writes a progress line several times a second. Only a change the eye
-/// can see is worth waking the UI for, so the repaint is gated on the whole
-/// percent moving.
-fn yt_job_progress(video_id: &str, frac: f64) {
+/// can see is worth waking the UI for: a new stage, or the whole percent moving.
+fn yt_job_tick(video_id: &str, t: &tulipix_music::youtube::progress::Tick) {
+    use tulipix_music::youtube::progress::Stage;
     let mut changed = false;
     if let Ok(mut g) = yt_jobs().lock() {
         if let Some(j) = g.iter_mut().find(|j| j.video_id == video_id) {
-            changed = (frac * 100.0) as i64 != (j.frac * 100.0) as i64 || !j.running;
-            j.frac = frac;
+            if let Some(stage) = t.stage {
+                if j.stage != stage.label() {
+                    j.stage = stage.label().to_string();
+                    changed = true;
+                }
+                // Merging, tagging and the rest have no rate and no end time.
+                if stage != Stage::Downloading {
+                    j.speed_bps = 0.0;
+                    j.eta_s = -1;
+                }
+            }
+            if let Some(f) = t.frac {
+                changed |= (f * 100.0) as i64 != (j.frac * 100.0) as i64;
+                j.frac = f;
+            }
+            if let Some(b) = t.total_bytes {
+                j.total_bytes = b as i64;
+            }
+            if let Some(v) = t.speed_bps {
+                j.speed_bps = v;
+            }
+            if let Some(e) = t.eta_s {
+                j.eta_s = e as i64;
+            }
+            changed |= !j.running;
             j.running = true;
         }
     }
@@ -7873,55 +9417,84 @@ fn yt_job_progress(video_id: &str, frac: f64) {
     }
 }
 
-fn yt_job_done(video_id: &str) {
+/// Running downloads, by video, and the signal that pauses each.
+fn yt_job_cancels() -> &'static Mutex<HashMap<String, std::sync::Arc<tokio::sync::Notify>>> {
+    static C: std::sync::OnceLock<Mutex<HashMap<String, std::sync::Arc<tokio::sync::Notify>>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// The error a paused download returns, told apart from a real failure.
+const YT_PAUSED: &str = "paused";
+
+fn yt_job_paused(video_id: &str) {
     if let Ok(mut g) = yt_jobs().lock() {
-        g.retain(|j| j.video_id != video_id);
+        if let Some(j) = g.iter_mut().find(|j| j.video_id == video_id) {
+            j.paused = true;
+            j.running = false;
+            j.speed_bps = 0.0;
+            j.eta_s = -1;
+        }
     }
     emit(MusicEvent::Stale);
 }
 
-/// `[download]  42.3% of ...` -> 0.423. yt-dlp writes one of these per update
-/// when given `--newline`, which is the only reason a bar is possible at all
-/// without re-implementing the downloader.
-fn yt_dl_percent(line: &str) -> Option<f64> {
-    let rest = line.trim().strip_prefix("[download]")?.trim_start();
-    let pct = rest.split('%').next()?.trim();
-    pct.parse::<f64>().ok().map(|p| (p / 100.0).clamp(0.0, 1.0))
+fn yt_job_fail(video_id: &str, error: &str) {
+    if let Ok(mut g) = yt_jobs().lock() {
+        if let Some(j) = g.iter_mut().find(|j| j.video_id == video_id) {
+            j.error = error.to_string();
+            j.running = false;
+            j.speed_bps = 0.0;
+            j.eta_s = -1;
+        }
+    }
+    emit(MusicEvent::Stale);
 }
 
-async fn yt_download(video_id: &str, quality: &str) -> Result<()> {
-    let dir = yt_download_dir();
-    let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let template = dir.join(format!("{video_id}.%(ext)s"));
-    let audio = quality.eq_ignore_ascii_case("audio");
-    let mut args: Vec<String> = vec!["--no-playlist".into(), "-o".into()];
-    args.push(template.to_string_lossy().into_owned());
-    if audio {
-        args.extend([
-            "-f".into(),
-            "bestaudio".into(),
-            "-x".into(),
-            "--audio-format".into(),
-            "opus".into(),
-        ]);
-    } else if quality.eq_ignore_ascii_case("best") {
-        args.extend([
-            "-f".into(),
-            "bestvideo+bestaudio/best".into(),
-            "--merge-output-format".into(),
-            "mkv".into(),
-        ]);
-    } else {
-        let height: i64 = quality.trim_end_matches('p').parse().unwrap_or(1080);
-        args.extend([
-            "-f".into(),
-            format!("bestvideo[height<={height}]+bestaudio/best[height<={height}]"),
-            "--merge-output-format".into(),
-            "mkv".into(),
-        ]);
+fn yt_job_done(video_id: &str) {
+    if let Ok(mut g) = yt_jobs().lock() {
+        g.retain(|j| j.video_id != video_id);
     }
-    args.push(url);
-    args.push("--newline".into());
+    if let Ok(mut g) = yt_job_specs().lock() {
+        g.remove(video_id);
+    }
+    emit(MusicEvent::Stale);
+}
+
+/// Queue, run and record one download. A failure stays on its job row with the
+/// reason and a Retry, rather than flashing through the status line and gone.
+async fn yt_download_job(video_id: &str, spec: YtDownloadSpec) -> Result<()> {
+    let domain = spec.to_domain()?;
+    // The job list is drawn before yt-dlp has said anything, so the title is
+    // whatever the lists and tables already know.
+    let title = Some(yt_video_meta(video_id).await.title)
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| video_id.to_string());
+    if let Ok(mut g) = yt_job_specs().lock() {
+        g.insert(video_id.to_string(), spec);
+    }
+    yt_job_push(video_id, &title, &domain.preset.label());
+    tulipix_music::yt_prefs::store_download_spec(Some(&domain));
+    match yt_download(video_id, &domain).await {
+        Ok(()) => yt_job_done(video_id),
+        Err(e) if e.to_string() == YT_PAUSED => yt_job_paused(video_id),
+        Err(e) => yt_job_fail(video_id, &e.to_string()),
+    }
+    Ok(())
+}
+
+async fn yt_download(
+    video_id: &str,
+    spec: &tulipix_music::youtube::dl_args::DownloadSpec,
+) -> Result<()> {
+    let url = format!("https://www.youtube.com/watch?v={video_id}");
+    let home = yt_home_dir();
+    // yt-dlp appends to this file, so a leftover from a crashed run would name
+    // the wrong download.
+    let path_file = std::env::temp_dir().join(format!("tulipix-yt-{video_id}.path"));
+    let _ = std::fs::remove_file(&path_file);
+    let mut args =
+        tulipix_music::youtube::dl_args::build_args(spec, &url, &home, &path_file);
     args.extend(tulipix_core::ytdlp::common_args());
     let mut child = tokio::process::Command::new(tulipix_core::ytdlp::bin())
         .args(&args)
@@ -7940,50 +9513,67 @@ async fn yt_download(video_id: &str, quality: &str) -> Result<()> {
             buf
         })
     });
-    if let Some(out) = child.stdout.take() {
-        use tokio::io::AsyncBufReadExt;
-        let mut lines = tokio::io::BufReader::new(out).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if let Some(f) = yt_dl_percent(&line) {
-                yt_job_progress(video_id, f);
+    // Pause kills yt-dlp and keeps its `.part` file; Resume runs the same
+    // download again, and yt-dlp carries on from where the file ends.
+    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+    if let Ok(mut g) = yt_job_cancels().lock() {
+        g.insert(video_id.to_string(), cancel.clone());
+    }
+    struct Unregister(String);
+    impl Drop for Unregister {
+        fn drop(&mut self) {
+            if let Ok(mut g) = yt_job_cancels().lock() {
+                g.remove(&self.0);
             }
         }
+    }
+    let _unregister = Unregister(video_id.to_string());
+    let stdout = child.stdout.take();
+    let pump = async {
+        if let Some(out) = stdout {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = tokio::io::BufReader::new(out).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Some(t) = tulipix_music::youtube::progress::parse_line(&line) {
+                    yt_job_tick(video_id, &t);
+                }
+            }
+        }
+    };
+    let paused = tokio::select! {
+        _ = cancel.notified() => true,
+        _ = pump => false,
+    };
+    if paused {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        let _ = std::fs::remove_file(&path_file);
+        anyhow::bail!(YT_PAUSED);
     }
     let status = child.wait().await?;
     let stderr = match stderr_task {
         Some(t) => t.await.unwrap_or_default(),
         None => String::new(),
     };
+    let printed = std::fs::read_to_string(&path_file).unwrap_or_default();
+    let _ = std::fs::remove_file(&path_file);
     if !status.success() {
-        yt_job_done(video_id);
         anyhow::bail!("{}", tulipix_core::ytdlp::friendly_error(&stderr));
     }
-    // yt-dlp picks the extension, so find what it actually wrote rather than
-    // assuming: a merge that fell back to mp4 is still a successful download.
-    let written = std::fs::read_dir(&dir)?
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| {
-            p.file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s == video_id)
-                .unwrap_or(false)
-        });
-    let Some(written) = written else {
-        yt_job_done(video_id);
+    let Some(written) = printed
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .next_back()
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+    else {
         anyhow::bail!("yt-dlp reported success but wrote no file");
     };
-    let known = {
-        let s = lock();
-        s.yt_results
-            .iter()
-            .chain(s.yt_channel_videos.iter())
-            .find(|v| v.video_id == video_id)
-            .cloned()
-    };
-    let (title, channel, thumb, dur) = known
-        .map(|v| (v.title, v.channel, v.thumb, v.duration))
-        .unwrap_or_default();
+    // Every list and table, not only what is on screen: a download started
+    // from a playlist or the feed was recorded with no title.
+    let tulipix_music::youtube::store::VideoMeta { title, channel, channel_id, thumb_path: thumb, duration: dur } =
+        yt_video_meta(video_id).await;
     let pool = youtube_pool().await?;
     tulipix_music::youtube::store::record_download(
         pool,
@@ -7993,26 +9583,238 @@ async fn yt_download(video_id: &str, quality: &str) -> Result<()> {
         &cache_remote(&thumb).await.unwrap_or_default(),
         &written.to_string_lossy(),
         dur,
-        if audio { "audio" } else { "video" },
+        if spec.preset.is_audio() { "audio" } else { "video" },
         &written
             .extension()
             .map(|e| e.to_string_lossy().to_uppercase())
             .unwrap_or_default(),
-        if audio { "Audio" } else { quality },
+        &spec.preset.label(),
     )
     .await?;
+    let _ = tulipix_music::youtube::store::set_channel_id(pool, video_id, &channel_id).await;
     Ok(())
+}
+
+/// What the lists on screen know about a video, for a cache row written after
+/// the fact: `(title, channel, thumb, duration, channel_id)`.
+fn yt_known_meta(id: &str) -> (String, String, String, i64, String) {
+    let s = lock();
+    s.yt_results
+        .iter()
+        .chain(s.yt_channel_videos.iter())
+        .chain(s.yt_channel_results.iter())
+        .chain(s.yt_recommended.iter())
+        .find(|v| v.video_id == id && !v.title.is_empty() && v.title != id)
+        .map(|v| (v.title.clone(), v.channel.clone(), v.thumb.clone(), v.duration, v.channel_id.clone()))
+        .unwrap_or_default()
+}
+
+/// A video's title, channel and thumbnail without the network: the lists on
+/// screen, then what the player is showing, then every table.
+async fn yt_video_meta(id: &str) -> tulipix_music::youtube::store::VideoMeta {
+    use tulipix_music::youtube::store::{video_meta, VideoMeta};
+    let (title, channel, thumb_path, duration, channel_id) = yt_known_meta(id);
+    if !title.is_empty() {
+        return VideoMeta { title, channel, channel_id, thumb_path, duration };
+    }
+    let np = mpv::now_playing();
+    if np.key == id && !np.title.is_empty() {
+        return VideoMeta { title: np.title, channel: np.artist, ..Default::default() };
+    }
+    if let Ok(pool) = youtube_pool().await {
+        if let Ok(Some(m)) = video_meta(pool, id).await {
+            return m;
+        }
+    }
+    VideoMeta::default()
+}
+
+/// Put a YouTube video on the player bar: its title, its channel as the
+/// subtitle, its thumbnail. `hint` is what yt-dlp just said about it, for a
+/// video no table holds. A video nothing knows is asked of yt-dlp in the
+/// background and the bar is filled in when the answer comes.
+async fn yt_set_now_playing(
+    video_id: &str,
+    hint: Option<tulipix_music::youtube::store::VideoMeta>,
+) {
+    let mut m = yt_video_meta(video_id).await;
+    if m.title.is_empty() {
+        if let Some(h) = hint {
+            m = h;
+        }
+    }
+    let thumb = if m.thumb_path.is_empty() {
+        tulipix_music::youtube::thumbs::video_thumb_url(video_id)
+    } else {
+        m.thumb_path.clone()
+    };
+    mpv::set_now_playing(mpv::NowPlaying {
+        item_id: 0,
+        title: m.title.clone(),
+        artist: m.channel.clone(),
+        album: String::new(),
+        art: cache_remote(&thumb).await.unwrap_or_default(),
+        key: video_id.to_string(),
+    });
+    if let Ok(pool) = youtube_pool().await {
+        let _ = tulipix_music::youtube::store::record_history(pool, video_id, &m).await;
+    }
+    if m.title.is_empty() {
+        yt_fetch_meta_later(video_id);
+    }
+}
+
+/// Ask yt-dlp for a video's title, channel and thumbnail, write them to every
+/// table that stored the video without them, and name the player bar if the
+/// video is still the one on it. Two at a time; a video is asked again only
+/// ten minutes after the last try, so a failure (offline, a refusal) is
+/// retried rather than remembered, and the once-a-second snapshot does not
+/// turn into a process a second.
+fn yt_fetch_meta_later(video_id: &str) {
+    static TRIED: std::sync::OnceLock<Mutex<HashMap<String, std::time::Instant>>> =
+        std::sync::OnceLock::new();
+    static GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    const RETRY: std::time::Duration = std::time::Duration::from_secs(600);
+    let fresh = TRIED
+        .get_or_init(Default::default)
+        .lock()
+        .map(|mut g| {
+            let now = std::time::Instant::now();
+            if g.get(video_id).is_some_and(|t| now.duration_since(*t) < RETRY) {
+                return false;
+            }
+            g.insert(video_id.to_string(), now);
+            true
+        })
+        .unwrap_or(false);
+    if !fresh {
+        return;
+    }
+    let id = video_id.to_string();
+    tokio::spawn(async move {
+        let Ok(_permit) = GATE.acquire().await else { return };
+        let Ok(out) = tokio::process::Command::new(tulipix_core::ytdlp::bin())
+            .args([
+                "--skip-download",
+                "--no-playlist",
+                "--print",
+                "%(title)s\t%(channel,uploader)s\t%(channel_id)s\t%(thumbnail)s\t%(duration)s",
+            ])
+            .args(tulipix_core::ytdlp::common_args())
+            .arg(format!("https://www.youtube.com/watch?v={id}"))
+            .no_window_async()
+            .output()
+            .await
+        else {
+            return;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut f = text
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split('\t')
+            .map(|x| if x == "NA" { String::new() } else { x.to_string() });
+        let m = tulipix_music::youtube::store::VideoMeta {
+            title: f.next().unwrap_or_default(),
+            channel: f.next().unwrap_or_default(),
+            channel_id: f.next().unwrap_or_default(),
+            thumb_path: f.next().unwrap_or_default(),
+            duration: f.next().and_then(|d| d.parse::<f64>().ok()).unwrap_or(0.0).round() as i64,
+        };
+        if m.title.is_empty() {
+            return;
+        }
+        if let Ok(pool) = youtube_pool().await {
+            let _ = tulipix_music::youtube::store::fill_video_meta(pool, &id, &m).await;
+            let _ = tulipix_music::youtube::store::set_channel_id(pool, &id, &m.channel_id).await;
+        }
+        let np = mpv::now_playing();
+        if np.key == id && np.title.is_empty() {
+            let art = if np.art.is_empty() {
+                cache_remote(&m.thumb_path).await.unwrap_or_default()
+            } else {
+                np.art.clone()
+            };
+            mpv::set_now_playing(mpv::NowPlaying {
+                title: m.title,
+                artist: m.channel,
+                art,
+                ..np
+            });
+            emit(MusicEvent::TrackChanged);
+        }
+        emit(MusicEvent::Stale);
+    });
+}
+
+/// The YouTube video on the deck or on screen, which eviction must spare.
+fn yt_playing_id() -> Option<String> {
+    if mpv::current_slot() == mpv::Slot::Youtube {
+        let key = mpv::now_playing().key;
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+    yt_watch().lock().ok().map(|g| g.1.clone()).filter(|id| !id.is_empty())
+}
+
+/// Apply the cache policy: budget, order, idle days. Files go with their rows.
+async fn yt_evict_now() {
+    use tulipix_music::yt_prefs;
+    let Ok(pool) = youtube_pool().await else { return };
+    let playing = yt_playing_id();
+    let victims = tulipix_music::youtube::store::evict_cached(
+        pool,
+        yt_prefs::cache_cap_bytes(),
+        yt_prefs::cache_evict(),
+        Some(yt_prefs::cache_idle_days()),
+        playing.as_deref(),
+    )
+    .await
+    .unwrap_or_default();
+    for (_id, path) in victims {
+        let _ = std::fs::remove_file(&path);
+    }
+    yt_sweep_art(pool).await;
+}
+
+/// Delete YouTube pictures no stored row points at and nothing has written
+/// for a month: a search's thumbnails, channels looked at once. Anything
+/// shown again is simply fetched again.
+async fn yt_sweep_art(pool: &sqlx::SqlitePool) {
+    const MONTH: std::time::Duration = std::time::Duration::from_secs(30 * 86_400);
+    let Ok(sources) = tulipix_music::youtube::store::art_sources(pool).await else { return };
+    let keep: std::collections::HashSet<PathBuf> = sources
+        .iter()
+        .map(|src| if src.starts_with("http") { art_cache_path(src) } else { PathBuf::from(src) })
+        .collect();
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(MONTH) else { return };
+    let Ok(dir) = std::fs::read_dir(yt_thumb_dir()) else { return };
+    for entry in dir.flatten() {
+        let path = entry.path();
+        if keep.contains(&path) || !path.is_file() {
+            continue;
+        }
+        if entry.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < cutoff) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Pull the audio down in the background after a stream starts, so the second
 /// play of the same video is local. Fire-and-forget: a failure here costs
 /// nothing, because the stream is already playing.
 async fn cache_youtube_audio(video_id: &str) {
+    if tulipix_music::yt_prefs::cache_mode() == "never" {
+        return;
+    }
     let id = video_id.to_string();
     tokio::spawn(async move {
         let dir = yt_media_dir();
         let out = dir.join(format!("{id}.opus"));
-        if out.exists() {
+        // A cached video already plays as audio.
+        if out.exists() || yt_cached_video_path(&id).exists() {
             return;
         }
         let template = dir.join(format!("{id}.%(ext)s"));
@@ -8030,15 +9832,9 @@ async fn cache_youtube_audio(video_id: &str) {
             return;
         }
         let Ok(pool) = youtube_pool().await else { return };
-        let (title, channel, thumb, dur) = {
-            let s = lock();
-            s.yt_results
-                .iter()
-                .chain(s.yt_channel_videos.iter())
-                .find(|v| v.video_id == id)
-                .map(|v| (v.title.clone(), v.channel.clone(), v.thumb.clone(), v.duration))
-                .unwrap_or_default()
-        };
+        let (_, _, _, dur, _) = yt_known_meta(&id);
+        let tulipix_music::youtube::store::VideoMeta { title, channel, channel_id, thumb_path: thumb, .. } =
+            yt_video_meta(&id).await;
         let _ = tulipix_music::youtube::store::record_cached(
             pool,
             &id,
@@ -8049,14 +9845,63 @@ async fn cache_youtube_audio(video_id: &str) {
             dur,
         )
         .await;
-        // Two caps, because neither alone is a bound: the count keeps the list
-        // short, the byte cap keeps the disk honest.
-        for (_v, p) in tulipix_music::youtube::store::evict_cached_over(pool, YT_CACHE_KEEP)
-            .await
-            .unwrap_or_default()
-        {
-            let _ = std::fs::remove_file(&p);
+        let _ = tulipix_music::youtube::store::set_channel_id(pool, &id, &channel_id).await;
+        yt_evict_now().await;
+    });
+}
+
+/// With the cache set to keep videos, pull down what is being watched, at the
+/// format being watched, once the picture is already playing from the stream.
+/// It replaces the video's audio cache: one file serves both decks.
+async fn cache_youtube_video(video_id: &str, selector: &str) {
+    if tulipix_music::yt_prefs::cache_mode() != "all" {
+        return;
+    }
+    let id = video_id.to_string();
+    let selector = selector.to_string();
+    tokio::spawn(async move {
+        let out = yt_cached_video_path(&id);
+        if out.exists() {
+            return;
         }
+        // Not beside the stream it copies: the second download and the merge
+        // cost the picture frames. It starts when the picture closes.
+        yt_wait_while_watching().await;
+        if out.exists() {
+            return;
+        }
+        let template = yt_media_dir().join(format!("{id}.video.%(ext)s"));
+        let url = format!("https://www.youtube.com/watch?v={id}");
+        let _ = tokio::process::Command::new(tulipix_core::ytdlp::bin())
+            .args(["-f", selector.as_str(), "--merge-output-format", "mkv", "--no-playlist"])
+            .args(tulipix_core::ytdlp::common_args())
+            .arg("-o")
+            .arg(&template)
+            .arg(&url)
+            .no_window_async()
+            .status()
+            .await;
+        if !out.exists() {
+            return;
+        }
+        let Ok(pool) = youtube_pool().await else { return };
+        let (_, _, _, dur, _) = yt_known_meta(&id);
+        let tulipix_music::youtube::store::VideoMeta { title, channel, channel_id, thumb_path: thumb, .. } =
+            yt_video_meta(&id).await;
+        let _ = tulipix_music::youtube::store::record_cached_as(
+            pool,
+            &id,
+            &title,
+            &channel,
+            &thumb,
+            &out.to_string_lossy(),
+            dur,
+            "video",
+        )
+        .await;
+        let _ = tulipix_music::youtube::store::set_channel_id(pool, &id, &channel_id).await;
+        let _ = std::fs::remove_file(yt_media_dir().join(format!("{id}.opus")));
+        yt_evict_now().await;
     });
 }
 
@@ -9270,13 +11115,16 @@ fn into_yt(v: tulipix_music::youtube::store::CachedVideo, progress: f64) -> YtVi
         thumb: v.thumb_path,
         duration: v.duration,
         media_path: v.media_path,
-        meta: if v.fmt.is_empty() {
-            String::new()
-        } else {
-            format!("{} · {}", v.fmt, v.quality)
-        },
+        meta: [v.fmt.as_str(), v.quality.as_str()]
+            .into_iter()
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · "),
         progress,
         quality: v.quality,
+        channel_id: v.channel_id,
+        offline: String::new(),
+        bytes: v.bytes,
     }
 }
 
@@ -9310,8 +11158,11 @@ async fn snapshot() -> Result<MusicState> {
     } else {
         (0, 0)
     };
+    // A video on screen stops the deck, but the bar is still YouTube's: it
+    // names the video and offers Back to audio.
+    let watching = yt_watch().lock().map(|g| g.0 != 0).unwrap_or(false);
     let now = NowPlaying {
-        mode: slot.as_str().to_string(),
+        mode: if watching { "youtube".to_string() } else { slot.as_str().to_string() },
         item_id: np_raw.item_id,
         key: np_raw.key,
         title: np_raw.title,
@@ -9367,6 +11218,7 @@ async fn snapshot() -> Result<MusicState> {
     let yt_jobs_now = yt_job_list();
     let dl = pod_dl().lock().map(|g| g.clone()).unwrap_or((-1, 0.0, String::new()));
     let fetch = yt_fetch().lock().map(|g| g.clone()).unwrap_or_default();
+    let playing_format = yt_now_format().lock().map(|g| g.clone()).unwrap_or_default();
 
     // --- per-tab -----------------------------------------------------------
     let mut st = MusicState {
@@ -9553,6 +11405,7 @@ async fn snapshot() -> Result<MusicState> {
         yt_channel_id: s.yt_channel_id.clone(),
         yt_channel_title: s.yt_channel_title.clone(),
         yt_channel_avatar: s.yt_channel_avatar.clone(),
+        yt_channel_banner: s.yt_channel_banner.clone(),
         yt_channel_subscribed: s.yt_channel_subscribed,
         yt_channel_mode: s.yt_channel_mode.clone(),
         yt_channel_videos: s.yt_channel_videos.clone(),
@@ -9562,16 +11415,24 @@ async fn snapshot() -> Result<MusicState> {
         yt_playlist_videos: Vec::new(),
         yt_status: s.yt_status.clone(),
         yt_recommended: s.yt_recommended.clone(),
+        yt_continue: Vec::new(),
+        yt_search_q: s.yt_search_q.clone(),
+        yt_search_offline: s.yt_search_offline,
         yt_results_more: s.yt_results_more,
         yt_dl_sort: s.yt_dl_sort.clone(),
         yt_subs_sort: s.yt_subs_sort.clone(),
         yt_subs_dir: s.yt_subs_dir.clone(),
         yt_subs_filter: s.yt_subs_filter.clone(),
+        yt_subs_sel: s.yt_subs_sel.clone(),
+        yt_subs_feed: Vec::new(),
+        yt_subs_feed_new: 0,
         yt_playlist_sort: s.yt_playlist_sort.clone(),
         yt_channel_sub: String::new(),
-        yt_busy: !yt_jobs_now.is_empty(),
+        // A failed job waits for Retry or Dismiss; it is not work in progress.
+        yt_busy: yt_jobs_now.iter().any(|j| j.error.is_empty()),
         yt_jobs: yt_jobs_now,
-        yt_default_res: tulipix_music::yt_prefs::default_res(),
+        yt_dl_prefs: yt_download_prefs(),
+        yt_cache_policy: yt_cache_policy(),
         yt_home_channels: tulipix_music::yt_prefs::home_channels(),
         yt_home_subs: Vec::new(),
         yt_fetcher: tulipix_music::yt_prefs::fetcher(),
@@ -9583,9 +11444,24 @@ async fn snapshot() -> Result<MusicState> {
         yt_channel_page: s.yt_channel_page,
         yt_channel_has_next: s.yt_channel_has_next,
         yt_watching: yt_watch().lock().map(|g| g.0 != 0).unwrap_or(false),
+        yt_format_for: playing_format.0,
+        yt_sound_format: playing_format.1,
+        yt_picture_format: playing_format.2,
         yt_playing_pl_id: s.yt_playing_pl_id,
         yt_home_connect: setting("music.yt.home-connect", "1") != "0",
+        // The three switches are read on the YouTube tab only: each is a
+        // load of settings.json, and this runs every second while playing.
+        yt_history: Vec::new(),
+        yt_hide_watched: false,
+        yt_sponsor_skip: false,
+        yt_caption_lang: String::new(),
+        yt_queue: Vec::new(),
+        yt_queue_pos: s.yt_queue_pos,
     };
+    // The Queue panel shows YouTube's queue from any section.
+    if !s.yt_queue.is_empty() && (mpv::current_slot() == mpv::Slot::Youtube || yt_watching()) {
+        st.yt_queue = yt_queue_rows(&s.yt_queue).await;
+    }
 
     // Whatever tab is open: the player bar's "add to playlist" is on every one
     // of them.
@@ -10510,10 +12386,126 @@ fn into_sub(x: &tulipix_music::youtube::store::Sub) -> YtSub {
         videos: x.video_count.unwrap_or(0),
         subs: x.sub_count.unwrap_or(0),
         subscribed: x.subscribed,
+        new_videos: 0,
     }
 }
 
 async fn fill_youtube(s: &Session, st: &mut MusicState) {
+    let watched = match youtube_pool().await {
+        Ok(pool) => tulipix_music::youtube::store::watched_ids(pool).await.unwrap_or_default(),
+        Err(_) => Default::default(),
+    };
+    st.yt_hide_watched = tulipix_music::yt_prefs::hide_watched();
+    st.yt_sponsor_skip = tulipix_music::yt_prefs::sponsor_skip();
+    st.yt_caption_lang = tulipix_music::yt_prefs::caption_lang();
+    fill_youtube_lists(s, st, &watched).await;
+    mark_offline(st, &watched).await;
+}
+
+/// The queue's ids as rows. Titles are remembered once found, so a queue of a
+/// hundred is not a hundred lookups a second while it plays.
+async fn yt_queue_rows(ids: &[String]) -> Vec<YtVideo> {
+    static MEMO: std::sync::OnceLock<Mutex<HashMap<String, tulipix_music::youtube::store::VideoMeta>>> =
+        std::sync::OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        let known = memo.lock().ok().and_then(|g| g.get(id).cloned());
+        let m = match known {
+            Some(m) => m,
+            None => {
+                let m = yt_video_meta(id).await;
+                if m.title.is_empty() {
+                    yt_fetch_meta_later(id);
+                } else if let Ok(mut g) = memo.lock() {
+                    g.insert(id.clone(), m.clone());
+                }
+                m
+            }
+        };
+        out.push(YtVideo {
+            video_id: id.clone(),
+            title: if m.title.is_empty() { id.clone() } else { m.title },
+            channel: m.channel,
+            thumb: if m.thumb_path.is_empty() {
+                tulipix_music::youtube::thumbs::video_thumb_url(id)
+            } else {
+                m.thumb_path
+            },
+            duration: m.duration,
+            media_path: String::new(),
+            meta: String::new(),
+            progress: 0.0,
+            quality: String::new(),
+            channel_id: m.channel_id,
+            offline: String::new(),
+            bytes: -1,
+        });
+    }
+    out
+}
+
+/// Stamp every list the tab can show with whether each video plays without
+/// the network, so a card can say so wherever it appears.
+///
+/// Also fills what a stored row can be missing: a thumbnail (YouTube's own
+/// still, when the row has none or its local file is gone) and the channel id
+/// (by name, from the subscriptions), so every card has a picture and a
+/// channel link.
+async fn mark_offline(st: &mut MusicState, watched: &std::collections::HashSet<String>) {
+    let Ok(pool) = youtube_pool().await else { return };
+    let kinds = tulipix_music::youtube::store::offline_kinds(pool)
+        .await
+        .unwrap_or_default();
+    let channel_ids: HashMap<String, String> = tulipix_music::youtube::store::list_subs(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|x| (x.title, x.channel_id))
+        .collect();
+    for list in [
+        &mut st.yt_results,
+        &mut st.yt_cached,
+        &mut st.yt_downloads,
+        &mut st.yt_channel_videos,
+        &mut st.yt_channel_results,
+        &mut st.yt_recommended,
+        &mut st.yt_playlist_videos,
+        &mut st.yt_continue,
+        &mut st.yt_subs_feed,
+        &mut st.yt_history,
+        &mut st.yt_queue,
+    ] {
+        for v in list.iter_mut() {
+            // Watched: a full bar, the way YouTube draws it.
+            if watched.contains(&v.video_id) {
+                v.progress = 1.0;
+            }
+            if let Some(k) = kinds.get(&v.video_id) {
+                v.offline = k.clone();
+            }
+            if v.thumb.is_empty() || (!v.thumb.starts_with("http") && !Path::new(&v.thumb).exists()) {
+                v.thumb = tulipix_music::youtube::thumbs::video_thumb_url(&v.video_id);
+            }
+            if v.channel_id.is_empty() {
+                if let Some(id) = channel_ids.get(&v.channel) {
+                    v.channel_id = id.clone();
+                }
+            }
+            // Stored without a title (a bare playlist import is titled with
+            // its own id): ask yt-dlp, once a session, two at a time.
+            if v.title.is_empty() || v.title == v.video_id {
+                yt_fetch_meta_later(&v.video_id);
+            }
+        }
+    }
+}
+
+async fn fill_youtube_lists(
+    s: &Session,
+    st: &mut MusicState,
+    watched: &std::collections::HashSet<String>,
+) {
     let Ok(pool) = youtube_pool().await else { return };
     let progress: std::collections::HashMap<String, f32> =
         tulipix_music::youtube::store::progress_map(pool)
@@ -10525,6 +12517,43 @@ async fn fill_youtube(s: &Session, st: &mut MusicState) {
     st.yt_recent = tulipix_music::youtube::store::list_recent_searches(pool, 6)
         .await
         .unwrap_or_default();
+
+    // The header search, on a page that narrows its list rather than asking
+    // YouTube. Dart clears it on every other page.
+    let q = s.yt_filter.as_str();
+    let hit = |title: &str, channel: &str| {
+        q.is_empty() || title.to_lowercase().contains(q) || channel.to_lowercase().contains(q)
+    };
+    let hide = st.yt_hide_watched;
+    let unwatched = |id: &str| !hide || !watched.contains(id);
+    st.yt_channel_videos.retain(|v| unwatched(&v.video_id));
+
+    if s.yt_tab == "history" {
+        st.yt_history = tulipix_music::youtube::store::list_history(pool, 500)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| hit(&r.title, &r.channel))
+            .map(|r| YtVideo {
+                progress: progress.get(&r.video_id).copied().unwrap_or(0.0) as f64,
+                meta: if r.finished {
+                    format!("watched {}", yt_ago(r.watched_at))
+                } else {
+                    format!("played {}", yt_ago(r.watched_at))
+                },
+                title: if r.title.is_empty() { r.video_id.clone() } else { r.title },
+                video_id: r.video_id,
+                channel: r.channel,
+                thumb: r.thumb_path,
+                duration: r.duration,
+                media_path: String::new(),
+                quality: String::new(),
+                channel_id: r.channel_id,
+                offline: String::new(),
+                bytes: -1,
+            })
+            .collect();
+    }
 
     if s.yt_playlist_open {
         st.yt_playlist_videos = tulipix_music::youtube::store::playlist_items(
@@ -10544,29 +12573,56 @@ async fn fill_youtube(s: &Session, st: &mut MusicState) {
             media_path: String::new(),
             meta: String::new(),
             quality: String::new(),
+            channel_id: String::new(),
+            offline: String::new(),
+            bytes: -1,
         })
         .collect();
         // "default" is the playlist's own order, which is the one thing a
-        // playlist actually carries -- so it sorts nothing.
-        match s.yt_playlist_sort.as_str() {
+        // playlist actually carries -- so it sorts nothing. A ":desc" suffix
+        // turns any of the three around.
+        let (sort, desc) = match s.yt_playlist_sort.strip_suffix(":desc") {
+            Some(key) => (key, true),
+            None => (s.yt_playlist_sort.as_str(), false),
+        };
+        match sort {
             "title" => st
                 .yt_playlist_videos
                 .sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
             "duration" => st.yt_playlist_videos.sort_by(|a, b| a.duration.cmp(&b.duration)),
             _ => {}
         }
+        if desc {
+            st.yt_playlist_videos.reverse();
+        }
+        st.yt_playlist_videos.retain(|v| hit(&v.title, &v.channel));
+        // The page's header needs its playlist's source, for Sync.
+        st.yt_playlists = yt_playlist_rows(pool).await;
         return;
     }
 
     match s.yt_tab.as_str() {
         "cached" | "home" => {
-            st.yt_cached = tulipix_music::youtube::store::list_cached(pool, LIST_PAGE)
+            // The Cached page lists everything it totals; Home needs a shelf.
+            let limit = if s.yt_tab == "cached" { 2_000 } else { LIST_PAGE };
+            st.yt_cached = tulipix_music::youtube::store::list_cached(pool, limit)
                 .await
                 .unwrap_or_default()
                 .into_iter()
+                .filter(|v| s.yt_tab != "cached" || hit(&v.title, &v.channel))
                 .map(|v| {
                     let p = progress.get(&v.video_id).copied().unwrap_or(0.0) as f64;
-                    into_yt(v, p)
+                    let (at, kind) = (v.at, v.kind.clone());
+                    let mut y = into_yt(v, p);
+                    // "Kept as OPUS audio", "cached 3 days ago": what the
+                    // cache holds of it, and since when.
+                    let ext = Path::new(&y.media_path)
+                        .extension()
+                        .map(|e| e.to_string_lossy().to_uppercase())
+                        .unwrap_or_default();
+                    y.quality = format!("{ext} {kind}").trim().to_string();
+                    y.meta = format!("cached {}", yt_ago(at));
+                    y
                 })
                 .collect();
         }
@@ -10577,6 +12633,9 @@ async fn fill_youtube(s: &Session, st: &mut MusicState) {
         let mut all = tulipix_music::youtube::store::list_downloads(pool, 1_000)
             .await
             .unwrap_or_default();
+        if s.yt_tab == "downloads" {
+            all.retain(|v| hit(&v.title, &v.channel));
+        }
         // `list_downloads` is newest-first already, so "new" is the identity.
         match s.yt_dl_sort.as_str() {
             "old" => all.reverse(),
@@ -10584,15 +12643,20 @@ async fn fill_youtube(s: &Session, st: &mut MusicState) {
             _ => {}
         }
         st.yt_dl_total = all.len() as i64;
-        st.yt_dl_pages = (st.yt_dl_total.max(1) as f64 / LIST_PAGE as f64).ceil() as i64;
-        let start = ((s.yt_dl_page * LIST_PAGE) as usize).min(all.len());
-        let end = (((s.yt_dl_page + 1) * LIST_PAGE) as usize).min(all.len());
+        // Cards, three rows of six a page.
+        const PAGE: i64 = 18;
+        st.yt_dl_pages = (st.yt_dl_total.max(1) as f64 / PAGE as f64).ceil() as i64;
+        let start = ((s.yt_dl_page * PAGE) as usize).min(all.len());
+        let end = (((s.yt_dl_page + 1) * PAGE) as usize).min(all.len());
         st.yt_downloads = all[start..end]
             .iter()
             .cloned()
             .map(|v| {
                 let p = progress.get(&v.video_id).copied().unwrap_or(0.0) as f64;
-                into_yt(v, p)
+                let mut y = into_yt(v, p);
+                // One page of stats, not the whole table's.
+                y.bytes = std::fs::metadata(&y.media_path).map(|m| m.len() as i64).unwrap_or(-1);
+                y
             })
             .collect();
     }
@@ -10609,7 +12673,9 @@ async fn fill_youtube(s: &Session, st: &mut MusicState) {
         let mut subs: Vec<_> = all
             .into_iter()
             .filter(|x| x.subscribed == want_sub)
+            .filter(|x| s.yt_tab != "subscriptions" || hit(&x.title, x.handle.as_deref().unwrap_or("")))
             .collect();
+        yt_auto_check_once();
         match s.yt_subs_sort.as_str() {
             "name" => subs.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
             "videos" => subs.sort_by(|a, b| a.video_count.unwrap_or(0).cmp(&b.video_count.unwrap_or(0))),
@@ -10621,41 +12687,131 @@ async fn fill_youtube(s: &Session, st: &mut MusicState) {
         st.yt_subs_pages = (subs.len().max(1) as f64 / LIST_PAGE as f64).ceil() as i64;
         let start = ((s.yt_subs_page * LIST_PAGE) as usize).min(subs.len());
         let end = (((s.yt_subs_page + 1) * LIST_PAGE) as usize).min(subs.len());
-        st.yt_subs = subs[start..end].iter().map(into_sub).collect();
+        let fresh = tulipix_music::youtube::store::new_counts(pool)
+            .await
+            .unwrap_or_default();
+        st.yt_subs = subs[start..end]
+            .iter()
+            .map(|x| YtSub {
+                new_videos: fresh.get(&x.channel_id).copied().unwrap_or(0),
+                ..into_sub(x)
+            })
+            .collect();
+        if s.yt_tab == "subscriptions" {
+            let feed = tulipix_music::youtube::store::sub_feed(pool, &s.yt_subs_sel)
+                .await
+                .unwrap_or_default();
+            // One channel was marked seen when it was picked, so the store's
+            // flags are gone; the count taken then still is not. New rows
+            // lead the feed either way, so after the filter they still do.
+            let feed: Vec<_> = feed
+                .into_iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    let new = if s.yt_subs_sel.is_empty() { f.fresh } else { (i as i64) < s.yt_subs_sel_new };
+                    (new, f)
+                })
+                .filter(|(_, f)| hit(&f.title, &f.channel) && unwatched(&f.video_id))
+                .collect();
+            st.yt_subs_feed_new = feed.iter().filter(|(new, _)| *new).count() as i64;
+            st.yt_subs_feed = feed
+                .into_iter()
+                .map(|(_, f)| YtVideo {
+                    progress: progress.get(&f.video_id).copied().unwrap_or(0.0) as f64,
+                    video_id: f.video_id,
+                    title: f.title,
+                    channel: f.channel,
+                    thumb: f.thumb_path,
+                    duration: f.duration,
+                    media_path: String::new(),
+                    meta: yt_ago(f.published),
+                    quality: String::new(),
+                    channel_id: f.channel_id,
+                    offline: String::new(),
+                    bytes: -1,
+                })
+                .collect();
+        }
     }
 
     if s.yt_tab == "home" {
-        // The newest video from each subscribed channel, from the per-channel
-        // cache the channel pages already fill -- no network, so Home is warm
-        // rather than empty on arrival.
+        // New from your channels: the pinned ones, or every subscription while
+        // nothing is pinned, newest upload first (listing dates are
+        // approximate; undated rows go each channel's newest, then second
+        // newest). Off the channel cache, no network, so Home is warm on
+        // arrival.
         let subs = tulipix_music::youtube::store::list_subs(pool)
             .await
             .unwrap_or_default();
-        let mut reco: Vec<YtVideo> = Vec::new();
-        for sub in subs.iter().filter(|x| x.subscribed).take(RAIL as usize) {
-            let cached = tulipix_music::youtube::store::get_channel_cache(pool, &sub.channel_id)
-                .await
-                .unwrap_or_default();
-            if let Some(v) = cached.into_iter().next() {
-                reco.push(YtVideo {
-                    progress: progress.get(&v.video_id).copied().unwrap_or(0.0) as f64,
-                    video_id: v.video_id,
-                    title: v.title,
-                    channel: sub.title.clone(),
-                    thumb: v.thumb_path,
-                    duration: v.duration,
-                    media_path: String::new(),
-                    meta: String::new(),
-                    quality: String::new(),
-                });
+        let pins = tulipix_music::yt_prefs::home_channels();
+        // Pins as they are: a channel can be pinned from its page without
+        // being subscribed to.
+        let ids: Vec<String> = if pins.is_empty() {
+            subs.iter().filter(|x| x.subscribed).map(|x| x.channel_id.clone()).collect()
+        } else {
+            pins.clone()
+        };
+        // Asked for more than shown, so hiding watched ones still fills it.
+        let mut latest = tulipix_music::youtube::store::latest_across(pool, &ids, HOME_NEW * 3)
+            .await
+            .unwrap_or_default();
+        latest.retain(|f| unwatched(&f.video_id));
+        latest.truncate(HOME_NEW as usize);
+        // A pinned channel never opened has nothing cached: fetch it once a
+        // session, behind the page. Nine pins at most, one indexed look each.
+        if !pins.is_empty() {
+            for id in &ids {
+                if latest.iter().any(|f| &f.channel_id == id) {
+                    continue;
+                }
+                let cached = tulipix_music::youtube::store::get_channel_cache(pool, id).await.unwrap_or_default();
+                if cached.is_empty() {
+                    yt_fetch_listing_once(id);
+                }
             }
         }
+        let reco: Vec<YtVideo> = latest
+            .into_iter()
+            .map(|f| YtVideo {
+                progress: progress.get(&f.video_id).copied().unwrap_or(0.0) as f64,
+                video_id: f.video_id,
+                title: f.title,
+                channel: f.channel,
+                thumb: f.thumb_path,
+                duration: f.duration,
+                media_path: String::new(),
+                meta: yt_ago(f.published),
+                quality: String::new(),
+                channel_id: f.channel_id,
+                offline: String::new(),
+                bytes: -1,
+            })
+            .collect();
         st.yt_recommended = reco;
+
+        st.yt_continue = tulipix_music::youtube::store::continue_list(pool, 8)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| YtVideo {
+                progress: (r.position_s / r.duration_s).clamp(0.0, 1.0),
+                duration: r.duration_s.round() as i64,
+                video_id: r.video_id,
+                title: r.title,
+                channel: r.channel,
+                thumb: r.thumb_path,
+                media_path: String::new(),
+                meta: String::new(),
+                quality: String::new(),
+                channel_id: r.channel_id,
+                offline: String::new(),
+                bytes: -1,
+            })
+            .collect();
 
         // The Home rail is the channels you pinned; until you pin any it is
         // the most-followed subscriptions, so the rail is never empty just
         // because you have not discovered pinning yet.
-        let pins = tulipix_music::yt_prefs::home_channels();
         let mut rail: Vec<YtSub> = if pins.is_empty() {
             let mut by_reach: Vec<_> = subs.iter().filter(|x| x.subscribed).collect();
             by_reach.sort_by(|a, b| b.sub_count.unwrap_or(0).cmp(&a.sub_count.unwrap_or(0)));
@@ -10676,55 +12832,59 @@ async fn fill_youtube(s: &Session, st: &mut MusicState) {
     }
 
     if s.yt_channel_open {
-        if let Some(sub) = tulipix_music::youtube::store::list_subs(pool)
+        // "@handle · 142 videos · 4.2M subscribers": the listing's own
+        // answer first, what was stored for the channel when it has none.
+        let sub = tulipix_music::youtube::store::list_subs(pool)
             .await
             .unwrap_or_default()
             .into_iter()
-            .find(|x| x.channel_id == s.yt_channel_id)
-        {
-            st.yt_channel_sub = [
-                sub.video_count.map(|n| format!("{n} videos")),
-                sub.sub_count.map(|n| format!("{n} subscribers")),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("  ·  ");
-        }
+            .find(|x| x.channel_id == s.yt_channel_id);
+        let handle = Some(s.yt_channel_handle.clone())
+            .filter(|h| !h.is_empty())
+            .or_else(|| sub.as_ref().and_then(|x| x.handle.clone()));
+        let followers = Some(s.yt_channel_followers)
+            .filter(|n| *n >= 0)
+            .or_else(|| sub.as_ref().and_then(|x| x.sub_count));
+        st.yt_channel_sub = [
+            handle,
+            sub.as_ref().and_then(|x| x.video_count).map(|n| format!("{n} videos")),
+            followers.map(|n| format!("{} subscribers", yt_fmt_count(n))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("  ·  ");
     }
 
-    if s.yt_tab == "playlists" || s.yt_tab == "home" {
-        st.yt_playlists = tulipix_music::youtube::store::list_playlists(pool)
+    // Every page: Add to playlist, from any card's menu, lists them.
+    {
+        st.yt_playlists = yt_playlist_rows(pool)
             .await
-            .unwrap_or_default()
             .into_iter()
-            .map(|p| YtPlaylist {
-                id: p.id,
-                name: p.name,
-                count: p.count,
-                cover: p.cover.unwrap_or_default(),
-                source_url: p.source_url.unwrap_or_default(),
-            })
+            .filter(|p| s.yt_tab != "playlists" || hit(&p.name, ""))
             .collect();
     }
+}
+
+/// The saved playlists as cards.
+async fn yt_playlist_rows(pool: &sqlx::SqlitePool) -> Vec<YtPlaylist> {
+    tulipix_music::youtube::store::list_playlists(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| YtPlaylist {
+            id: p.id,
+            name: p.name,
+            count: p.count,
+            cover: p.cover.unwrap_or_default(),
+            source_url: p.source_url.unwrap_or_default(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn yt_progress_lines_parse() {
-        // Not assert_eq on the float: 42.3/100.0 is not bit-identical to 0.423.
-        let got = yt_dl_percent("[download]  42.3% of 120MiB at 3MiB/s").unwrap();
-        assert!((got - 0.423).abs() < 1e-9, "{got}");
-        assert_eq!(yt_dl_percent("[download] 100% of 120MiB"), Some(1.0));
-        assert_eq!(yt_dl_percent("[download]   0.0% of ~1.00MiB"), Some(0.0));
-        // Everything else yt-dlp writes on stdout must not move the bar.
-        assert_eq!(yt_dl_percent("[youtube] abc123: Downloading webpage"), None);
-        assert_eq!(yt_dl_percent("[download] Destination: /tmp/x.mkv"), None);
-        assert_eq!(yt_dl_percent("[Merger] Merging formats into \"x.mkv\""), None);
-    }
 
     /// A track with no duration tag must not take the rail down with it.
     ///

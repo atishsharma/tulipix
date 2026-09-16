@@ -36,6 +36,7 @@ import 'package:tulipix/sections/music/music_controller.dart';
 import 'package:tulipix/sections/music/music_viz.dart' show visStyleNames;
 import 'package:tulipix/sections/music/music_widgets.dart';
 import 'package:tulipix/sections/music/my_music_tab.dart';
+import 'package:tulipix/sections/music/youtube/youtube_tab.dart';
 import 'package:tulipix/sections/music/zen_player.dart';
 import 'package:tulipix/src/rust/api/music.dart';
 
@@ -108,6 +109,8 @@ MusicState _state({
   double podDlFrac = 0.0,
   String podDlTitle = '',
   String ytTab = '',
+  bool ytChannelOpen = false,
+  String ytChannelTitle = '',
   List<YtVideo> ytChannelVideos = const [],
   bool ytBusy = false,
   int ytChannelPage = 0,
@@ -288,10 +291,12 @@ MusicState _state({
       ytSubsPage: 0,
       ytSubsPages: 0,
       ytPlaylists: const [],
-      ytChannelOpen: false,
+      ytChannelOpen: ytChannelOpen,
       ytChannelId: '',
-      ytChannelTitle: '',
-      ytChannelAvatar: '',
+      ytChannelTitle: ytChannelTitle,
+      // A path that is not there: `MusicArt` with none asks the bridge.
+      ytChannelAvatar: '/nonexistent/avatar.jpg',
+      ytChannelBanner: '',
       ytChannelSubscribed: false,
       ytChannelMode: '',
       ytChannelVideos: ytChannelVideos,
@@ -301,16 +306,40 @@ MusicState _state({
       ytPlaylistVideos: const [],
       ytStatus: '',
       ytRecommended: const [],
+      ytContinue: const [],
       ytResultsMore: false,
+      ytSearchQ: '',
+      ytSearchOffline: false,
       ytDlSort: '',
       ytSubsSort: '',
       ytSubsDir: '',
       ytSubsFilter: '',
+      ytSubsSel: '',
+      ytSubsFeed: const [],
+      ytSubsFeedNew: 0,
+      ytFormatFor: '',
+      ytSoundFormat: '',
+      ytPictureFormat: '',
       ytPlaylistSort: '',
       ytChannelSub: '',
       ytJobs: const [],
       ytBusy: ytBusy,
-      ytDefaultRes: 0,
+      ytDlPrefs: const YtDownloadPrefs(
+        audioPreset: 'opus',
+        videoPreset: 'mp4-1080',
+        cover: true,
+        tags: true,
+        chapters: true,
+        sponsorblock: false,
+        subs: false,
+        template: '',
+      ),
+      ytCachePolicy: const YtCachePolicy(
+        mode: 'audio',
+        capBytes: 5368709120,
+        evict: 'lru',
+        idleDays: 30,
+      ),
       ytHomeChannels: const [],
       ytHomeSubs: const [],
       ytFetcher: '',
@@ -324,6 +353,12 @@ MusicState _state({
       ytWatching: false,
       ytPlayingPlId: 0,
       ytHomeConnect: false,
+      ytHistory: const [],
+      ytHideWatched: false,
+      ytSponsorSkip: true,
+      ytCaptionLang: 'en',
+      ytQueue: const [],
+      ytQueuePos: 0,
     );
 
 Widget _host(Widget child) => MaterialApp(
@@ -754,4 +789,36 @@ void main() {
     expect(find.byType(ErrorWidget), findsNothing);
   });
 
+  group('YouTube, driven off a snapshot', () {
+    final c = MusicController.instance;
+
+    tearDown(() => c.state = null);
+
+    for (final tab in const ['home', 'subscriptions', 'playlists', 'history']) {
+      testWidgets('an empty $tab page lays out', (tester) async {
+        c.state = _state(view: 'youtube', ytTab: tab);
+        await _at(tester, const Size(1400, 900), YoutubeTab(controller: c));
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      });
+    }
+
+    testWidgets('a channel page keeps the tab row over it', (tester) async {
+      // The page used to replace the whole tab, row and all, so the only way
+      // back to another tab was the back arrow.
+      c.state = _state(
+        view: 'youtube',
+        ytTab: 'subscriptions',
+        ytChannelOpen: true,
+        ytChannelTitle: 'A channel',
+      );
+      await _at(tester, const Size(1400, 900), YoutubeTab(controller: c));
+      expect(find.text('A channel'), findsOneWidget);
+      for (final tab in const ['Home', 'Subscriptions', 'Playlists', 'History', 'Cached', 'Downloads']) {
+        expect(find.text(tab), findsWidgets, reason: tab);
+      }
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
+  });
 }

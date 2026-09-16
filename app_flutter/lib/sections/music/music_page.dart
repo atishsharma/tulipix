@@ -27,8 +27,8 @@ import 'player_bar.dart';
 import 'podcasts_tab.dart';
 import 'radio_tab.dart';
 import 'side_panel.dart';
-import 'youtube_tab.dart';
-
+import 'youtube/youtube_tab.dart';
+import 'youtube/yt_search.dart';
 
 /// Whether the keyboard is currently going into a text field.
 ///
@@ -55,7 +55,13 @@ class _MusicPageState extends State<MusicPage> {
   // The app's one controller, not this page's: the floating mini and the zen
   // player are hosted above every section and read the same state.
   final MusicController _c = MusicController.instance;
-  final TextEditingController _search = TextEditingController();
+
+  /// One search box, one text per section: what you typed on YouTube is not
+  /// a filter on My Music when you come back to it.
+  final Map<String, TextEditingController> _searches = {};
+
+  TextEditingController _searchFor(String view) =>
+      _searches.putIfAbsent(view, TextEditingController.new);
 
   @override
   void initState() {
@@ -79,7 +85,9 @@ class _MusicPageState extends State<MusicPage> {
 
   @override
   void dispose() {
-    _search.dispose();
+    for (final t in _searches.values) {
+      t.dispose();
+    }
     super.dispose();
   }
 
@@ -92,165 +100,168 @@ class _MusicPageState extends State<MusicPage> {
     return DefaultTextStyle.merge(
       style: TextStyle(fontFamily: skin.fontFamily),
       child: AnimatedBuilder(
-      animation: _c,
-      builder: (context, _) {
-        final st = _c.state;
-        // Two gates on every transport key.
-        //
-        // The player has to be up. These keys move a deck; with nothing loaded
-        // there is no deck, and Space silently doing nothing on a library page
-        // is worse than Space doing what the platform would have done with it.
-        // The condition is exactly the one `PlayerBar` renders itself under, so
-        // "the keys work" and "the bar is on screen" are the same fact.
-        final now = st?.now;
-        final deckUp =
-            now != null && (now.loaded || now.title.isNotEmpty);
+        animation: _c,
+        builder: (context, _) {
+          final st = _c.state;
+          // Two gates on every transport key.
+          //
+          // The player has to be up. These keys move a deck; with nothing loaded
+          // there is no deck, and Space silently doing nothing on a library page
+          // is worse than Space doing what the platform would have done with it.
+          // The condition is exactly the one `PlayerBar` renders itself under, so
+          // "the keys work" and "the bar is on screen" are the same fact.
+          final now = st?.now;
+          final deckUp = now != null && (now.loaded || now.title.isNotEmpty);
 
-        // And nothing may be being typed into -- which `_Keys` sees to, not
-        // this: see there for why a check in the callback was not enough.
-        VoidCallback guard(VoidCallback run) => () {
-              if (!deckUp) return;
-              run();
-            };
+          // And nothing may be being typed into -- which `_Keys` sees to, not
+          // this: see there for why a check in the callback was not enough.
+          VoidCallback guard(VoidCallback run) => () {
+                if (!deckUp) return;
+                run();
+              };
 
-        return _Keys(
-          typing: _typing,
-          // Escape closes whatever the player has open — the docked panel or
-          // the equalizer — before anything outside the section sees the key.
-          // Slint's is a focus scope that exists only while one is open; this
-          // is the same rule, bound where the panels live.
-          bindings: <ShortcutActivator, VoidCallback>{
-            if (_c.panel.isNotEmpty)
-              const SingleActivator(LogicalKeyboardKey.escape): () =>
-                  _c.setPanel(_c.panel),
-            // Transport.
-            const SingleActivator(LogicalKeyboardKey.space):
-                guard(_c.keyPlayPause),
-            const SingleActivator(LogicalKeyboardKey.arrowLeft):
-                guard(() => _c.nudge(-10)),
-            const SingleActivator(LogicalKeyboardKey.arrowRight):
-                guard(() => _c.nudge(10)),
-            // Whole tracks, because holding the arrow to cross a nine-minute
-            // side is not seeking, it is waiting.
-            const SingleActivator(LogicalKeyboardKey.arrowLeft, shift: true):
-                guard(_c.keyPrev),
-            const SingleActivator(LogicalKeyboardKey.arrowRight, shift: true):
-                guard(_c.keyNext),
-            // Marks and modes.
-            const SingleActivator(LogicalKeyboardKey.keyL): guard(_c.keyLove),
-            const SingleActivator(LogicalKeyboardKey.keyS): guard(_c.keyShuffle),
-            const SingleActivator(LogicalKeyboardKey.keyR): guard(_c.keyRepeat),
-            const SingleActivator(LogicalKeyboardKey.keyQ):
-                guard(() => _c.setPanel('queue')),
-            // Back out of a detail page the way the browser key does, since
-            // the trail is a history now. Not gated on the deck -- this is
-            // navigation, not transport -- but still not while typing, or
-            // Alt+Left in the search box leaves the page.
-            if (_c.canGoBack)
-              const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true):
-                  () {
-                if (_typing()) return;
-                _c.goBack();
-              },
-          },
-          // Under a language with a backdrop the page is the shell's card over
-          // that backdrop, as every other section is, and the shell lights it
-          // with this record while Music is up. Painting a canvas and a second
-          // backdrop here drew the window twice: four window-sized gradients a
-          // frame under Glass.
-          child: _canvas(
-            skin.pageBackdrop(accent: _c.accent) == null
-                ? skin.canvas ?? t.nCanvas
-                : null,
-            Column(
-              children: [
-                _Header(controller: _c, search: _search),
-                if (_c.progress != null) _ProgressBar(controller: _c),
-                // One row, not two. A failed command sets `status` on the
-                // snapshot AND emits `Failed`, which becomes `error` here, so
-                // the same sentence arrived twice — once with a close button
-                // and once without. The dismissible one wins; the status line
-                // is for the notes no command failed over ("Queued 25 similar
-                // tracks").
-                if (_c.error != null)
-                  _ErrorBanner(controller: _c)
-                else if (st != null && st.status.isNotEmpty)
-                  // Keyed, so the progress bar coming and going above it does
-                  // not rebuild it into a fresh five seconds.
-                  _StatusBanner(
-                      key: const ValueKey('status'), message: st.status),
-                Expanded(
-                  child: st == null
-                      ? FirstLoad(error: _c.error, onRetry: _c.refresh)
-                      : Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            // The page stands on a strip the bar's own height,
-                            // and the bar floats over that strip. When the
-                            // equalizer opens out of the bar's top, the bar
-                            // grows up over the page, and the page — a queue,
-                            // a grid — keeps every pixel it had.
-                            Padding(
-                              padding: EdgeInsets.only(
-                                  bottom: PlayerBar.baseHeight(context, _c)),
-                              child: Stack(
-                                children: [
-                            // IndexedStack, not a switch: each tab holds scroll
-                            // positions and text fields, and rebuilding the whole
-                            // subtree on every category change would throw both
-                            // away.
-                            IndexedStack(
-                              index: musicViews
-                                  .indexWhere((v) => v.id == st.view)
-                                  .clamp(0, musicViews.length - 1),
-                              children: [
-                                MyMusicTab(controller: _c),
-                                PodcastsTab(controller: _c),
-                                AudiobooksTab(controller: _c),
-                                RadioTab(controller: _c),
-                                YoutubeTab(controller: _c),
-                              ],
-                            ),
-                            // Queue and Lyrics dock here — under BOTH headers
-                            // and above the player, which is the band Slint
-                            // gives them. It used to start at the top of this
-                            // Stack, which put it over the tab row belonging to
-                            // the page behind it: the panel covered the way out
-                            // of itself.
-                            if (_c.panel == 'queue' || _c.panel == 'lyrics')
+          return _Keys(
+            typing: _typing,
+            // Escape closes whatever the player has open — the docked panel or
+            // the equalizer — before anything outside the section sees the key.
+            // Slint's is a focus scope that exists only while one is open; this
+            // is the same rule, bound where the panels live.
+            bindings: <ShortcutActivator, VoidCallback>{
+              if (_c.panel.isNotEmpty)
+                const SingleActivator(LogicalKeyboardKey.escape): () =>
+                    _c.setPanel(_c.panel),
+              // Transport.
+              const SingleActivator(LogicalKeyboardKey.space):
+                  guard(_c.keyPlayPause),
+              const SingleActivator(LogicalKeyboardKey.arrowLeft):
+                  guard(() => _c.nudge(-10)),
+              const SingleActivator(LogicalKeyboardKey.arrowRight):
+                  guard(() => _c.nudge(10)),
+              // Whole tracks, because holding the arrow to cross a nine-minute
+              // side is not seeking, it is waiting.
+              const SingleActivator(LogicalKeyboardKey.arrowLeft, shift: true):
+                  guard(_c.keyPrev),
+              const SingleActivator(LogicalKeyboardKey.arrowRight, shift: true):
+                  guard(_c.keyNext),
+              // Marks and modes.
+              const SingleActivator(LogicalKeyboardKey.keyL): guard(_c.keyLove),
+              const SingleActivator(LogicalKeyboardKey.keyS):
+                  guard(_c.keyShuffle),
+              const SingleActivator(LogicalKeyboardKey.keyR):
+                  guard(_c.keyRepeat),
+              const SingleActivator(LogicalKeyboardKey.keyQ):
+                  guard(() => _c.setPanel('queue')),
+              // Back out of a detail page the way the browser key does, since
+              // the trail is a history now. Not gated on the deck -- this is
+              // navigation, not transport -- but still not while typing, or
+              // Alt+Left in the search box leaves the page.
+              if (_c.canGoBack)
+                const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true):
+                    () {
+                  if (_typing()) return;
+                  _c.goBack();
+                },
+            },
+            // Under a language with a backdrop the page is the shell's card over
+            // that backdrop, as every other section is, and the shell lights it
+            // with this record while Music is up. Painting a canvas and a second
+            // backdrop here drew the window twice: four window-sized gradients a
+            // frame under Glass.
+            child: _canvas(
+              skin.pageBackdrop(accent: _c.accent) == null
+                  ? skin.canvas ?? t.nCanvas
+                  : null,
+              Column(
+                children: [
+                  _Header(controller: _c, searchFor: _searchFor),
+                  if (_c.progress != null) _ProgressBar(controller: _c),
+                  // One row, not two. A failed command sets `status` on the
+                  // snapshot AND emits `Failed`, which becomes `error` here, so
+                  // the same sentence arrived twice — once with a close button
+                  // and once without. The dismissible one wins; the status line
+                  // is for the notes no command failed over ("Queued 25 similar
+                  // tracks").
+                  if (_c.error != null)
+                    _ErrorBanner(controller: _c)
+                  else if (st != null && st.status.isNotEmpty)
+                    // Keyed, so the progress bar coming and going above it does
+                    // not rebuild it into a fresh five seconds.
+                    _StatusBanner(
+                        key: const ValueKey('status'), message: st.status),
+                  Expanded(
+                    child: st == null
+                        ? FirstLoad(error: _c.error, onRetry: _c.refresh)
+                        : Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              // The page stands on a strip the bar's own height,
+                              // and the bar floats over that strip. When the
+                              // equalizer opens out of the bar's top, the bar
+                              // grows up over the page, and the page — a queue,
+                              // a grid — keeps every pixel it had.
+                              Padding(
+                                padding: EdgeInsets.only(
+                                    bottom: PlayerBar.baseHeight(context, _c)),
+                                child: Stack(
+                                  children: [
+                                    // IndexedStack, not a switch: each tab holds scroll
+                                    // positions and text fields, and rebuilding the whole
+                                    // subtree on every category change would throw both
+                                    // away.
+                                    IndexedStack(
+                                      index: musicViews
+                                          .indexWhere((v) => v.id == st.view)
+                                          .clamp(0, musicViews.length - 1),
+                                      children: [
+                                        MyMusicTab(controller: _c),
+                                        PodcastsTab(controller: _c),
+                                        AudiobooksTab(controller: _c),
+                                        RadioTab(controller: _c),
+                                        YoutubeTab(controller: _c),
+                                      ],
+                                    ),
+                                    // Queue and Lyrics dock here — under BOTH headers
+                                    // and above the player, which is the band Slint
+                                    // gives them. It used to start at the top of this
+                                    // Stack, which put it over the tab row belonging to
+                                    // the page behind it: the panel covered the way out
+                                    // of itself.
+                                    if (_c.panel == 'queue' ||
+                                        _c.panel == 'lyrics')
+                                      Positioned(
+                                        top: st.view == 'mymusic' ? 57 : 52,
+                                        left: 0,
+                                        right: 0,
+                                        bottom: 0,
+                                        // The lyric line follows the position.
+                                        child: ListenableBuilder(
+                                          listenable: _c.ticks,
+                                          builder: (_, __) => SidePanel(
+                                              key: sidePanelKey,
+                                              controller: _c),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
                               Positioned(
-                                top: st.view == 'mymusic' ? 57 : 52,
                                 left: 0,
                                 right: 0,
                                 bottom: 0,
-                                // The lyric line follows the position.
-                                child: ListenableBuilder(
-                                  listenable: _c.ticks,
-                                  builder: (_, __) => SidePanel(
-                                      key: sidePanelKey, controller: _c),
-                                ),
+                                // A position tick rebuilds only the bar's lyric
+                                // and seek rows, inside it; this builder listens
+                                // to the controller, which a tick that moves
+                                // nothing but the position does not fire.
+                                child: PlayerBar(controller: _c),
                               ),
-                                ],
-                              ),
-                            ),
-                            Positioned(
-                              left: 0,
-                              right: 0,
-                              bottom: 0,
-                              // A position tick rebuilds only the bar's lyric
-                              // and seek rows, inside it; this builder listens
-                              // to the controller, which a tick that moves
-                              // nothing but the position does not fire.
-                              child: PlayerBar(controller: _c),
-                            ),
-                          ],
-                        ),
-                ),
-              ],
+                            ],
+                          ),
+                  ),
+                ],
+              ),
             ),
-          ),
-        );
-      },
+          );
+        },
       ),
     );
   }
@@ -261,10 +272,10 @@ Widget _canvas(Color? colour, Widget child) =>
     colour == null ? child : ColoredBox(color: colour, child: child);
 
 class _Header extends StatelessWidget {
-  const _Header({required this.controller, required this.search});
+  const _Header({required this.controller, required this.searchFor});
 
   final MusicController controller;
-  final TextEditingController search;
+  final TextEditingController Function(String view) searchFor;
 
   @override
   Widget build(BuildContext context) {
@@ -281,18 +292,18 @@ class _Header extends StatelessWidget {
       decoration: !skin.isStandard
           ? const BoxDecoration()
           : const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.bottomLeft,
-          end: Alignment.bottomRight,
-          stops: [0.0, 0.22, 0.78, 1.0],
-          colors: [
-            Color(0x00EC4899),
-            Color(0xFFEC4899),
-            Color(0xFF8B5CF6),
-            Color(0x008B5CF6),
-          ],
-        ),
-      ),
+              gradient: LinearGradient(
+                begin: Alignment.bottomLeft,
+                end: Alignment.bottomRight,
+                stops: [0.0, 0.22, 0.78, 1.0],
+                colors: [
+                  Color(0x00EC4899),
+                  Color(0xFFEC4899),
+                  Color(0xFF8B5CF6),
+                  Color(0x008B5CF6),
+                ],
+              ),
+            ),
       child: Padding(
         padding: const EdgeInsets.only(bottom: 2),
         child: ColoredBox(
@@ -315,16 +326,16 @@ class _Header extends StatelessWidget {
             decoration: !skin.isStandard
                 ? const BoxDecoration()
                 : BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.centerLeft,
-                end: Alignment.centerRight,
-                stops: const [0.0, 0.55],
-                colors: [
-                  accent.withValues(alpha: 0.22),
-                  accent.withValues(alpha: 0.0),
-                ],
-              ),
-            ),
+                    gradient: LinearGradient(
+                      begin: Alignment.centerLeft,
+                      end: Alignment.centerRight,
+                      stops: const [0.0, 0.55],
+                      colors: [
+                        accent.withValues(alpha: 0.22),
+                        accent.withValues(alpha: 0.0),
+                      ],
+                    ),
+                  ),
             child: SizedBox(
               // 72, not 64: the Slint row is 72 and the eight-pixel difference
               // is what was making the two-tier header look squashed against
@@ -349,8 +360,16 @@ class _Header extends StatelessWidget {
                               active: active == v.id,
                               tint: v.tint,
                               tint2: v.tint2,
-                              onTap: () =>
-                                  controller.send(MusicCmd.setView(name: v.id)),
+                              onTap: () async {
+                                await controller
+                                    .send(MusicCmd.setView(name: v.id));
+                                // The library filter is one query in the
+                                // bridge; put back the one this section had.
+                                if (v.id != 'radio' && v.id != 'youtube') {
+                                  await controller.send(MusicCmd.search(
+                                      query: searchFor(v.id).text));
+                                }
+                              },
                             ),
                           ),
                         ],
@@ -358,7 +377,14 @@ class _Header extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 14),
-                  _SearchPill(controller: controller, search: search),
+                  _SearchPill(
+                    // Keyed by section, and on YouTube by page: its box asks
+                    // YouTube on Home, searches the channel on a channel, and
+                    // narrows the list everywhere else, each with its own text.
+                    key: ValueKey('search-${_searchKey(active, st)}'),
+                    controller: controller,
+                    search: searchFor(_searchKey(active, st)),
+                  ),
                   const SizedBox(width: 10),
                   // Add follows the open section's colour. Always drawn as an
                   // active chip — it is an action, not a tab.
@@ -385,6 +411,23 @@ class _Header extends StatelessWidget {
     );
   }
 }
+
+/// What the header's search box is for: the section, and on YouTube the page.
+String _searchKey(String view, MusicState? st) =>
+    view == 'youtube' ? 'youtube:${_ytPage(st)}' : view;
+
+/// The open YouTube page, as the search box sees it. Home and its results are
+/// one search; each channel and playlist has its own.
+String _ytPage(MusicState? st) => st == null
+    ? 'search'
+    : st.ytChannelOpen
+        ? 'channel:${st.ytChannelId}'
+        : st.ytPlaylistOpen
+            ? 'playlist:${st.ytPlaylistId}'
+            : switch (st.ytTab) {
+                'home' || 'results' || '' => 'search',
+                final tab => tab,
+              };
 
 /// The header's `+ Add`, which means something different in each of the five.
 ///
@@ -426,6 +469,27 @@ Future<void> musicAdd(BuildContext context, MusicController c) async {
 /// this is a switch, not a query.
 Widget _countPill(MusicState? st, String view) {
   if (st == null) return const _CountPill(count: 0, label: 'Tracks');
+  if (view == 'youtube') {
+    // Whatever the open YouTube page is listing.
+    final (count, label) = st.ytChannelOpen
+        ? (
+            st.ytChannelQuery.isEmpty
+                ? st.ytChannelVideos.length
+                : st.ytChannelResults.length,
+            'Videos'
+          )
+        : st.ytPlaylistOpen
+            ? (st.ytPlaylistVideos.length, 'Videos')
+            : switch (st.ytTab) {
+                'playlists' => (st.ytPlaylists.length, 'Playlists'),
+                'history' => (st.ytHistory.length, 'History'),
+                'cached' => (st.ytCached.length, 'Cached'),
+                'downloads' => (st.ytDlTotal.toInt(), 'Downloads'),
+                'results' => (st.ytResults.length, 'Results'),
+                _ => (st.ytSubCount.toInt(), 'Channels'),
+              };
+    return _CountPill(count: count, label: label);
+  }
   if (view != 'mymusic') {
     return _CountPill(
       // Radio's number is not the library's: it is how many stations are in
@@ -522,7 +586,8 @@ class _Wordmark extends StatelessWidget {
 /// active control, or Standard's ring glowing — rather than a box being drawn
 /// inside it.
 class _SearchPill extends StatefulWidget {
-  const _SearchPill({required this.controller, required this.search});
+  const _SearchPill(
+      {super.key, required this.controller, required this.search});
 
   final MusicController controller;
   final TextEditingController search;
@@ -534,16 +599,42 @@ class _SearchPill extends StatefulWidget {
 class _SearchPillState extends State<_SearchPill> {
   final FocusNode _focus = FocusNode();
 
+  /// On YouTube: `search` asks YouTube, `channel` searches the open channel,
+  /// anything else narrows the page's list. "" off YouTube.
+  late final String _yt = widget.controller.view == 'youtube'
+      ? _ytPage(widget.controller.state)
+      : '';
+
+  bool get _ytFilters =>
+      _yt.isNotEmpty && _yt != 'search' && !_yt.startsWith('channel:');
+
   @override
   void initState() {
     super.initState();
+    // A channel opens unsearched; its box says so rather than showing the
+    // last question asked there.
+    final asked = widget.controller.state?.ytChannelQuery ?? '';
+    if (_yt.startsWith('channel:') && widget.search.text != asked) {
+      widget.search.text = asked;
+    }
     _focus.addListener(_onFocus);
+    // The clear button follows the text, which on YouTube changes without a
+    // command (and so without a snapshot) behind it.
+    widget.search.addListener(_onFocus);
+    // A YouTube page opens with its own filter, or none: the bridge holds one
+    // filter for the whole tab. After this frame, because `send` notifies.
+    if (_yt.isNotEmpty) {
+      final q = _ytFilters ? widget.search.text : '';
+      WidgetsBinding.instance.addPostFrameCallback(
+          (_) => widget.controller.send(MusicCmd.ytFilter(query: q)));
+    }
   }
 
   void _onFocus() => setState(() {});
 
   @override
   void dispose() {
+    widget.search.removeListener(_onFocus);
     _focus.dispose();
     super.dispose();
   }
@@ -553,6 +644,9 @@ class _SearchPillState extends State<_SearchPill> {
     final controller = widget.controller;
     final search = widget.search;
     final radio = controller.view == 'radio';
+    final youtube = _yt == 'search';
+    final channel = _yt.startsWith('channel:');
+    final filters = _ytFilters;
     final skin = context.skin;
     final focused = _focus.hasFocus;
     // Search holds a value, so a skin sinks it into the page: its own well in
@@ -564,92 +658,141 @@ class _SearchPillState extends State<_SearchPill> {
     return GestureDetector(
       onTap: _focus.requestFocus,
       child: Container(
-      width: 340,
-      height: 44,
-      decoration: well ?? BoxDecoration(
-        borderRadius: BorderRadius.circular(22),
-        gradient: const LinearGradient(
-          begin: Alignment(-1, -0.58),
-          end: Alignment(1, 0.58),
-          stops: [0.0, 0.5, 1.0],
-          colors: [Color(0xFFEC4899), Color(0xFF8B5CF6), Color(0xFF06B6D4)],
-        ),
-        boxShadow: focused
-            ? const [BoxShadow(color: Color(0x66EC4899), blurRadius: 14)]
-            : null,
-      ),
-      padding: const EdgeInsets.all(1.5),
-      child: Container(
-        decoration: well != null
-            ? null
-            : BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20.5),
+        width: 340,
+        height: 44,
+        decoration: well ??
+            BoxDecoration(
+              borderRadius: BorderRadius.circular(22),
+              gradient: const LinearGradient(
+                begin: Alignment(-1, -0.58),
+                end: Alignment(1, 0.58),
+                stops: [0.0, 0.5, 1.0],
+                colors: [
+                  Color(0xFFEC4899),
+                  Color(0xFF8B5CF6),
+                  Color(0xFF06B6D4)
+                ],
               ),
-        padding: const EdgeInsets.only(left: 14, right: 8),
-        child: Row(
-          children: [
-            Icon(skin.icon(Icons.search),
-                size: 15,
-                color: skin.inkDim ??
-                    const Color(0xFF6B6B74)),
-            const SizedBox(width: 8),
-            Expanded(
-              child: TextField(
-                controller: search,
-                focusNode: _focus,
-                style: TextStyle(
-                  fontFamily: skin.fontFamily ?? Tokens.fontFamily,
-                  fontSize: 14,
-                  color:
-                      skin.ink ?? const Color(0xFF16161B),
-                ),
-                cursorColor: skin.accent ?? const Color(0xFFEC4899),
-                // Radio is not in the library, so the library filter cannot
-                // reach it: its stations live in radio.db and are found by
-                // asking radio-browser. One box, two questions — which is what
-                // Slint does, and is why the Radio tab had a second search
-                // field of its own.
-                textInputAction: radio
-                    ? TextInputAction.search
-                    : TextInputAction.unspecified,
-                onSubmitted: radio
-                    ? (q) => controller.send(MusicCmd.radioSearch(query: q))
-                    : null,
-                onChanged: radio
-                    ? null
-                    : (q) => controller.send(MusicCmd.search(query: q)),
-                decoration: InputDecoration(
-                  isCollapsed: true,
-                  border: InputBorder.none,
-                  hintText:
-                      radio ? 'Search stations — press ↵' : 'Search music',
-                  hintStyle: TextStyle(
-                    fontFamily: skin.fontFamily ?? Tokens.fontFamily,
-                    fontSize: 14,
-                    color: skin.inkDim ??
-                        const Color(0xFF8A8A92),
-                  ),
-                ),
-              ),
+              boxShadow: focused
+                  ? const [BoxShadow(color: Color(0x66EC4899), blurRadius: 14)]
+                  : null,
             ),
-            if (search.text.isNotEmpty)
-              _Round(
-                icon: Icons.close,
-                onTap: () {
-                  search.clear();
-                  // An empty station search is a no-op in the bridge -- there
-                  // is nothing to look for -- so clearing the box on Radio has
-                  // to mean "back to the categories".
-                  controller.send(radio
-                      ? const MusicCmd.radioBack()
-                      : const MusicCmd.search(query: ''));
-                },
+        padding: const EdgeInsets.all(1.5),
+        child: Container(
+          decoration: well != null
+              ? null
+              : BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20.5),
+                ),
+          padding: const EdgeInsets.only(left: 14, right: 8),
+          child: Row(
+            children: [
+              Icon(skin.icon(Icons.search),
+                  size: 15, color: skin.inkDim ?? const Color(0xFF6B6B74)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: youtube
+                    // YouTube's box: suggestions as you type, links opened,
+                    // an offline switch in its list.
+                    ? YtSearchField(
+                        controller: controller,
+                        text: search,
+                        focus: _focus,
+                        style: TextStyle(
+                          fontFamily: skin.fontFamily ?? Tokens.fontFamily,
+                          fontSize: 14,
+                          color: skin.ink ?? const Color(0xFF16161B),
+                        ),
+                        hintStyle: TextStyle(
+                          fontFamily: skin.fontFamily ?? Tokens.fontFamily,
+                          fontSize: 14,
+                          color: skin.inkDim ?? const Color(0xFF8A8A92),
+                        ),
+                      )
+                    : TextField(
+                        controller: search,
+                        focusNode: _focus,
+                        style: TextStyle(
+                          fontFamily: skin.fontFamily ?? Tokens.fontFamily,
+                          fontSize: 14,
+                          color: skin.ink ?? const Color(0xFF16161B),
+                        ),
+                        cursorColor: skin.accent ?? const Color(0xFFEC4899),
+                        // Radio is not in the library, so the library filter cannot
+                        // reach it: its stations live in radio.db and are found by
+                        // asking radio-browser. One box, two questions — which is what
+                        // Slint does, and is why the Radio tab had a second search
+                        // field of its own.
+                        textInputAction: radio || channel
+                            ? TextInputAction.search
+                            : TextInputAction.unspecified,
+                        onSubmitted: radio
+                            ? (q) =>
+                                controller.send(MusicCmd.radioSearch(query: q))
+                            : channel
+                                // A site search per question, so on Enter.
+                                ? (q) => controller
+                                    .send(MusicCmd.ytChannelSearch(query: q))
+                                : null,
+                        onChanged: radio || channel
+                            ? null
+                            : filters
+                                ? (q) =>
+                                    controller.send(MusicCmd.ytFilter(query: q))
+                                : (q) =>
+                                    controller.send(MusicCmd.search(query: q)),
+                        decoration: InputDecoration(
+                          isCollapsed: true,
+                          border: InputBorder.none,
+                          hintText: radio
+                              ? 'Search stations — press ↵'
+                              : channel
+                                  ? 'Search this channel — press ↵'
+                                  : filters
+                                      ? switch (_yt) {
+                                          'subscriptions' => 'Filter channels',
+                                          'playlists' => 'Filter playlists',
+                                          'cached' => 'Filter the cache',
+                                          'downloads' => 'Filter downloads',
+                                          'history' => 'Filter history',
+                                          _ => 'Filter this playlist',
+                                        }
+                                      : 'Search music',
+                          hintStyle: TextStyle(
+                            fontFamily: skin.fontFamily ?? Tokens.fontFamily,
+                            fontSize: 14,
+                            color: skin.inkDim ?? const Color(0xFF8A8A92),
+                          ),
+                        ),
+                      ),
               ),
-            const _Round(icon: Icons.mic_none, onTap: null),
-          ],
+              if (search.text.isNotEmpty)
+                _Round(
+                  icon: Icons.close,
+                  onTap: () {
+                    search.clear();
+                    if (youtube) return;
+                    if (channel) {
+                      controller.send(const MusicCmd.ytChannelSearch(query: ''));
+                      return;
+                    }
+                    if (filters) {
+                      controller.send(const MusicCmd.ytFilter(query: ''));
+                      return;
+                    }
+                    // An empty station search is a no-op in the bridge -- there
+                    // is nothing to look for -- so clearing the box on Radio has
+                    // to mean "back to the categories".
+                    controller.send(radio
+                        ? const MusicCmd.radioBack()
+                        : const MusicCmd.search(query: ''));
+                  },
+                ),
+              const _Round(icon: Icons.mic_none, onTap: null),
+            ],
+          ),
         ),
-      ),
       ),
     );
   }
@@ -675,19 +818,19 @@ class _Round extends StatelessWidget {
                     size: 13, color: context.skin.accent),
               )
             : SizedBox(
-          width: 26,
-          height: 26,
-          child: Material(
-            color: const Color(0x33EC4899),
-            shape: const CircleBorder(),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: onTap,
-              hoverColor: const Color(0xFFEC4899),
-              child: Icon(icon, size: 13, color: const Color(0xFFEC4899)),
-            ),
-          ),
-        ),
+                width: 26,
+                height: 26,
+                child: Material(
+                  color: const Color(0x33EC4899),
+                  shape: const CircleBorder(),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    onTap: onTap,
+                    hoverColor: const Color(0xFFEC4899),
+                    child: Icon(icon, size: 13, color: const Color(0xFFEC4899)),
+                  ),
+                ),
+              ),
       );
 }
 

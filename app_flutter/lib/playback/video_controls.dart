@@ -63,7 +63,8 @@ Duration seekTargetFor(Duration base, int seconds, Duration duration) {
 
 /// Everything the player can be told to do, in one place.
 class VideoOps {
-  VideoOps(this.player, {required this.source});
+  VideoOps(this.player, {required this.source, String? title})
+      : _title = title;
 
   final Player player;
 
@@ -71,13 +72,13 @@ class VideoOps {
   /// is a real file, and the screenshot takes its name from it.
   final String source;
 
-  /// A readable name, taken from the source's own file name.
-  ///
-  /// Not passed in: the `VideoPlay` event does not carry a title, and adding a
-  /// field to it that nothing fills would be worse than deriving one. A film on
-  /// disk is named after itself, which is the case that matters — the subtitle
-  /// finder only uses this to prefill a box the user can edit.
-  late final String title = _titleFrom(source);
+  final String? _title;
+
+  /// A readable name: the one the source was opened with (a YouTube video's
+  /// own title), else the source's file name. A film on disk is named after
+  /// itself, and a stream URL's "file name" is a query string nobody can read.
+  late final String title =
+      _title?.trim().isNotEmpty == true ? _title!.trim() : _titleFrom(source);
 
   static String _titleFrom(String source) {
     final base = _basename(source);

@@ -100,11 +100,17 @@ pub async fn upsert_track(pool: &SqlitePool, item_id: i64, abs_path: &str, t: &T
     Ok(())
 }
 
-/// Count of tracks currently visible (file present).
+/// Count of tracks in My Music: present, and not a book chapter.
+///
+/// Audiobook chapters live in this same table behind `is_audiobook`, and
+/// counting them here made the number unusable: it is drawn as "N Tracks"
+/// beside a list that does not contain them. The filter is the one every My
+/// Music list already starts from — `MUSIC_WHERE` in the bridge.
 pub async fn track_count(pool: &SqlitePool) -> Result<i64> {
     Ok(sqlx::query_scalar(
         "SELECT COUNT(*) FROM track_meta JOIN items ON items.id = track_meta.item_id
-         WHERE items.missing_since IS NULL",
+         WHERE items.section = 'music' AND items.missing_since IS NULL
+           AND COALESCE(track_meta.is_audiobook, 0) = 0",
     ).fetch_one(pool).await?)
 }
 
