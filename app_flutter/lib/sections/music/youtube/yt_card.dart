@@ -116,41 +116,48 @@ class _YtVideoCardState extends State<YtVideoCard> {
             aspectRatio: 16 / 9,
             child: GestureDetector(
               onTap: () => playYtAudio(c, v),
-              child: YtThumb(
-                controller: c,
-                video: v,
-                radius: Tokens.radiusMd,
-                views: views,
-                overlay: AnimatedOpacity(
-                  opacity: _hover || _focus ? 1 : 0,
-                  duration: t.reduceMotion
-                      ? Duration.zero
-                      : const Duration(milliseconds: 150),
-                  child: Align(
-                    alignment: Alignment.bottomLeft,
-                    child: Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: [
-                          _QuickButton(
-                            icon: Icons.headphones_outlined,
-                            label: 'Audio',
-                            onTap: () => playYtAudio(c, v),
-                          ),
-                          _QuickButton(
-                            icon: Icons.smart_display_outlined,
-                            label: 'Video',
-                            onTap: () => watchVideo(context, c, v),
-                          ),
-                          _QuickButton(
-                            icon: Icons.download_rounded,
-                            tooltip: 'Download…',
-                            onTap: () => showFormatSheet(context, c, v,
-                                mode: FormatMode.download),
-                          ),
-                        ],
+              child: DecoratedBox(
+                decoration: cardGlowBox(
+                  color: cardGlow('video'),
+                  on: _hover || _focus,
+                  radius: Tokens.radiusMd,
+                ),
+                child: YtThumb(
+                  controller: c,
+                  video: v,
+                  radius: Tokens.radiusMd,
+                  views: views,
+                  overlay: AnimatedOpacity(
+                    opacity: _hover || _focus ? 1 : 0,
+                    duration: t.reduceMotion
+                        ? Duration.zero
+                        : const Duration(milliseconds: 150),
+                    child: Align(
+                      alignment: Alignment.bottomLeft,
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            _QuickButton(
+                              icon: Icons.headphones_outlined,
+                              label: 'Audio',
+                              onTap: () => playYtAudio(c, v),
+                            ),
+                            _QuickButton(
+                              icon: Icons.smart_display_outlined,
+                              label: 'Video',
+                              onTap: () => watchVideo(context, c, v),
+                            ),
+                            _QuickButton(
+                              icon: Icons.download_rounded,
+                              tooltip: 'Download…',
+                              onTap: () => showFormatSheet(context, c, v,
+                                  mode: FormatMode.download),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -552,39 +559,43 @@ class YtPlaylistCard extends StatelessWidget {
                 cover(10, 0.6),
                 Positioned.fill(
                   top: 10,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(Tokens.radiusMd),
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        MusicArt(
-                          controller: c,
-                          kind: 'yt',
-                          artKey: p.cover,
-                          direct: direct,
-                          size: 320,
-                          radius: 0,
-                          fallback: Icons.playlist_play,
-                        ),
-                        Positioned(
-                          right: 8,
-                          bottom: 8,
-                          child: _Badge(
-                            icon: Icons.playlist_play,
-                            text: '${p.count}',
+                  child: HoverGlow(
+                    color: cardGlow('yt-playlist'),
+                    radius: Tokens.radiusMd,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(Tokens.radiusMd),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          MusicArt(
+                            controller: c,
+                            kind: 'yt',
+                            artKey: p.cover,
+                            direct: direct,
+                            size: 320,
+                            radius: 0,
+                            fallback: Icons.playlist_play,
                           ),
-                        ),
-                        Positioned(
-                          left: 8,
-                          bottom: 8,
-                          child: _QuickButton(
-                            icon: Icons.play_arrow_rounded,
-                            label: playing ? 'Playing' : 'Play',
-                            onTap: () => c.send(
-                                MusicCmd.ytPlaylistPlayAll(playlistId: p.id)),
+                          Positioned(
+                            right: 8,
+                            bottom: 8,
+                            child: _Badge(
+                              icon: Icons.playlist_play,
+                              text: '${p.count}',
+                            ),
                           ),
-                        ),
-                      ],
+                          Positioned(
+                            left: 8,
+                            bottom: 8,
+                            child: _QuickButton(
+                              icon: Icons.play_arrow_rounded,
+                              label: playing ? 'Playing' : 'Play',
+                              onTap: () => c.send(
+                                  MusicCmd.ytPlaylistPlayAll(playlistId: p.id)),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),

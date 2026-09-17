@@ -74,16 +74,24 @@ class YtHome extends StatelessWidget {
             }),
           ),
         if (st.ytRecommended.isNotEmpty) ...[
-          _Head(
-            title: 'New from your channels',
-            hint: st.ytHomeChannels.isEmpty
-                ? 'latest from all subscriptions'
-                : 'from your pinned channels',
-            action: (
-              'Subscriptions',
-              () => c.send(const MusicCmd.ytSetTab(name: 'subscriptions'))
+          // Nothing pinned and no subscriptions: Rust fills the shelf with
+          // trending music instead.
+          if (st.ytHomeChannels.isEmpty && st.ytHomeSubs.isEmpty)
+            const _Head(
+              title: 'Trending music',
+              hint: 'Hindi · Punjabi · English, most watched this week',
+            )
+          else
+            _Head(
+              title: 'New from your channels',
+              hint: st.ytHomeChannels.isEmpty
+                  ? 'from your most-followed subscriptions'
+                  : 'from your pinned channels',
+              action: (
+                'Subscriptions',
+                () => c.send(const MusicCmd.ytSetTab(name: 'subscriptions'))
+              ),
             ),
-          ),
           YtVideoGrid(controller: c, videos: st.ytRecommended),
         ],
         if (st.ytPlaylists.isNotEmpty) ...[

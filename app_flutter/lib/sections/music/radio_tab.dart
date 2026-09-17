@@ -243,17 +243,12 @@ class _CategoryTileState extends State<_CategoryTile> {
           duration: t.reduceMotion
               ? Duration.zero
               : const Duration(milliseconds: 140),
-          decoration: BoxDecoration(
+          // The section's hover glow, in this category's own first colour:
+          // six gradients, six glows.
+          decoration: cardGlowBox(color: g.first, on: _hover, radius: 16)
+              .copyWith(
             color: t.nCard,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: _hover ? const Color(0x8014B8A6) : t.nHair,
-            ),
-            boxShadow: _hover
-                ? const [
-                    BoxShadow(color: Color(0x3314B8A6), blurRadius: 18),
-                  ]
-                : const [],
+            border: _hover ? null : Border.all(color: t.nHair),
           ),
           clipBehavior: Clip.antiAlias,
           child: Stack(

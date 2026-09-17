@@ -410,8 +410,21 @@ class _Feed extends StatelessWidget {
                 const SizedBox(width: 12),
                 Pager(page: at, pages: pages, onGo: onPage, compact: true),
               ],
-              if (feed.isNotEmpty) ...[
+              // All channels only: picking one channel already fetches its
+              // listing. The fetch bar shows the check running.
+              if (all) ...[
                 const SizedBox(width: 12),
+                TextButton.icon(
+                  style: musicQuietStyle(context),
+                  icon: const Icon(Icons.sync, size: 16),
+                  label: const Text('Check for new videos'),
+                  onPressed: st.ytFetchBusy
+                      ? null
+                      : () => c.send(const MusicCmd.ytCheckNew()),
+                ),
+              ],
+              if (feed.isNotEmpty) ...[
+                SizedBox(width: all ? 6 : 12),
                 FilledButton.icon(
                   style: musicFilledStyle(fill: ytRose),
                   icon: const Icon(Icons.play_arrow_rounded, size: 18),

@@ -304,6 +304,71 @@ const double kCardLabelOne = kCardGap + kCardTitleLine;
 /// section does: an album needs its artist, an artist needs its track count.
 const double kCardLabelTwo = kCardLabelOne + kCardSubLine;
 
+/// What a card is, as the colour it lights on hover: the 2px ring and the
+/// glow round it. Every card in the section shares the effect; the colour says
+/// what you are pointing at, so a wall of albums and a wall of artists do not
+/// light the same pink. A song, and anything unnamed, keeps the section's.
+Color cardGlow(String kind) => switch (kind) {
+      'album' => const Color(0xFFF43F5E),
+      'artist' => const Color(0xFFA855F7),
+      'genre' => const Color(0xFFF59E0B),
+      'playlist' => const Color(0xFF7C3AED),
+      'folder' => const Color(0xFF0EA5E9),
+      'podcast' => const Color(0xFF8B5CF6),
+      'book' => const Color(0xFF3B82F6),
+      'radio' => const Color(0xFF14B8A6),
+      'video' => const Color(0xFFEF4444),
+      'yt-playlist' => const Color(0xFFF97316),
+      _ => Tokens.secMusic,
+    };
+
+/// The hover ring and glow in [color], or a bare rounded box at rest. Drawn
+/// behind the card's clipped art, so neither eats into the picture.
+BoxDecoration cardGlowBox({
+  required Color color,
+  required bool on,
+  required double radius,
+}) =>
+    BoxDecoration(
+      borderRadius: BorderRadius.circular(radius),
+      border: on ? Border.all(color: color, width: 2) : null,
+      boxShadow: on
+          ? [BoxShadow(color: color.withValues(alpha: 0.67), blurRadius: 28)]
+          : null,
+    );
+
+/// [cardGlowBox] for a card that keeps no hover state of its own.
+class HoverGlow extends StatefulWidget {
+  const HoverGlow({
+    super.key,
+    required this.color,
+    required this.radius,
+    required this.child,
+  });
+
+  final Color color;
+  final double radius;
+  final Widget child;
+
+  @override
+  State<HoverGlow> createState() => _HoverGlowState();
+}
+
+class _HoverGlowState extends State<HoverGlow> {
+  bool _on = false;
+
+  @override
+  Widget build(BuildContext context) => MouseRegion(
+        onEnter: (_) => setState(() => _on = true),
+        onExit: (_) => setState(() => _on = false),
+        child: DecoratedBox(
+          decoration:
+              cardGlowBox(color: widget.color, on: _on, radius: widget.radius),
+          child: widget.child,
+        ),
+      );
+}
+
 /// A square tile: album, artist, genre, playlist, folder, podcast, book.
 class MusicCard extends StatefulWidget {
   const MusicCard({
@@ -419,22 +484,14 @@ class _MusicCardState extends State<MusicCard> {
                         .surface(SurfaceRole.art, radius: radius + 5);
                     return Container(
                       padding: EdgeInsets.all(mat == null ? 0 : 5),
-                      // Hover elevation: a 2px accent ring and a coloured glow,
-                      // drawn outside the clip so neither eats into the art.
-                      decoration: mat ?? BoxDecoration(
-                        borderRadius: BorderRadius.circular(radius),
-                        border: _hovered
-                            ? Border.all(color: Tokens.secMusic, width: 2)
-                            : null,
-                        boxShadow: _hovered
-                            ? const [
-                                BoxShadow(
-                                  color: Color(0xAAEC4899),
-                                  blurRadius: 28,
-                                )
-                              ]
-                            : null,
-                      ),
+                      // Hover elevation: a 2px ring and a glow in the colour of
+                      // what the card is, outside the clip.
+                      decoration: mat ??
+                          cardGlowBox(
+                            color: cardGlow(w.artKind),
+                            on: _hovered,
+                            radius: radius,
+                          ),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(radius),
                         child: Stack(
@@ -2023,8 +2080,11 @@ class _TileCardState extends State<TileCard> {
               child: AspectRatio(
                 aspectRatio: 1,
                 child: Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
+                  decoration: cardGlowBox(
+                    color: cardGlow(w.strong ? 'playlist' : 'folder'),
+                    on: _hovered,
+                    radius: 12,
+                  ).copyWith(
                     gradient: LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
@@ -2032,14 +2092,6 @@ class _TileCardState extends State<TileCard> {
                           ? const [Color(0xFFEC4899), Color(0xFF7C3AED)]
                           : const [Color(0x55EC4899), Color(0x557C3AED)],
                     ),
-                    border: _hovered
-                        ? Border.all(color: Tokens.secMusic, width: 2)
-                        : null,
-                    boxShadow: _hovered
-                        ? const [
-                            BoxShadow(color: Color(0xAAEC4899), blurRadius: 26)
-                          ]
-                        : null,
                   ),
                   clipBehavior: Clip.antiAlias,
                   child: Stack(

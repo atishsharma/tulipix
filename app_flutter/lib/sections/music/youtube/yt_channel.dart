@@ -1,4 +1,4 @@
-// YouTube › a channel: who it is and what it uploaded, newest first, 18 at a
+// YouTube › a channel: who it is and what it uploaded, newest first, 12 at a
 // time.
 //
 // Search is the Music header's: on this page it searches the channel.
@@ -20,6 +20,10 @@ import '../music_dialogs.dart';
 import '../music_widgets.dart';
 import 'yt_card.dart';
 import 'yt_format_sheet.dart';
+
+/// Cards per page, and videos per yt-dlp block (`CHANNEL_PAGE` in Rust): one
+/// page is one fetch, kept small so a channel does not keep yt-dlp busy.
+const int _perPage = 12;
 
 class YtChannel extends StatefulWidget {
   const YtChannel({super.key, required this.controller, required this.st});
@@ -55,55 +59,51 @@ class _YtChannelState extends State<YtChannel> {
     final pinned = st.ytHomeChannels.contains(st.ytChannelId);
     // Only the listing has a next block: the search is a fixed twenty hits.
     final more = !searching && st.ytChannelHasNext;
-    final loaded = (videos.length / ytPerPage).ceil().clamp(1, 1 << 30);
+    final loaded = (videos.length / _perPage).ceil().clamp(1, 1 << 30);
     final page = _page.clamp(0, loaded - 1);
-    final shown = videos.skip(page * ytPerPage).take(ytPerPage).toList();
+    final shown = videos.skip(page * _perPage).take(_perPage).toList();
 
     return ListView(
       padding: const EdgeInsets.only(bottom: 32),
       children: [
-        _Banner(controller: c, st: st, pinned: pinned),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 12),
-          child: Row(
-            children: [
-              const Spacer(),
-              if (videos.isNotEmpty) ...[
-                FilledButton.icon(
-                  style: musicFilledStyle(fill: ytRose),
-                  icon: const Icon(Icons.play_arrow_rounded, size: 18),
-                  label: const Text('Play all'),
-                  onPressed: () => c.send(MusicCmd.ytPlayAll(
-                      videoIds: [for (final v in videos) v.videoId])),
-                ),
-                const SizedBox(width: 8),
-                FilledButton.icon(
-                  style: ytDownloadStyle(),
-                  icon: const Icon(Icons.download_rounded, size: 16),
-                  label: Text('Download all ${videos.length}'),
-                  onPressed: () => showFormatSheet(context, c, videos.first,
-                      mode: FormatMode.download, batch: videos),
-                ),
-              ],
-              // One page further than is loaded while YouTube has more:
-              // going there fetches the next block, and it shows on arrival.
-              Padding(
-                padding: const EdgeInsets.only(left: 8),
-                child: Pager(
-                  page: page,
-                  pages: more ? loaded + 1 : loaded,
-                  compact: true,
-                  onGo: (p) {
-                    if (p >= loaded) {
-                      c.send(const MusicCmd.ytChannelLoadMore());
-                    }
-                    setState(() => _page = p);
-                  },
-                ),
+        _Banner(
+          controller: c,
+          st: st,
+          pinned: pinned,
+          // In the banner, left of pin and Subscribe.
+          actions: [
+            if (videos.isNotEmpty) ...[
+              FilledButton.icon(
+                style: musicFilledStyle(fill: ytRose),
+                icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                label: const Text('Play all'),
+                onPressed: () => c.send(MusicCmd.ytPlayAll(
+                    videoIds: [for (final v in videos) v.videoId])),
+              ),
+              FilledButton.icon(
+                style: ytDownloadStyle(),
+                icon: const Icon(Icons.download_rounded, size: 16),
+                label: Text('Download all ${videos.length}'),
+                onPressed: () => showFormatSheet(context, c, videos.first,
+                    mode: FormatMode.download, batch: videos),
               ),
             ],
-          ),
+            // One page further than is loaded while YouTube has more:
+            // going there fetches the next block, and it shows on arrival.
+            Pager(
+              page: page,
+              pages: more ? loaded + 1 : loaded,
+              compact: true,
+              onGo: (p) {
+                if (p >= loaded) {
+                  c.send(const MusicCmd.ytChannelLoadMore());
+                }
+                setState(() => _page = p);
+              },
+            ),
+          ],
         ),
+        const SizedBox(height: 12),
         if (videos.isEmpty)
           SizedBox(
             height: 280,
@@ -129,11 +129,15 @@ class _Banner extends StatelessWidget {
     required this.controller,
     required this.st,
     required this.pinned,
+    required this.actions,
   });
 
   final MusicController controller;
   final MusicState st;
   final bool pinned;
+
+  /// Play all, Download all and the pager.
+  final List<Widget> actions;
 
   @override
   Widget build(BuildContext context) {
@@ -208,6 +212,7 @@ class _Banner extends StatelessWidget {
                 ),
                 const SizedBox(width: 16),
                 Expanded(
+                  flex: 2,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
@@ -228,36 +233,55 @@ class _Banner extends StatelessWidget {
                     ],
                   ),
                 ),
-                IconButton(
-                  tooltip: pinned ? 'Unpin from Home' : 'Pin to the Home rail',
-                  icon: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                      size: 18),
-                  onPressed: () => c.send(pinned
-                      ? MusicCmd.ytUnpinHome(channelId: st.ytChannelId)
-                      : MusicCmd.ytPinHome(channelId: st.ytChannelId)),
-                ),
-                const SizedBox(width: 6),
-                if (st.ytChannelSubscribed)
-                  FilledButton.icon(
-                    style: musicFilledStyle(fill: const Color(0xFFDC2626))
-                        .copyWith(
-                            foregroundColor:
-                                const WidgetStatePropertyAll(Colors.white)),
-                    icon: const Icon(Icons.check, size: 16),
-                    label: const Text('Subscribed'),
-                    onPressed: () =>
-                        c.send(MusicCmd.ytUnsub(channelId: st.ytChannelId)),
-                  )
-                else
-                  FilledButton.icon(
-                    style: musicFilledStyle(fill: ytRose),
-                    icon: const Icon(Icons.add, size: 16),
-                    label: const Text('Subscribe'),
-                    onPressed: () => c.send(MusicCmd.ytSubscribe(
-                      channelId: st.ytChannelId,
-                      title: st.ytChannelTitle,
-                    )),
+                const SizedBox(width: 12),
+                // The page's buttons in one line with Subscribe; a narrow
+                // window wraps them upward, the banner being bottom-anchored.
+                // Expanded, not Flexible: a loose Flexible shrinks the Wrap to
+                // its buttons and leaves the spare width after them, so `end`
+                // had nothing to push against and the row sat mid-banner.
+                Expanded(
+                  flex: 3,
+                  child: Wrap(
+                    alignment: WrapAlignment.end,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ...actions,
+                      IconButton(
+                        tooltip:
+                            pinned ? 'Unpin from Home' : 'Pin to the Home rail',
+                        icon: Icon(
+                            pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                            size: 18),
+                        onPressed: () => c.send(pinned
+                            ? MusicCmd.ytUnpinHome(channelId: st.ytChannelId)
+                            : MusicCmd.ytPinHome(channelId: st.ytChannelId)),
+                      ),
+                      if (st.ytChannelSubscribed)
+                        FilledButton.icon(
+                          style: musicFilledStyle(fill: const Color(0xFFDC2626))
+                              .copyWith(
+                                  foregroundColor: const WidgetStatePropertyAll(
+                                      Colors.white)),
+                          icon: const Icon(Icons.check, size: 16),
+                          label: const Text('Subscribed'),
+                          onPressed: () => c.send(
+                              MusicCmd.ytUnsub(channelId: st.ytChannelId)),
+                        )
+                      else
+                        FilledButton.icon(
+                          style: musicFilledStyle(fill: ytRose),
+                          icon: const Icon(Icons.add, size: 16),
+                          label: const Text('Subscribe'),
+                          onPressed: () => c.send(MusicCmd.ytSubscribe(
+                            channelId: st.ytChannelId,
+                            title: st.ytChannelTitle,
+                          )),
+                        ),
+                    ],
                   ),
+                ),
               ],
             ),
           ),

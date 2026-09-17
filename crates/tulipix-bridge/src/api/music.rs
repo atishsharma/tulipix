@@ -3695,8 +3695,16 @@ async fn cache_remote(src: &str) -> Option<String> {
         return None;
     }
     let dest = art_cache_path(src);
+    // An error page cached before the check below was here: fetched again.
     if dest.exists() {
-        return Some(dest.to_string_lossy().into_owned());
+        let head = std::fs::File::open(&dest).and_then(|mut f| {
+            let mut b = [0u8; 16];
+            std::io::Read::read(&mut f, &mut b).map(|n| b[..n].to_vec())
+        });
+        if head.is_ok_and(|b| image::guess_format(&b).is_ok()) {
+            return Some(dest.to_string_lossy().into_owned());
+        }
+        let _ = std::fs::remove_file(&dest);
     }
     // A YouTube picture fetched before they had their own folder.
     if let Some(name) = dest.file_name() {
@@ -3711,9 +3719,14 @@ async fn cache_remote(src: &str) -> Option<String> {
         .send()
         .await
         .ok()?
+        .error_for_status()
+        .ok()?
         .bytes()
         .await
         .ok()?;
+    // A 200 can still be HTML (a consent page, a captive portal); a file of it
+    // would be a "picture" that never draws. The magic bytes say which it is.
+    image::guess_format(&bytes).ok()?;
     std::fs::write(&dest, &bytes).ok()?;
     Some(dest.to_string_lossy().into_owned())
 }
@@ -6863,6 +6876,8 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                 )
                 .await?;
             }
+            // Subscribed from a card, not its page: nothing of it is cached.
+            yt_auto_check();
             let mut s = lock();
             if s.yt_channel_id == channel_id {
                 s.yt_channel_subscribed = true;
@@ -6879,7 +6894,7 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
         MusicCmd::YtSetSubsPage { page } => lock().yt_subs_page = page.max(0),
         MusicCmd::YtRefreshSubs => yt_refresh_subs().await?,
         MusicCmd::YtSubsSelect { channel_id } => yt_subs_select(&channel_id).await?,
-        MusicCmd::YtCheckNew => yt_check_new(None).await?,
+        MusicCmd::YtCheckNew => yt_check_new(false).await?,
         MusicCmd::YtPlayAll { video_ids } => {
             let Some(first) = video_ids.first().cloned() else {
                 anyhow::bail!("nothing to play");
@@ -6899,6 +6914,7 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             let pool = youtube_pool().await?;
             let n = tulipix_music::youtube::store::import_subs(pool, &subs).await?;
             lock().yt_status = format!("Imported {n} channels");
+            yt_auto_check();
         }
         MusicCmd::YtCreatePlaylist { name } => {
             let pool = youtube_pool().await?;
@@ -9015,9 +9031,11 @@ async fn yt_subs_select(channel_id: &str) -> Result<()> {
 
 /// Pull subscribed channels' newest videos so the Subscriptions list can count
 /// what arrived since each was last looked at; the listing brings the
-/// follower count and dates with it. `max_age_s` limits it to channels not
-/// refreshed for that long. One yt-dlp spawn per channel, one run at a time.
-async fn yt_check_new(max_age_s: Option<i64>) -> Result<()> {
+/// follower count and dates with it. One yt-dlp spawn per channel, one run at
+/// a time. `auto` is the check YouTube runs by itself: only Home's channels
+/// ([`yt_home_ids`]) not refreshed for twelve hours, and any never fetched
+/// (just added); the rest wait for Check for new videos, or for their page.
+async fn yt_check_new(auto: bool) -> Result<()> {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tulipix_music::youtube::store::mark_seen;
     static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -9032,32 +9050,64 @@ async fn yt_check_new(max_age_s: Option<i64>) -> Result<()> {
     }
     let _done = Done;
     let pool = youtube_pool().await?;
-    let now = tulipix_core::util::unix_secs_i64();
-    let subs: Vec<_> = tulipix_music::youtube::store::list_subs(pool)
-        .await?
-        .into_iter()
-        .filter(|x| x.subscribed)
-        .filter(|x| max_age_s.is_none_or(|age| x.fetched_at.is_none_or(|t| now - t > age)))
-        .collect();
-    if subs.is_empty() {
-        return Ok(());
+    // Listed again after every pass: a channel added while this runs is taken
+    // by this run, not turned away by the guard above.
+    let mut checked = std::collections::HashSet::new();
+    loop {
+        let all = tulipix_music::youtube::store::list_subs(pool).await?;
+        let home = yt_home_ids(&all, &tulipix_music::yt_prefs::home_channels());
+        let now = tulipix_core::util::unix_secs_i64();
+        let subs: Vec<_> = all
+            .into_iter()
+            .filter(|x| !checked.contains(&x.channel_id))
+            .filter(|x| {
+                let on_home = home.contains(&x.channel_id);
+                match (auto, x.fetched_at) {
+                    (false, _) => x.subscribed,
+                    (true, None) => x.subscribed || on_home,
+                    (true, Some(t)) => on_home && now - t > 12 * 3600,
+                }
+            })
+            .collect();
+        if subs.is_empty() {
+            break;
+        }
+        let total = subs.len();
+        for (i, sub) in subs.iter().enumerate() {
+            checked.insert(sub.channel_id.clone());
+            yt_wait_while_watching().await;
+            yt_fetch_set(
+                true,
+                i as f64 / total.max(1) as f64,
+                &format!("New videos: {} ({}/{total})", sub.title, i + 1),
+            );
+            mark_seen(pool, &sub.channel_id, true).await?;
+            // Just the newest: All channels shows one video a channel, and picking
+            // a channel fetches its listing properly.
+            yt_fetch_listing(&sub.channel_id, false, 1, 1).await;
+            mark_seen(pool, &sub.channel_id, true).await?;
+        }
     }
-    let total = subs.len();
-    for (i, sub) in subs.iter().enumerate() {
-        yt_wait_while_watching().await;
-        yt_fetch_set(
-            true,
-            i as f64 / total.max(1) as f64,
-            &format!("New videos: {} ({}/{total})", sub.title, i + 1),
-        );
-        mark_seen(pool, &sub.channel_id, true).await?;
-        // Just the newest: All channels shows one video a channel, and picking
-        // a channel fetches its listing properly.
-        yt_fetch_listing(&sub.channel_id, false, 1, 1).await;
-        mark_seen(pool, &sub.channel_id, true).await?;
+    if !checked.is_empty() {
+        yt_fetch_set(false, 1.0, "");
     }
-    yt_fetch_set(false, 1.0, "");
     Ok(())
+}
+
+/// The channels Home is about: the pinned ones, or while nothing is pinned the
+/// most-followed subscriptions. The rail shows them, New from your channels
+/// lists their uploads, and the background check keeps them fresh.
+fn yt_home_ids(subs: &[tulipix_music::youtube::store::Sub], pins: &[String]) -> Vec<String> {
+    if !pins.is_empty() {
+        return pins.to_vec();
+    }
+    let mut by_reach: Vec<_> = subs.iter().filter(|x| x.subscribed).collect();
+    by_reach.sort_by_key(|x| std::cmp::Reverse(x.sub_count.unwrap_or(0)));
+    by_reach
+        .into_iter()
+        .take(tulipix_music::yt_prefs::HOME_MAX)
+        .map(|x| x.channel_id.clone())
+        .collect()
 }
 
 /// Open a channel on its first block; Load more appends the next.
@@ -9153,18 +9203,22 @@ async fn yt_channel_load_more() -> Result<()> {
     Ok(())
 }
 
-/// Refresh channels not refreshed for twelve hours, behind the page, once a
-/// session: the new counts, follower counts and Home's latest keep up without
-/// anyone reaching for the menu. The fetch bar shows it running.
+/// Refresh the pinned channels (at most every twelve hours), and any just
+/// added, behind the page, once a session: Home's latest keeps up without anyone reaching for the menu. The
+/// fetch bar shows it running.
 fn yt_auto_check_once() {
     static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(|| {
-        tokio::spawn(async {
-            if let Err(e) = yt_check_new(Some(12 * 3600)).await {
-                tracing::warn!(error = %e, "youtube: background check for new videos failed");
-            }
-            emit(MusicEvent::Stale);
-        });
+    STARTED.call_once(yt_auto_check);
+}
+
+/// The background check, now. After a subscribe or an import it finds only
+/// the channels just added: Home's were refreshed when the tab opened.
+fn yt_auto_check() {
+    tokio::spawn(async {
+        if let Err(e) = yt_check_new(true).await {
+            tracing::warn!(error = %e, "youtube: background check for new videos failed");
+        }
+        emit(MusicEvent::Stale);
     });
 }
 
@@ -9187,6 +9241,72 @@ fn yt_ago(ts: i64) -> String {
 
 /// Home's "New from your channels".
 const HOME_NEW: i64 = 12;
+
+/// Home's trending music, once fetched this session.
+fn yt_trending() -> &'static Mutex<Option<Vec<YtVideo>>> {
+    static C: std::sync::OnceLock<Mutex<Option<Vec<YtVideo>>>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// Fill [`yt_trending`]: this week's most-watched Hindi, Punjabi and English
+/// songs, taken in turns. Once a session; offline, Home stays as it was until
+/// the next one.
+fn yt_fetch_trending_once() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        tokio::spawn(async {
+            let (hi, pa, en) = tokio::join!(
+                yt_trending_in("Hindi", "hindi songs"),
+                yt_trending_in("Punjabi", "punjabi songs"),
+                yt_trending_in("English", "english songs"),
+            );
+            let lists = [hi, pa, en];
+            let mut mixed = Vec::new();
+            for i in 0..lists.iter().map(Vec::len).max().unwrap_or(0) {
+                mixed.extend(lists.iter().filter_map(|l| l.get(i).cloned()));
+            }
+            mixed.truncate(HOME_NEW as usize);
+            if mixed.is_empty() {
+                return;
+            }
+            if let Ok(mut g) = yt_trending().lock() {
+                *g = Some(mixed);
+            }
+            emit(MusicEvent::Stale);
+        });
+    });
+}
+
+/// One language's share of [`yt_trending`]. YouTube's own Trending page is
+/// gone; a search over this week's uploads sorted by views (`sp`) stands in.
+async fn yt_trending_in(label: &str, query: &str) -> Vec<YtVideo> {
+    let url = format!(
+        "https://www.youtube.com/results?search_query={}&sp=CAMSBAgDEAE%3D",
+        urlish(query)
+    );
+    let json = ytdlp_json(vec![
+        "--flat-playlist".into(),
+        "-J".into(),
+        "--no-warnings".into(),
+        "--playlist-end".into(),
+        "15".into(),
+        url,
+    ])
+    .await;
+    json.as_ref()
+        .and_then(|j| j.get("entries"))
+        .and_then(|e| e.as_array())
+        .map(|arr| arr.iter().map(yt_entry).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        // A song, not a Short, a live stream (no length) or an hour's jukebox.
+        .filter(|v| (61..=900).contains(&v.duration) && !v.video_id.is_empty())
+        .map(|mut v| {
+            v.meta = if v.meta.is_empty() { label.to_string() } else { format!("{label} · {}", v.meta) };
+            v
+        })
+        .collect()
+}
 
 /// Fetch a channel's listing in the background, once per session per channel.
 fn yt_fetch_listing_once(channel_id: &str) {
@@ -9212,8 +9332,9 @@ fn yt_fetch_listing_once(channel_id: &str) {
     });
 }
 
-/// Videos per block on a channel page: three rows of six cards.
-const CHANNEL_PAGE: i64 = 18;
+/// Videos per block on a channel page, one page of cards (`_perPage` in
+/// yt_channel.dart). Twelve, not eighteen: each block is a yt-dlp run.
+const CHANNEL_PAGE: i64 = 12;
 
 async fn yt_open_channel(channel_id: &str) -> Result<()> {
     {
@@ -12933,8 +13054,8 @@ async fn fill_youtube_lists(
     }
 
     if s.yt_tab == "home" {
-        // New from your channels: the pinned ones, or every subscription while
-        // nothing is pinned, newest upload first (listing dates are
+        // New from your channels: Home's channels (the pinned ones, else the
+        // most-followed subscriptions), newest upload first (listing dates are
         // approximate; undated rows go each channel's newest, then second
         // newest). Off the channel cache, no network, so Home is warm on
         // arrival.
@@ -12944,11 +13065,7 @@ async fn fill_youtube_lists(
         let pins = tulipix_music::yt_prefs::home_channels();
         // Pins as they are: a channel can be pinned from its page without
         // being subscribed to.
-        let ids: Vec<String> = if pins.is_empty() {
-            subs.iter().filter(|x| x.subscribed).map(|x| x.channel_id.clone()).collect()
-        } else {
-            pins.clone()
-        };
+        let ids = yt_home_ids(&subs, &pins);
         // Asked for more than shown, so hiding watched ones still fills it.
         let mut latest = tulipix_music::youtube::store::latest_across(pool, &ids, HOME_NEW * 3)
             .await
@@ -12986,6 +13103,23 @@ async fn fill_youtube_lists(
             })
             .collect();
         st.yt_recommended = reco;
+        // Nothing pinned and nothing subscribed: trending music, not an empty
+        // shelf. Dart titles it by the same test.
+        if ids.is_empty() {
+            match yt_trending().lock().ok().and_then(|g| g.clone()) {
+                Some(found) => {
+                    st.yt_recommended = found
+                        .into_iter()
+                        .filter(|v| unwatched(&v.video_id))
+                        .map(|mut v| {
+                            v.progress = progress.get(&v.video_id).copied().unwrap_or(0.0) as f64;
+                            v
+                        })
+                        .collect()
+                }
+                None => yt_fetch_trending_once(),
+            }
+        }
 
         st.yt_continue = tulipix_music::youtube::store::continue_list(pool, 8)
             .await
@@ -13010,21 +13144,12 @@ async fn fill_youtube_lists(
         // The Home rail is the channels you pinned; until you pin any it is
         // the most-followed subscriptions, so the rail is never empty just
         // because you have not discovered pinning yet.
-        let mut rail: Vec<YtSub> = if pins.is_empty() {
-            let mut by_reach: Vec<_> = subs.iter().filter(|x| x.subscribed).collect();
-            by_reach.sort_by(|a, b| b.sub_count.unwrap_or(0).cmp(&a.sub_count.unwrap_or(0)));
-            by_reach
-                .into_iter()
-                .take(tulipix_music::yt_prefs::HOME_MAX)
-                .map(into_sub)
-                .collect()
-        } else {
-            pins.iter()
-                .filter_map(|pid| subs.iter().find(|x| &x.channel_id == pid))
-                .take(tulipix_music::yt_prefs::HOME_MAX)
-                .map(into_sub)
-                .collect()
-        };
+        let mut rail: Vec<YtSub> = ids
+            .iter()
+            .filter_map(|id| subs.iter().find(|x| &x.channel_id == id))
+            .take(tulipix_music::yt_prefs::HOME_MAX)
+            .map(into_sub)
+            .collect();
         rail.truncate(tulipix_music::yt_prefs::HOME_MAX);
         st.yt_home_subs = rail;
     }
@@ -13083,6 +13208,25 @@ async fn yt_playlist_rows(pool: &sqlx::SqlitePool) -> Vec<YtPlaylist> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_is_the_pins_else_the_most_followed_subscriptions() {
+        let sub = |id: &str, followers: i64, subscribed: bool| tulipix_music::youtube::store::Sub {
+            channel_id: id.into(),
+            title: id.into(),
+            avatar_path: None,
+            video_count: None,
+            sub_count: Some(followers),
+            fetched_at: None,
+            subscribed,
+            handle: None,
+        };
+        let subs = [sub("a", 10, true), sub("b", 30, true), sub("c", 99, false)];
+        assert_eq!(yt_home_ids(&subs, &["c".into()]), ["c"]);
+        assert_eq!(yt_home_ids(&subs, &[]), ["b", "a"]);
+        // Nothing pinned, nothing subscribed: Home shows trending instead.
+        assert!(yt_home_ids(&subs[2..], &[]).is_empty());
+    }
 
     #[test]
     fn station_tiles_skip_filler_words_and_draw_letters() {
