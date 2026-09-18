@@ -19,7 +19,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../design/tokens.dart';
 
 enum CropKind {

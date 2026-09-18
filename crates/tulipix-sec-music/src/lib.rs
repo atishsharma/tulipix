@@ -2177,14 +2177,14 @@ pub fn load_book_detail_bookmarks(w: &MainWindow, ids: Vec<i64>) {
             ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
         let _ = weak.upgrade_in_event_loop(move |w| {
             let labels: Vec<slint::SharedString> =
-                marks.iter().map(|(_, _, l)| l.clone().into()).collect();
-            let times: Vec<slint::SharedString> = marks.iter().map(|(id, p, _)| {
+                marks.iter().map(|(_, _, l, _)| l.clone().into()).collect();
+            let times: Vec<slint::SharedString> = marks.iter().map(|(id, p, _, _)| {
                 let ch = rank.get(id).map(|i| i + 1).unwrap_or(0);
                 let s = if ch > 0 { format!("Ch {ch} · {}", fmt_clock(*p)) } else { fmt_clock(*p) };
                 s.into()
             }).collect();
             if let Ok(mut g) = ab_open_marks().lock() {
-                *g = marks.iter().map(|(id, p, _)| (*id, *p)).collect();
+                *g = marks.iter().map(|(id, p, _, _)| (*id, *p)).collect();
             }
             w.set_music_ab_d_bm_labels(slint::ModelRc::new(slint::VecModel::from(labels)));
             w.set_music_ab_d_bm_times(slint::ModelRc::new(slint::VecModel::from(times)));

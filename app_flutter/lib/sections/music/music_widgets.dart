@@ -1554,15 +1554,27 @@ class CardGrid extends StatelessWidget {
     required this.children,
     this.min = 168,
     this.padding = const EdgeInsets.fromLTRB(24, 16, 24, 24),
+    this.inList = false,
   });
 
   final List<Widget> children;
   final double min;
   final EdgeInsets padding;
 
+  /// The grid is one band of a page that scrolls around it, not the page.
+  ///
+  /// Without this a grid dropped into a `ListView` gets unbounded height, the
+  /// scroll offset it lays out against is infinite, and `SliverGrid` throws
+  /// `Infinity or NaN toInt` out of `performLayout` — the frame dies and the
+  /// band never appears at all. It takes its height from its children then,
+  /// and leaves the scrolling to the list it sits in.
+  final bool inList;
+
   @override
   Widget build(BuildContext context) => GridView.builder(
         padding: padding,
+        shrinkWrap: inList,
+        physics: inList ? const NeverScrollableScrollPhysics() : null,
         gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
           maxCrossAxisExtent: min,
           mainAxisSpacing: 18,

@@ -597,7 +597,7 @@ mod tests {
         assert!(t.rows.is_empty());
         assert_eq!(t.cols.len(), 2);
         assert!(!t.table[0].cells[0].tag, "a plain cell is not a pill");
-        assert!(t.table[0].cells[1].tag, "and a {tag} cell is");
+        assert!(t.table[0].cells[1].tag, "and a {{tag}} cell is");
     }
 
     /// Mirrors put numbers in table cells unquoted, and `as_str` alone blanks

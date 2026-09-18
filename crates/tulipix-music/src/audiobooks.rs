@@ -84,21 +84,88 @@ pub async fn bookmarks(pool: &SqlitePool, item_id: i64) -> Result<Vec<(f64, Stri
 /// The player panel's chips only ever show the PLAYING chapter's marks; a book
 /// is a list of chapters, so the detail page needs the union or half the
 /// bookmarks are invisible from the place you would look for them.
-pub async fn book_bookmarks(pool: &SqlitePool, item_ids: &[i64]) -> Result<Vec<(i64, f64, String)>> {
+pub async fn book_bookmarks(pool: &SqlitePool, item_ids: &[i64]) -> Result<Vec<(i64, f64, String, String)>> {
     if item_ids.is_empty() { return Ok(vec![]); }
     let list = item_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-    let rows: Vec<(i64, f64, Option<String>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT item_id, position_s, label FROM audiobook_bookmarks
+    let rows: Vec<(i64, f64, Option<String>, Option<String>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT item_id, position_s, label, note FROM audiobook_bookmarks
          WHERE item_id IN ({list}) ORDER BY item_id, position_s"))).fetch_all(pool).await?;
     // Preserve the caller's chapter order rather than the id order — chapter 10
     // can have a lower rowid than chapter 2.
     let rank: std::collections::HashMap<i64, usize> =
         item_ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
-    let mut out: Vec<(i64, f64, String)> = rows.into_iter()
-        .map(|(id, p, l)| (id, p, l.unwrap_or_default())).collect();
+    let mut out: Vec<(i64, f64, String, String)> = rows.into_iter()
+        .map(|(id, p, l, n)| (id, p, l.unwrap_or_default(), n.unwrap_or_default())).collect();
     out.sort_by(|a, b| rank.get(&a.0).cmp(&rank.get(&b.0))
         .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
     Ok(out)
+}
+
+/// The sentence behind a bookmark — why you marked it, which the label never
+/// has room for. Empty clears it.
+pub async fn set_bookmark_note(pool: &SqlitePool, item_id: i64, position_s: f64, note: &str) -> Result<()> {
+    sqlx::query("UPDATE audiobook_bookmarks SET note = ? WHERE item_id = ? AND ABS(position_s - ?) < 1.0")
+        .bind(if note.trim().is_empty() { None } else { Some(note.trim()) })
+        .bind(item_id).bind(position_s).execute(pool).await?;
+    Ok(())
+}
+
+/// Forget every position in a book, so it starts from chapter one again.
+/// Bookmarks survive: they are notes about the text, not about the progress.
+pub async fn reset_progress(pool: &SqlitePool, item_ids: &[i64]) -> Result<()> {
+    for id in item_ids {
+        sqlx::query("DELETE FROM audiobook_progress WHERE item_id = ?")
+            .bind(id).execute(pool).await?;
+    }
+    Ok(())
+}
+
+/// When any chapter of this book was last touched, as a unix second, and when
+/// its files entered the library. `(0, 0)` for a book never played or with no
+/// rows at all — the shelf's "Recently played" sort reads 0 as "never", which
+/// is what sends an untouched book to the end.
+pub async fn book_times(pool: &SqlitePool, folder: &str) -> Result<(i64, i64)> {
+    let row: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
+        "SELECT (SELECT MAX(ap.updated) FROM audiobook_progress ap \
+                 JOIN track_meta tm ON tm.item_id = ap.item_id WHERE tm.folder = ?1), \
+                (SELECT MIN(i.added) FROM items i \
+                 JOIN track_meta tm ON tm.item_id = i.id WHERE tm.folder = ?1)")
+        .bind(folder).fetch_optional(pool).await?;
+    let (played, added) = row.unwrap_or((None, None));
+    Ok((played.unwrap_or(0), added.unwrap_or(0)))
+}
+
+/// Seconds listened between `from` and now, across every audiobook.
+///
+/// `audiobook_progress` keeps one row per chapter with the position reached and
+/// when it was last written, so "time listened this week" is the sum of the
+/// positions of the chapters touched since then. It over-counts a chapter
+/// re-started from the middle and under-counts one finished in two sittings;
+/// it is a figure on a stat card, not a ledger.
+pub async fn listened_since(pool: &SqlitePool, from: i64) -> Result<f64> {
+    let s: Option<f64> = sqlx::query_scalar(
+        "SELECT SUM(position_s) FROM audiobook_progress WHERE updated >= ?")
+        .bind(from).fetch_one(pool).await?;
+    Ok(s.unwrap_or(0.0))
+}
+
+/// How many days back from today there is an unbroken run of listening. Days
+/// are local-midnight buckets of `audiobook_progress.updated`.
+pub async fn listening_streak(pool: &SqlitePool) -> Result<i64> {
+    let days: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT CAST(updated / 86400 AS INTEGER) AS d FROM audiobook_progress ORDER BY d DESC")
+        .fetch_all(pool).await?;
+    let today = now() / 86400;
+    // A streak that has not been added to today is still alive until tomorrow,
+    // so the run may start at today or yesterday.
+    let Some(&first) = days.first() else { return Ok(0) };
+    if first < today - 1 { return Ok(0); }
+    let mut streak = 0;
+    let mut expect = first;
+    for d in days {
+        if d == expect { streak += 1; expect -= 1; } else if d < expect { break; }
+    }
+    Ok(streak)
 }
 
 /// Drop one bookmark, identified by the pair that made it.
@@ -267,7 +334,7 @@ mod tests {
         add_bookmark(&pool, c1, 10.0, "").await.unwrap();
         // Chapter order comes from the caller's list, not from the ids.
         let got = book_bookmarks(&pool, &[c1, c2]).await.unwrap();
-        assert_eq!(got.iter().map(|(id, p, _)| (*id, *p)).collect::<Vec<_>>(),
+        assert_eq!(got.iter().map(|(id, p, ..)| (*id, *p)).collect::<Vec<_>>(),
                    vec![(c1, 10.0), (c1, 90.0), (c2, 30.0)]);
         assert_eq!(got[0].2, "", "an unnamed bookmark keeps an empty label");
 
@@ -277,8 +344,51 @@ mod tests {
         rename_bookmark(&pool, c1, 10.0, "   ").await.unwrap();
         assert_eq!(book_bookmarks(&pool, &[c1, c2]).await.unwrap()[0].2, "");
 
+        // A note is its own field; renaming must not disturb it, and clearing
+        // it is a blank rather than whitespace.
+        set_bookmark_note(&pool, c1, 90.0, "  the encyclopaedia job  ").await.unwrap();
+        rename_bookmark(&pool, c1, 90.0, "Wilson").await.unwrap();
+        let got = book_bookmarks(&pool, &[c1, c2]).await.unwrap();
+        assert_eq!((got[1].2.as_str(), got[1].3.as_str()),
+                   ("Wilson", "the encyclopaedia job"));
+        set_bookmark_note(&pool, c1, 90.0, "  ").await.unwrap();
+        assert_eq!(book_bookmarks(&pool, &[c1, c2]).await.unwrap()[1].3, "");
+
         remove_bookmark(&pool, c1, 10.4).await.unwrap();   // within the 1s window
         assert_eq!(book_bookmarks(&pool, &[c1, c2]).await.unwrap().len(), 2);
+    }
+
+    /// The streak is a run of day buckets back from today, and a bookmark is
+    /// not progress: starting a book over must not take the marks with it.
+    #[tokio::test]
+    async fn streak_counts_back_from_today_and_reset_keeps_bookmarks() {
+        let (_t, pool) = open_pool().await;
+        let c1 = add_track(&pool, "/books/dune/ch01.mp3").await;
+        let c2 = add_track(&pool, "/books/dune/ch02.mp3").await;
+        assert_eq!(listening_streak(&pool).await.unwrap(), 0, "nothing heard, no streak");
+
+        let day = 86_400;
+        let today = now() / day;
+        // Today, yesterday, the day before — then a gap, then two older days
+        // that must not be counted. One chapter per day, because the table
+        // keeps one row per item.
+        for (i, back) in [0i64, 1, 2, 5, 6].iter().enumerate() {
+            let id = add_track(&pool, &format!("/books/other/ch{i:02}.mp3")).await;
+            sqlx::query(
+                "INSERT INTO audiobook_progress (item_id, position_s, speed, updated) \
+                 VALUES (?, 60, 1.0, ?)")
+                .bind(id)
+                .bind((today - back) * day)
+                .execute(&pool).await.unwrap();
+        }
+        assert_eq!(listening_streak(&pool).await.unwrap(), 3);
+
+        save_progress(&pool, c1, 120.0, 1.25).await.unwrap();
+        save_progress(&pool, c2, 40.0, 1.25).await.unwrap();
+        add_bookmark(&pool, c1, 90.0, "keep me").await.unwrap();
+        reset_progress(&pool, &[c1, c2]).await.unwrap();
+        assert_eq!(resume(&pool, c1).await.unwrap().0, 0.0);
+        assert_eq!(book_bookmarks(&pool, &[c1, c2]).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

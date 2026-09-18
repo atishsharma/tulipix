@@ -1,18 +1,38 @@
-// Podcasts — Home, Subscribed and Downloads, plus the show page.
+// Podcasts — Home, New, Subscribed, Trends and Downloads, plus the show page.
 //
 // Subscribing is one HTTP GET and one call into the domain crate's feed
 // parser; everything after that is rows in podcasts.db. Playing an episode
 // takes over the same player bar My Music was using, which is the whole point
 // of the five tabs being one section.
+//
+// The shape of the tab is docs/listen-deck.html: resume is one click from
+// Home, and every episode action sits on its own row rather than behind a
+// menu. The queue is the docked side panel (see side_panel.dart), not a
+// dialog, because it is read while something is playing.
 
 import 'package:flutter/material.dart';
 
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
 import 'music_dialogs.dart';
 import 'music_widgets.dart';
+
+/// The tab's own gradient — the orange→pink pair ui/page_music.slint gives the
+/// podcast sub-tabs, which is not the purple the section chip wears.
+const Color kPodTint = Color(0xFFF97316);
+const Color kPodTint2 = Color(0xFFEC4899);
+
+/// The four filters every episode list offers, in the order the chips sit.
+/// One list, because the New tab and a show page filter the same rows the same
+/// way and two orderings would put "Unplayed" in two places.
+const List<(String, String)> kEpFilters = [
+  ('unplayed', 'Unplayed'),
+  ('progress', 'In progress'),
+  ('downloaded', 'Downloaded'),
+  ('all', 'All'),
+];
 
 class PodcastsTab extends StatelessWidget {
   const PodcastsTab({super.key, required this.controller});
@@ -24,89 +44,92 @@ class PodcastsTab extends StatelessWidget {
     final st = controller.state;
     if (st == null) return const Center(child: CircularProgressIndicator());
 
-    // The info card and the show notes are panels over whatever is behind
-    // them, not routes: both are things you glance at and dismiss, and losing
-    // your place in a grid to read three lines of description is the reason
-    // the Slint ones are overlays too.
+    // The info card is a panel over whatever is behind it, not a route: it is
+    // something you glance at and dismiss, and losing your place in a grid to
+    // read three lines of description is the reason the Slint one is an
+    // overlay too. Show notes are no longer one of these — they live in the
+    // docked panel now, beside the list they belong to.
     return Stack(
       children: [
-        if (st.podDetailOpen)
-          _ShowPage(controller: controller, st: st)
-        else
-          Column(
-            children: [
-              // Keyed on the tab: each tab keeps its own filter, so the box
-              // has to be rebuilt with that tab's text when you switch.
-              _Header(
-                key: ValueKey(st.podTab),
-                controller: controller,
-                st: st,
-              ),
-              Expanded(
-                child: switch (st.podTab) {
-                  'downloads' => _Downloads(controller: controller, st: st),
-                  'subscribed' => _Subscribed(controller: controller, st: st),
-                  'trends' => _Trends(controller: controller, st: st),
-                  _ => _Home(controller: controller, st: st),
-                },
-              ),
-            ],
-          ),
+        Column(
+          children: [
+            _SubTabs(controller: controller, st: st),
+            Expanded(
+              child: st.podDetailOpen
+                  ? _ShowPage(
+                      key: ValueKey(st.podDetail?.id ?? -1),
+                      controller: controller,
+                      st: st,
+                    )
+                  : switch (st.podTab) {
+                      'new' => _Inbox(controller: controller, st: st),
+                      'downloads' => _Downloads(controller: controller, st: st),
+                      'subscribed' =>
+                        _Subscribed(controller: controller, st: st),
+                      'trends' => _Trends(controller: controller, st: st),
+                      _ => _Home(controller: controller, st: st),
+                    },
+            ),
+          ],
+        ),
         if (st.podInfo != null)
           _InfoCard(controller: controller, info: st.podInfo!),
-        if (st.podTranscriptTitle.isNotEmpty)
-          _TranscriptPanel(controller: controller, st: st),
       ],
     );
   }
 }
 
-class _Header extends StatefulWidget {
-  const _Header({super.key, required this.controller, required this.st});
+// ------------------------------------------------------------ sub-tab row --
+
+class _SubTabs extends StatelessWidget {
+  const _SubTabs({required this.controller, required this.st});
 
   final MusicController controller;
   final MusicState st;
 
   @override
-  State<_Header> createState() => _HeaderState();
-}
-
-class _HeaderState extends State<_Header> {
-  late final TextEditingController _search =
-      TextEditingController(text: widget.st.podQuery);
-
-  @override
-  void dispose() {
-    _search.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final controller = widget.controller;
-    final st = widget.st;
     final t = context.tokens;
     final row = SizedBox(
       height: 52,
       child: Row(
         children: [
           const SizedBox(width: 20),
-          for (final tab in const [
-            ('home', 'Home', Icons.home_outlined),
-            ('trends', 'Trends', Icons.trending_up),
-            ('subscribed', 'Subscribed', Icons.podcasts),
-            ('downloads', 'Downloads', Icons.download_outlined),
+          for (final tab in [
+            ('home', 'Home', Icons.home_outlined, null),
+            (
+              'new',
+              'New',
+              Icons.inbox_outlined,
+              st.podNewCount > 0 ? '${st.podNewCount}' : null
+            ),
+            (
+              'subscribed',
+              'Subscribed',
+              Icons.podcasts,
+              st.podSubCount > 0 ? '${st.podSubCount}' : null
+            ),
+            ('trends', 'Trends', Icons.trending_up, null),
+            (
+              'downloads',
+              'Downloads',
+              Icons.download_outlined,
+              st.podDlCount > 0 ? '${st.podDlCount}' : null
+            ),
           ])
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
               child: MusicChip(
                 label: tab.$2,
                 icon: tab.$3,
-                active: st.podTab == tab.$1,
-                tint: const Color(0xFFF97316),
-                tint2: const Color(0xFFEC4899),
-                badge: tab.$1 == 'subscribed' ? '${st.podTotal}' : null,
+                active: st.podTab == tab.$1 && !st.podDetailOpen,
+                tint: kPodTint,
+                tint2: kPodTint2,
+                badge: tab.$4,
                 onTap: () {
+                  // Just the one command: picking a tab leaves the show page on
+                  // the bridge's side. Sending `podBack` alongside this raced
+                  // it, and the loser's snapshot was the one that stuck.
                   controller.send(MusicCmd.podSetTab(name: tab.$1));
                   // Building the directory is a network walk over three dozen
                   // feeds. The bridge caches it for the session, so this is a
@@ -117,73 +140,7 @@ class _HeaderState extends State<_Header> {
                 },
               ),
             ),
-          const SizedBox(width: 16),
-          _TabSort(controller: controller, st: st),
-          const SizedBox(width: 10),
-          SizedBox(
-            width: 190,
-            child: TextField(
-              controller: _search,
-              decoration: InputDecoration(
-                isDense: true,
-                prefixIcon: const Icon(Icons.search, size: 16),
-                hintText: switch (st.podTab) {
-                  'downloads' => 'Filter saved',
-                  'trends' => 'Filter the directory',
-                  _ => 'Filter shows',
-                },
-                border: const OutlineInputBorder(),
-                suffixIcon: st.podQuery.isEmpty
-                    ? null
-                    : IconButton(
-                        tooltip: 'Clear the search',
-                        icon: const Icon(Icons.close, size: 14),
-                        onPressed: () {
-                          _search.clear();
-                          controller.send(const MusicCmd.podSearch(query: ''));
-                        },
-                      ),
-              ),
-              onChanged: (q) => controller.send(MusicCmd.podSearch(query: q)),
-            ),
-          ),
-          if (st.podCategories.length > 1)
-            SizedBox(
-              width: 180,
-              child: DropdownButton<String>(
-                value: st.podCategories.contains(st.podCat)
-                    ? st.podCat
-                    : st.podCategories.first,
-                isExpanded: true,
-                underline: const SizedBox.shrink(),
-                items: [
-                  for (final c in st.podCategories)
-                    DropdownMenuItem(value: c, child: Text(c)),
-                ],
-                onChanged: (v) => v == null
-                    ? null
-                    : controller.send(MusicCmd.podSetCat(name: v)),
-              ),
-            ),
           const Spacer(),
-          // Speed, cycled rather than a slider: podcast listening is a small
-          // set of speeds you pick once, and Slint's header chip cycles the
-          // same six.
-          TextButton(
-            onPressed: () {
-              const steps = [1.0, 1.25, 1.5, 1.75, 2.0, 0.75];
-              final i = steps.indexWhere((v) => (v - st.podSpeed).abs() < 0.01);
-              final next = steps[(i + 1) % steps.length];
-              controller.send(MusicCmd.podSetSpeed(speed: next));
-            },
-            child: Text('${st.podSpeed.toStringAsFixed(2)}×'),
-          ),
-          if (st.podQueue.isNotEmpty)
-            TextButton.icon(
-              icon: const Icon(Icons.playlist_play, size: 16),
-              label: Text('Queue · ${st.podQueue.length}'),
-              onPressed: () => _showQueue(context, controller, st),
-            ),
           TextButton.icon(
             icon: const Icon(Icons.refresh, size: 16),
             label: const Text('Refresh all'),
@@ -203,6 +160,14 @@ class _HeaderState extends State<_Header> {
               PopupMenuItem(
                   value: 'reset', child: Text('Delete every subscription…')),
             ],
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            iconSize: 18,
+            tooltip: 'Queue and show notes (Q)',
+            isSelected: controller.panel == 'queue',
+            icon: const Icon(Icons.queue_music_outlined),
+            onPressed: () => controller.setPanel('queue'),
           ),
           const SizedBox(width: 12),
           Container(width: 1, height: 24, color: t.outline),
@@ -236,7 +201,7 @@ class _HeaderState extends State<_Header> {
                     value: frac <= 0 ? null : frac.clamp(0.0, 1.0),
                     minHeight: 3,
                     backgroundColor: t.nHair,
-                    valueColor: const AlwaysStoppedAnimation(Color(0xFFF97316)),
+                    valueColor: const AlwaysStoppedAnimation(kPodTint),
                   ),
                 ),
               ),
@@ -257,59 +222,1444 @@ class _HeaderState extends State<_Header> {
   }
 }
 
-/// The sort control for whichever tab is open. Each list sorts by something
-/// different -- shows by name, downloads by when they were saved -- so one
-/// shared chip row would have had to hide most of itself anyway.
-class _TabSort extends StatelessWidget {
-  const _TabSort({required this.controller, required this.st});
+/// A toolbar strip: a row of chips over a list, with room for a search box and
+/// whatever bulk actions the list has. Every podcast page but Home has one, so
+/// the padding and the wrap live here rather than five times over.
+class _Toolbar extends StatelessWidget {
+  const _Toolbar({required this.children, this.top = 10});
+
+  final List<Widget> children;
+  final double top;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: EdgeInsets.fromLTRB(24, top, 24, 4),
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: children,
+        ),
+      );
+}
+
+/// A heading over a shelf: the title, an aside, and an optional link out.
+class _Head extends StatelessWidget {
+  const _Head({required this.title, this.hint = '', this.action, this.trailing});
+
+  final String title;
+  final String hint;
+  final (String, VoidCallback)? action;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Text(title,
+              style: TextStyle(
+                  fontSize: 15, fontWeight: FontWeight.w700, color: t.nInk)),
+          if (hint.isNotEmpty) ...[
+            const SizedBox(width: 10),
+            Text(hint, style: TextStyle(fontSize: 11.5, color: t.nInk3)),
+          ],
+          const Spacer(),
+          if (trailing != null) trailing!,
+          if (action != null)
+            TextButton(onPressed: action!.$2, child: Text(action!.$1)),
+        ],
+      ),
+    );
+  }
+}
+
+/// The search box every list on this tab carries. Its own State so the caret
+/// does not jump on the snapshot the keystroke produced.
+class _Search extends StatefulWidget {
+  const _Search({
+    super.key,
+    required this.value,
+    required this.hint,
+    required this.onChanged,
+  });
+
+  final String value;
+  final String hint;
+  final ValueChanged<String> onChanged;
+
+  @override
+  State<_Search> createState() => _SearchState();
+}
+
+class _SearchState extends State<_Search> {
+  late final TextEditingController _c = TextEditingController(text: widget.value);
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: 220,
+        height: 34,
+        child: TextField(
+          controller: _c,
+          style: const TextStyle(fontSize: 12.5),
+          decoration: InputDecoration(
+            isDense: true,
+            contentPadding: const EdgeInsets.symmetric(vertical: 8),
+            prefixIcon: const Icon(Icons.search, size: 16),
+            prefixIconConstraints:
+                const BoxConstraints(minWidth: 32, minHeight: 32),
+            hintText: widget.hint,
+            border: const OutlineInputBorder(),
+            suffixIcon: _c.text.isEmpty
+                ? null
+                : IconButton(
+                    tooltip: 'Clear the search',
+                    icon: const Icon(Icons.close, size: 14),
+                    onPressed: () {
+                      _c.clear();
+                      widget.onChanged('');
+                      setState(() {});
+                    },
+                  ),
+          ),
+          onChanged: (q) {
+            widget.onChanged(q);
+            setState(() {});
+          },
+        ),
+      );
+}
+
+// ------------------------------------------------------------------- Home --
+
+class _Home extends StatelessWidget {
+  const _Home({required this.controller, required this.st});
 
   final MusicController controller;
   final MusicState st;
 
   @override
   Widget build(BuildContext context) {
-    final Map<String, String> modes;
-    final String active;
-    final void Function(String) send;
-    switch (st.podTab) {
-      case 'home':
-        modes = const {
-          'name': 'Name',
-          'category': 'Category',
-          'latest': 'Newest'
-        };
-        active = st.podHomeSort;
-        send = (m) => controller.send(MusicCmd.podSetHomeSort(mode: m));
-      case 'trends':
-        modes = const {'name': 'Name', 'category': 'Category'};
-        active = st.podTrendsSort;
-        send = (m) => controller.send(MusicCmd.podSetTrendsSort(mode: m));
-      case 'downloads':
-        modes = const {
-          'dl': 'Recently saved',
-          'new': 'Newest',
-          'old': 'Oldest'
-        };
-        active = st.podDlSort;
-        send = (m) => controller.send(MusicCmd.podSetDlSort(mode: m));
-      default:
-        return const SizedBox.shrink();
+    if (st.podShows.isEmpty && st.podHome.isEmpty) {
+      return MusicEmpty(
+        icon: Icons.podcasts_outlined,
+        title: 'No podcasts yet',
+        body: 'Paste a feed URL and Tulipix will pull the show, its artwork '
+            'and its back catalogue into podcasts.db.',
+        action: ('Add a feed', () => addFeed(context, controller)),
+      );
     }
-    return Row(
+    final t = context.tokens;
+    // "Your shows" is the shows you PINNED, not the first page of the
+    // subscription list. Before, Home and Subscribed drew the same rail from
+    // the same rows and Home had no reason to exist.
+    final pinned = st.podHome;
+    return ListView(
       children: [
-        for (final e in modes.entries)
-          Padding(
-            padding: const EdgeInsets.only(right: 6),
-            child: SortChip(
-              label: e.value,
-              active: active == e.key,
-              onTap: () => send(e.key),
+        if (st.podContinue.isNotEmpty) ...[
+          _Head(
+            title: 'Continue listening',
+            hint: '${st.podContinue.length} in progress',
+            action: (
+              'See all',
+              () async {
+                // Awaited: two dispatches in flight at once race, and the one
+                // that lands last is the snapshot the page keeps.
+                await controller.send(const MusicCmd.podSetTab(name: 'new'));
+                await controller
+                    .send(const MusicCmd.podSetInboxFilter(name: 'progress'));
+              }
             ),
           ),
+          SizedBox(
+            height: 92,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              itemCount: st.podContinue.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 12),
+              itemBuilder: (_, i) => _ContinueCard(
+                controller: controller,
+                episode: st.podContinue[i],
+              ),
+            ),
+          ),
+        ],
+        if (st.podLatest.isNotEmpty) ...[
+          _Head(
+            title: 'New from your shows',
+            hint: 'newest episode of each',
+            trailing: TextButton.icon(
+              icon: const Icon(Icons.playlist_play, size: 16),
+              label: const Text('Queue all'),
+              onPressed: () =>
+                  controller.send(const MusicCmd.podQueueAll(podcastId: -1)),
+            ),
+            action: (
+              'See all',
+              () => controller.send(const MusicCmd.podSetTab(name: 'new'))
+            ),
+          ),
+          for (final e in st.podLatest)
+            EpisodeRow(controller: controller, episode: e),
+        ],
+        _Head(
+          title: 'Your shows',
+          hint: 'pinned',
+          action: (
+            'Subscribed',
+            () => controller.send(const MusicCmd.podSetTab(name: 'subscribed'))
+          ),
+        ),
+        if (pinned.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+            child: Text(
+              'Nothing pinned yet — open Subscribed and pin the shows you '
+              'actually follow, and they will live here.',
+              style: TextStyle(fontSize: 12, color: t.nInk2),
+            ),
+          )
+        else
+          CardGrid(
+            inList: true,
+            padding: const EdgeInsets.fromLTRB(24, 8, 24, 8),
+            min: 190,
+            children: [
+              for (final s in pinned)
+                _ShowCard(controller: controller, show: s),
+            ],
+          ),
+        // Pinning forty shows makes a grid nobody reaches the end of.
+        if (st.podHomePages > 1)
+          Pager(
+            page: st.podHomePage,
+            pages: st.podHomePages,
+            onGo: (p) => controller.send(MusicCmd.podSetHomePage(page: p)),
+          ),
+        const SizedBox(height: 24),
       ],
     );
   }
 }
+
+/// One part-heard episode on Home's first shelf: art, title, show, time left
+/// and how far in. The whole tile is the resume button — the point of the row
+/// is that carrying on is one click from opening the section.
+class _ContinueCard extends StatelessWidget {
+  const _ContinueCard({required this.controller, required this.episode});
+
+  final MusicController controller;
+  final Episode episode;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final e = episode;
+    final part =
+        e.durationS > 0 ? (e.positionS / e.durationS).clamp(0.0, 1.0) : 0.0;
+    return SizedBox(
+      width: 320,
+      child: Material(
+        color: t.nCard,
+        borderRadius: BorderRadius.circular(Tokens.radiusMd),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(Tokens.radiusMd),
+          onTap: () => controller.send(MusicCmd.podPlay(episodeId: e.id)),
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Row(
+              children: [
+                MusicArt(
+                  controller: controller,
+                  kind: 'podcast',
+                  artKey: e.art,
+                  size: 56,
+                  radius: 8,
+                  fallback: Icons.podcasts,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(e.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                              color: t.nInk)),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${e.show_} · ${fmtMins(e.durationS - e.positionS)} left',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 11, color: t.nInk2),
+                      ),
+                      const SizedBox(height: 8),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(2),
+                        child: LinearProgressIndicator(
+                          value: part,
+                          minHeight: 3,
+                          backgroundColor: t.nHair,
+                          valueColor: const AlwaysStoppedAnimation(kPodTint),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                const Icon(Icons.play_arrow, size: 20, color: kPodTint),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A subscribed show as a tile: the unplayed count is the badge, and the play
+/// button on hover starts the newest episode rather than opening the page.
+class _ShowCard extends StatelessWidget {
+  const _ShowCard({required this.controller, required this.show});
+
+  final MusicController controller;
+  final PodcastShow show;
+
+  @override
+  Widget build(BuildContext context) => MusicCard(
+        controller: controller,
+        title: show.title,
+        subtitle: [show.author, show.category]
+            .where((s) => s.isNotEmpty)
+            .join(' · '),
+        artKind: 'podcast',
+        artKey: show.art,
+        fallback: Icons.podcasts,
+        badge: show.unplayed > 0 ? '${show.unplayed}' : null,
+        onTap: () => controller.send(MusicCmd.podOpen(podcastId: show.id)),
+        onPlay: () =>
+            controller.send(MusicCmd.podPlayLatest(podcastId: show.id)),
+        onMenu: () => _podMenu(context, controller, show),
+      );
+}
+
+// -------------------------------------------------------------- New tab ----
+
+/// Everything the subscriptions posted in the last three weeks, in one list,
+/// with the filters and the two bulk actions that make an inbox an inbox.
+class _Inbox extends StatelessWidget {
+  const _Inbox({required this.controller, required this.st});
+
+  final MusicController controller;
+  final MusicState st;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final counts = st.podInboxCounts;
+    final left = st.podInbox.fold<double>(
+        0, (n, e) => n + (e.durationS - e.positionS).clamp(0.0, e.durationS));
+    return Column(
+      children: [
+        _Head(
+          title: 'New episodes',
+          hint: st.podInbox.isEmpty
+              ? 'the last three weeks'
+              : '${st.podInbox.length} episodes · ${fmtMins(left)}',
+        ),
+        _Toolbar(
+          top: 0,
+          children: [
+            for (var i = 0; i < kEpFilters.length; i++)
+              SortChip(
+                label: i < counts.length
+                    ? '${kEpFilters[i].$2}  ${counts[i]}'
+                    : kEpFilters[i].$2,
+                active: st.podInboxFilter == kEpFilters[i].$1,
+                onTap: () => controller
+                    .send(MusicCmd.podSetInboxFilter(name: kEpFilters[i].$1)),
+              ),
+            const SizedBox(width: 8),
+            TextButton.icon(
+              icon: const Icon(Icons.playlist_add, size: 16),
+              label: const Text('Queue all'),
+              onPressed: st.podInbox.isEmpty
+                  ? null
+                  : () =>
+                      controller.send(const MusicCmd.podQueueAll(podcastId: -1)),
+            ),
+            TextButton.icon(
+              icon: const Icon(Icons.done_all, size: 16),
+              label: const Text('Mark all played'),
+              onPressed: st.podInbox.isEmpty
+                  ? null
+                  : () => confirmThen(
+                        context,
+                        controller,
+                        title: 'Mark these played?',
+                        body: '${st.podInbox.length} episodes leave the inbox. '
+                            'Anything downloaded from them stays on disk '
+                            'unless "delete when played" is on.',
+                        action: 'Mark played',
+                        cmd: const MusicCmd.podMarkAllPlayed(podcastId: -1),
+                      ),
+            ),
+          ],
+        ),
+        Expanded(
+          child: st.podInbox.isEmpty
+              ? MusicEmpty(
+                  icon: Icons.inbox_outlined,
+                  title: 'You are caught up',
+                  body: st.podInboxFilter == 'unplayed'
+                      ? 'Nothing unplayed in the last three weeks. Refresh the '
+                          'feeds, or look at All.'
+                      : 'Nothing in the last three weeks matches this filter.',
+                  action: st.podInboxFilter == 'all'
+                      ? null
+                      : (
+                          'Show all',
+                          () => controller.send(
+                              const MusicCmd.podSetInboxFilter(name: 'all'))
+                        ),
+                )
+              : ListView.builder(
+                  itemCount: st.podInbox.length,
+                  itemBuilder: (_, i) => EpisodeRow(
+                    controller: controller,
+                    episode: st.podInbox[i],
+                  ),
+                ),
+        ),
+        SizedBox(height: 1, child: ColoredBox(color: t.nHair)),
+      ],
+    );
+  }
+}
+
+// ----------------------------------------------------------- Subscribed ----
+
+class _Subscribed extends StatelessWidget {
+  const _Subscribed({required this.controller, required this.st});
+
+  final MusicController controller;
+  final MusicState st;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _Toolbar(
+          children: [
+            for (final c in st.podCategories)
+              SortChip(
+                label: c,
+                active: st.podCat == c,
+                onTap: () => controller.send(MusicCmd.podSetCat(name: c)),
+              ),
+            const SizedBox(width: 8),
+            for (final m in const [
+              ('name', 'Name'),
+              ('latest', 'Updated'),
+              ('category', 'Category'),
+            ])
+              SortChip(
+                label: m.$2,
+                active: st.podHomeSort == m.$1,
+                onTap: () =>
+                    controller.send(MusicCmd.podSetHomeSort(mode: m.$1)),
+              ),
+          ],
+        ),
+        Expanded(
+          child: st.podShows.isEmpty
+              ? MusicEmpty(
+                  icon: Icons.podcasts_outlined,
+                  title: 'Nothing here',
+                  body: 'Pick another category, clear the search, or add a '
+                      'feed.',
+                  action: ('Add a feed', () => addFeed(context, controller)),
+                )
+              : CardGrid(
+                  min: 190,
+                  children: [
+                    for (final s in st.podShows)
+                      _ShowCard(controller: controller, show: s),
+                  ],
+                ),
+        ),
+        Pager(
+          page: st.podPage,
+          pages: st.podPages,
+          onGo: (p) => controller.send(MusicCmd.podSetPage(page: p)),
+        ),
+      ],
+    );
+  }
+}
+
+// -------------------------------------------------------------- Downloads --
+
+class _Downloads extends StatelessWidget {
+  const _Downloads({required this.controller, required this.st});
+
+  final MusicController controller;
+  final MusicState st;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _Storage(controller: controller, st: st),
+        _Toolbar(
+          children: [
+            for (final m in const [
+              ('dl', 'Recently saved'),
+              ('new', 'Newest'),
+              ('old', 'Oldest'),
+            ])
+              SortChip(
+                label: m.$2,
+                active: st.podDlSort == m.$1,
+                onTap: () => controller.send(MusicCmd.podSetDlSort(mode: m.$1)),
+              ),
+            const SizedBox(width: 8),
+            TextButton.icon(
+              icon: const Icon(Icons.cleaning_services_outlined, size: 16),
+              label: const Text('Remove played'),
+              onPressed: () => confirmThen(
+                context,
+                controller,
+                title: 'Remove the played downloads?',
+                body: 'Every saved file whose episode is marked played is '
+                    'deleted from disk. The episodes stay in their feeds.',
+                action: 'Remove played',
+                cmd: const MusicCmd.podRemovePlayedDownloads(),
+              ),
+            ),
+            TextButton.icon(
+              icon: const Icon(Icons.delete_sweep_outlined, size: 16),
+              label: const Text('Delete all'),
+              onPressed: () => confirmThen(
+                context,
+                controller,
+                title: 'Delete every downloaded episode?',
+                body: 'The audio files are removed from disk. The episodes '
+                    'stay in their feeds and can be downloaded again.',
+                action: 'Delete all',
+                cmd: const MusicCmd.podClearDownloads(),
+              ),
+            ),
+          ],
+        ),
+        Expanded(
+          child: st.podDownloads.isEmpty
+              ? const MusicEmpty(
+                  icon: Icons.download_outlined,
+                  title: 'Nothing saved offline',
+                  body: 'Download an episode from a show page and it lands '
+                      'here, playable with no network at all.',
+                )
+              : ListView.builder(
+                  itemCount: st.podDownloads.length,
+                  itemBuilder: (_, i) => EpisodeRow(
+                    controller: controller,
+                    episode: st.podDownloads[i],
+                  ),
+                ),
+        ),
+        Pager(
+          page: st.podPage,
+          pages: st.podPages,
+          onGo: (p) => controller.send(MusicCmd.podSetPage(page: p)),
+        ),
+      ],
+    );
+  }
+}
+
+/// What the saved episodes take, against the ceiling you set, and the two
+/// rules that keep them under it.
+class _Storage extends StatelessWidget {
+  const _Storage({required this.controller, required this.st});
+
+  final MusicController controller;
+  final MusicState st;
+
+  static const List<int> _limits = [0, 2, 6, 12, 32];
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final gb = st.podDlBytes / (1024 * 1024 * 1024);
+    final limit = st.podDlLimitGb;
+    final frac = limit <= 0 ? 0.0 : (gb / limit).clamp(0.0, 1.0);
+    void prefs({int? limitGb, bool? whenPlayed, bool? wifiOnly}) =>
+        controller.send(MusicCmd.podDownloadPrefs(
+          limitGb: limitGb ?? st.podDlLimitGb,
+          whenPlayed: whenPlayed ?? st.podDlWhenPlayed,
+          wifiOnly: wifiOnly ?? st.podDlWifiOnly,
+        ));
+    return Container(
+      margin: const EdgeInsets.fromLTRB(24, 12, 24, 0),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      decoration: BoxDecoration(
+        color: t.nCard,
+        borderRadius: BorderRadius.circular(Tokens.radiusMd),
+        border: Border.all(color: t.nHair),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(gb >= 1 ? '${gb.toStringAsFixed(2)} GB' : '${(gb * 1024).round()} MB',
+                  style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: t.nInk)),
+              Text(limit <= 0 ? 'no limit set' : 'of a $limit GB limit',
+                  style: TextStyle(fontSize: 11.5, color: t.nInk2)),
+            ],
+          ),
+          const SizedBox(width: 20),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: limit <= 0 ? 0.0 : frac,
+                    minHeight: 8,
+                    backgroundColor: t.nTile,
+                    valueColor: AlwaysStoppedAnimation(
+                        frac > 0.9 ? Tokens.error : kPodTint),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text('Limit',
+                        style: TextStyle(fontSize: 11.5, color: t.nInk3)),
+                    for (final v in _limits)
+                      SortChip(
+                        label: v == 0 ? 'None' : '$v GB',
+                        active: limit == v,
+                        onTap: () => prefs(limitGb: v),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 20),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _Switch(
+                label: 'Delete when played',
+                value: st.podDlWhenPlayed,
+                onChanged: (v) => prefs(whenPlayed: v),
+              ),
+              _Switch(
+                label: 'Auto-download on Wi-Fi only',
+                value: st.podDlWifiOnly,
+                onChanged: (v) => prefs(wifiOnly: v),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A labelled switch at the size the panels here want. Material's SwitchListTile
+/// is a 56px row; these sit four to a card.
+class _Switch extends StatelessWidget {
+  const _Switch({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: () => onChanged(!value),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Transform.scale(
+              scale: 0.7,
+              child: Switch(value: value, onChanged: onChanged),
+            ),
+            const SizedBox(width: 4),
+            Text(label, style: TextStyle(fontSize: 12, color: t.nInk2)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ----------------------------------------------------------------- Trends --
+
+/// The baked directory. Not a search of the world: three dozen feeds chosen up
+/// front, so the page has something to show on a first run when nothing is
+/// subscribed — which is the one moment a podcast section is otherwise an
+/// empty box with a "paste an RSS URL" prompt in it. The box over the grid
+/// searches those, by name, author or category.
+class _Trends extends StatelessWidget {
+  const _Trends({required this.controller, required this.st});
+
+  final MusicController controller;
+  final MusicState st;
+
+  @override
+  Widget build(BuildContext context) {
+    if (st.podTrendsLoading && st.podTrends.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return Column(
+      children: [
+        _Toolbar(
+          children: [
+            for (final m in const [('name', 'Name'), ('category', 'Category')])
+              SortChip(
+                label: m.$2,
+                active: st.podTrendsSort == m.$1,
+                onTap: () =>
+                    controller.send(MusicCmd.podSetTrendsSort(mode: m.$1)),
+              ),
+          ],
+        ),
+        Expanded(
+          child: st.podTrends.isEmpty
+              ? MusicEmpty(
+                  icon: Icons.trending_up,
+                  title: st.podQuery.isEmpty
+                      ? 'The directory did not load'
+                      : 'Nothing matches',
+                  body: st.podQuery.isEmpty
+                      ? 'Every feed in it was unreachable. It retries whenever '
+                          'you come back to this tab.'
+                      : 'The directory is three dozen shows, not the whole of '
+                          'podcasting. Paste a feed URL for anything else.',
+                  action: (
+                    'Try again',
+                    () => controller.send(const MusicCmd.podTrendsLoad())
+                  ),
+                )
+              : CardGrid(
+                  min: 190,
+                  children: [
+                    for (final tr in st.podTrends)
+                      _TrendCard(controller: controller, trend: tr),
+                  ],
+                ),
+        ),
+        Pager(
+          page: st.podTrendsPage,
+          pages: st.podTrendsPages,
+          onGo: (p) => controller.send(MusicCmd.podSetTrendsPage(page: p)),
+        ),
+      ],
+    );
+  }
+}
+
+class _TrendCard extends StatelessWidget {
+  const _TrendCard({required this.controller, required this.trend});
+
+  final MusicController controller;
+  final PodTrend trend;
+
+  @override
+  Widget build(BuildContext context) => MusicCard(
+        controller: controller,
+        title: trend.title,
+        subtitle: trend.subscribed
+            ? 'Subscribed'
+            : (trend.author.isEmpty ? 'Preview before subscribing' : trend.author),
+        artKind: 'podcast',
+        artKey: trend.art,
+        fallback: Icons.podcasts,
+        badge: trend.subscribed ? '✓' : null,
+        // Tapping a card you have not subscribed to opens the info card, not a
+        // subscription: the whole point of a directory is deciding.
+        onTap: () => controller.send(
+          MusicCmd.podInfoOpen(podcastId: -1, feedUrl: trend.feedUrl),
+        ),
+        onPlay: trend.subscribed
+            ? null
+            : () => controller
+                .send(MusicCmd.podTrendSubscribe(feedUrl: trend.feedUrl)),
+      );
+}
+
+// -------------------------------------------------------------- show page --
+
+class _ShowPage extends StatefulWidget {
+  const _ShowPage({
+    super.key,
+    required this.controller,
+    required this.st,
+  });
+
+  final MusicController controller;
+  final MusicState st;
+
+  @override
+  State<_ShowPage> createState() => _ShowPageState();
+}
+
+class _ShowPageState extends State<_ShowPage> {
+  bool _settings = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final st = widget.st;
+    final t = context.tokens;
+    final show = st.podDetail;
+    final counts = st.podEpCounts;
+    return ListView(
+      padding: EdgeInsets.zero,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Row(
+            children: [
+              TextButton.icon(
+                icon: const Icon(Icons.arrow_back, size: 18),
+                label: const Text('Back'),
+                onPressed: () => controller.send(const MusicCmd.podBack()),
+              ),
+            ],
+          ),
+        ),
+        if (show != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 8, 24, 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                MusicArt(
+                  controller: controller,
+                  kind: 'podcast',
+                  artKey: show.art,
+                  size: 128,
+                  radius: 12,
+                  fallback: Icons.podcasts,
+                ),
+                const SizedBox(width: 20),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (show.category.isNotEmpty)
+                        Text(show.category.toUpperCase(),
+                            style: TextStyle(
+                                fontSize: 10,
+                                letterSpacing: 1.1,
+                                fontWeight: FontWeight.w700,
+                                color: t.nInk3)),
+                      Text(show.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w700,
+                              color: t.nInk)),
+                      if (show.author.isNotEmpty)
+                        Text(show.author,
+                            style:
+                                TextStyle(fontSize: 12.5, color: t.nInk2)),
+                      const SizedBox(height: 6),
+                      Text(
+                        [
+                          '${show.episodes} episodes',
+                          '${show.unplayed} unplayed',
+                          if (show.latest > 0)
+                            'Updated ${fmtAgo(show.latest)}',
+                        ].join('   ·   '),
+                        style: TextStyle(fontSize: 11.5, color: t.nInk3),
+                      ),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          FilledButton.icon(
+                            icon: const Icon(Icons.play_arrow, size: 18),
+                            label: const Text('Play latest'),
+                            onPressed: show.episodes == 0
+                                ? null
+                                : () => controller.send(
+                                    MusicCmd.podPlayLatest(podcastId: show.id)),
+                          ),
+                          OutlinedButton.icon(
+                            icon: const Icon(Icons.playlist_add, size: 16),
+                            label: const Text('Queue unplayed'),
+                            onPressed: show.unplayed == 0
+                                ? null
+                                : () => controller.send(
+                                    MusicCmd.podQueueAll(podcastId: show.id)),
+                          ),
+                          TextButton.icon(
+                            icon: Icon(
+                                show.pinned
+                                    ? Icons.push_pin
+                                    : Icons.push_pin_outlined,
+                                size: 16,
+                                color: show.pinned ? kPodTint : null),
+                            label: Text(
+                                show.pinned ? 'Pinned to Home' : 'Pin to Home'),
+                            onPressed: () => controller
+                                .send(MusicCmd.podToggleHome(podcastId: show.id)),
+                          ),
+                          TextButton.icon(
+                            icon: Icon(
+                                _settings ? Icons.tune : Icons.tune_outlined,
+                                size: 16),
+                            label: const Text('Settings'),
+                            onPressed: () =>
+                                setState(() => _settings = !_settings),
+                          ),
+                          TextButton.icon(
+                            icon: const Icon(Icons.done_all, size: 16),
+                            label: const Text('Mark all played'),
+                            onPressed: show.unplayed == 0
+                                ? null
+                                : () => confirmThen(
+                                      context,
+                                      controller,
+                                      title: 'Mark the whole show played?',
+                                      body: '${show.unplayed} unplayed '
+                                          'episodes of “${show.title}” are '
+                                          'marked played.',
+                                      action: 'Mark played',
+                                      cmd: MusicCmd.podMarkAllPlayed(
+                                          podcastId: show.id),
+                                    ),
+                          ),
+                          IconButton(
+                            iconSize: 18,
+                            tooltip: 'Refresh this feed',
+                            icon: const Icon(Icons.refresh),
+                            onPressed: () => controller
+                                .send(MusicCmd.podRefreshOne(podcastId: show.id)),
+                          ),
+                          IconButton(
+                            iconSize: 18,
+                            tooltip: 'More',
+                            icon: const Icon(Icons.more_horiz),
+                            onPressed: () => _podMenu(context, controller, show),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (show != null && show.description.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+            child: Text(
+              show.description,
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12, height: 1.5, color: t.nInk2),
+            ),
+          ),
+        if (_settings && show != null)
+          _ShowSettings(controller: controller, show: show),
+        _Toolbar(
+          children: [
+            for (var i = 0; i < kEpFilters.length; i++)
+              SortChip(
+                // `pod_ep_counts` is in the chips' own order — unplayed, in
+                // progress, downloaded, all — so the number beside a filter is
+                // the number of rows that filter would keep.
+                label: i < counts.length
+                    ? '${kEpFilters[i].$2}  ${counts[i]}'
+                    : kEpFilters[i].$2,
+                active: st.podEpFilter == kEpFilters[i].$1,
+                onTap: () => controller
+                    .send(MusicCmd.podSetEpFilter(name: kEpFilters[i].$1)),
+              ),
+            const SizedBox(width: 8),
+            _Search(
+              key: ValueKey('show-search-${show?.id ?? -1}'),
+              value: st.podEpQuery,
+              hint: 'Search this show',
+              onChanged: (q) =>
+                  controller.send(MusicCmd.podSearchEpisodes(query: q)),
+            ),
+            const SizedBox(width: 8),
+            for (final m in const [('new', 'Newest first'), ('old', 'Oldest first')])
+              SortChip(
+                label: m.$2,
+                active: (st.podEpSort == 'old') == (m.$1 == 'old'),
+                onTap: () => controller.send(MusicCmd.podSetEpSort(mode: m.$1)),
+              ),
+          ],
+        ),
+        if (st.podEpisodes.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 32, 24, 32),
+            child: Text(
+              st.podEpFilter == 'all' && st.podEpQuery.isEmpty
+                  ? 'No episodes stored. Refresh the feed to pull them in.'
+                  : 'No episodes match this filter.',
+              style: TextStyle(fontSize: 12.5, color: t.nInk2),
+            ),
+          )
+        else
+          for (final e in st.podEpisodes)
+            EpisodeRow(
+              controller: controller,
+              episode: e,
+              showName: false,
+            ),
+        Pager(
+          page: st.podEpPage,
+          pages: st.podEpPages,
+          onGo: (p) => controller.send(MusicCmd.podSetEpPage(page: p)),
+        ),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+}
+
+/// The four things a show can be told, written together: one panel, one save.
+/// `speed = 0` is "follow the section", which is why the first chip is Section
+/// and not 1.0×.
+class _ShowSettings extends StatelessWidget {
+  const _ShowSettings({required this.controller, required this.show});
+
+  final MusicController controller;
+  final PodcastShow show;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    void save({double? speed, int? intro, bool? auto, int? keep}) =>
+        controller.send(MusicCmd.podShowSettings(
+          podcastId: show.id,
+          speed: speed ?? show.speed,
+          skipIntroS: intro ?? show.skipIntroS,
+          autoDl: auto ?? show.autoDl,
+          keepLast: keep ?? show.keepLast,
+        ));
+    Widget row(String label, List<Widget> chips) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 5),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 150,
+                child: Text(label,
+                    style: TextStyle(fontSize: 12, color: t.nInk3)),
+              ),
+              Expanded(
+                child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: chips),
+              ),
+            ],
+          ),
+        );
+    return Container(
+      margin: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      decoration: BoxDecoration(
+        color: t.nCard,
+        borderRadius: BorderRadius.circular(Tokens.radiusMd),
+        border: Border.all(color: t.nHair),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          row('Speed for this show', [
+            SortChip(
+              label: 'Section',
+              active: show.speed <= 0,
+              onTap: () => save(speed: 0.0),
+            ),
+            for (final v in const [1.0, 1.2, 1.3, 1.5, 1.8, 2.0])
+              SortChip(
+                label: '$v×',
+                active: (show.speed - v).abs() < 0.01,
+                onTap: () => save(speed: v),
+              ),
+          ]),
+          row('Skip intro', [
+            for (final v in const [0, 15, 30, 45, 60, 90])
+              SortChip(
+                label: v == 0 ? 'Off' : '$v s',
+                active: show.skipIntroS == v,
+                onTap: () => save(intro: v),
+              ),
+          ]),
+          row('New episodes', [
+            _Switch(
+              label: 'Download automatically',
+              value: show.autoDl,
+              onChanged: (v) => save(auto: v),
+            ),
+          ]),
+          row('Keep downloaded', [
+            for (final v in const [(0, 'All'), (3, 'Last 3'), (5, 'Last 5'), (10, 'Last 10')])
+              SortChip(
+                label: v.$2,
+                active: show.keepLast == v.$1,
+                onTap: () => save(keep: v.$1),
+              ),
+          ]),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------- episode row ----
+
+/// One episode: how far in it is, when it landed, how much is left, and the
+/// five things you can do to it without opening anything.
+///
+/// The actions are on the row rather than behind a menu because every one of
+/// them is a one-click decision made while skimming — queueing the next three,
+/// burying one you will never play, saving one for a flight.
+class EpisodeRow extends StatefulWidget {
+  const EpisodeRow({
+    super.key,
+    required this.controller,
+    required this.episode,
+    this.showName = true,
+  });
+
+  final MusicController controller;
+  final Episode episode;
+
+  /// The show's name on the meta line. Off on a show page, where every row
+  /// would say the same thing.
+  final bool showName;
+
+  @override
+  State<EpisodeRow> createState() => _EpisodeRowState();
+}
+
+class _EpisodeRowState extends State<EpisodeRow> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final controller = widget.controller;
+    final e = widget.episode;
+    final st = controller.state;
+    final playing =
+        controller.now?.mode == 'podcast' && controller.now?.key == '${e.id}';
+    final saved = e.downloaded.isNotEmpty;
+    final saving = st != null && st.podDlId == e.id;
+    final queued = st != null && st.podQueue.any((q) => q.id == e.id);
+    final part =
+        e.durationS > 0 ? (e.positionS / e.durationS).clamp(0.0, 1.0) : 0.0;
+    final fresh = !e.played &&
+        e.positionS == 0 &&
+        e.published > 0 &&
+        DateTime.now()
+                .difference(
+                    DateTime.fromMillisecondsSinceEpoch(e.published * 1000))
+                .inDays <
+            7;
+
+    Widget act(String tip, IconData icon, VoidCallback? onTap,
+            {bool on = false}) =>
+        IconButton(
+          iconSize: 18,
+          tooltip: tip,
+          isSelected: on,
+          color: on ? kPodTint : null,
+          icon: Icon(icon),
+          onPressed: onTap,
+        );
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: Material(
+        color: _hovered ? t.nHover : Colors.transparent,
+        child: InkWell(
+          onTap: () => controller.send(MusicCmd.podPlay(episodeId: e.id)),
+          child: Opacity(
+            // A played episode stays legible but stops competing: the list is
+            // read for what is left, not for what is done.
+            opacity: e.played ? 0.55 : 1,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 10, 16, 10),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _PlayDisc(
+                    controller: controller,
+                    episode: e,
+                    playing: playing,
+                    progress: e.played ? 1.0 : part,
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                [
+                                  if (widget.showName && e.show_.isNotEmpty)
+                                    e.show_,
+                                  if (e.published > 0) fmtAgo(e.published),
+                                  if (e.durationS > 0)
+                                    e.positionS > 0 && !e.played
+                                        ? '${fmtMins(e.durationS - e.positionS)} left'
+                                        : fmtMins(e.durationS),
+                                ].join('  ·  '),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style:
+                                    TextStyle(fontSize: 11, color: t.nInk2),
+                              ),
+                            ),
+                            if (fresh) const _Tag(text: 'New', tint: kPodTint),
+                            if (saved)
+                              const _Tag(text: 'Saved', tint: Tokens.ok),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          e.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight:
+                                playing ? FontWeight.w700 : FontWeight.w600,
+                            color: playing ? kPodTint : t.nInk,
+                          ),
+                        ),
+                        if (e.description.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 3),
+                            child: Text(
+                              e.description,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style:
+                                  TextStyle(fontSize: 11, color: t.nInk3),
+                            ),
+                          ),
+                        // A save in flight owns the strip: an 80MB episode used
+                        // to download with nothing on screen at all until it
+                        // appeared.
+                        if (saving)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: LinearProgressIndicator(
+                                    value: st.podDlFrac <= 0
+                                        ? null
+                                        : st.podDlFrac.clamp(0.0, 1.0),
+                                    minHeight: 3,
+                                    backgroundColor: t.nHair,
+                                    valueColor:
+                                        const AlwaysStoppedAnimation(kPodTint),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text('${(st.podDlFrac * 100).round()}%',
+                                    style: TextStyle(
+                                        fontSize: 10, color: t.nInk2)),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  act(
+                    'Play next',
+                    Icons.playlist_play,
+                    () => controller
+                        .send(MusicCmd.podQueueNext(episodeId: e.id)),
+                  ),
+                  act(
+                    queued ? 'In the queue' : 'Add to the queue',
+                    queued ? Icons.playlist_add_check : Icons.playlist_add,
+                    () => controller.send(queued
+                        ? MusicCmd.podQueueRemove(episodeId: e.id)
+                        : MusicCmd.podQueueAdd(episodeId: e.id)),
+                    on: queued,
+                  ),
+                  act(
+                    saving
+                        ? 'Saving…'
+                        : (saved ? 'Delete the saved copy' : 'Save for offline'),
+                    saving
+                        ? Icons.downloading
+                        : (saved
+                            ? Icons.delete_outline
+                            : Icons.download_outlined),
+                    saving
+                        ? null
+                        : () => controller.send(
+                              saved
+                                  ? MusicCmd.podRemoveDownload(episodeId: e.id)
+                                  : MusicCmd.podDownload(episodeId: e.id),
+                            ),
+                  ),
+                  act(
+                    e.played ? 'Mark unplayed' : 'Mark played',
+                    e.played ? Icons.check_circle : Icons.check_circle_outline,
+                    () => controller.send(
+                        MusicCmd.podSetPlayed(episodeId: e.id, played: !e.played)),
+                    on: e.played,
+                  ),
+                  act(
+                    'Show notes',
+                    Icons.notes_outlined,
+                    () {
+                      controller.send(MusicCmd.podTranscript(episodeId: e.id));
+                      // The notes half of the docked panel, which shares the
+                      // slot the library's lyrics use.
+                      controller.showPanel('lyrics');
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The play button with the episode's progress drawn round it — the one place
+/// a list can say "you are 40% through this" without spending a row on a bar.
+class _PlayDisc extends StatelessWidget {
+  const _PlayDisc({
+    required this.controller,
+    required this.episode,
+    required this.playing,
+    required this.progress,
+  });
+
+  final MusicController controller;
+  final Episode episode;
+  final bool playing;
+  final double progress;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return SizedBox(
+      width: 44,
+      height: 44,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          if (progress > 0.005)
+            SizedBox(
+              width: 44,
+              height: 44,
+              child: CircularProgressIndicator(
+                value: progress,
+                strokeWidth: 2.5,
+                backgroundColor: t.nHair,
+                valueColor: const AlwaysStoppedAnimation(kPodTint),
+              ),
+            ),
+          IconButton(
+            iconSize: 22,
+            tooltip: playing ? 'Pause' : 'Play',
+            icon: Icon(playing && controller.tickPlaying
+                ? Icons.pause_circle_filled
+                : Icons.play_circle_fill),
+            color: playing ? kPodTint : t.nInk2,
+            onPressed: () => playing
+                ? controller.send(const MusicCmd.playPause())
+                : controller.send(MusicCmd.podPlay(episodeId: episode.id)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Tag extends StatelessWidget {
+  const _Tag({required this.text, required this.tint});
+
+  final String text;
+  final Color tint;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(left: 6),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+          decoration: BoxDecoration(
+            color: tint.withValues(alpha: 0.16),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(text,
+              style: TextStyle(
+                  fontSize: 9.5, fontWeight: FontWeight.w700, color: tint)),
+        ),
+      );
+}
+
+// --------------------------------------------------------------- dialogs ----
 
 /// Import, export and the reset. OPML is how a podcast library moves between
 /// apps, and both directions go through the domain crate's parser so a file
@@ -339,56 +1689,6 @@ Future<void> _more(
       );
       if (ok) await c.send(const MusicCmd.podResetAll());
   }
-}
-
-/// The episode queue, which is the podcast half of what the player bar's
-/// Queue panel is for library tracks. Separate because the two hold different
-/// things — `items` rows on one side, episode ids on the other.
-Future<void> _showQueue(
-    BuildContext context, MusicController c, MusicState st) async {
-  await showDialog<void>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('Episode queue'),
-      content: SizedBox(
-        width: 520,
-        height: 360,
-        child: ListView(
-          children: [
-            for (final e in st.podQueue)
-              ListTile(
-                dense: true,
-                title:
-                    Text(e.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-                subtitle:
-                    Text(e.show_, maxLines: 1, overflow: TextOverflow.ellipsis),
-                onTap: () {
-                  c.send(MusicCmd.podPlay(episodeId: e.id));
-                  Navigator.pop(ctx);
-                },
-                trailing: IconButton(
-                  icon: const Icon(Icons.close, size: 16),
-                  tooltip: 'Remove',
-                  onPressed: () =>
-                      c.send(MusicCmd.podQueueRemove(episodeId: e.id)),
-                ),
-              ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () {
-            c.send(const MusicCmd.podQueueClear());
-            Navigator.pop(ctx);
-          },
-          child: const Text('Clear'),
-        ),
-        FilledButton(
-            onPressed: () => Navigator.pop(ctx), child: const Text('Done')),
-      ],
-    ),
-  );
 }
 
 /// Subscribe by RSS URL. The header's `+ Add` while Podcasts is open.
@@ -425,261 +1725,6 @@ Future<void> addFeed(BuildContext context, MusicController c) async {
   if (trimmed.isNotEmpty) await c.send(MusicCmd.podSubscribe(url: trimmed));
 }
 
-class _Home extends StatelessWidget {
-  const _Home({required this.controller, required this.st});
-
-  final MusicController controller;
-  final MusicState st;
-
-  @override
-  Widget build(BuildContext context) {
-    if (st.podShows.isEmpty) {
-      return MusicEmpty(
-        icon: Icons.podcasts_outlined,
-        title: 'No podcasts yet',
-        body: 'Paste a feed URL and Tulipix will pull the show, its artwork '
-            'and its back catalogue into podcasts.db.',
-        action: ('Add a feed', () => addFeed(context, controller)),
-      );
-    }
-    // "Your shows" is the shows you PINNED, not the first page of the
-    // subscription list. Before, Home and Subscribed drew the same rail from
-    // the same rows and Home had no reason to exist.
-    final pinned = st.podHome;
-    return ListView(
-      children: [
-        Rail(
-          title: 'Your shows',
-          height: 210,
-          action: (
-            'See all',
-            () => controller.send(const MusicCmd.podSetTab(name: 'subscribed'))
-          ),
-          children: [
-            for (final s in pinned)
-              MusicCard(
-                controller: controller,
-                title: s.title,
-                subtitle: s.author,
-                artKind: 'podcast',
-                artKey: s.art,
-                fallback: Icons.podcasts,
-                badge: s.unplayed > 0 ? '${s.unplayed}' : null,
-                onTap: () => controller.send(MusicCmd.podOpen(podcastId: s.id)),
-                onMenu: () => _podMenu(context, controller, s),
-              ),
-          ],
-        ),
-        if (pinned.isEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-            child: Text(
-              'Nothing pinned yet — open Subscribed and pin the shows you '
-              'actually follow, and they will live here.',
-              style: TextStyle(fontSize: 12, color: context.tokens.nInk2),
-            ),
-          ),
-        // Pinning forty shows makes a rail nobody reaches the end of.
-        if (st.podHomePages > 1)
-          Pager(
-            page: st.podHomePage,
-            pages: st.podHomePages,
-            onGo: (p) => controller.send(MusicCmd.podSetHomePage(page: p)),
-          ),
-        if (st.podLatest.isNotEmpty) ...[
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 24, 24, 8),
-            child: Text('Latest episodes',
-                style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    color: context.tokens.nInk)),
-          ),
-          for (final e in st.podLatest)
-            EpisodeRow(controller: controller, episode: e),
-        ],
-        const SizedBox(height: 24),
-      ],
-    );
-  }
-}
-
-class _Subscribed extends StatelessWidget {
-  const _Subscribed({required this.controller, required this.st});
-
-  final MusicController controller;
-  final MusicState st;
-
-  @override
-  Widget build(BuildContext context) {
-    if (st.podShows.isEmpty) {
-      return MusicEmpty(
-        icon: Icons.podcasts_outlined,
-        title: 'Nothing in this category',
-        body: 'Pick another category, or add a feed.',
-        action: ('Add a feed', () => addFeed(context, controller)),
-      );
-    }
-    return Column(
-      children: [
-        Expanded(
-          child: CardGrid(
-            children: [
-              for (final s in st.podShows)
-                MusicCard(
-                  controller: controller,
-                  title: s.title,
-                  subtitle: '${s.episodes} episodes',
-                  artKind: 'podcast',
-                  artKey: s.art,
-                  fallback: Icons.podcasts,
-                  badge: s.unplayed > 0 ? '${s.unplayed}' : null,
-                  onTap: () =>
-                      controller.send(MusicCmd.podOpen(podcastId: s.id)),
-                  onMenu: () => _podMenu(context, controller, s),
-                ),
-            ],
-          ),
-        ),
-        Pager(
-          page: st.podPage,
-          pages: st.podPages,
-          onGo: (p) => controller.send(MusicCmd.podSetPage(page: p)),
-        ),
-      ],
-    );
-  }
-}
-
-class _Downloads extends StatelessWidget {
-  const _Downloads({required this.controller, required this.st});
-
-  final MusicController controller;
-  final MusicState st;
-
-  @override
-  Widget build(BuildContext context) {
-    if (st.podDownloads.isEmpty) {
-      return const MusicEmpty(
-        icon: Icons.download_outlined,
-        title: 'Nothing saved offline',
-        body: 'Download an episode from a show page and it lands here, '
-            'playable with no network at all.',
-      );
-    }
-    return Column(
-      children: [
-        Row(
-          children: [
-            const Spacer(),
-            TextButton.icon(
-              icon: const Icon(Icons.delete_sweep_outlined, size: 16),
-              label: const Text('Delete all'),
-              onPressed: () => confirmThen(
-                context,
-                controller,
-                title: 'Delete every downloaded episode?',
-                body: 'The audio files are removed from disk. The episodes '
-                    'stay in their feeds and can be downloaded again.',
-                action: 'Delete all',
-                cmd: const MusicCmd.podClearDownloads(),
-              ),
-            ),
-            const SizedBox(width: 12),
-          ],
-        ),
-        Expanded(
-          child: ListView(
-            children: [
-              for (final e in st.podDownloads)
-                EpisodeRow(controller: controller, episode: e),
-            ],
-          ),
-        ),
-        Pager(
-          page: st.podPage,
-          pages: st.podPages,
-          onGo: (p) => controller.send(MusicCmd.podSetPage(page: p)),
-        ),
-      ],
-    );
-  }
-}
-
-/// The baked directory. Not a search: thirty-six feeds chosen up front, so the
-/// page has something to show on a first run when nothing is subscribed --
-/// which is the one moment a podcast section is otherwise an empty box with an
-/// "paste an RSS URL" prompt in it.
-class _Trends extends StatelessWidget {
-  const _Trends({required this.controller, required this.st});
-
-  final MusicController controller;
-  final MusicState st;
-
-  @override
-  Widget build(BuildContext context) {
-    if (st.podTrendsLoading && st.podTrends.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (st.podTrends.isEmpty) {
-      return MusicEmpty(
-        icon: Icons.trending_up,
-        title: 'The directory did not load',
-        body: 'Every feed in it was unreachable. It retries whenever you come '
-            'back to this tab.',
-        action: (
-          'Try again',
-          () => controller.send(const MusicCmd.podTrendsLoad())
-        ),
-      );
-    }
-    return Column(
-      children: [
-        Expanded(
-          child: CardGrid(
-            children: [
-              for (final tr in st.podTrends)
-                _TrendCard(controller: controller, trend: tr),
-            ],
-          ),
-        ),
-        Pager(
-          page: st.podTrendsPage,
-          pages: st.podTrendsPages,
-          onGo: (p) => controller.send(MusicCmd.podSetTrendsPage(page: p)),
-        ),
-      ],
-    );
-  }
-}
-
-class _TrendCard extends StatelessWidget {
-  const _TrendCard({required this.controller, required this.trend});
-
-  final MusicController controller;
-  final PodTrend trend;
-
-  @override
-  Widget build(BuildContext context) => MusicCard(
-        controller: controller,
-        title: trend.title,
-        subtitle: trend.author.isEmpty ? 'Podcast' : trend.author,
-        artKind: 'podcast',
-        artKey: trend.art,
-        fallback: Icons.podcasts,
-        badge: trend.subscribed ? '✓' : null,
-        // Tapping a card you have not subscribed to opens the info card, not a
-        // subscription: the whole point of a directory is deciding.
-        onTap: () => controller.send(
-          MusicCmd.podInfoOpen(podcastId: -1, feedUrl: trend.feedUrl),
-        ),
-        onPlay: trend.subscribed
-            ? null
-            : () => controller
-                .send(MusicCmd.podTrendSubscribe(feedUrl: trend.feedUrl)),
-      );
-}
-
 /// Everything you can do to a subscribed show from a card.
 Future<void> _podMenu(
     BuildContext context, MusicController c, PodcastShow s) async {
@@ -690,7 +1735,7 @@ Future<void> _podMenu(
       children: [
         for (final o in [
           ('info', 'Show info'),
-          ('pin', 'Pin to Home / unpin'),
+          ('pin', s.pinned ? 'Unpin from Home' : 'Pin to Home'),
           ('art', 'Choose artwork…'),
           ('refresh', 'Refresh this feed'),
           ('unsub', 'Unsubscribe…'),
@@ -838,22 +1883,36 @@ class _InfoCard extends StatelessWidget {
                           FilledButton.icon(
                             icon: const Icon(Icons.open_in_new, size: 16),
                             label: const Text('Open show'),
-                            onPressed: () {
-                              controller.send(const MusicCmd.podInfoClose());
-                              controller.send(
+                            onPressed: () async {
+                              await controller
+                                  .send(const MusicCmd.podInfoClose());
+                              await controller.send(
                                   MusicCmd.podOpen(podcastId: info.podcastId));
                             },
                           )
-                        else
+                        else ...[
+                          // Hearing the newest episode is the honest way to
+                          // decide, and it costs nothing: subscribing to find
+                          // out and unsubscribing again is the thing this
+                          // replaces.
+                          OutlinedButton.icon(
+                            icon: const Icon(Icons.play_arrow, size: 16),
+                            label: const Text('Preview'),
+                            onPressed: () => controller.send(
+                                MusicCmd.podPreview(feedUrl: info.feedUrl)),
+                          ),
+                          const SizedBox(width: 8),
                           FilledButton.icon(
                             icon: const Icon(Icons.add, size: 16),
                             label: const Text('Subscribe'),
-                            onPressed: () {
-                              controller.send(MusicCmd.podTrendSubscribe(
+                            onPressed: () async {
+                              await controller.send(MusicCmd.podTrendSubscribe(
                                   feedUrl: info.feedUrl));
-                              controller.send(const MusicCmd.podInfoClose());
+                              await controller
+                                  .send(const MusicCmd.podInfoClose());
                             },
                           ),
+                        ],
                       ],
                     ),
                   ],
@@ -897,382 +1956,5 @@ Future<void> _editCategory(
   text.dispose();
   if (next != null) {
     await c.send(MusicCmd.podInfoSetCategory(name: next.trim()));
-  }
-}
-
-/// Show notes. A side panel rather than a dialog because it is read while the
-/// episode plays, and the transport has to stay reachable.
-class _TranscriptPanel extends StatelessWidget {
-  const _TranscriptPanel({required this.controller, required this.st});
-
-  final MusicController controller;
-  final MusicState st;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Align(
-      alignment: Alignment.centerRight,
-      child: Container(
-        width: 380,
-        margin: const EdgeInsets.all(12),
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          color: t.modalSolid,
-          borderRadius: BorderRadius.circular(Tokens.radiusLg),
-          border: Border.all(color: t.outline),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(st.podTranscriptTitle,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: t.nInk)),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close, size: 18),
-                  tooltip: 'Close',
-                  onPressed: () =>
-                      controller.send(const MusicCmd.podTranscriptClose()),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Expanded(
-              child: SingleChildScrollView(
-                child: SelectableText(
-                  st.podTranscriptText,
-                  style: TextStyle(fontSize: 12, height: 1.6, color: t.nInk2),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ShowPage extends StatelessWidget {
-  const _ShowPage({required this.controller, required this.st});
-
-  final MusicController controller;
-  final MusicState st;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    final show = st.podDetail;
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-          child: Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back),
-                tooltip: 'Back',
-                onPressed: () => controller.send(const MusicCmd.podBack()),
-              ),
-              const Spacer(),
-              // The same five actions the card menu has, because a show page
-              // is where you are when you decide to pin or re-art one.
-              TextButton.icon(
-                icon: const Icon(Icons.push_pin_outlined, size: 16),
-                label: const Text('Pin to Home'),
-                onPressed: show == null
-                    ? null
-                    : () => controller
-                        .send(MusicCmd.podToggleHome(podcastId: show.id)),
-              ),
-              TextButton.icon(
-                icon: const Icon(Icons.image_outlined, size: 16),
-                label: const Text('Artwork'),
-                onPressed: show == null
-                    ? null
-                    : () async {
-                        final path = await pickFile(
-                          label: 'Images',
-                          extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'],
-                        );
-                        if (path != null) {
-                          await controller.send(MusicCmd.podSetThumb(
-                              podcastId: show.id, path: path));
-                        }
-                      },
-              ),
-              TextButton.icon(
-                icon: const Icon(Icons.refresh, size: 16),
-                label: const Text('Refresh'),
-                onPressed: show == null
-                    ? null
-                    : () => controller
-                        .send(MusicCmd.podRefreshOne(podcastId: show.id)),
-              ),
-              TextButton.icon(
-                icon: const Icon(Icons.link_off, size: 16),
-                label: const Text('Unsubscribe'),
-                onPressed: show == null
-                    ? null
-                    : () => confirmThen(
-                          context,
-                          controller,
-                          title: 'Unsubscribe from this show?',
-                          body: '“${show.title}” and its episode list go. '
-                              'Anything downloaded from it stays on disk.',
-                          action: 'Unsubscribe',
-                          cmd: MusicCmd.podUnsubscribe(podcastId: show.id),
-                        ),
-              ),
-            ],
-          ),
-        ),
-        if (show != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 8, 24, 12),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                MusicArt(
-                  controller: controller,
-                  kind: 'podcast',
-                  artKey: show.art,
-                  size: 128,
-                  radius: 12,
-                  fallback: Icons.podcasts,
-                ),
-                const SizedBox(width: 20),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(show.title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.w700,
-                              color: t.nInk)),
-                      Text(
-                        [
-                          show.author,
-                          show.category,
-                          '${show.episodes} episodes'
-                        ].where((s) => s.isNotEmpty).join(' · '),
-                        style: TextStyle(fontSize: 12, color: t.nInk2),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        show.description,
-                        maxLines: 4,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 12, color: t.nInk2),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        Row(
-          children: [
-            const SizedBox(width: 24),
-            MusicChip(
-              label: 'Newest first',
-              active: st.podEpSort != 'old',
-              tint: const Color(0xFFF97316),
-              tint2: const Color(0xFFEC4899),
-              onTap: () =>
-                  controller.send(const MusicCmd.podSetEpSort(mode: 'new')),
-            ),
-            const SizedBox(width: 6),
-            MusicChip(
-              label: 'Oldest first',
-              active: st.podEpSort == 'old',
-              tint: const Color(0xFFF97316),
-              tint2: const Color(0xFFEC4899),
-              onTap: () =>
-                  controller.send(const MusicCmd.podSetEpSort(mode: 'old')),
-            ),
-          ],
-        ),
-        Expanded(
-          child: st.podEpisodes.isEmpty
-              ? const MusicEmpty(
-                  icon: Icons.inbox_outlined,
-                  title: 'No episodes stored',
-                  body: 'Refresh the feed to pull them in.',
-                )
-              : ListView(
-                  children: [
-                    for (final e in st.podEpisodes)
-                      EpisodeRow(controller: controller, episode: e),
-                  ],
-                ),
-        ),
-        Pager(
-          page: st.podEpPage,
-          pages: st.podEpPages,
-          onGo: (p) => controller.send(MusicCmd.podSetEpPage(page: p)),
-        ),
-      ],
-    );
-  }
-}
-
-/// One episode: art, title, date and length, and the three things you can do
-/// to it — play, save offline, queue.
-class EpisodeRow extends StatelessWidget {
-  const EpisodeRow({
-    super.key,
-    required this.controller,
-    required this.episode,
-  });
-
-  final MusicController controller;
-  final Episode episode;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    final e = episode;
-    final playing =
-        controller.now?.mode == 'podcast' && controller.now?.key == '${e.id}';
-    final saved = e.downloaded.isNotEmpty;
-    final st = controller.state;
-    final saving = st != null && st.podDlId == e.id;
-    return InkWell(
-      onTap: () => controller.send(MusicCmd.podPlay(episodeId: e.id)),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            MusicArt(
-              controller: controller,
-              kind: 'podcast',
-              artKey: e.art,
-              size: 56,
-              radius: 8,
-              fallback: Icons.podcasts,
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    e.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: playing ? FontWeight.w700 : FontWeight.w600,
-                      color: playing ? Tokens.secMusic : t.nInk,
-                    ),
-                  ),
-                  Text(
-                    [
-                      e.show_,
-                      fmtDate(e.published),
-                      if (e.durationS > 0) fmtClock(e.durationS),
-                      if (saved) 'saved',
-                    ].where((s) => s.isNotEmpty).join(' · '),
-                    style: TextStyle(fontSize: 11, color: t.nInk2),
-                  ),
-                  if (e.description.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(
-                        e.description,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 11, color: t.nInk2),
-                      ),
-                    ),
-                  // A save in flight owns the strip: an 80MB episode used to
-                  // download with nothing on screen at all until it appeared.
-                  if (saving)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: LinearProgressIndicator(
-                              value: st.podDlFrac <= 0
-                                  ? null
-                                  : st.podDlFrac.clamp(0.0, 1.0),
-                              minHeight: 3,
-                              backgroundColor: t.nHair,
-                              valueColor: const AlwaysStoppedAnimation(
-                                  Color(0xFFF97316)),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text('${(st.podDlFrac * 100).round()}%',
-                              style: TextStyle(fontSize: 10, color: t.nInk2)),
-                        ],
-                      ),
-                    )
-                  // Where you got to last time. Only drawn once there is
-                  // something to draw — a bar at zero is noise on every row.
-                  else if (e.positionS > 0 && e.durationS > 0)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: LinearProgressIndicator(
-                        value: (e.positionS / e.durationS).clamp(0.0, 1.0),
-                        minHeight: 2,
-                        backgroundColor: t.nHair,
-                        valueColor:
-                            const AlwaysStoppedAnimation(Tokens.secMusic),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            // Show notes. Feeds carry them on nearly every episode and they are
-            // the only place a chapter list or a link ever appears, so the two
-            // lines of preview above are not the whole of it.
-            IconButton(
-              iconSize: 18,
-              tooltip: 'Show notes',
-              icon: const Icon(Icons.notes_outlined),
-              onPressed: () =>
-                  controller.send(MusicCmd.podTranscript(episodeId: e.id)),
-            ),
-            IconButton(
-              iconSize: 18,
-              tooltip: 'Add to the episode queue',
-              icon: const Icon(Icons.playlist_add),
-              onPressed: () =>
-                  controller.send(MusicCmd.podQueueAdd(episodeId: e.id)),
-            ),
-            IconButton(
-              iconSize: 18,
-              tooltip: saving
-                  ? 'Saving…'
-                  : (saved ? 'Delete the saved copy' : 'Save for offline'),
-              icon: Icon(saving
-                  ? Icons.downloading
-                  : (saved ? Icons.delete_outline : Icons.download_outlined)),
-              onPressed: saving
-                  ? null
-                  : () => controller.send(
-                        saved
-                            ? MusicCmd.podRemoveDownload(episodeId: e.id)
-                            : MusicCmd.podDownload(episodeId: e.id),
-                      ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }

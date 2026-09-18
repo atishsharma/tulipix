@@ -26,6 +26,9 @@
 //  - The accessibility labels, which have no visible symptom at all.
 
 import 'dart:typed_data' show Float64List;
+// `Vec<i64>` crosses as frb's own Int64List, not the SDK's — the two are
+// different classes and only this one is assignable to a generated field.
+import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -136,6 +139,8 @@ MusicState _state({
       shuffle: false,
       repeat: '',
       sleepMin: sleepMin,
+      sleepEndOfItem: false,
+      sleepFade: true,
       queue: queue,
       queueSuggested: 0,
       lyrics: lyrics,
@@ -261,6 +266,21 @@ MusicState _state({
       podDlId: podDlId,
       podDlFrac: podDlFrac,
       podDlTitle: podDlTitle,
+      podContinue: const [],
+      podInbox: const [],
+      podInboxFilter: 'unplayed',
+      podInboxCounts: Int64List.fromList(const [0, 0, 0, 0]),
+      podNewCount: 0,
+      podDlCount: 0,
+      podSubCount: 0,
+      podEpFilter: 'all',
+      podEpQuery: '',
+      podEpCounts: Int64List.fromList(const [0, 0, 0, 0]),
+      podDlBytes: 0,
+      podDlLimitGb: 6,
+      podDlWhenPlayed: false,
+      podDlWifiOnly: true,
+      podQueueAuto: false,
       bookTab: '',
       books: const [],
       bookDetailOpen: false,
@@ -269,6 +289,16 @@ MusicState _state({
       bookBookmarks: const [],
       bookSpeed: 0.0,
       bookResumeIndex: 0,
+      bookSort: 'recent',
+      bookGroup: 'none',
+      bookQuery: '',
+      bookHits: const [],
+      bookStats: const ListenStats(
+          leftS: 0.0, weekS: 0.0, streakDays: 0, finishedYear: 0),
+      bookSkipS: 30,
+      bookRewindPause: true,
+      bookTrimSilence: false,
+      bookBoostVoices: false,
       radioTab: '',
       radioCategories: const [],
       radioCatOpen: false,

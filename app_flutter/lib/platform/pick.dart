@@ -14,6 +14,12 @@
 // Cancelling returns null everywhere. None of these throw: a picker the desktop
 // portal refuses to open should leave the button looking unpressed, not put a
 // stack trace on screen.
+//
+// Not in lib/design, where it started. `lib/design` is handed what it draws and
+// reaches into nothing (design_layering_test enforces that), because every
+// section imports skin.dart and a bridge import there hands the bridge to all
+// of them. This file is a native shim, not a drawing file, and the sections
+// that need a picker import it directly.
 
 import 'package:flutter/foundation.dart' show debugPrint;
 

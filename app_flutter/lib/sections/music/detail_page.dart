@@ -13,7 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_accent.dart';

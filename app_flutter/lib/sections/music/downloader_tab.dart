@@ -15,7 +15,7 @@ import 'package:flutter/material.dart';
 // `playList` takes the former.
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/mdl.dart';

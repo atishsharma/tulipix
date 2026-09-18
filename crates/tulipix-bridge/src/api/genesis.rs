@@ -1400,8 +1400,8 @@ mod tests {
 
     #[test]
     fn the_default_topics_are_the_two_worth_searching() {
-        let on: Vec<&str> =
-            default_topics().iter().filter(|t| t.on).map(|t| t.code.as_str()).collect();
+        let topics = default_topics();
+        let on: Vec<&str> = topics.iter().filter(|t| t.on).map(|t| t.code.as_str()).collect();
         assert_eq!(on, ["libgen", "fiction"]);
     }
 

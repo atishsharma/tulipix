@@ -9,7 +9,6 @@ import 'dart:math' show Random;
 
 import 'package:flutter/material.dart';
 
-import '../../../design/clock.dart';
 import '../../../design/tokens.dart';
 import '../../../src/rust/api/music.dart';
 import '../music_controller.dart';

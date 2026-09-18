@@ -3,7 +3,7 @@
 //
 // There was a one-line path prompt here too, which every import and export
 // used, because the shell was supposed to own file dialogs one day. It does
-// now — `lib/design/pick.dart` — so the prompt is gone and the callers open a
+// now — `lib/platform/pick.dart` — so the prompt is gone and the callers open a
 // native chooser instead.
 
 import 'package:flutter/material.dart';

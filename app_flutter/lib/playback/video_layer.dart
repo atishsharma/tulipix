@@ -27,7 +27,7 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
-import '../design/pick.dart';
+import '../platform/pick.dart';
 import '../design/tokens.dart';
 import '../shell/window.dart';
 import '../src/rust/api/videos.dart';

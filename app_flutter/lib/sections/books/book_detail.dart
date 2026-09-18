@@ -9,7 +9,7 @@ import 'package:flutter/material.dart';
 
 import '../../design/skin.dart';
 
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../src/rust/api/books.dart';
 import 'book_theme.dart';
 import 'books_controller.dart';

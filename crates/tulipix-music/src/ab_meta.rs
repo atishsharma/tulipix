@@ -81,22 +81,88 @@ pub async fn ensure_tables(pool: &SqlitePool) {
     .await;
     // Added after the table shipped; the error on an existing column is the
     // expected outcome, not a failure.
-    let _ = sqlx::query("ALTER TABLE audiobook_meta ADD COLUMN title TEXT")
-        .execute(pool)
-        .await;
+    for sql in [
+        "ALTER TABLE audiobook_meta ADD COLUMN title TEXT",
+        // Who read it, which is half of what picking an audiobook is about and
+        // is never the author.
+        "ALTER TABLE audiobook_meta ADD COLUMN narrator TEXT",
+        // The series and the number in it. Empty series = a standalone book;
+        // `series_no` is only meaningful beside a non-empty series.
+        "ALTER TABLE audiobook_meta ADD COLUMN series TEXT",
+        "ALTER TABLE audiobook_meta ADD COLUMN series_no INTEGER NOT NULL DEFAULT 0",
+    ] {
+        let _ = sqlx::query(sql).execute(pool).await;
+    }
 }
 
-/// folder → (title, author), whatever has been resolved so far.
-pub async fn load_meta(pool: &SqlitePool) -> HashMap<String, (String, String)> {
-    sqlx::query_as::<_, (String, Option<String>, String)>(
-        "SELECT folder, title, author FROM audiobook_meta",
+/// Everything the side tables know about one book. Nothing here comes off
+/// disk: the chapters, the length and the progress are queried per folder, and
+/// this is the identity the lookup (or the user) put on top of them.
+#[derive(Debug, Clone, Default)]
+pub struct BookDetails {
+    pub title: String,
+    pub author: String,
+    pub narrator: String,
+    pub series: String,
+    pub series_no: i64,
+}
+
+/// folder → everything resolved so far.
+pub async fn load_details(pool: &SqlitePool) -> HashMap<String, BookDetails> {
+    sqlx::query_as::<_, (String, Option<String>, String, Option<String>, Option<String>, i64)>(
+        "SELECT folder, title, author, narrator, series, series_no FROM audiobook_meta",
     )
     .fetch_all(pool)
     .await
     .unwrap_or_default()
     .into_iter()
-    .map(|(f, t, a)| (f, (t.unwrap_or_default(), a)))
+    .map(|(f, t, a, n, se, no)| {
+        (
+            f,
+            BookDetails {
+                title: t.unwrap_or_default(),
+                author: a,
+                narrator: n.unwrap_or_default(),
+                series: se.unwrap_or_default(),
+                series_no: no,
+            },
+        )
+    })
     .collect()
+}
+
+/// Write the details the user typed. Empty strings clear a field rather than
+/// leaving the lookup's guess in place — "no narrator" has to be sayable.
+pub async fn set_details(
+    pool: &SqlitePool,
+    folder: &str,
+    d: &BookDetails,
+) -> Result<()> {
+    ensure_tables(pool).await;
+    sqlx::query(
+        "INSERT INTO audiobook_meta (folder, author, title, narrator, series, series_no) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+         ON CONFLICT(folder) DO UPDATE SET \
+             author = ?2, title = ?3, narrator = ?4, series = ?5, series_no = ?6",
+    )
+    .bind(folder)
+    .bind(&d.author)
+    .bind(&d.title)
+    .bind(&d.narrator)
+    .bind(&d.series)
+    .bind(d.series_no)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// folder → (title, author), whatever has been resolved so far.
+pub async fn load_meta(pool: &SqlitePool) -> HashMap<String, (String, String)> {
+    load_details(pool)
+        .await
+        .into_iter()
+        .map(|(f, d)| (f, (d.title, d.author)))
+        .collect()
 }
 
 /// folder → cover path (user-chosen, or the `_net.jpg` a lookup wrote).

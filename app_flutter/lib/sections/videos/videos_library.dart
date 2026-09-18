@@ -7,7 +7,7 @@
 
 import 'package:flutter/material.dart';
 
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/videos.dart';
 import 'videos_controller.dart';

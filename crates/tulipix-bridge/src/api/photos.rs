@@ -1231,6 +1231,9 @@ mod tests {
             trashed: false,
             width: 0,
             height: 0,
+            stack_size: 0,
+            stack_id: 0,
+            live: false,
         };
         // May, May, April, then May again (out of order): four tiles, three
         // groups — a date-sorted grid never produces the fourth case, but a

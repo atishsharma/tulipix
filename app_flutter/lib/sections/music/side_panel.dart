@@ -15,12 +15,14 @@ import 'package:flutter/material.dart';
 import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
+import 'audiobooks_tab.dart' show addBookmark, editBookmark, kBookTint;
 import 'meta_manager.dart';
 import 'lyrics_timer.dart';
 import 'music_controller.dart';
 import 'music_dialogs.dart';
 import 'music_widgets.dart';
 import 'player_widgets.dart';
+import 'podcasts_tab.dart' show kPodTint;
 import 'music_motion.dart';
 import 'word_search.dart';
 import 'youtube/yt_card.dart' show YtThumb, ytRose;
@@ -103,11 +105,7 @@ class SidePanel extends StatelessWidget {
                   children: [
                     _Tabs(controller: controller),
                     const SizedBox(height: 12),
-                    Expanded(
-                      child: which == 'lyrics'
-                          ? _Lyrics(controller: controller)
-                          : _Queue(controller: controller),
-                    ),
+                    Expanded(child: _body(controller, which)),
                   ],
                 ),
                 ),
@@ -120,6 +118,24 @@ class SidePanel extends StatelessWidget {
   }
 }
 
+/// What the panel holds, which is a question about the section as much as
+/// about the chip: a podcast has a queue and show notes where an album has a
+/// queue and words, and a book has neither — it has bookmarks.
+Widget _body(MusicController controller, String which) {
+  switch (controller.view) {
+    case 'podcasts':
+      return which == 'lyrics'
+          ? _Notes(controller: controller)
+          : _PodQueue(controller: controller);
+    case 'audiobooks':
+      return _BookPanel(controller: controller);
+    default:
+      return which == 'lyrics'
+          ? _Lyrics(controller: controller)
+          : _Queue(controller: controller);
+  }
+}
+
 class _Tabs extends StatelessWidget {
   const _Tabs({required this.controller});
 
@@ -129,34 +145,39 @@ class _Tabs extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final which = controller.panel;
+    final pod = controller.view == 'podcasts';
+    final book = controller.view == 'audiobooks';
     // The two chips share the row rather than huddling at its left end: they
     // are this panel's tabs, and a tab that is 90px wide in a 432px column
-    // reads as a button someone forgot to lay out.
+    // reads as a button someone forgot to lay out. A book has one view, not
+    // two, so its row is one chip wide.
     return Row(
       children: [
         Expanded(
           child: MusicChip(
-            icon: Icons.queue_music,
-            label: 'Queue',
-            active: which == 'queue',
+            icon: book ? Icons.bookmarks_outlined : Icons.queue_music,
+            label: book ? 'Bookmarks' : 'Queue',
+            active: which == 'queue' || book,
             tint: const Color(0xFF3B82F6),
             tint2: const Color(0xFF6366F1),
             expand: true,
             onTap: () => controller.showPanel('queue'),
           ),
         ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: MusicChip(
-            icon: Icons.lyrics_outlined,
-            label: 'Lyrics',
-            active: which == 'lyrics',
-            tint: const Color(0xFFEC4899),
-            tint2: const Color(0xFF8B5CF6),
-            expand: true,
-            onTap: () => controller.showPanel('lyrics'),
+        if (!book) ...[
+          const SizedBox(width: 8),
+          Expanded(
+            child: MusicChip(
+              icon: pod ? Icons.notes_outlined : Icons.lyrics_outlined,
+              label: pod ? 'Notes' : 'Lyrics',
+              active: which == 'lyrics',
+              tint: const Color(0xFFEC4899),
+              tint2: const Color(0xFF8B5CF6),
+              expand: true,
+              onTap: () => controller.showPanel('lyrics'),
+            ),
           ),
-        ),
+        ],
         const SizedBox(width: 8),
         SizedBox(
           width: 30,
@@ -719,6 +740,492 @@ class _Nudge extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+// ------------------------------------------------- podcasts: the queue -----
+
+/// The episode queue, docked.
+///
+/// It used to be a dialog off the sub-tab row, which is the wrong shape for a
+/// list you reorder while something is playing: the dialog covered the row it
+/// was launched from, and closing it to reach the transport lost your place.
+class _PodQueue extends StatelessWidget {
+  const _PodQueue({required this.controller});
+
+  final MusicController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final st = controller.state;
+    final queue = st?.podQueue ?? const <Episode>[];
+    final left = queue.fold<double>(
+        0, (n, e) => n + (e.durationS - e.positionS).clamp(0.0, e.durationS));
+    return Column(
+      children: [
+        Row(
+          children: [
+            Text(
+              queue.isEmpty
+                  ? 'Up next'
+                  : 'Up next · ${queue.length} · ${fmtMins(left)}',
+              style: TextStyle(
+                fontFamily: Tokens.fontFamily,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: t.nInk2,
+              ),
+            ),
+            const Spacer(),
+            if (queue.isNotEmpty)
+              TextButton(
+                onPressed: () =>
+                    controller.send(const MusicCmd.podQueueClear()),
+                child: const Text('Clear'),
+              ),
+          ],
+        ),
+        Expanded(
+          child: queue.isEmpty
+              ? const MusicEmpty(
+                  icon: Icons.queue_music_outlined,
+                  title: 'Nothing queued',
+                  body: 'Use Play next or Queue on any episode, or Queue all '
+                      'on the New tab.',
+                )
+              : ReorderableListView.builder(
+                  buildDefaultDragHandles: true,
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  itemCount: queue.length,
+                  // onReorderItem, unlike the deprecated onReorder, already
+                  // accounts for the lifted row.
+                  onReorderItem: (from, to) =>
+                      controller.send(MusicCmd.podQueueMove(from: from, to: to)),
+                  itemBuilder: (_, i) => Padding(
+                    key: ValueKey(queue[i].id),
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: _QueueRow(
+                      controller: controller,
+                      episode: queue[i],
+                    ),
+                  ),
+                ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Row(
+            children: [
+              Transform.scale(
+                scale: 0.7,
+                child: Switch(
+                  value: st?.podQueueAuto ?? false,
+                  onChanged: (v) =>
+                      controller.send(MusicCmd.podSetQueueAuto(auto: v)),
+                ),
+              ),
+              Expanded(
+                child: Text(
+                  'Queue new episodes of pinned shows',
+                  style: TextStyle(fontSize: 11.5, color: t.nInk2),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _QueueRow extends StatelessWidget {
+  const _QueueRow({required this.controller, required this.episode});
+
+  final MusicController controller;
+  final Episode episode;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final e = episode;
+    final now = controller.now?.mode == 'podcast' &&
+        controller.now?.key == '${e.id}';
+    return Material(
+      color: now ? kPodTint.withValues(alpha: 0.12) : t.nCard,
+      borderRadius: BorderRadius.circular(Tokens.radiusMd),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(Tokens.radiusMd),
+        onTap: () => controller.send(MusicCmd.podPlay(episodeId: e.id)),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Row(
+            children: [
+              MusicArt(
+                controller: controller,
+                kind: 'podcast',
+                artKey: e.art,
+                size: 40,
+                radius: 8,
+                fallback: Icons.podcasts,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(e.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: now ? kPodTint : t.nInk)),
+                    Text(
+                      '${e.show_} · ${fmtMins(e.durationS - e.positionS)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 10.5, color: t.nInk2),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                iconSize: 15,
+                tooltip: 'Remove',
+                icon: const Icon(Icons.close),
+                onPressed: () =>
+                    controller.send(MusicCmd.podQueueRemove(episodeId: e.id)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Show notes, beside the list rather than over it. A feed's notes are the only
+/// place a chapter list or a link ever appears, and they are read while the
+/// episode plays — which is why they are not a dialog any more.
+class _Notes extends StatelessWidget {
+  const _Notes({required this.controller});
+
+  final MusicController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final st = controller.state;
+    if (st == null || st.podTranscriptTitle.isEmpty) {
+      return const MusicEmpty(
+        icon: Icons.notes_outlined,
+        title: 'No notes open',
+        body: 'The notes button on any episode row opens what its feed '
+            'carries — a summary, a chapter list, the links mentioned.',
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(st.podTranscriptTitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: t.nInk)),
+            ),
+            IconButton(
+              iconSize: 16,
+              tooltip: 'Close the notes',
+              icon: const Icon(Icons.close),
+              onPressed: () =>
+                  controller.send(const MusicCmd.podTranscriptClose()),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: SingleChildScrollView(
+            child: SelectableText(
+              st.podTranscriptText.isEmpty
+                  ? 'This episode carries no notes.'
+                  : st.podTranscriptText,
+              style: TextStyle(fontSize: 12, height: 1.6, color: t.nInk2),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ----------------------------------------------- audiobooks: bookmarks -----
+
+/// The book half of the panel: where you stand, what you marked, and the four
+/// switches that are about your ears rather than about the book.
+class _BookPanel extends StatelessWidget {
+  const _BookPanel({required this.controller});
+
+  final MusicController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final st = controller.state;
+    if (st == null) return const SizedBox.shrink();
+    final book = st.bookDetail;
+    final marks = st.bookBookmarks;
+    final stats = st.bookStats;
+    return ListView(
+      padding: EdgeInsets.zero,
+      children: [
+        if (book != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(book.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: t.nInk)),
+          ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            color: t.nCard,
+            borderRadius: BorderRadius.circular(Tokens.radiusMd),
+            border: Border.all(color: t.nHair),
+          ),
+          child: Wrap(
+            spacing: 18,
+            runSpacing: 10,
+            children: [
+              _Fig(
+                value: fmtMins(stats.leftS),
+                label: book == null
+                    ? 'left'
+                    : 'left at ${book.speed > 0 ? book.speed : st.bookSpeed}×',
+              ),
+              _Fig(value: fmtMins(stats.weekS), label: 'this week'),
+              _Fig(
+                  value: '${stats.streakDays} '
+                      'day${stats.streakDays == 1 ? '' : 's'}',
+                  label: 'streak'),
+              _Fig(
+                  value: '${stats.finishedYear}', label: 'finished this year'),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            Text('Bookmarks',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: t.nInk)),
+            const SizedBox(width: 8),
+            Text('${marks.length}',
+                style: TextStyle(fontSize: 11, color: t.nInk3)),
+            const Spacer(),
+            TextButton.icon(
+              icon: const Icon(Icons.add, size: 15),
+              label: const Text('Add'),
+              onPressed: controller.now?.mode == 'book'
+                  ? () => addBookmark(context, controller)
+                  : null,
+            ),
+          ],
+        ),
+        if (marks.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Text(
+              'Nothing marked yet. While a book is playing, B saves the exact '
+              'second — and a note says why.',
+              style: TextStyle(fontSize: 11.5, color: t.nInk2),
+            ),
+          ),
+        for (var i = 0; i < marks.length; i++)
+          _BookmarkRow(controller: controller, index: i, mark: marks[i]),
+        const SizedBox(height: 16),
+        Text('This book',
+            style: TextStyle(
+                fontSize: 13, fontWeight: FontWeight.w700, color: t.nInk)),
+        const SizedBox(height: 8),
+        _BookSettings(controller: controller, st: st),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+}
+
+class _Fig extends StatelessWidget {
+  const _Fig({required this.value, required this.label});
+
+  final String value;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(value,
+            style: TextStyle(
+                fontSize: 14, fontWeight: FontWeight.w700, color: t.nInk)),
+        Text(label, style: TextStyle(fontSize: 10.5, color: t.nInk3)),
+      ],
+    );
+  }
+}
+
+class _BookmarkRow extends StatelessWidget {
+  const _BookmarkRow({
+    required this.controller,
+    required this.index,
+    required this.mark,
+  });
+
+  final MusicController controller;
+  final int index;
+  final Bookmark mark;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+      decoration: BoxDecoration(
+        color: t.nCard,
+        borderRadius: BorderRadius.circular(Tokens.radiusMd),
+        border: Border.all(color: t.nHair),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              InkWell(
+                borderRadius: BorderRadius.circular(4),
+                onTap: () =>
+                    controller.send(MusicCmd.bookmarkJump(index: index)),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Text(mark.when,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: kBookTint)),
+                ),
+              ),
+              const Spacer(),
+              IconButton(
+                iconSize: 15,
+                tooltip: 'Play from here',
+                icon: const Icon(Icons.play_arrow),
+                onPressed: () =>
+                    controller.send(MusicCmd.bookmarkJump(index: index)),
+              ),
+              IconButton(
+                iconSize: 15,
+                tooltip: 'Rename, or add a note',
+                icon: const Icon(Icons.edit_outlined),
+                onPressed: () =>
+                    editBookmark(context, controller, index, mark),
+              ),
+              IconButton(
+                iconSize: 15,
+                tooltip: 'Remove',
+                icon: const Icon(Icons.close),
+                onPressed: () =>
+                    controller.send(MusicCmd.bookmarkRemove(index: index)),
+              ),
+            ],
+          ),
+          if (mark.label.isNotEmpty)
+            Text(mark.label,
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: t.nInk)),
+          if (mark.note.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(mark.note,
+                  style: TextStyle(
+                      fontSize: 11, height: 1.4, color: t.nInk2)),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BookSettings extends StatelessWidget {
+  const _BookSettings({required this.controller, required this.st});
+
+  final MusicController controller;
+  final MusicState st;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    void save({int? skip, bool? rewind, bool? trim, bool? boost}) =>
+        controller.send(MusicCmd.bookSettings(
+          skipS: skip ?? st.bookSkipS,
+          rewindPause: rewind ?? st.bookRewindPause,
+          trimSilence: trim ?? st.bookTrimSilence,
+          boostVoices: boost ?? st.bookBoostVoices,
+        ));
+    Widget sw(String label, bool value, ValueChanged<bool> onChanged) => Row(
+          children: [
+            Transform.scale(
+              scale: 0.7,
+              child: Switch(value: value, onChanged: onChanged),
+            ),
+            Expanded(
+              child: Text(label,
+                  style: TextStyle(fontSize: 11.5, color: t.nInk2)),
+            ),
+          ],
+        );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text('Skip back and forward',
+                style: TextStyle(fontSize: 11.5, color: t.nInk3)),
+            const SizedBox(width: 10),
+            for (final v in const [10, 30, 60])
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: SortChip(
+                  label: '$v s',
+                  active: st.bookSkipS == v,
+                  onTap: () => save(skip: v),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        sw('Rewind 5 s after a pause', st.bookRewindPause,
+            (v) => save(rewind: v)),
+        sw('Trim silence', st.bookTrimSilence, (v) => save(trim: v)),
+        sw('Boost voices', st.bookBoostVoices, (v) => save(boost: v)),
+      ],
     );
   }
 }

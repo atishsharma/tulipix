@@ -16,7 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
 import '../../design/motion_clock.dart';
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../design/tokens.dart';
 import '../../playback/audio_deck.dart';
 import '../../playback/video_layer.dart';
@@ -115,12 +115,17 @@ class MusicController extends ChangeNotifier {
     // is unavailable" but a blank landing page. `send` already reports its own
     // failures the same way, and it is also what lets the layout tests run
     // without the native library.
+    // Volume and mute move the players' controls the moment the deck applies
+    // them, and only those: every volume control already rebuilds on [ticks],
+    // as the position readers do.
+    //
+    // OUTSIDE the guard below. It is an in-process ValueNotifier with nothing
+    // native under it, and it used to sit after `start()` inside the try — so
+    // on any machine where the deck cannot start, the controls stopped
+    // following the deck and nothing said why.
+    audioLevel.addListener(_tickOnly);
     try {
       AudioDeck.instance.start();
-      // Volume and mute move the players' controls the moment the deck
-      // applies them, and only those: every volume control already rebuilds
-      // on [ticks], as the position readers do.
-      audioLevel.addListener(_tickOnly);
       _events = musicEvents().listen(_onEvent, onError: (Object e) {
         error = e;
         notifyListeners();
@@ -417,6 +422,33 @@ class MusicController extends ChangeNotifier {
   Color accentAlt = const Color(0xFF8B5CF6);
   String _accentFor = '';
 
+  /// A `Stale` re-read in flight, and whether one more is owed.
+  ///
+  /// `Stale` arrives in bursts — a download reports its progress, a scan its
+  /// files — and each one used to start its own full snapshot: every podcast
+  /// list, the queue and the audiobook shelf, over and over, with a rebuild
+  /// between each. They stack up faster than they finish and the page stops
+  /// answering the mouse. One at a time, then one more if anything came in
+  /// while it ran, which is all a burst ever needed.
+  bool _reReading = false;
+  bool _reReadOwed = false;
+
+  Future<void> _staleRefresh() async {
+    if (_reReading) {
+      _reReadOwed = true;
+      return;
+    }
+    _reReading = true;
+    try {
+      do {
+        _reReadOwed = false;
+        await refresh();
+      } while (_reReadOwed);
+    } finally {
+      _reReading = false;
+    }
+  }
+
   void _onEvent(MusicEvent event) {
     switch (event) {
       case MusicEvent_Tick(:final pos, :final dur, :final playing)
@@ -449,7 +481,7 @@ class MusicController extends ChangeNotifier {
         // had to be fetched. Nothing about the player changed, so this is a
         // plain re-read rather than the accent-and-artwork reload a track
         // change gets.
-        refresh();
+        unawaited(_staleRefresh());
       case MusicEvent_ScanFinished():
         progress = null;
         refresh();
@@ -1099,6 +1131,105 @@ class MusicController extends ChangeNotifier {
 
   void keyRepeat() => send(const MusicCmd.cycleRepeat());
 
+  /// The episode on the deck, found in whichever list this snapshot happens to
+  /// carry it.
+  ///
+  /// The deck knows an episode id and nothing else — `NowPlaying.key` is a
+  /// string. Everything that wants the row (the speed the SHOW is remembered
+  /// at, the played tick in the bar) has to find it, and every podcast list on
+  /// the snapshot is a place it might be.
+  Episode? get nowEpisode {
+    final st = state;
+    if (st == null || now?.mode != 'podcast') return null;
+    final id = int.tryParse(now?.key ?? '');
+    if (id == null) return null;
+    for (final list in [
+      st.podQueue,
+      st.podEpisodes,
+      st.podContinue,
+      st.podInbox,
+      st.podLatest,
+      st.podDownloads,
+    ]) {
+      for (final e in list) {
+        if (e.id == id) return e;
+      }
+    }
+    return null;
+  }
+
+  /// The show the episode on the deck belongs to, when this snapshot knows it.
+  PodcastShow? get nowShow {
+    final st = state;
+    final pid = nowEpisode?.podcastId;
+    if (st == null || pid == null) return null;
+    if (st.podDetail?.id == pid) return st.podDetail;
+    for (final list in [st.podShows, st.podHome]) {
+      for (final s in list) {
+        if (s.id == pid) return s;
+      }
+    }
+    return null;
+  }
+
+  /// What the deck is actually playing at: the show's own speed when it has
+  /// one, the section's otherwise. `speed = 0` on a show is "no opinion".
+  double get listenSpeed {
+    final st = state;
+    if (st == null) return 1.0;
+    if (now?.mode == 'book') return st.bookSpeed;
+    final own = nowShow?.speed ?? 0;
+    return own > 0 ? own : st.podSpeed;
+  }
+
+  /// `[` and `]`. One step through the presets rather than a free nudge: the
+  /// speeds people actually use are a short list, and 1.37× is nobody's
+  /// choice.
+  void keySpeed(int step) {
+    const steps = [0.75, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+    final at = listenSpeed;
+    var i = steps.indexWhere((v) => (v - at).abs() < 0.01);
+    if (i < 0) i = steps.indexWhere((v) => v > at).clamp(0, steps.length - 1);
+    final next = steps[(i + step).clamp(0, steps.length - 1)];
+    if ((next - at).abs() < 0.01) return;
+    setListenSpeed(next);
+  }
+
+  /// Write a speed where it belongs: a book keeps its own, a podcast keeps the
+  /// show's when the bar knows which show, and falls back to the section.
+  void setListenSpeed(double speed, {bool perShow = true}) {
+    if (now?.mode == 'book') {
+      send(MusicCmd.bookSetSpeed(speed: speed));
+      return;
+    }
+    final show = perShow ? nowShow : null;
+    if (show == null) {
+      send(MusicCmd.podSetSpeed(speed: speed));
+      return;
+    }
+    send(MusicCmd.podShowSettings(
+      podcastId: show.id,
+      speed: speed,
+      skipIntroS: show.skipIntroS,
+      autoDl: show.autoDl,
+      keepLast: show.keepLast,
+    ));
+  }
+
+  /// `B`. A bookmark is a book thing; on a podcast the nearest honest answer
+  /// is nothing at all rather than a mark in a table books own.
+  void keyBookmark() {
+    if (now?.mode != 'book') return;
+    send(const MusicCmd.bookmarkAdd(label: ''));
+  }
+
+  /// `M`. Mark the episode on the deck played, or take the mark off.
+  void keyMarkPlayed() {
+    final e = nowEpisode;
+    if (e == null) return;
+    send(MusicCmd.podSetPlayed(episodeId: e.id, played: !e.played));
+  }
+
   // --- shorthands the widgets use constantly --------------------------------
 
   Future<void> playFrom(List<Track> tracks, int index, String source) {
@@ -1123,6 +1254,36 @@ class MusicController extends ChangeNotifier {
     _events?.cancel();
     super.dispose();
   }
+}
+
+/// Unix seconds as "Today", "Yesterday", "4 days ago", "3 wk ago", "5 mo ago".
+///
+/// What an episode list wants over a date: nobody reads a feed by the calendar,
+/// they read it by how far behind they are. [fmtDate] still has the exact day
+/// for the places that need one.
+String fmtAgo(int unixSeconds) {
+  if (unixSeconds <= 0) return '';
+  final days = DateTime.now()
+      .difference(DateTime.fromMillisecondsSinceEpoch(unixSeconds * 1000))
+      .inDays;
+  if (days <= 0) return 'Today';
+  if (days == 1) return 'Yesterday';
+  if (days < 7) return '$days days ago';
+  if (days < 30) return '${days ~/ 7} wk ago';
+  if (days < 365) return '${days ~/ 30} mo ago';
+  return '${days ~/ 365} yr ago';
+}
+
+/// Seconds as "38 min" or "4 h 12 min".
+///
+/// A length, not a position: [fmtClock] counts a seek bar, this one answers
+/// "how long is this". Rounded to the minute because "1:47:23 left" is a
+/// precision nobody asked for.
+String fmtMins(double secs) {
+  final m = (secs / 60).round();
+  if (m < 60) return '$m min';
+  final rest = m % 60;
+  return rest == 0 ? '${m ~/ 60} h' : '${m ~/ 60} h $rest min';
 }
 
 /// Unix seconds as "12 Mar 2026". Episode and release dates only — nothing

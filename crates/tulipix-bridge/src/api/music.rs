@@ -368,6 +368,20 @@ pub struct PodcastShow {
     pub unplayed: i64,
     pub latest: i64,
     pub feed_url: String,
+    /// The show's own speed. 0 means "whatever the section is set to" — one
+    /// podcast is comfortable at 1.5x and the next is not, and a single
+    /// section-wide speed made that choice for all of them.
+    pub speed: f64,
+    /// Seconds of jingle to jump on every episode of this show.
+    pub skip_intro_s: i64,
+    pub auto_dl: bool,
+    /// Keep only this many saved episodes of the show; 0 = keep every one.
+    pub keep_last: i64,
+    /// On Home's "Your shows" shelf. The pin control is a toggle, so it has to
+    /// be able to say which way it is pointing -- without this the button read
+    /// "Pin to Home" whether or not the show was already there, and a second
+    /// press quietly unpinned it.
+    pub pinned: bool,
 }
 
 /// One card in the Trends grid — the baked directory, not a subscription.
@@ -428,12 +442,58 @@ pub struct BookCard {
     pub folder: String,
     pub title: String,
     pub author: String,
+    /// Who read it. Half of what picking an audiobook is about, and never the
+    /// author.
+    pub narrator: String,
+    /// "" for a standalone book; `series_no` only means anything beside a name.
+    pub series: String,
+    pub series_no: i64,
     pub art: String,
     pub chapters: i64,
     pub finished: bool,
     /// 0..1 across the whole book, not the open chapter.
     pub progress: f64,
     pub total_s: f64,
+    /// 1-based chapter the book is on, so a card can say "Ch 6 of 12" without
+    /// loading the chapter list for every tile on the shelf.
+    pub chapter_now: i64,
+    /// The remembered narration speed, which is what "time left" has to be
+    /// divided by to be a real answer.
+    pub speed: f64,
+    /// Unix seconds: when a chapter of this book was last listened to, and when
+    /// its files entered the library. 0 = never, which sorts last.
+    pub last_played: i64,
+    pub added: i64,
+}
+
+/// One answer to the Audiobooks search box.
+///
+/// Three kinds in one list because they are one question — "where is that bit
+/// about the lighthouse" is answered by a book, a chapter or a bookmark and
+/// the asker does not know which in advance.
+#[derive(Debug, Clone)]
+pub struct BookHit {
+    /// book | chapter | bookmark
+    pub kind: String,
+    pub title: String,
+    /// The book a chapter or a bookmark belongs to, plus its place in it.
+    pub subtitle: String,
+    pub folder: String,
+    /// 0 on a book hit; the chapter's track otherwise.
+    pub item_id: i64,
+    /// Where in the chapter, for a bookmark. -1 elsewhere.
+    pub position_s: f64,
+}
+
+/// The four figures on the Audiobooks panel's stat card.
+#[derive(Debug, Clone)]
+pub struct ListenStats {
+    /// Seconds still to hear in the open (or most recent) book, at its speed.
+    pub left_s: f64,
+    /// Seconds listened in the last seven days, across every book.
+    pub week_s: f64,
+    pub streak_days: i64,
+    pub finished_year: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -450,6 +510,9 @@ pub struct Bookmark {
     pub item_id: i64,
     pub position_s: f64,
     pub label: String,
+    /// The sentence behind the mark — why it is there, which the label never
+    /// has room for.
+    pub note: String,
     /// "Ch 3 · 12:40" — the chapter index has to be resolved against the book's
     /// track order, which Dart does not have.
     pub when: String,
@@ -717,6 +780,12 @@ pub struct MusicState {
     /// off | all | one
     pub repeat: String,
     pub sleep_min: i64,
+    /// Stop at the end of the episode or chapter playing, rather than after a
+    /// count of minutes. The one sleep setting that is about the thing being
+    /// listened to instead of the clock.
+    pub sleep_end_of_item: bool,
+    /// Fade the last minute out instead of cutting when the timer fires.
+    pub sleep_fade: bool,
     pub queue: Vec<Track>,
     /// How many of `queue` the station put there rather than the user.
     ///
@@ -897,7 +966,7 @@ pub struct MusicState {
     pub detail_scanned: String,
 
     // --- Podcasts ---
-    /// home | subscribed | downloads
+    /// home | new | subscribed | trends | downloads
     pub pod_tab: String,
     pub pod_shows: Vec<PodcastShow>,
     pub pod_total: i64,
@@ -945,9 +1014,49 @@ pub struct MusicState {
     pub pod_dl_id: i64,
     pub pod_dl_frac: f64,
     pub pod_dl_title: String,
+    /// Home's first shelf: part-heard episodes, the one you were last in
+    /// first. `pod_latest` is what is new; this is what is unfinished, and the
+    /// two are almost never the same rows.
+    pub pod_continue: Vec<Episode>,
+    /// The New tab — recent episodes across every subscription, already
+    /// narrowed by `pod_inbox_filter`.
+    pub pod_inbox: Vec<Episode>,
+    /// unplayed | progress | downloaded | all
+    pub pod_inbox_filter: String,
+    /// How many rows each inbox filter would keep, for the chips' counts:
+    /// [unplayed, in progress, downloaded, all].
+    pub pod_inbox_counts: Vec<i64>,
+    /// The badge on the New tab: unplayed episodes from the last week.
+    pub pod_new_count: i64,
+    /// The badge on the Downloads tab: every saved episode, not the page.
+    pub pod_dl_count: i64,
+    /// Every subscription. `pod_total` is the count AFTER the category and the
+    /// search, which is what the pager needs and not what the chip means.
+    pub pod_sub_count: i64,
+    /// The show page's episode filter, same four names as the inbox.
+    pub pod_ep_filter: String,
+    /// The show page's own search box, which is not `pod_query` — that one
+    /// filters the list of shows and each tab keeps its own.
+    pub pod_ep_query: String,
+    /// The open show's counts, in the chips' order: [all, unplayed, in
+    /// progress, downloaded]. Counted across the whole show, not the page.
+    pub pod_ep_counts: Vec<i64>,
+    /// What the saved episodes take on disk, and the ceiling the user set (GB,
+    /// 0 = none).
+    pub pod_dl_bytes: i64,
+    pub pod_dl_limit_gb: i64,
+    pub pod_dl_when_played: bool,
+    pub pod_dl_wifi_only: bool,
+    /// New episodes of a pinned show join the queue by themselves.
+    pub pod_queue_auto: bool,
 
     // --- Audiobooks ---
-    /// all | progress | finished | folders
+    /// home | all | progress | finished | series | folders
+    ///
+    /// The tab narrows what is DRAWN, not what is loaded: `books` is always
+    /// the whole shelf, because Home, the counts on the chips and the search
+    /// all read across it and a list that changes shape with the open tab made
+    /// every one of them lie.
     pub book_tab: String,
     pub books: Vec<BookCard>,
     pub book_detail_open: bool,
@@ -956,6 +1065,22 @@ pub struct MusicState {
     pub book_bookmarks: Vec<Bookmark>,
     pub book_speed: f64,
     pub book_resume_index: i64,
+    /// recent | added | title | author | left — how the shelf is ordered.
+    pub book_sort: String,
+    /// none | author | series — and what it is broken into under that order.
+    pub book_group: String,
+    pub book_stats: ListenStats,
+    /// The Audiobooks search box, and what it found across books, chapters and
+    /// bookmarks. Empty query = the box is closed and the shelf is showing.
+    pub book_query: String,
+    pub book_hits: Vec<BookHit>,
+    /// What the two skip buttons move by, and the three per-listener switches.
+    /// Section-wide rather than per book: they are about your ears, not about
+    /// the book.
+    pub book_skip_s: i64,
+    pub book_rewind_pause: bool,
+    pub book_trim_silence: bool,
+    pub book_boost_voices: bool,
 
     // --- Radio ---
     /// home | favourites | recent
@@ -1447,6 +1572,47 @@ pub enum MusicCmd {
     PodTranscriptClose,
     /// Filter the open tab. Stored per tab.
     PodSearch { query: String },
+    /// Mark one episode played, or take the mark off. `played` is stored
+    /// already — until now nothing but reaching the end of the file set it.
+    PodSetPlayed { episode_id: i64, played: bool },
+    /// Put an episode at the head of the queue rather than the end.
+    PodQueueNext { episode_id: i64 },
+    /// Drag one queue row to another index.
+    PodQueueMove { from: i64, to: i64 },
+    /// unplayed | progress | downloaded | all, on the New tab.
+    PodSetInboxFilter { name: String },
+    /// Same four names, on the open show's episode list.
+    PodSetEpFilter { name: String },
+    /// The show page's own search box.
+    PodSearchEpisodes { query: String },
+    /// Queue every unplayed episode of a show, or (-1) everything the New tab
+    /// is showing.
+    PodQueueAll { podcast_id: i64 },
+    /// Mark a whole show played, or (-1) everything the New tab is showing.
+    PodMarkAllPlayed { podcast_id: i64 },
+    /// The newest episode of a show, straight onto the deck.
+    PodPlayLatest { podcast_id: i64 },
+    /// One show's four settings, written together: they are one panel and one
+    /// save, and four commands would be four round trips through the snapshot.
+    PodShowSettings {
+        podcast_id: i64,
+        /// 0 = follow the section speed.
+        speed: f64,
+        skip_intro_s: i64,
+        auto_dl: bool,
+        /// 0 = keep every download.
+        keep_last: i64,
+    },
+    /// Delete the saved audio of every episode already played.
+    PodRemovePlayedDownloads,
+    /// The Downloads tab's storage rules.
+    PodDownloadPrefs { limit_gb: i64, when_played: bool, wifi_only: bool },
+    /// New episodes of a pinned show join the queue by themselves.
+    PodSetQueueAuto { auto: bool },
+    /// Hear the newest episode of a feed you have not subscribed to. Nothing
+    /// is stored: subscribing to find out what a show sounds like and
+    /// unsubscribing again is exactly what this replaces.
+    PodPreview { feed_url: String },
 
     // --- Audiobooks ---
     BookSetTab { name: String },
@@ -1461,6 +1627,36 @@ pub enum MusicCmd {
     BookmarkJump { index: i64 },
     BookmarkRemove { index: i64 },
     BookmarkRename { index: i64, label: String },
+    /// The sentence behind a bookmark, which its label has no room for.
+    BookmarkSetNote { index: i64, note: String },
+    /// recent | added | title | author | left
+    BookSetSort { mode: String },
+    /// none | author | series
+    BookSetGroup { mode: String },
+    /// One box over books, their chapters and every bookmark in them.
+    BookSearch { query: String },
+    /// Title, author, narrator and where it sits in a series — the four the
+    /// lookup guesses and gets wrong often enough to need a way back.
+    BookEditDetails {
+        folder: String,
+        title: String,
+        author: String,
+        narrator: String,
+        series: String,
+        series_no: i64,
+    },
+    /// Forget every position in a book. Bookmarks survive: they are notes about
+    /// the text, not about the progress.
+    BookResetProgress { folder: String },
+    /// The listener's own four, section-wide rather than per book.
+    BookSettings {
+        skip_s: i64,
+        rewind_pause: bool,
+        trim_silence: bool,
+        boost_voices: bool,
+    },
+    /// Fade the last minute out instead of cutting when the timer fires.
+    SetSleepFade { fade: bool },
 
     // --- Radio ---
     RadioSetTab { name: String },
@@ -1720,9 +1916,16 @@ struct Session {
     pod_transcript: Option<(String, String)>,
     /// tab name -> its filter.
     pod_queries: HashMap<String, String>,
+    /// The New tab's filter, and the open show's own filter and search box.
+    pod_inbox_filter: String,
+    pod_ep_filter: String,
+    pod_ep_query: String,
 
     book_tab: String,
     book_open: String,
+    book_sort: String,
+    book_group: String,
+    book_query: String,
 
     radio_tab: String,
     radio_cat_open: bool,
@@ -1850,8 +2053,16 @@ impl Default for Session {
             pod_info: None,
             pod_transcript: None,
             pod_queries: HashMap::new(),
-            book_tab: "all".into(),
+            pod_inbox_filter: "unplayed".into(),
+            pod_ep_filter: "all".into(),
+            pod_ep_query: String::new(),
+            // Home, not All: the shelf is where you go to browse, and the tab
+            // that opens is the one that answers "what was I listening to".
+            book_tab: "home".into(),
             book_open: String::new(),
+            book_sort: "recent".into(),
+            book_group: "none".into(),
+            book_query: String::new(),
             radio_tab: "home".into(),
             radio_cat_open: false,
             radio_cat_title: String::new(),
@@ -4556,6 +4767,19 @@ async fn play_episode(episode_id: i64) -> Result<()> {
     let Some((title, url, position, downloaded, show, art)) = row else {
         anyhow::bail!("episode {episode_id} is gone");
     };
+    // The show's own settings outrank the section's. `speed = 0` is the "no
+    // opinion" value, which is why it is not 1.
+    let (show_speed, intro): (f64, i64) = sqlx::query_as(
+        "SELECT COALESCE(p.speed, 0), COALESCE(p.skip_intro_s, 0) FROM podcasts p \
+         JOIN podcast_episodes e ON e.podcast_id = p.id WHERE e.id = ?",
+    )
+    .bind(episode_id)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or((0.0, 0));
+    // Skip the jingle, but only on a first listen: a resume point past the
+    // intro is where you actually stopped.
+    let position = if position <= 0.0 { intro as f64 } else { position };
     // A saved copy always wins: an episode kept for a flight should not go to
     // the network when the plane has no network.
     let src = if !downloaded.is_empty() && Path::new(&downloaded).exists() {
@@ -4563,7 +4787,7 @@ async fn play_episode(episode_id: i64) -> Result<()> {
     } else {
         url
     };
-    let speed = lock().pod_speed;
+    let speed = if show_speed > 0.0 { show_speed } else { lock().pod_speed };
     let mut args = audio_args(false);
     args.push(format!("--speed={speed}"));
     // Podcast CDNs answer mpv's default agent with 403; the domain crate keeps
@@ -5957,6 +6181,11 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             let mut s = lock();
             s.pod_tab = name;
             s.pod_page = 0;
+            // Picking a tab leaves the show page. It used to take a separate
+            // `PodBack` fired alongside this one from Dart, and the two raced:
+            // whichever snapshot landed last won, so half the time Home came
+            // back filled by the show-page branch, which never reads the pins.
+            s.pod_open = -1;
         }
         MusicCmd::PodSubscribe { url } => {
             pod_job_set(true, 0.0, "Subscribing…");
@@ -6239,9 +6468,126 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             s.pod_page = 0;
             s.pod_trends_page = 0;
         }
+        MusicCmd::PodSetPlayed { episode_id, played } => {
+            let pool = podcasts_pool().await?;
+            set_episodes_played(pool, &[episode_id], played).await?;
+        }
+        MusicCmd::PodQueueNext { episode_id } => {
+            let mut s = lock();
+            s.pod_queue.retain(|e| *e != episode_id);
+            // After the one on the deck if it is in the queue, so "play next"
+            // does not mean "interrupt this".
+            let at = mpv::now_playing()
+                .key
+                .parse::<i64>()
+                .ok()
+                .and_then(|now| s.pod_queue.iter().position(|e| *e == now))
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let len = s.pod_queue.len();
+            s.pod_queue.insert(at.min(len), episode_id);
+        }
+        MusicCmd::PodQueueMove { from, to } => {
+            let mut s = lock();
+            let len = s.pod_queue.len();
+            let (from, to) = (from.max(0) as usize, to.max(0) as usize);
+            if from < len && to < len && from != to {
+                let id = s.pod_queue.remove(from);
+                s.pod_queue.insert(to, id);
+            }
+        }
+        MusicCmd::PodSetInboxFilter { name } => lock().pod_inbox_filter = name,
+        MusicCmd::PodSetEpFilter { name } => {
+            let mut s = lock();
+            s.pod_ep_filter = name;
+            s.pod_ep_page = 0;
+        }
+        MusicCmd::PodSearchEpisodes { query } => {
+            let mut s = lock();
+            s.pod_ep_query = query.trim().to_string();
+            s.pod_ep_page = 0;
+        }
+        MusicCmd::PodQueueAll { podcast_id } => {
+            let pool = podcasts_pool().await?;
+            let ids = bulk_episode_ids(pool, podcast_id).await?;
+            let mut s = lock();
+            for id in ids {
+                if !s.pod_queue.contains(&id) {
+                    s.pod_queue.push(id);
+                }
+            }
+        }
+        MusicCmd::PodMarkAllPlayed { podcast_id } => {
+            let pool = podcasts_pool().await?;
+            let ids = bulk_episode_ids(pool, podcast_id).await?;
+            set_episodes_played(pool, &ids, true).await?;
+        }
+        MusicCmd::PodPlayLatest { podcast_id } => {
+            let pool = podcasts_pool().await?;
+            let id: Option<i64> = sqlx::query_scalar(
+                "SELECT id FROM podcast_episodes WHERE podcast_id = ? \
+                 ORDER BY COALESCE(published, 0) DESC LIMIT 1",
+            )
+            .bind(podcast_id)
+            .fetch_optional(pool)
+            .await?;
+            let Some(id) = id else {
+                anyhow::bail!("that show has no episodes yet");
+            };
+            play_episode(id).await?;
+        }
+        MusicCmd::PodShowSettings { podcast_id, speed, skip_intro_s, auto_dl, keep_last } => {
+            let pool = podcasts_pool().await?;
+            sqlx::query(
+                "UPDATE podcasts SET speed = ?, skip_intro_s = ?, auto_dl = ?, keep_last = ? \
+                 WHERE id = ?",
+            )
+            .bind(if speed <= 0.0 { 0.0 } else { speed.clamp(0.5, 3.0) })
+            .bind(skip_intro_s.clamp(0, 600))
+            .bind(i64::from(auto_dl))
+            .bind(keep_last.max(0))
+            .bind(podcast_id)
+            .execute(pool)
+            .await?;
+            // The show on the deck answers to the new speed straight away;
+            // waiting for the next episode is not what a speed chip means.
+            if speed > 0.0 && mpv::current_slot() == mpv::Slot::Podcast {
+                mpv::set_property("speed", &format!("{}", speed.clamp(0.5, 3.0)));
+            }
+        }
+        MusicCmd::PodRemovePlayedDownloads => {
+            let pool = podcasts_pool().await?;
+            let rows: Vec<(i64, String)> = sqlx::query_as(
+                "SELECT id, downloaded_path FROM podcast_episodes \
+                 WHERE played = 1 AND downloaded_path IS NOT NULL AND downloaded_path != ''",
+            )
+            .fetch_all(pool)
+            .await?;
+            for (id, path) in rows {
+                let _ = std::fs::remove_file(&path);
+                sqlx::query("UPDATE podcast_episodes SET downloaded_path = NULL WHERE id = ?")
+                    .bind(id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        MusicCmd::PodDownloadPrefs { limit_gb, when_played, wifi_only } => {
+            tulipix_music::listen_prefs::set_download_limit_gb(limit_gb);
+            tulipix_music::listen_prefs::set_delete_when_played(when_played);
+            tulipix_music::listen_prefs::set_wifi_only(wifi_only);
+        }
+        MusicCmd::PodSetQueueAuto { auto } => {
+            tulipix_music::listen_prefs::set_queue_new_pinned(auto);
+        }
+        MusicCmd::PodPreview { feed_url } => preview_feed(&feed_url).await?,
 
         // --- Audiobooks -----------------------------------------------------
-        MusicCmd::BookSetTab { name } => lock().book_tab = name,
+        MusicCmd::BookSetTab { name } => {
+            // Leaves the book page too -- same reason PodSetTab does.
+            let mut s = lock();
+            s.book_tab = name;
+            s.book_open.clear();
+        }
         MusicCmd::BookOpen { folder } => lock().book_open = folder,
         MusicCmd::BookBack => lock().book_open.clear(),
         MusicCmd::BookPlay { item_id } => {
@@ -6322,6 +6668,56 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                 .await?;
             }
         }
+        MusicCmd::BookmarkSetNote { index, note } => {
+            let pool = music_pool().await?;
+            let marks = book_bookmarks(pool).await?;
+            if let Some(bm) = marks.get(index.max(0) as usize) {
+                tulipix_music::audiobooks::set_bookmark_note(
+                    pool,
+                    bm.item_id,
+                    bm.position_s,
+                    &note,
+                )
+                .await?;
+            }
+        }
+        MusicCmd::BookSetSort { mode } => lock().book_sort = mode,
+        MusicCmd::BookSetGroup { mode } => lock().book_group = mode,
+        MusicCmd::BookSearch { query } => lock().book_query = query.trim().to_string(),
+        MusicCmd::BookEditDetails {
+            folder,
+            title,
+            author,
+            narrator,
+            series,
+            series_no,
+        } => {
+            let pool = music_pool().await?;
+            tulipix_music::ab_meta::set_details(
+                pool,
+                &folder,
+                &tulipix_music::ab_meta::BookDetails {
+                    title: title.trim().to_string(),
+                    author: author.trim().to_string(),
+                    narrator: narrator.trim().to_string(),
+                    series: series.trim().to_string(),
+                    series_no: series_no.max(0),
+                },
+            )
+            .await?;
+        }
+        MusicCmd::BookResetProgress { folder } => {
+            let pool = music_pool().await?;
+            let ids = tulipix_music::audiobooks::book_chapters(pool, &folder).await?;
+            tulipix_music::audiobooks::reset_progress(pool, &ids).await?;
+        }
+        MusicCmd::BookSettings { skip_s, rewind_pause, trim_silence, boost_voices } => {
+            tulipix_music::listen_prefs::set_skip_seconds(skip_s);
+            tulipix_music::listen_prefs::set_rewind_after_pause(rewind_pause);
+            tulipix_music::listen_prefs::set_trim_silence(trim_silence);
+            tulipix_music::listen_prefs::set_boost_voices(boost_voices);
+        }
+        MusicCmd::SetSleepFade { fade } => tulipix_music::listen_prefs::set_sleep_fade(fade),
 
         // --- Radio ----------------------------------------------------------
         MusicCmd::RadioSetTab { name } => {
@@ -7565,12 +7961,17 @@ fn check_sleep() {
         emit(MusicEvent::TrackChanged);
         return;
     }
-    // The last thirty seconds ramp the volume down, which is the whole point
-    // of a sleep timer rather than a kill switch.
+    // The last minute ramps the volume down, which is the whole point of a
+    // sleep timer rather than a kill switch — unless it has been turned off,
+    // in which case the timer is a kill switch on purpose.
+    if !tulipix_music::listen_prefs::sleep_fade() {
+        return;
+    }
+    const FADE_S: f64 = 60.0;
     let left = deadline.duration_since(now).as_secs_f64();
-    if left < 30.0 {
+    if left < FADE_S {
         let base: f64 = setting("music.volume", "80").parse().unwrap_or(80.0);
-        mpv::set_property("volume", &format!("{:.0}", base * (left / 30.0)));
+        mpv::set_property("volume", &format!("{:.0}", base * (left / FADE_S)));
     }
 }
 
@@ -8160,12 +8561,13 @@ async fn book_bookmarks(pool: &sqlx::SqlitePool) -> Result<Vec<Bookmark>> {
     let raw = tulipix_music::audiobooks::book_bookmarks(pool, &ids).await?;
     Ok(raw
         .into_iter()
-        .map(|(item_id, position_s, label)| {
+        .map(|(item_id, position_s, label, note)| {
             let chapter = ids.iter().position(|i| *i == item_id).unwrap_or(0) + 1;
             Bookmark {
                 item_id,
                 position_s,
                 label,
+                note,
                 when: format!("Ch {chapter} · {}", fmt_clock(position_s)),
             }
         })
@@ -8223,8 +8625,272 @@ async fn subscribe_podcast(url: &str) -> Result<()> {
 }
 
 async fn refresh_feed(podcast_id: i64, url: &str) -> Result<()> {
-    let _ = podcast_id;
-    subscribe_podcast(url).await
+    subscribe_podcast(url).await?;
+    // The show's rules run on the refresh that brought the episodes in, which
+    // is the only moment "new" means anything.
+    if let Err(e) = apply_show_rules(podcast_id).await {
+        tracing::warn!(error = %e, podcast_id, "podcast show rules failed");
+    }
+    Ok(())
+}
+
+/// At most this many episodes are pulled down in one auto-download pass. A
+/// show that posts daily and has been away for a month should not open the
+/// taps on forty files because you pressed Refresh.
+const AUTO_DL_BATCH: usize = 3;
+
+/// Auto-download, keep-last and auto-queue for one show, after a refresh.
+async fn apply_show_rules(podcast_id: i64) -> Result<()> {
+    let pool = podcasts_pool().await?;
+    let row: Option<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT COALESCE(auto_dl, 0), COALESCE(keep_last, 0), COALESCE(home_pinned, 0) \
+         FROM podcasts WHERE id = ?",
+    )
+    .bind(podcast_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((auto_dl, keep_last, pinned)) = row else {
+        return Ok(());
+    };
+
+    if auto_dl != 0 {
+        let todo: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM podcast_episodes WHERE podcast_id = ? AND played = 0 \
+             AND (downloaded_path IS NULL OR downloaded_path = '') \
+             ORDER BY COALESCE(published, 0) DESC LIMIT ?",
+        )
+        .bind(podcast_id)
+        .bind(AUTO_DL_BATCH as i64)
+        .fetch_all(pool)
+        .await?;
+        for id in todo {
+            if let Err(e) = download_episode(id).await {
+                tracing::warn!(error = %e, episode = id, "auto-download failed");
+            }
+        }
+    }
+
+    if keep_last > 0 {
+        // Everything saved past the newest N goes. Ordered by publication, not
+        // by when it was saved: "keep the last five" is about the show's
+        // timeline, not about your download history.
+        let stale: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT id, downloaded_path FROM podcast_episodes WHERE podcast_id = ? \
+             AND downloaded_path IS NOT NULL AND downloaded_path != '' \
+             ORDER BY COALESCE(published, 0) DESC LIMIT -1 OFFSET ?",
+        )
+        .bind(podcast_id)
+        .bind(keep_last)
+        .fetch_all(pool)
+        .await?;
+        for (id, path) in stale {
+            let _ = std::fs::remove_file(&path);
+            sqlx::query("UPDATE podcast_episodes SET downloaded_path = NULL WHERE id = ?")
+                .bind(id)
+                .execute(pool)
+                .await?;
+        }
+    }
+
+    if pinned != 0 && tulipix_music::listen_prefs::queue_new_pinned() {
+        let cutoff = now_secs() - 7 * 86_400;
+        let fresh: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM podcast_episodes WHERE podcast_id = ? AND played = 0 \
+             AND position_s = 0 AND COALESCE(published, 0) >= ? \
+             ORDER BY COALESCE(published, 0) ASC",
+        )
+        .bind(podcast_id)
+        .bind(cutoff)
+        .fetch_all(pool)
+        .await?;
+        let mut s = lock();
+        for id in fresh {
+            if !s.pod_queue.contains(&id) {
+                s.pod_queue.push(id);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Set (or clear) the played mark on a set of episodes.
+///
+/// One place, because four things reach for it — a row's tick, the bar's tick,
+/// "Mark all played", and the M key — and because marking played is what makes
+/// "delete when played" fire. A guard in each caller would be four chances to
+/// forget the cleanup.
+async fn set_episodes_played(
+    pool: &sqlx::SqlitePool,
+    ids: &[i64],
+    played: bool,
+) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let holes = vec!["?"; ids.len()].join(",");
+    // Marking played also parks the position: a row that says "played" and
+    // still offers "12 min left" is two answers to one question.
+    let sql = format!(
+        "UPDATE podcast_episodes SET played = ?, \
+                position_s = CASE WHEN ? = 1 THEN 0 ELSE position_s END \
+         WHERE id IN ({holes})"
+    );
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(&*sql))
+        .bind(i64::from(played))
+        .bind(i64::from(played));
+    for id in ids {
+        q = q.bind(id);
+    }
+    q.execute(pool).await?;
+    if !played || !tulipix_music::listen_prefs::delete_when_played() {
+        return Ok(());
+    }
+    let sql = format!(
+        "SELECT id, downloaded_path FROM podcast_episodes \
+         WHERE downloaded_path IS NOT NULL AND downloaded_path != '' AND id IN ({holes})"
+    );
+    let mut q = sqlx::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(&*sql));
+    for id in ids {
+        q = q.bind(id);
+    }
+    for (id, path) in q.fetch_all(pool).await.unwrap_or_default() {
+        let _ = std::fs::remove_file(&path);
+        sqlx::query("UPDATE podcast_episodes SET downloaded_path = NULL WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+/// The episodes a bulk action applies to: one show's unplayed back catalogue,
+/// or — with -1 — exactly the rows the New tab is showing, filter and all. The
+/// second is the point: "Mark all played" over a list you have filtered to
+/// "Downloaded" must not also bury the rest.
+async fn bulk_episode_ids(pool: &sqlx::SqlitePool, podcast_id: i64) -> Result<Vec<i64>> {
+    if podcast_id >= 0 {
+        return Ok(sqlx::query_scalar(
+            "SELECT id FROM podcast_episodes WHERE podcast_id = ? AND played = 0 \
+             ORDER BY COALESCE(published, 0) DESC",
+        )
+        .bind(podcast_id)
+        .fetch_all(pool)
+        .await?);
+    }
+    let filter = ep_filter_sql(&lock().pod_inbox_filter);
+    let cutoff = now_secs() - INBOX_DAYS * 86_400;
+    let mut wheres = format!("COALESCE(e.published, 0) >= {cutoff}");
+    if !filter.is_empty() {
+        wheres.push_str(&format!(" AND {filter}"));
+    }
+    let sql = format!(
+        "SELECT e.id FROM podcast_episodes e WHERE {wheres} \
+         ORDER BY COALESCE(e.published, 0) DESC LIMIT {INBOX_MAX}"
+    );
+    Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(&*sql))
+        .fetch_all(pool)
+        .await?)
+}
+
+/// Play the newest episode of a feed straight off the network, storing
+/// nothing. The deck's "now playing" carries the show's name and cover so the
+/// bar does not go blank on a show that has no row anywhere.
+async fn preview_feed(feed_url: &str) -> Result<()> {
+    let url = tulipix_music::podcasts::resolve_feed_url(tulipix_core::net::http(), feed_url).await?;
+    let body = tulipix_core::net::http()
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let feed = tulipix_music::podcasts::parse_feed(&body);
+    let newest = feed
+        .episodes
+        .iter()
+        .max_by_key(|e| e.published.unwrap_or(0))
+        .ok_or_else(|| anyhow::anyhow!("that feed has no episodes to preview"))?;
+    let mut args = audio_args(false);
+    args.push(format!("--speed={}", lock().pod_speed));
+    args.push(format!("--user-agent={}", tulipix_core::net::BROWSER_UA));
+    mpv::play(
+        &newest.audio_url,
+        mpv::Slot::Podcast,
+        &args,
+        None,
+        |obs| {
+            emit(MusicEvent::Tick {
+                pos: obs.pos,
+                dur: obs.dur,
+                playing: !obs.paused,
+            })
+        },
+        || emit(MusicEvent::Ended),
+    );
+    let art = if newest.image_url.is_empty() {
+        feed.image_url.clone()
+    } else {
+        newest.image_url.clone()
+    };
+    let art_local = cache_remote(&art).await.unwrap_or_default();
+    mpv::set_now_playing(mpv::NowPlaying {
+        item_id: 0,
+        title: newest.title.clone(),
+        artist: feed.title.clone().unwrap_or_default(),
+        album: String::new(),
+        art: art_local,
+        // No row to point at — an id here would name somebody else's episode.
+        key: String::new(),
+    });
+    emit(MusicEvent::TrackChanged);
+    Ok(())
+}
+
+/// Stream one URL to `dest`, reporting progress against `episode_id`.
+///
+/// Its own function so the caller can clear the progress slot on every way out,
+/// including the `?`s on connect and create -- a stuck slot greys the row's
+/// download button for the rest of the session.
+async fn stream_to_file(
+    url: &str,
+    dest: &std::path::Path,
+    episode_id: i64,
+    title: &str,
+) -> Result<()> {
+    // Chunked rather than `.bytes()`: an episode is routinely 80MB and the row
+    // showed nothing at all until the whole thing had landed. `chunk()` is on
+    // the plain response, so this needs no stream crate.
+    let mut resp = tulipix_core::net::http_stream()
+        .get(url)
+        .header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA)
+        .send()
+        .await?
+        .error_for_status()?;
+    let total = resp.content_length().unwrap_or(0);
+    let mut got: u64 = 0;
+    let mut file = std::fs::File::create(dest)?;
+    let wrote = async {
+        use std::io::Write;
+        while let Some(chunk) = resp.chunk().await? {
+            file.write_all(&chunk)?;
+            got += chunk.len() as u64;
+            if total > 0 {
+                pod_dl_set(episode_id, (got as f64 / total as f64).clamp(0.0, 1.0), title);
+            }
+        }
+        file.flush()?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    drop(file);
+    if let Err(e) = wrote {
+        // A half-written file is worse than none: it would play as a truncated
+        // episode and `mark_downloaded` never runs to say otherwise.
+        let _ = std::fs::remove_file(dest);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Save one episode for offline. Streams to disk through the long-transfer
@@ -8246,41 +8912,19 @@ async fn download_episode(episode_id: i64) -> Result<()> {
         .filter(|e| e.len() <= 4 && !e.contains('/'))
         .unwrap_or("mp3");
     let dest = podcast_offline_dir().join(format!("ep-{episode_id}.{ext}"));
-    // Chunked rather than `.bytes()`: an episode is routinely 80MB and the row
-    // showed nothing at all until the whole thing had landed. `chunk()` is on
-    // the plain response, so this needs no stream crate.
-    let mut resp = tulipix_core::net::http_stream()
-        .get(&url)
-        .header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA)
-        .send()
-        .await?
-        .error_for_status()?;
-    let total = resp.content_length().unwrap_or(0);
-    let mut got: u64 = 0;
-    let mut file = std::fs::File::create(&dest)?;
+    // Claim the slot BEFORE the request goes out. Connecting to a podcast host
+    // and getting headers back is seconds on a bad line, and until this ran the
+    // button looked untouched -- so the press read as dropped and the next four
+    // presses started four more downloads of the same 80MB file over the same
+    // path. A press for an episode already saving is now the no-op it looks
+    // like.
+    if pod_dl().lock().map(|g| g.0).unwrap_or(-1) == episode_id {
+        return Ok(());
+    }
     pod_dl_set(episode_id, 0.0, &title);
-    let wrote = async {
-        use std::io::Write;
-        while let Some(chunk) = resp.chunk().await? {
-            file.write_all(&chunk)?;
-            got += chunk.len() as u64;
-            if total > 0 {
-                pod_dl_set(episode_id, (got as f64 / total as f64).clamp(0.0, 1.0), &title);
-            }
-        }
-        file.flush()?;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-    drop(file);
-    if let Err(e) = wrote {
-        // A half-written file is worse than none: it would play as a truncated
-        // episode and `mark_downloaded` never runs to say otherwise.
-        let _ = std::fs::remove_file(&dest);
-        pod_dl_clear();
-        return Err(e);
-    }
+    let r = stream_to_file(&url, &dest, episode_id, &title).await;
     pod_dl_clear();
+    r?;
     tulipix_music::podcasts::mark_downloaded(
         pool,
         episode_id,
@@ -11047,14 +11691,18 @@ async fn detail_tracks(pool: &sqlx::SqlitePool, s: &Session) -> (Vec<Track>, Str
 
 // --- podcasts ---
 
-type ShowRow = (i64, String, String, String, String, String, String, i64, i64, i64);
+type ShowRow = (
+    i64, String, String, String, String, String, String, i64, i64, i64, f64, i64, i64, i64, i64,
+);
 
 const SHOW_SELECT: &str = "SELECT p.id, COALESCE(p.title, ''), COALESCE(p.author, ''), \
      COALESCE(p.category, ''), COALESCE(p.description, ''), \
      COALESCE(NULLIF(p.custom_image, ''), COALESCE(p.image_url, '')), p.feed_url, \
      (SELECT COUNT(*) FROM podcast_episodes e WHERE e.podcast_id = p.id), \
      (SELECT COUNT(*) FROM podcast_episodes e WHERE e.podcast_id = p.id AND e.played = 0), \
-     COALESCE((SELECT MAX(published) FROM podcast_episodes e WHERE e.podcast_id = p.id), 0) \
+     COALESCE((SELECT MAX(published) FROM podcast_episodes e WHERE e.podcast_id = p.id), 0), \
+     COALESCE(p.speed, 0), COALESCE(p.skip_intro_s, 0), \
+     COALESCE(p.auto_dl, 0), COALESCE(p.keep_last, 0), COALESCE(p.home_pinned, 0) \
      FROM podcasts p";
 
 fn into_show(r: ShowRow) -> PodcastShow {
@@ -11069,6 +11717,11 @@ fn into_show(r: ShowRow) -> PodcastShow {
         episodes: r.7,
         unplayed: r.8,
         latest: r.9,
+        speed: r.10,
+        skip_intro_s: r.11,
+        auto_dl: r.12 != 0,
+        keep_last: r.13,
+        pinned: r.14 != 0,
     }
 }
 
@@ -11198,10 +11851,23 @@ fn pod_dl() -> &'static Mutex<(i64, f64, String)> {
 }
 
 fn pod_dl_set(id: i64, frac: f64, title: &str) {
+    // Dart answers `Stale` with a whole fresh snapshot -- every podcast list,
+    // the queue and the audiobook shelf. At one per percent an 80MB episode
+    // fired a hundred of them, the page rebuilt through all of it, and clicking
+    // another tab while a download ran barely registered. Four a second is
+    // faster than a progress bar reads anyway.
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
     let mut changed = false;
     if let Ok(mut g) = pod_dl().lock() {
-        changed = g.0 != id || (frac * 100.0) as i64 != (g.1 * 100.0) as i64;
+        changed = g.0 != id;
         *g = (id, frac, title.to_string());
+    }
+    if !changed && let Ok(mut last) = LAST.lock() {
+        let now = std::time::Instant::now();
+        changed = last.is_none_or(|t| now.duration_since(t).as_millis() >= 250);
+        if changed {
+            *last = Some(now);
+        }
     }
     if changed {
         emit(MusicEvent::Stale);
@@ -11315,13 +11981,13 @@ fn kick_ab_lookup(folders: Vec<String>) {
 /// Library when there are any, and only the folder's basename and the first
 /// track's artist as the placeholder until then. The bare basename is what a
 /// rip called `dune_01_64kb` shows, which is why the lookup exists.
-async fn book_cards(pool: &sqlx::SqlitePool, tab: &str) -> Vec<BookCard> {
+async fn book_cards(pool: &sqlx::SqlitePool) -> Vec<BookCard> {
     let folders = tulipix_music::audiobooks::book_folders(pool)
         .await
         .unwrap_or_default();
     tulipix_music::ab_meta::ensure_tables(pool).await;
     let covers = tulipix_music::ab_meta::load_covers(pool).await;
-    let meta = tulipix_music::ab_meta::load_meta(pool).await;
+    let meta = tulipix_music::ab_meta::load_details(pool).await;
     let mut out = Vec::new();
     // Every book, whether or not the open tab keeps it -- see below.
     let mut every: Vec<String> = Vec::new();
@@ -11331,7 +11997,7 @@ async fn book_cards(pool: &sqlx::SqlitePool, tab: &str) -> Vec<BookCard> {
         let ids = tulipix_music::audiobooks::book_chapters(pool, &folder)
             .await
             .unwrap_or_default();
-        let (finished_ids, _) = tulipix_music::audiobooks::chapter_states(pool, &ids)
+        let (finished_ids, current) = tulipix_music::audiobooks::chapter_states(pool, &ids)
             .await
             .unwrap_or_default();
         let totals: Option<(f64, f64)> = sqlx::query_as(
@@ -11359,16 +12025,8 @@ async fn book_cards(pool: &sqlx::SqlitePool, tab: &str) -> Vec<BookCard> {
         if art.is_none() {
             no_art.push(folder.clone());
         }
-        let keep = match tab {
-            "progress" => progress > 0.0 && !finished,
-            "finished" => finished,
-            _ => true,
-        };
-        if !keep {
-            continue;
-        }
         let resolved = meta.get(&folder);
-        let author = match resolved.map(|(_, a)| a.clone()).filter(|a| !a.is_empty()) {
+        let author = match resolved.map(|d| d.author.clone()).filter(|a| !a.is_empty()) {
             Some(a) => a,
             // Nothing resolved yet: the chapters' own artist tag is the best
             // guess on disk, and on a tagged rip it is already the author.
@@ -11384,23 +12042,56 @@ async fn book_cards(pool: &sqlx::SqlitePool, tab: &str) -> Vec<BookCard> {
             .flatten()
             .unwrap_or_default(),
         };
+        // Where the book is, 1-based. `chapter_states` hands back the chapter
+        // last touched; a finished book sits on its last one, and a book never
+        // opened sits on its first.
+        let chapter_now = match current.and_then(|c| ids.iter().position(|i| *i == c)) {
+            Some(i) => i as i64 + 1,
+            None if finished => chapters,
+            None => 1,
+        };
+        let (last_played, added) = tulipix_music::audiobooks::book_times(pool, &folder)
+            .await
+            .unwrap_or((0, 0));
+        // Time left is only an answer once it is divided by the speed the book
+        // is actually heard at, so the card carries the speed.
+        let speed = match ids.first() {
+            Some(first) => tulipix_music::audiobooks::book_speed(pool, *first)
+                .await
+                .unwrap_or(1.0),
+            None => 1.0,
+        };
         out.push(BookCard {
             title: resolved
-                .map(|(t, _)| t.clone())
+                .map(|d| d.title.clone())
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| tulipix_music::ab_meta::book_title(&folder)),
             author,
+            narrator: resolved.map(|d| d.narrator.clone()).unwrap_or_default(),
+            series: resolved.map(|d| d.series.clone()).unwrap_or_default(),
+            series_no: resolved.map(|d| d.series_no).unwrap_or(0),
             art: art.unwrap_or_default(),
             chapters,
             finished,
             progress,
             total_s,
+            chapter_now,
+            speed,
+            last_played,
+            added,
             folder,
         });
     }
     // Everything with no art at all, plus anything wearing a net cover that
     // never resolved a real title -- the improved chain retries those once.
-    let missing = tulipix_music::ab_meta::needs_lookup(&every, &covers, &meta, |f| {
+    // `needs_lookup` asks one thing of the meta map — has this folder a real
+    // title yet — and the Slint build hands it the (title, author) pairs, so
+    // that is the shape it takes.
+    let titles: std::collections::HashMap<String, (String, String)> = meta
+        .iter()
+        .map(|(f, d)| (f.clone(), (d.title.clone(), d.author.clone())))
+        .collect();
+    let missing = tulipix_music::ab_meta::needs_lookup(&every, &covers, &titles, |f| {
         !no_art.iter().any(|n| n.as_str() == f)
     });
     kick_ab_lookup(missing);
@@ -11548,6 +12239,8 @@ async fn snapshot() -> Result<MusicState> {
         shuffle: s.shuffle,
         repeat: s.repeat.clone(),
         sleep_min: s.sleep_min,
+        sleep_end_of_item: s.sleep_end_of_track,
+        sleep_fade: tulipix_music::listen_prefs::sleep_fade(),
         queue,
         queue_suggested,
         lyrics,
@@ -11687,6 +12380,21 @@ async fn snapshot() -> Result<MusicState> {
         pod_dl_id: dl.0,
         pod_dl_frac: dl.1,
         pod_dl_title: dl.2,
+        pod_continue: Vec::new(),
+        pod_inbox: Vec::new(),
+        pod_inbox_filter: s.pod_inbox_filter.clone(),
+        pod_inbox_counts: vec![0; 4],
+        pod_new_count: 0,
+        pod_dl_count: 0,
+        pod_sub_count: 0,
+        pod_ep_filter: s.pod_ep_filter.clone(),
+        pod_ep_query: s.pod_ep_query.clone(),
+        pod_ep_counts: vec![0; 4],
+        pod_dl_bytes: 0,
+        pod_dl_limit_gb: tulipix_music::listen_prefs::download_limit_gb(),
+        pod_dl_when_played: tulipix_music::listen_prefs::delete_when_played(),
+        pod_dl_wifi_only: tulipix_music::listen_prefs::wifi_only(),
+        pod_queue_auto: tulipix_music::listen_prefs::queue_new_pinned(),
 
         book_tab: s.book_tab.clone(),
         books: Vec::new(),
@@ -11696,6 +12404,15 @@ async fn snapshot() -> Result<MusicState> {
         book_bookmarks: Vec::new(),
         book_speed: 1.0,
         book_resume_index: -1,
+        book_sort: s.book_sort.clone(),
+        book_group: s.book_group.clone(),
+        book_stats: ListenStats { left_s: 0.0, week_s: 0.0, streak_days: 0, finished_year: 0 },
+        book_query: s.book_query.clone(),
+        book_hits: Vec::new(),
+        book_skip_s: tulipix_music::listen_prefs::skip_seconds(),
+        book_rewind_pause: tulipix_music::listen_prefs::rewind_after_pause(),
+        book_trim_silence: tulipix_music::listen_prefs::trim_silence(),
+        book_boost_voices: tulipix_music::listen_prefs::boost_voices(),
 
         radio_tab: s.radio_tab.clone(),
         radio_categories: Vec::new(),
@@ -12345,25 +13062,49 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
         } else {
             "DESC"
         };
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM podcast_episodes WHERE podcast_id = ?",
-        )
-        .bind(s.pod_open)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-        let rows: Vec<EpisodeRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "{EPISODE_SELECT} WHERE e.podcast_id = ? \
+        // The four chips over the list count the whole show, not the page: a
+        // filter that says "Unplayed 3" while page two holds nine more is
+        // worse than no number at all.
+        st.pod_ep_counts = ep_counts(pool, "e.podcast_id = ?", &[s.pod_open]).await;
+        // Filter and search narrow before the page is cut, so page two of
+        // "Unplayed" is the next twenty unplayed episodes and not the twenty
+        // rows that happened to survive off page two of everything.
+        let mut wheres = vec!["e.podcast_id = ?".to_string()];
+        wheres.push(ep_filter_sql(&s.pod_ep_filter));
+        let searching = !s.pod_ep_query.trim().is_empty();
+        if searching {
+            wheres.push("e.title LIKE ?".into());
+        }
+        let where_sql = wheres
+            .iter()
+            .filter(|w| !w.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let like = format!("%{}%", s.pod_ep_query.trim());
+        let count_sql = format!("SELECT COUNT(*) FROM podcast_episodes e WHERE {where_sql}");
+        let mut cq = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(&*count_sql)).bind(s.pod_open);
+        if searching {
+            cq = cq.bind(like.clone());
+        }
+        let total: i64 = cq.fetch_one(pool).await.unwrap_or(0);
+        let ep_sql = format!(
+            "{EPISODE_SELECT} WHERE {where_sql} \
              ORDER BY COALESCE(e.published, 0) {order} LIMIT ? OFFSET ?"
-        )))
-        .bind(s.pod_open)
-        .bind(LIST_PAGE)
-        .bind(s.pod_ep_page * LIST_PAGE)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
+        );
+        let mut q = sqlx::query_as::<_, EpisodeRow>(sqlx::AssertSqlSafe(&*ep_sql)).bind(s.pod_open);
+        if searching {
+            q = q.bind(like);
+        }
+        let rows: Vec<EpisodeRow> = q
+            .bind(LIST_PAGE)
+            .bind(s.pod_ep_page * LIST_PAGE)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
         st.pod_episodes = rows.into_iter().map(into_episode).collect();
         st.pod_ep_pages = (total.max(1) as f64 / LIST_PAGE as f64).ceil() as i64;
+        fill_pod_shared(pool, s, st).await;
         return;
     }
 
@@ -12463,6 +13204,50 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
         .await
         .unwrap_or_default();
         st.pod_latest = rows.into_iter().map(into_episode).collect();
+
+        // Home's first shelf. Ordered by how recently the position moved, not
+        // by how new the episode is: "carry on" is about you, not about the
+        // feed. `downloaded_at` doubles as the touch time — nothing else in
+        // the table records when a row was last written.
+        let rows: Vec<EpisodeRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "{EPISODE_SELECT} WHERE e.position_s > 0 AND e.played = 0 \
+             ORDER BY e.position_s / MAX(e.duration_s, 1) DESC LIMIT ?"
+        )))
+        .bind(RAIL)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        st.pod_continue = rows.into_iter().map(into_episode).collect();
+    }
+
+    if s.pod_tab == "new" {
+        // Three weeks is the window the tab is for: an inbox that reaches back
+        // a year is a back catalogue, and there is a Subscribed tab for that.
+        let cutoff = now_secs() - INBOX_DAYS * 86_400;
+        let scope = format!("COALESCE(e.published, 0) >= {cutoff}");
+        st.pod_inbox_counts = ep_counts(pool, &scope, &[]).await;
+        let filter = ep_filter_sql(&s.pod_inbox_filter);
+        let where_sql = if filter.is_empty() {
+            scope.clone()
+        } else {
+            format!("{scope} AND {filter}")
+        };
+        let rows: Vec<EpisodeRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "{EPISODE_SELECT} WHERE {where_sql} \
+             ORDER BY COALESCE(e.published, 0) DESC LIMIT ?"
+        )))
+        .bind(INBOX_MAX)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        st.pod_inbox = rows.into_iter().map(into_episode).collect();
+        if let Some(q) = s.pod_queries.get("new").filter(|q| !q.is_empty()) {
+            let needle = q.to_lowercase();
+            st.pod_inbox.retain(|e| {
+                e.title.to_lowercase().contains(&needle)
+                    || e.show.to_lowercase().contains(&needle)
+            });
+        }
     }
 
     if s.pod_tab == "downloads" {
@@ -12502,6 +13287,21 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
         .await
         .unwrap_or(0);
         st.pod_pages = (saved.max(1) as f64 / LIST_PAGE as f64).ceil() as i64;
+        // What the saved files actually take. Stat-ing them beats trusting a
+        // column: a file deleted from under us would otherwise be counted for
+        // ever, and the meter is the one place that would show it.
+        let paths: Vec<String> = sqlx::query_scalar(
+            "SELECT downloaded_path FROM podcast_episodes \
+             WHERE downloaded_path IS NOT NULL AND downloaded_path != ''",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        st.pod_dl_bytes = paths
+            .iter()
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len() as i64)
+            .sum();
     }
 
     if s.pod_tab == "trends" {
@@ -12547,6 +13347,57 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
             .collect();
     }
 
+    fill_pod_shared(pool, s, st).await;
+}
+
+/// Episodes published in the last three weeks. Beyond that a feed is a back
+/// catalogue, which is what the Subscribed tab is for.
+const INBOX_DAYS: i64 = 21;
+
+/// The most the New tab holds. Forty daily shows over three weeks is eight
+/// hundred rows, and nobody scrolls an inbox that long.
+const INBOX_MAX: i64 = 200;
+
+/// The SQL one of the four episode filters adds. "" for `all`, so the caller
+/// can drop it out of the WHERE rather than paste `1 = 1`.
+fn ep_filter_sql(name: &str) -> String {
+    match name {
+        "unplayed" => "e.played = 0".into(),
+        "progress" => "e.position_s > 0 AND e.played = 0".into(),
+        "downloaded" => "e.downloaded_path IS NOT NULL AND e.downloaded_path != ''".into(),
+        _ => String::new(),
+    }
+}
+
+/// How many rows each filter would keep inside `scope`, in the chips' order:
+/// unplayed, in progress, downloaded, all. One query per chip is four cheap
+/// COUNTs against an indexed table, and it is the only way the numbers agree
+/// with the list the chip then draws.
+async fn ep_counts(pool: &sqlx::SqlitePool, scope: &str, binds: &[i64]) -> Vec<i64> {
+    let mut out = Vec::with_capacity(4);
+    for f in ["unplayed", "progress", "downloaded", "all"] {
+        let filter = ep_filter_sql(f);
+        let where_sql = if filter.is_empty() {
+            scope.to_string()
+        } else {
+            format!("{scope} AND {filter}")
+        };
+        let sql = format!("SELECT COUNT(*) FROM podcast_episodes e WHERE {where_sql}");
+        let mut q = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(&*sql));
+        for b in binds {
+            q = q.bind(b);
+        }
+        out.push(q.fetch_one(pool).await.unwrap_or(0));
+    }
+    out
+}
+
+/// What every podcast tab needs, whichever one is open: the New badge, and the
+/// queue. Drawn in the sub-tab row, so it cannot live inside one tab's branch.
+async fn fill_pod_shared(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState) {
+    // The queue is drawn in the docked panel, which is up over every tab and
+    // over a show page too. It used to be filled after the show-page branch
+    // had already returned, so opening a show emptied the panel.
     if !s.pod_queue.is_empty() {
         let holes = vec!["?"; s.pod_queue.len()].join(",");
         let queue_sql = format!("{EPISODE_SELECT} WHERE e.id IN ({holes})");
@@ -12563,22 +13414,46 @@ async fn fill_podcasts(s: &Session, st: &mut MusicState) {
             .filter_map(|id| by_id.remove(id))
             .collect();
     }
+    // The three numbers the sub-tab row wears. They are counted here rather
+    // than inside a tab's own branch because the row is drawn over every tab
+    // and over a show page: a badge that only appears on the tab it counts is
+    // a badge nobody sees.
+    let cutoff = now_secs() - 7 * 86_400;
+    st.pod_new_count = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM podcast_episodes e \
+         WHERE e.played = 0 AND e.position_s = 0 AND COALESCE(e.published, 0) >= ?",
+    )
+    .bind(cutoff)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    st.pod_dl_count = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM podcast_episodes \
+         WHERE downloaded_path IS NOT NULL AND downloaded_path != ''",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    st.pod_sub_count = sqlx::query_scalar("SELECT COUNT(*) FROM podcasts")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
 }
 
 async fn fill_books(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState) {
-    st.books = book_cards(pool, &s.book_tab).await;
+    st.books = book_cards(pool).await;
+    // Through locals: both read `st.books` and write another field of the same
+    // `&mut MusicState`, which is a borrow the compiler is entitled to refuse.
+    let stats = book_stats(pool, &st.books, &s.book_open).await;
+    st.book_stats = stats;
+    if !s.book_query.is_empty() {
+        let hits = book_search(pool, &s.book_query, &st.books).await;
+        st.book_hits = hits;
+    }
     if s.book_open.is_empty() {
         return;
     }
     st.book_detail = st.books.iter().find(|b| b.folder == s.book_open).cloned();
-    if st.book_detail.is_none() {
-        // The open book was filtered out by the tab (a finished book while the
-        // "In progress" tab is showing). Its detail page still has to work.
-        st.book_detail = book_cards(pool, "all")
-            .await
-            .into_iter()
-            .find(|b| b.folder == s.book_open);
-    }
     let ids = tulipix_music::audiobooks::book_chapters(pool, &s.book_open)
         .await
         .unwrap_or_default();
@@ -12638,6 +13513,155 @@ async fn fill_books(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState) {
             .unwrap_or(1.0),
         None => 1.0,
     };
+}
+
+/// At most this many of each kind of hit. A search that returns four hundred
+/// chapters has answered a different question from the one asked.
+const BOOK_HITS: i64 = 20;
+
+/// Books, chapters and bookmarks matching one phrase.
+///
+/// The books come off the shelf that is already built (so the titles here are
+/// the resolved ones, not the folder names); the chapters and bookmarks are
+/// two small LIKE queries, which is why this can afford to run on every
+/// keystroke.
+async fn book_search(
+    pool: &sqlx::SqlitePool,
+    query: &str,
+    books: &[BookCard],
+) -> Vec<BookHit> {
+    let needle = query.to_lowercase();
+    let like = format!("%{query}%");
+    let title_of = |folder: &str| -> String {
+        books
+            .iter()
+            .find(|b| b.folder == folder)
+            .map(|b| b.title.clone())
+            .unwrap_or_else(|| tulipix_music::ab_meta::book_title(folder))
+    };
+    let mut out: Vec<BookHit> = books
+        .iter()
+        .filter(|b| {
+            [&b.title, &b.author, &b.narrator, &b.series]
+                .iter()
+                .any(|f| f.to_lowercase().contains(&needle))
+        })
+        .take(BOOK_HITS as usize)
+        .map(|b| BookHit {
+            kind: "book".into(),
+            title: b.title.clone(),
+            subtitle: [b.author.clone(), format!("{} chapters", b.chapters)]
+                .into_iter()
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · "),
+            folder: b.folder.clone(),
+            item_id: 0,
+            position_s: -1.0,
+        })
+        .collect();
+
+    let chapters: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT item_id, COALESCE(title, ''), COALESCE(folder, '') FROM track_meta \
+         WHERE is_audiobook = 1 AND title LIKE ? \
+         ORDER BY folder, COALESCE(track_no, 1000000) LIMIT ?",
+    )
+    .bind(&like)
+    .bind(BOOK_HITS)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for (item_id, title, folder) in chapters {
+        out.push(BookHit {
+            kind: "chapter".into(),
+            title,
+            subtitle: title_of(&folder),
+            folder,
+            item_id,
+            position_s: -1.0,
+        });
+    }
+
+    let marks: Vec<(i64, f64, Option<String>, Option<String>, String)> = sqlx::query_as(
+        "SELECT ab.item_id, ab.position_s, ab.label, ab.note, COALESCE(tm.folder, '') \
+         FROM audiobook_bookmarks ab JOIN track_meta tm ON tm.item_id = ab.item_id \
+         WHERE ab.label LIKE ?1 OR ab.note LIKE ?1 \
+         ORDER BY ab.created DESC LIMIT ?2",
+    )
+    .bind(&like)
+    .bind(BOOK_HITS)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for (item_id, position_s, label, note, folder) in marks {
+        let label = label.unwrap_or_default();
+        out.push(BookHit {
+            kind: "bookmark".into(),
+            title: if label.is_empty() { fmt_clock(position_s) } else { label },
+            subtitle: {
+                let book = title_of(&folder);
+                match note.unwrap_or_default() {
+                    n if n.is_empty() => book,
+                    n => format!("{book} — {n}"),
+                }
+            },
+            folder,
+            item_id,
+            position_s,
+        });
+    }
+    out
+}
+
+/// The four figures on the panel's stat card.
+///
+/// "Left" follows the open book, and falls back to the one most recently
+/// listened to — the card is beside the bookmarks, and the bookmarks belong to
+/// whichever book that is.
+async fn book_stats(
+    pool: &sqlx::SqlitePool,
+    books: &[BookCard],
+    open: &str,
+) -> ListenStats {
+    let subject = books
+        .iter()
+        .find(|b| b.folder == open)
+        .or_else(|| {
+            books
+                .iter()
+                .filter(|b| !b.finished && b.progress > 0.0)
+                .max_by_key(|b| b.last_played)
+        });
+    let left_s = subject
+        .map(|b| {
+            let speed = if b.speed > 0.0 { b.speed } else { 1.0 };
+            (b.total_s * (1.0 - b.progress.clamp(0.0, 1.0))) / speed
+        })
+        .unwrap_or(0.0);
+    let week_s = tulipix_music::audiobooks::listened_since(pool, now_secs() - 7 * 86_400)
+        .await
+        .unwrap_or(0.0);
+    let streak_days = tulipix_music::audiobooks::listening_streak(pool)
+        .await
+        .unwrap_or(0);
+    // Counted in SQL rather than off `books`, which the open tab has already
+    // filtered: a figure that changes when you switch tabs is not a figure.
+    let year_start = now_secs() - 365 * 86_400;
+    let finished_year: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ( \
+             SELECT tm.folder AS f, COUNT(*) AS n, \
+                    SUM(CASE WHEN ap.finished = 1 THEN 1 ELSE 0 END) AS done, \
+                    MAX(COALESCE(ap.updated, 0)) AS last \
+             FROM track_meta tm LEFT JOIN audiobook_progress ap ON ap.item_id = tm.item_id \
+             WHERE tm.is_audiobook = 1 AND tm.folder IS NOT NULL AND tm.folder <> '' \
+             GROUP BY tm.folder) \
+         WHERE n > 0 AND n = done AND last >= ?",
+    )
+    .bind(year_start)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    ListenStats { left_s, week_s, streak_days, finished_year }
 }
 
 async fn fill_radio(s: &Session, st: &mut MusicState) {
@@ -13260,9 +14284,16 @@ mod tests {
         for ddl in [
             "CREATE TABLE items (id INTEGER PRIMARY KEY, abs_path TEXT, section TEXT, \
              missing_since INTEGER, added INTEGER)",
+            // Every column `TRACK_SELECT` names, and it names more of them than
+            // it used to: a missing one makes the whole query error, which
+            // `tracks_by_ids` swallows into an empty list, so the drift shows
+            // up as "no rows" rather than as a failure that says why.
             "CREATE TABLE track_meta (item_id INTEGER, title TEXT, artist_id INTEGER, \
              album_id INTEGER, duration_s REAL, loved INTEGER, rating INTEGER, \
-             play_count INTEGER, track_no INTEGER, year INTEGER, genre TEXT, \
+             play_count INTEGER, track_no INTEGER, disc_no INTEGER, \
+             bpm REAL, music_key TEXT, dr_score REAL, \
+             composer TEXT, performer TEXT, producer TEXT, remixer TEXT, \
+             year INTEGER, genre TEXT, \
              is_audiobook INTEGER DEFAULT 0, last_played INTEGER)",
             "CREATE TABLE artists (id INTEGER PRIMARY KEY, name TEXT)",
             "CREATE TABLE albums (id INTEGER PRIMARY KEY, title TEXT, cover_path TEXT, \

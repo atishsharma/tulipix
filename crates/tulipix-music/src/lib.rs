@@ -36,6 +36,7 @@ pub mod formats;
 pub mod grid_density;
 pub mod headphone_eq;
 pub mod import;
+pub mod listen_prefs;
 pub mod listenbrainz;
 pub mod lyrics;
 pub mod lyrics_sync;

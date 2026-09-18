@@ -8,7 +8,7 @@ import 'dart:io' show FileSystemEntity, Platform;
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/tools.dart';
 import 'tools_controller.dart';

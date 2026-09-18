@@ -14,7 +14,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../src/rust/api/transfer.dart';
 
 /// How often the page re-reads the service while it is on screen. Fast enough

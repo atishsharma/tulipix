@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS audiobook_bookmarks (
     item_id    INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
     position_s REAL    NOT NULL,
     label      TEXT,
+    note       TEXT,
     created    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audiobook_bookmarks_item_idx ON audiobook_bookmarks(item_id);
@@ -226,6 +227,7 @@ const ADDED_COLUMNS: &[&str] = &[
     "ALTER TABLE track_meta ADD COLUMN release_date TEXT",
     "ALTER TABLE playlists ADD COLUMN description TEXT",
     "ALTER TABLE track_meta ADD COLUMN tags_version INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE audiobook_bookmarks ADD COLUMN note TEXT",
 ];
 
 pub async fn apply(pool: &SqlitePool) -> Result<()> {

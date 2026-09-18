@@ -8,7 +8,7 @@
 
 import 'package:flutter/material.dart';
 
-import '../../../design/pick.dart';
+import '../../../platform/pick.dart';
 import '../../../design/tokens.dart';
 import '../../../src/rust/api/music.dart';
 import '../music_controller.dart';

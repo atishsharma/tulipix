@@ -14,7 +14,7 @@ import 'package:flutter/services.dart';
 
 import '../../design/design_language.dart';
 import '../../design/first_load.dart';
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../shell/shell_controller.dart';
@@ -151,6 +151,17 @@ class _MusicPageState extends State<MusicPage> {
                   guard(_c.keyRepeat),
               const SingleActivator(LogicalKeyboardKey.keyQ):
                   guard(() => _c.setPanel('queue')),
+              // Spoken word. Speed, a bookmark and the played tick are the
+              // three things a listener reaches for mid-episode, and all three
+              // are two clicks away in the bar without them.
+              const SingleActivator(LogicalKeyboardKey.bracketLeft):
+                  guard(() => _c.keySpeed(-1)),
+              const SingleActivator(LogicalKeyboardKey.bracketRight):
+                  guard(() => _c.keySpeed(1)),
+              const SingleActivator(LogicalKeyboardKey.keyB):
+                  guard(_c.keyBookmark),
+              const SingleActivator(LogicalKeyboardKey.keyM):
+                  guard(_c.keyMarkPlayed),
               // Back out of a detail page the way the browser key does, since
               // the trail is a history now. Not gated on the deck -- this is
               // navigation, not transport -- but still not while typing, or
@@ -644,6 +655,11 @@ class _SearchPillState extends State<_SearchPill> {
     final controller = widget.controller;
     final search = widget.search;
     final radio = controller.view == 'radio';
+    // Podcasts and Audiobooks are not in the library either: `search` filters
+    // `items`, and neither an episode nor a bookmark is a row in it. One box,
+    // one question per section — the same rule Radio already followed.
+    final pod = controller.view == 'podcasts';
+    final book = controller.view == 'audiobooks';
     final youtube = _yt == 'search';
     final channel = _yt.startsWith('channel:');
     final filters = _ytFilters;
@@ -737,16 +753,26 @@ class _SearchPillState extends State<_SearchPill> {
                                 : null,
                         onChanged: radio || channel
                             ? null
-                            : filters
-                                ? (q) =>
-                                    controller.send(MusicCmd.ytFilter(query: q))
-                                : (q) =>
-                                    controller.send(MusicCmd.search(query: q)),
+                            : pod
+                                ? (q) => controller
+                                    .send(MusicCmd.podSearch(query: q))
+                                : book
+                                    ? (q) => controller
+                                        .send(MusicCmd.bookSearch(query: q))
+                                    : filters
+                                        ? (q) => controller
+                                            .send(MusicCmd.ytFilter(query: q))
+                                        : (q) => controller
+                                            .send(MusicCmd.search(query: q)),
                         decoration: InputDecoration(
                           isCollapsed: true,
                           border: InputBorder.none,
                           hintText: radio
                               ? 'Search stations — press ↵'
+                              : pod
+                              ? 'Search shows and episodes'
+                              : book
+                              ? 'Search books, chapters and bookmarks'
                               : channel
                                   ? 'Search this channel — press ↵'
                                   : filters
@@ -779,6 +805,14 @@ class _SearchPillState extends State<_SearchPill> {
                     }
                     if (filters) {
                       controller.send(const MusicCmd.ytFilter(query: ''));
+                      return;
+                    }
+                    if (pod) {
+                      controller.send(const MusicCmd.podSearch(query: ''));
+                      return;
+                    }
+                    if (book) {
+                      controller.send(const MusicCmd.bookSearch(query: ''));
                       return;
                     }
                     // An empty station search is a no-op in the bridge -- there

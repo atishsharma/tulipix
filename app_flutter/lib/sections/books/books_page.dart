@@ -15,7 +15,7 @@ import 'package:flutter/material.dart';
 import '../../design/skin.dart';
 
 import '../../design/first_load.dart';
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../design/tokens.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/books.dart';

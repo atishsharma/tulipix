@@ -21,7 +21,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../playback/audio_deck.dart' show audioPositionS;
@@ -795,6 +795,31 @@ class Transport extends StatelessWidget {
             : null,
       ),
       if (book || podcast) _SpeedButton(controller: controller, book: book),
+      // Bookmark a book, tick off an episode. The two spoken-word marks, in
+      // the one place that is reachable from every page.
+      if (book)
+        PlayerBtn(
+          icon: Icons.bookmark_add_outlined,
+          tip: 'Bookmark here (B)',
+          size: 40 * s,
+          iconSize: 19 * s,
+          accent: accent,
+          onTap: controller.keyBookmark,
+        ),
+      if (podcast && controller.nowEpisode != null)
+        PlayerBtn(
+          icon: controller.nowEpisode!.played
+              ? Icons.check_circle
+              : Icons.check_circle_outline,
+          tip: controller.nowEpisode!.played
+              ? 'Mark unplayed (M)'
+              : 'Mark played (M)',
+          size: 40 * s,
+          iconSize: 19 * s,
+          active: controller.nowEpisode!.played,
+          accent: accent,
+          onTap: controller.keyMarkPlayed,
+        ),
     ];
 
     return Row(
@@ -809,6 +834,12 @@ class Transport extends StatelessWidget {
   }
 }
 
+/// The speed control, as a popover rather than a list of six.
+///
+/// A menu of presets could not say the two things that matter about narration
+/// speed: that 1.35× is a real answer, and that the speed belongs to the SHOW
+/// (or the book) rather than to the app. Both are here — the slider for the
+/// first, the switch for the second.
 class _SpeedButton extends StatelessWidget {
   const _SpeedButton({required this.controller, required this.book});
 
@@ -817,29 +848,145 @@ class _SpeedButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final st = controller.state;
-    final speed = book ? (st?.bookSpeed ?? 1.0) : (st?.podSpeed ?? 1.0);
+    final speed = controller.listenSpeed;
+    final show = book ? null : controller.nowShow;
     return Builder(
       builder: (btn) => GestureDetector(
-        onTap: () async {
-          final v = await dropUp<double>(btn, items: [
-            for (final x in const [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0])
-              CheckedPopupMenuItem(
-                value: x,
-                checked: speed == x,
-                child: Text('$x×'),
+        onTap: () => dropUp<void>(btn, items: [
+          PopupMenuItem<void>(
+            enabled: false,
+            padding: EdgeInsets.zero,
+            child: _SpeedPanel(
+              controller: controller,
+              book: book,
+              show: show,
+            ),
+          ),
+        ]),
+        child: Tooltip(
+          message: book
+              ? 'Speed for this book ([ and ])'
+              : (show == null
+                  ? 'Speed ([ and ])'
+                  : 'Speed for ${show.title} ([ and ])'),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Text('${_trim(speed)}×',
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w600)),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// `1.50` reads as a measurement; `1.5` reads as a speed.
+String _trim(double v) {
+  final s = v.toStringAsFixed(2);
+  return s.endsWith('0') ? s.substring(0, s.length - 1) : s;
+}
+
+class _SpeedPanel extends StatefulWidget {
+  const _SpeedPanel({
+    required this.controller,
+    required this.book,
+    required this.show,
+  });
+
+  final MusicController controller;
+  final bool book;
+  final PodcastShow? show;
+
+  @override
+  State<_SpeedPanel> createState() => _SpeedPanelState();
+}
+
+class _SpeedPanelState extends State<_SpeedPanel> {
+  late double _v = widget.controller.listenSpeed;
+
+  /// Off, the speed is the section's and every podcast shares it. On (the
+  /// default when the bar knows which show is playing), it is written to the
+  /// show and the next episode of it starts there.
+  late bool _remember = widget.book || widget.show != null;
+
+  void _write(double v) {
+    setState(() => _v = v);
+    widget.controller.setListenSpeed(v, perShow: _remember);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final subject = widget.book
+        ? 'this book'
+        : (widget.show?.title ?? 'every podcast');
+    return SizedBox(
+      width: 300,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Speed · $subject',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: t.nInk)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final x in const [0.8, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5])
+                  SortChip(
+                    label: '${_trim(x)}×',
+                    active: (_v - x).abs() < 0.01,
+                    onTap: () => _write(x),
+                  ),
+              ],
+            ),
+            Slider(
+              value: _v.clamp(0.5, 3.0),
+              min: 0.5,
+              max: 3.0,
+              divisions: 50,
+              label: '${_trim(_v)}×',
+              onChanged: (v) => setState(() => _v = v),
+              onChangeEnd: _write,
+            ),
+            if (!widget.book)
+              Row(
+                children: [
+                  Transform.scale(
+                    scale: 0.7,
+                    child: Switch(
+                      value: _remember,
+                      onChanged: widget.show == null
+                          ? null
+                          : (v) {
+                              setState(() => _remember = v);
+                              widget.controller
+                                  .setListenSpeed(_v, perShow: v);
+                            },
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      widget.show == null
+                          ? 'No show on the deck to remember it against'
+                          : 'Remember for ${widget.show!.title}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11, color: t.nInk2),
+                    ),
+                  ),
+                ],
               ),
-          ]);
-          if (v == null) return;
-          controller.send(book
-              ? MusicCmd.bookSetSpeed(speed: v)
-              : MusicCmd.podSetSpeed(speed: v));
-        },
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          child: Text('$speed×',
-              style:
-                  const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+          ],
         ),
       ),
     );
@@ -879,28 +1026,86 @@ class _SleepButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final mins = controller.state?.sleepMin ?? 0;
+    final st = controller.state;
+    final mins = st?.sleepMin ?? 0;
+    final endOf = st?.sleepEndOfItem ?? false;
+    // "After this track" means the episode on a podcast and the chapter in a
+    // book: the thing you are in the middle of, whatever it is called here.
+    final item = switch (controller.now?.mode) {
+      'podcast' => 'episode',
+      'book' => 'chapter',
+      _ => 'track',
+    };
     return Builder(
       builder: (btn) => PlayerBtn(
         icon: Icons.bedtime_outlined,
-        tip: mins > 0 ? 'Sleep in $mins min' : 'Sleep timer',
-        active: mins != 0,
+        tip: endOf
+            ? 'Sleep at the end of this $item'
+            : (mins > 0 ? 'Sleep in $mins min' : 'Sleep timer'),
+        active: mins != 0 || endOf,
         accent: controller.accent,
-        onTap: () async {
-          final v = await dropUp<int>(btn, items: [
-            for (final m in const [0, 10, 15, 30, 45, 60, 90, -1])
-              CheckedPopupMenuItem(
-                value: m,
-                checked: mins == m,
-                child: Text(switch (m) {
-                  0 => 'Off',
-                  -1 => 'After this track',
-                  _ => '$m minutes',
-                }),
+        onTap: () => dropUp<void>(btn, items: [
+          for (final m in const [0, 10, 15, 30, 45, 60, 90, -1])
+            PopupMenuItem<void>(
+              onTap: () => controller.send(MusicCmd.setSleep(minutes: m)),
+              child: Row(
+                children: [
+                  Icon(
+                    (m == -1 ? endOf : (!endOf && mins == m))
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 10),
+                  Text(switch (m) {
+                    0 => 'Off',
+                    -1 => 'End of this $item',
+                    _ => '$m minutes',
+                  }),
+                ],
               ),
-          ]);
-          if (v != null) controller.send(MusicCmd.setSleep(minutes: v));
-        },
+            ),
+          const PopupMenuDivider(),
+          PopupMenuItem<void>(
+            enabled: false,
+            padding: EdgeInsets.zero,
+            child: _FadeSwitch(controller: controller),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+/// The one thing that makes a sleep timer a sleep timer rather than a kill
+/// switch, and the one reason to turn it off — a fade under headphones is
+/// lovely, a fade on a speaker at the other end of the room is a track going
+/// quiet for no reason.
+class _FadeSwitch extends StatelessWidget {
+  const _FadeSwitch({required this.controller});
+
+  final MusicController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final on = controller.state?.sleepFade ?? true;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 0, 12, 4),
+      child: Row(
+        children: [
+          Transform.scale(
+            scale: 0.7,
+            child: Switch(
+              value: on,
+              onChanged: (v) => controller.send(MusicCmd.setSleepFade(fade: v)),
+            ),
+          ),
+          Expanded(
+            child: Text('Fade out over the last minute',
+                style: TextStyle(fontSize: 11.5, color: t.nInk2)),
+          ),
+        ],
       ),
     );
   }

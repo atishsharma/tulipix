@@ -9,7 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../design/app_mark.dart';
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../shell/lock/lock_controller.dart';

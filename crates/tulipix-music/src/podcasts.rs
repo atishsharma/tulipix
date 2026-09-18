@@ -68,6 +68,20 @@ pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     let _ = sqlx::query("ALTER TABLE podcasts ADD COLUMN home_pinned INTEGER NOT NULL DEFAULT 0").execute(pool).await;
     // When the offline copy was stored — drives the Downloads "Downloaded" sort.
     let _ = sqlx::query("ALTER TABLE podcast_episodes ADD COLUMN downloaded_at INTEGER").execute(pool).await;
+    // Per-show listening settings. A show is the unit here, not the app: one
+    // podcast is comfortable at 1.5x and the next is unlistenable above 1.2,
+    // and "skip the first 45 seconds" is a fact about a jingle, not a taste.
+    // `speed = 0` means "follow the section speed", which is why the default
+    // is 0 and not 1.
+    for sql in [
+        "ALTER TABLE podcasts ADD COLUMN speed REAL NOT NULL DEFAULT 0",
+        "ALTER TABLE podcasts ADD COLUMN skip_intro_s INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE podcasts ADD COLUMN auto_dl INTEGER NOT NULL DEFAULT 0",
+        // 0 = keep every download this show has.
+        "ALTER TABLE podcasts ADD COLUMN keep_last INTEGER NOT NULL DEFAULT 0",
+    ] {
+        let _ = sqlx::query(sql).execute(pool).await;
+    }
     Ok(())
 }
 

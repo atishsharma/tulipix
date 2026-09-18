@@ -3,7 +3,7 @@
 
 import 'package:flutter/material.dart';
 
-import '../../design/pick.dart';
+import '../../platform/pick.dart';
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../design/skin.dart';
