@@ -60,6 +60,21 @@ Future<void> main() async {
   runApp(const TulipixApp());
 }
 
+/// One section's page. Four of them take `visible` because they hold something
+/// that should stop when it is not on screen — a poll, a queue ticker.
+Widget _pageFor(Section s, Section at) => switch (s) {
+      Section.home => HomePage(visible: at == Section.home),
+      Section.photos => const PhotosPage(),
+      Section.videos => const VideosPage(),
+      Section.music => const MusicPage(),
+      Section.books => const BooksPage(),
+      Section.cloud => const CloudPage(),
+      Section.tools => ToolsPage(visible: at == Section.tools),
+      Section.transfer => TransferPage(visible: at == Section.transfer),
+      Section.finances => const FinancesPage(),
+      Section.settings => SettingsPage(visible: at == Section.settings),
+    };
+
 class TulipixApp extends StatefulWidget {
   const TulipixApp({super.key});
 
@@ -302,7 +317,14 @@ class _TulipixAppState extends State<TulipixApp> {
                                           ),
                                       clipBehavior: Clip.antiAlias,
                                       child: IndexedStack(
-                                        index: at.index,
+                                        // The position in what is drawn, not
+                                        // the enum's ordinal: the two were one
+                                        // number until Settings → Sections let
+                                        // the sidebar be shorter than ten, and
+                                        // an ordinal used as a position points
+                                        // at the wrong page the moment
+                                        // anything ahead of it is hidden.
+                                        index: _shell.stackIndex,
                                         children: [
                                           // TickerMode is what makes "kept alive" stop short of
                                           // "kept animating". IndexedStack holds all ten pages
@@ -316,27 +338,32 @@ class _TulipixAppState extends State<TulipixApp> {
                                           // and the window rebuilt, laid out, painted and
                                           // re-walked its semantics tree 144 times a second
                                           // over a screen where nothing moved.
-                                          for (final (i, page) in <Widget>[
-                                            HomePage(
-                                                visible: at == Section.home),
-                                            const PhotosPage(),
-                                            const VideosPage(),
-                                            const MusicPage(),
-                                            const BooksPage(),
-                                            const CloudPage(),
-                                            ToolsPage(
-                                                visible: at == Section.tools),
-                                            TransferPage(
-                                                visible:
-                                                    at == Section.transfer),
-                                            const FinancesPage(),
-                                            SettingsPage(
-                                                visible:
-                                                    at == Section.settings),
-                                          ].indexed)
+                                          // Only what the sidebar shows gets
+                                          // built. A hidden section is not a
+                                          // page kept offstage — it is a page
+                                          // that never existed this run, which
+                                          // is the whole reason hiding one is
+                                          // worth anything.
+                                          //
+                                          // Keyed by the section, so the list
+                                          // can change while the app runs.
+                                          // Unkeyed, Flutter matches a
+                                          // multi-child list by position:
+                                          // hiding Photos would re-match every
+                                          // page after it and throw away its
+                                          // State. With a key on each, the
+                                          // survivors are recognised as the
+                                          // same child that merely moved, which
+                                          // is what lets Settings → Sections
+                                          // take effect where you can see it
+                                          // rather than at the next launch.
+                                          for (final (i, s)
+                                              in _shell.sections.indexed)
                                             TickerMode(
-                                                enabled: i == at.index,
-                                                child: page),
+                                              key: ValueKey(s),
+                                              enabled: i == _shell.stackIndex,
+                                              child: _pageFor(s, at),
+                                            ),
                                         ],
                                       ),
                                     ),

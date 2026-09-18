@@ -17,6 +17,7 @@ import '../../design/first_load.dart';
 import '../../platform/pick.dart';
 import '../../design/skin.dart';
 import '../../design/tokens.dart';
+import '../../shell/section_tabs.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/music.dart';
 import 'audiobooks_tab.dart';
@@ -362,7 +363,9 @@ class _Header extends StatelessWidget {
                   Expanded(
                     child: Row(
                       children: [
-                        for (final v in musicViews) ...[
+                        for (final v in keepTabs(
+                            'music', musicViews, (v) => v.id,
+                            active: (v) => st?.view == v.id)) ...[
                           if (v != musicViews.first) const SizedBox(width: 8),
                           Expanded(
                             child: MusicChip(
@@ -770,21 +773,25 @@ class _SearchPillState extends State<_SearchPill> {
                           hintText: radio
                               ? 'Search stations — press ↵'
                               : pod
-                              ? 'Search shows and episodes'
-                              : book
-                              ? 'Search books, chapters and bookmarks'
-                              : channel
-                                  ? 'Search this channel — press ↵'
-                                  : filters
-                                      ? switch (_yt) {
-                                          'subscriptions' => 'Filter channels',
-                                          'playlists' => 'Filter playlists',
-                                          'cached' => 'Filter the cache',
-                                          'downloads' => 'Filter downloads',
-                                          'history' => 'Filter history',
-                                          _ => 'Filter this playlist',
-                                        }
-                                      : 'Search music',
+                                  ? 'Search shows and episodes'
+                                  : book
+                                      ? 'Search books, chapters and bookmarks'
+                                      : channel
+                                          ? 'Search this channel — press ↵'
+                                          : filters
+                                              ? switch (_yt) {
+                                                  'subscriptions' =>
+                                                    'Filter channels',
+                                                  'playlists' =>
+                                                    'Filter playlists',
+                                                  'cached' =>
+                                                    'Filter the cache',
+                                                  'downloads' =>
+                                                    'Filter downloads',
+                                                  'history' => 'Filter history',
+                                                  _ => 'Filter this playlist',
+                                                }
+                                              : 'Search music',
                           hintStyle: TextStyle(
                             fontFamily: skin.fontFamily ?? Tokens.fontFamily,
                             fontSize: 14,
@@ -800,7 +807,8 @@ class _SearchPillState extends State<_SearchPill> {
                     search.clear();
                     if (youtube) return;
                     if (channel) {
-                      controller.send(const MusicCmd.ytChannelSearch(query: ''));
+                      controller
+                          .send(const MusicCmd.ytChannelSearch(query: ''));
                       return;
                     }
                     if (filters) {

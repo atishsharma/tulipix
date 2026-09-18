@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import '../../design/first_load.dart';
 import '../../shell/shell_controller.dart';
 import '../../design/tokens.dart';
+import '../../shell/section_tabs.dart';
 import '../../design/skin.dart';
 import '../../src/rust/api/tools.dart';
 import 'tools_controller.dart';
@@ -179,7 +180,8 @@ class _Header extends StatelessWidget {
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
-                    for (final tab in toolTabs)
+                    for (final tab in keepTabs('tools', toolTabs, (t) => t.id,
+                        active: (t) => st.category == t.id))
                       _Tab(
                         tab: tab,
                         active: st.query.isEmpty && st.category == tab.id,
@@ -257,11 +259,7 @@ class _SearchPillState extends State<_SearchPill> {
             gradient: const LinearGradient(
               begin: Alignment(-1, -0.58),
               end: Alignment(1, 0.58),
-              colors: [
-                Color(0xFF06B6D4),
-                Color(0xFF6366F1),
-                Color(0xFF8B5CF6)
-              ],
+              colors: [Color(0xFF06B6D4), Color(0xFF6366F1), Color(0xFF8B5CF6)],
             ),
           ),
       padding: const EdgeInsets.all(1.4),
@@ -275,14 +273,12 @@ class _SearchPillState extends State<_SearchPill> {
         padding: const EdgeInsets.only(left: 13, right: 5),
         child: Row(
           children: [
-            Icon(skin.icon(Icons.search),
-                size: 17, color: t.nInk3),
+            Icon(skin.icon(Icons.search), size: 17, color: t.nInk3),
             const SizedBox(width: 8),
             Expanded(
               child: TextField(
                 controller: widget.search,
-                style:
-                    TextStyle(fontSize: 15, color: t.nInk),
+                style: TextStyle(fontSize: 15, color: t.nInk),
                 cursorColor: Tokens.secTools,
                 onChanged: (v) =>
                     widget.controller.send(ToolsCmd.search(text: v.trim())),

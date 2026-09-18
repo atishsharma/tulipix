@@ -51,6 +51,62 @@ pub struct PhotoTile {
     pub live: bool,
 }
 
+/// One indexing pass over the library, as the AI tab draws it.
+///
+/// `stage` is `background::Stage::key()` — the string persisted in
+/// `photo_ai_state.stage`, so it is a storage format and Dart passes it back
+/// unchanged.
+#[derive(Debug, Clone)]
+pub struct AiStage {
+    pub stage: String,
+    pub label: String,
+    /// What it produces, in the user's terms rather than the model's.
+    pub blurb: String,
+    /// Photos that have not been considered for this stage yet.
+    pub pending: i64,
+    /// Every model this stage needs before it can do anything, by manifest
+    /// name. Empty for the two stages that need none.
+    pub needs: Vec<String>,
+    /// All of `needs` installed. False ⇒ the row offers "Get model", not "Run".
+    pub ready: bool,
+    /// 0..1 while this stage is the one running; -1 when it is not.
+    pub frac: f64,
+}
+
+/// One row of `resources/ai-models.toml`, with what it is worth on this
+/// machine right now.
+#[derive(Debug, Clone)]
+pub struct AiModel {
+    /// Manifest name — the id every command takes.
+    pub name: String,
+    /// What it does, not what it is called.
+    pub label: String,
+    pub purpose: String,
+    pub mb: i64,
+    pub quant: String,
+    pub installed: bool,
+    /// 0..1 while downloading, -1 otherwise.
+    pub frac: f64,
+    /// The stage this model feeds, or "" for an editor tool with no queue —
+    /// Magic eraser, Smart select and Upscale are per-photo, so their card
+    /// offers the editor rather than a Run.
+    pub stage: String,
+    /// Photos still waiting on this model's stage; -1 when it has no stage.
+    pub pending: i64,
+}
+
+/// What the machine brings, for the strip above the stage list.
+#[derive(Debug, Clone)]
+pub struct AiMachine {
+    pub ram_mb: i64,
+    /// Whether this build has the ONNX runtime compiled in at all. Without it
+    /// every model stage is permanently a no-op, and saying so beats a Run
+    /// button that does nothing.
+    pub onnx: bool,
+    pub installed: i64,
+    pub total: i64,
+}
+
 /// One date bucket of the timeline, e.g. "May 2026". Empty when the grid is
 /// sorted by something other than date.
 #[derive(Debug, Clone)]
@@ -160,6 +216,30 @@ pub struct PhotosState {
     /// name | count | size, for the Library tab's own sort.
     pub lib_sort: String,
     pub lib_sort_dir: String,
+    // --- the AI tab ---
+    pub ai_stages: Vec<AiStage>,
+    pub ai_models: Vec<AiModel>,
+    pub ai_machine: AiMachine,
+    /// The stage running now, or "" — one at a time, because they contend for
+    /// the same disk and the same cores.
+    pub ai_running: String,
+    /// Photos waiting on at least one runnable pass. Distinct photos, not the
+    /// sum of the per-stage queues: a photo owing three passes is one photo
+    /// waiting, and adding the queues up trebled the headline.
+    pub ai_waiting: i64,
+    /// "idle" | "plugged" | "always". When the background indexer is allowed to
+    /// pick the queue up by itself.
+    pub ai_when: String,
+    /// Per-category counts for the chip row, keyed by category id. Counted once
+    /// per snapshot rather than once per chip.
+    pub counts: Vec<CategoryCount>,
+}
+
+/// A chip and how many photos are behind it.
+#[derive(Debug, Clone)]
+pub struct CategoryCount {
+    pub id: String,
+    pub count: i64,
 }
 
 // -------------------------------------------------------------- commands ----
@@ -199,6 +279,25 @@ pub enum PhotosCmd {
     /// Break a stack up; its members become ordinary tiles again.
     Unstack { stack_id: i64 },
     Scan,
+    /// Run one indexing pass over everything still waiting for it. Detached —
+    /// the command returns at once and progress arrives as `Stale`.
+    AiRun { stage: String },
+    /// The first stage that has work and a model, then the next, and so on.
+    AiRunAll,
+    /// Stop after the batch in flight. Progress already written is kept.
+    AiStop,
+    /// Forget every attempt at this stage so the whole library is reconsidered,
+    /// then run it. "Run again" on a stage that has drained.
+    AiRerun { stage: String },
+    /// "idle" | "plugged" | "always" — when the background indexer may run
+    /// without being asked.
+    AiSetWhen { mode: String },
+    /// Fetch and verify one manifest model.
+    AiDownload { name: String },
+    /// Re-check an installed model against its pinned digest.
+    AiVerify { name: String },
+    /// Delete a model's folder, pinned digest included.
+    AiRemove { name: String },
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +305,9 @@ pub enum PhotosEvent {
     ScanStarted { root: String },
     ScanFinished { scanned: i64, inserted: i64, updated: i64, missing: i64 },
     ScanFailed { message: String },
+    /// Something behind the page changed on its own — an indexing pass moved,
+    /// a model finished downloading. Dart answers with a plain re-read.
+    Stale,
 }
 
 // --------------------------------------------------------------- session ----
@@ -387,6 +489,105 @@ pub async fn photos_dispatch(cmd: PhotosCmd) -> Result<PhotosState> {
         PhotosCmd::Scan => {
             scan_watched(pool).await;
             invalidate_badges();
+        }
+        PhotosCmd::AiRun { stage } => {
+            if let Some(st) = stage_of(&stage) {
+                ai_spawn(vec![st]);
+            }
+        }
+        PhotosCmd::AiRunAll => {
+            // In queue order, skipping what has no model: EXIF and the search
+            // index first because everything else reads what they write.
+            ai_spawn(
+                tulipix_photos::ai::background::Stage::ALL
+                    .into_iter()
+                    .filter(|s| tulipix_photos::ai::load::stage_ready(*s))
+                    .collect(),
+            );
+        }
+        PhotosCmd::AiStop => {
+            AI_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+            emit(PhotosEvent::Stale);
+        }
+        PhotosCmd::AiRerun { stage } => {
+            if let Some(st) = stage_of(&stage) {
+                tulipix_photos::ai::background::reset_stage(pool, st).await?;
+                ai_spawn(vec![st]);
+            }
+        }
+        PhotosCmd::AiSetWhen { mode } => set_ai_when(&mode),
+        PhotosCmd::AiDownload { name } => {
+            let Some(entry) = manifest().models.iter().find(|m| m.name == name) else {
+                anyhow::bail!("no model called \u{201c}{name}\u{201d} is in the manifest");
+            };
+            // Detached, like the indexing run and for the same reason: an
+            // unanswered press is a press the user makes four more times.
+            // Claimed before the spawn so the snapshot this command returns
+            // already says "downloading". The guard is taken and given back
+            // inside this `let` rather than held over the `await` below: a std
+            // MutexGuard alive across an await point makes the whole dispatch
+            // future !Send, and frb spawns it.
+            let already = {
+                let mut g = match ai_dl().lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                let had = g.contains_key(&name);
+                if !had {
+                    g.insert(name.clone(), 0.0);
+                }
+                had
+            };
+            if already {
+                return snapshot(pool).await;
+            }
+            let entry = entry.clone();
+            tokio::spawn(async move {
+                let key = entry.name.clone();
+                let res = tulipix_photos::ai::models::download_with_progress(&entry, |f| {
+                    let mut g = match ai_dl().lock() {
+                        Ok(g) => g,
+                        Err(e) => e.into_inner(),
+                    };
+                    let prev = g.get(&key).copied().unwrap_or(0.0);
+                    g.insert(key.clone(), f as f64);
+                    drop(g);
+                    // Per percent, not per chunk: a 205MB model is thousands of
+                    // chunks and every event costs Dart a whole snapshot.
+                    if (f as f64 * 100.0) as i64 != (prev * 100.0) as i64 {
+                        emit(PhotosEvent::Stale);
+                    }
+                })
+                .await;
+                if let Ok(mut g) = ai_dl().lock() {
+                    g.remove(&entry.name);
+                }
+                match res {
+                    Ok(_) => tracing::info!(name = %entry.name, "model installed"),
+                    Err(e) => tracing::error!(name = %entry.name, error = %e, "model download"),
+                }
+                emit(PhotosEvent::Stale);
+            });
+        }
+        PhotosCmd::AiVerify { name } => {
+            let Some(entry) = manifest().models.iter().find(|m| m.name == name) else {
+                anyhow::bail!("no model called \u{201c}{name}\u{201d} is in the manifest");
+            };
+            let Some(path) = tulipix_photos::ai::models::local_path(entry) else {
+                anyhow::bail!("{name} is not installed");
+            };
+            tulipix_photos::ai::models::verify(&path, &entry.sha256).await?;
+        }
+        PhotosCmd::AiRemove { name } => {
+            let Some(entry) = manifest().models.iter().find(|m| m.name == name) else {
+                anyhow::bail!("no model called \u{201c}{name}\u{201d} is in the manifest");
+            };
+            // The whole folder, pinned digest included, so a later download
+            // re-pins rather than checking against a hash for a file that is
+            // no longer there.
+            if let Some(dir) = tulipix_photos::ai::models::install_dir(entry) {
+                std::fs::remove_dir_all(&dir).ok();
+            }
         }
     }
 
@@ -602,6 +803,383 @@ pub(crate) fn human_size(bytes: u64) -> String {
     }
 }
 
+// -------------------------------------------------------------------- ai ----
+
+/// The indexing job in flight: `(stage key, 0..1)`. Empty stage = nothing
+/// running. One slot, because one stage runs at a time.
+fn ai_job() -> &'static Mutex<(String, f64)> {
+    static J: std::sync::OnceLock<Mutex<(String, f64)>> = std::sync::OnceLock::new();
+    J.get_or_init(|| Mutex::new((String::new(), 0.0)))
+}
+
+/// Set by Stop, cleared when a run ends. The run checks it between batches,
+/// which is also its yield point — stopping mid-batch would throw away work
+/// already paid for.
+static AI_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Model downloads in flight, by manifest name.
+fn ai_dl() -> &'static Mutex<std::collections::HashMap<String, f64>> {
+    static D: std::sync::OnceLock<Mutex<std::collections::HashMap<String, f64>>> =
+        std::sync::OnceLock::new();
+    D.get_or_init(Default::default)
+}
+
+/// Progress events are answered by a whole fresh snapshot on the Dart side, so
+/// they are rationed rather than sent per item. Four a second is faster than a
+/// progress bar reads.
+fn ai_progress(stage: &str, frac: f64) {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let changed = {
+        let mut g = match ai_job().lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        let changed = g.0 != stage;
+        *g = (stage.to_string(), frac);
+        changed
+    };
+    let due = changed
+        || LAST
+            .lock()
+            .map(|mut last| {
+                let now = std::time::Instant::now();
+                let due = last.is_none_or(|t| now.duration_since(t).as_millis() >= 250);
+                if due {
+                    *last = Some(now);
+                }
+                due
+            })
+            .unwrap_or(true);
+    if due {
+        emit(PhotosEvent::Stale);
+    }
+}
+
+fn ai_clear() {
+    if let Ok(mut g) = ai_job().lock() {
+        *g = (String::new(), 0.0);
+    }
+    AI_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+    emit(PhotosEvent::Stale);
+}
+
+fn stage_of(key: &str) -> Option<tulipix_photos::ai::background::Stage> {
+    use tulipix_photos::ai::background::Stage;
+    Stage::ALL.into_iter().find(|s| s.key() == key)
+}
+
+/// Drain one stage, a batch at a time, until it is empty or Stop is pressed.
+///
+/// Detached: `photos_dispatch` must come back the moment the button is pressed
+/// or the first press reads as dropped and the next four start four more runs.
+/// Guarded by the job slot, so a second press while one runs is a no-op rather
+/// than two passes fighting over the same rows.
+fn ai_spawn(stages: Vec<tulipix_photos::ai::background::Stage>) {
+    {
+        let g = match ai_job().lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        if !g.0.is_empty() {
+            return;
+        }
+    }
+    AI_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+    // Claim the slot before the task is spawned: the snapshot this command
+    // returns has to already say "running", or the button springs back.
+    if let Some(first) = stages.first() {
+        ai_progress(first.key(), 0.0);
+    }
+    tokio::spawn(async move {
+        let Ok(pool) = photos_pool().await else {
+            ai_clear();
+            return;
+        };
+        for stage in stages {
+            if AI_STOP.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            if !tulipix_photos::ai::load::stage_ready(stage) {
+                continue;
+            }
+            let total = tulipix_photos::ai::background::pending_for(pool, stage)
+                .await
+                .unwrap_or(0)
+                .max(1);
+            let mut done = 0i64;
+            loop {
+                if AI_STOP.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                match tulipix_photos::ai::indexer::run_batch(pool, stage, AI_BATCH).await {
+                    // 0 means drained, or a model stage with no model. Either
+                    // way there is nothing more this pass can do.
+                    Ok(0) => break,
+                    Ok(n) => {
+                        done += n as i64;
+                        ai_progress(stage.key(), (done as f64 / total as f64).clamp(0.0, 1.0));
+                    }
+                    Err(e) => {
+                        tracing::warn!(stage = stage.key(), error = %e, "index run");
+                        break;
+                    }
+                }
+            }
+            // Faces and tags write rows the grid reads; the badge cache has to
+            // let go of what it counted before them.
+            invalidate_badges();
+        }
+        ai_clear();
+    });
+}
+
+/// Photos per batch. Small enough that Stop feels immediate and a stage that
+/// turns out to be slow does not hold the pool for a minute.
+const AI_BATCH: i64 = 48;
+
+/// The manifest, parsed once. Same file `api/settings.rs` reads, by
+/// `include_str!` rather than a copy.
+fn manifest() -> &'static tulipix_core::ai_models::Manifest {
+    static M: std::sync::OnceLock<tulipix_core::ai_models::Manifest> = std::sync::OnceLock::new();
+    M.get_or_init(|| {
+        tulipix_core::ai_models::Manifest::from_toml(include_str!(
+            "../../../../resources/ai-models.toml"
+        ))
+        .unwrap_or_default()
+    })
+}
+
+/// Name, purpose and which stage it feeds, per manifest row. Keyed on the name
+/// rather than the capability because two files share a capability twice over
+/// (the face pair, CLIP and its tokenizer) and the cards are per file.
+fn model_display(name: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    Some(match name {
+        "face-det-500m" => ("Face detection", "Finds faces in photos so people can be grouped.", "faces"),
+        "face-rec-500m" => ("Face recognition", "Tells faces apart so each person is grouped once.", "faces"),
+        "clip-vit-b32-q8" => ("Photo search", "Finds photos by what is in them \u{2014} type \u{201c}beach at sunset\u{201d}.", "clip"),
+        "clip-vit-b32-tokenizer" => ("Search words", "Turns what you type into something photo search understands.", "clip"),
+        "yolox-s" => ("Object tags", "Names the things in your photos, for the Things tab.", "tags"),
+        // The three editor tools. Empty stage = no queue, so the card offers
+        // the editor rather than a Run button that would have nothing to run.
+        "lama-inpaint" => ("Magic eraser", "Removes unwanted objects in the photo editor.", ""),
+        "mobile-sam" => ("Smart select", "Selects sky or an object for one-tap edits.", ""),
+        "realesrgan-x4" => ("Upscale", "Enlarges a photo four times in the editor, keeping detail.", ""),
+        // Whisper, CLAP, MDX and Kokoro are in the same manifest and belong to
+        // other sections. The Photos tab shows Photos' models.
+        _ => return None,
+    })
+}
+
+fn stage_blurb(stage: tulipix_photos::ai::background::Stage) -> (&'static str, &'static str) {
+    use tulipix_photos::ai::background::Stage;
+    match stage {
+        Stage::Exif => ("Read EXIF", "Date taken, camera, lens and GPS. Everything else sorts by it."),
+        Stage::Fts => ("Search index", "Filenames, camera, tags and people, into the full-text table."),
+        Stage::Faces => ("Find faces", "Detect, crop and embed, then cluster. Fills the People tab."),
+        Stage::Tags => ("Tag objects", "COCO-80 objects. Fills the Things tab and sharpens search."),
+        Stage::Clip => ("Photo search index", "One embedding per photo, so \u{201c}beach at sunset\u{201d} finds the photo."),
+    }
+}
+
+/// Which models a stage needs before it can do anything.
+fn stage_needs(stage: tulipix_photos::ai::background::Stage) -> Vec<String> {
+    use tulipix_photos::ai::background::Stage;
+    let v: &[&str] = match stage {
+        Stage::Exif | Stage::Fts => &[],
+        Stage::Faces => &["face-det-500m", "face-rec-500m"],
+        Stage::Tags => &["yolox-s"],
+        Stage::Clip => &["clip-vit-b32-q8", "clip-vit-b32-tokenizer"],
+    };
+    v.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// The key `Settings.advanced` stores the run policy under. Shared with the
+/// Slint build, which reads the same store.
+const AI_WHEN_KEY: &str = "photos.ai.when";
+
+fn ai_when() -> String {
+    tulipix_core::settings::Settings::load()
+        .ok()
+        .and_then(|s| s.advanced.get(AI_WHEN_KEY).cloned())
+        .unwrap_or_else(|| "idle".into())
+}
+
+/// The background indexing loop, on this side at last.
+///
+/// It lived in `tulipix-app`'s runtime, so on the Flutter build nothing ever
+/// picked the queue up by itself — a model downloaded and then waited for a
+/// button. Started once, from the shell's first snapshot, like the auto-rescan.
+///
+/// Policy is `photos.ai.when`, which did not exist either: indexing was
+/// idle-only and hard-coded, so a machine that is never idle never indexed.
+pub(crate) fn start_ai_indexer() {
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return;
+    }
+    tokio::spawn(async {
+        // Launch has enough to do.
+        tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+        // A drained library is the steady state -- most of the time this loop
+        // exists to do nothing -- so it backs off rather than running five
+        // counting queries a minute forever.
+        let mut quiet: u32 = 0;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(20) * (1u32 << quiet.min(4))).await;
+            if !ai_policy_allows() {
+                // Not a quiet pass: there may be plenty of work and the machine
+                // is simply in use. Keep the short tick.
+                quiet = 0;
+                continue;
+            }
+            // A run started from the AI tab owns the slot; this loop never
+            // competes with the user's own Run.
+            if ai_job().lock().map(|g| !g.0.is_empty()).unwrap_or(true) {
+                continue;
+            }
+            let Ok(pool) = photos_pool().await else {
+                quiet = quiet.saturating_add(1);
+                continue;
+            };
+            let mut worked = false;
+            for stage in tulipix_photos::ai::background::Stage::ALL {
+                if !tulipix_photos::ai::load::stage_ready(stage) {
+                    continue;
+                }
+                match tulipix_photos::ai::indexer::run_batch(pool, stage, AI_BATCH).await {
+                    Ok(0) => continue,
+                    Ok(_) => {
+                        worked = true;
+                        emit(PhotosEvent::Stale);
+                    }
+                    Err(e) => tracing::warn!(stage = stage.key(), error = %e, "background index"),
+                }
+                // One batch per pass. The policy check above is the yield
+                // point, and someone who picks the machine up mid-drain should
+                // get it back at the next batch boundary.
+                break;
+            }
+            quiet = if worked { 0 } else { quiet.saturating_add(1) };
+        }
+    });
+}
+
+/// Whether the background loop may run right now.
+///
+/// Three things, in the order they can say no: the section is switched off in
+/// Settings → Sections, the machine is on battery, the user is at the keyboard.
+fn ai_policy_allows() -> bool {
+    let Ok(s) = tulipix_core::settings::Settings::load() else { return false };
+    if !tulipix_core::sections::mode_of(&s, "photos").works() {
+        return false;
+    }
+    match s
+        .advanced
+        .get(AI_WHEN_KEY)
+        .map(String::as_str)
+        .unwrap_or("idle")
+    {
+        "always" => true,
+        "plugged" => !matches!(
+            tulipix_core::power_aware::power_source(),
+            tulipix_core::power_aware::PowerSource::Battery
+        ),
+        // The default. `idle_secs` is weaker than it looks on this build --
+        // nothing reports ordinary input -- so the battery gate and the small
+        // batch are what actually keep it out of the way.
+        _ => {
+            !matches!(
+                tulipix_core::power_aware::power_source(),
+                tulipix_core::power_aware::PowerSource::Battery
+            ) && tulipix_core::idle::idle_secs() >= 600
+        }
+    }
+}
+
+fn set_ai_when(mode: &str) {
+    let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+    s.advanced.insert(AI_WHEN_KEY.to_string(), mode.to_string());
+    let _ = s.save();
+}
+
+async fn ai_panel(
+    pool: &sqlx::SqlitePool,
+) -> (Vec<AiStage>, Vec<AiModel>, AiMachine, String, i64) {
+    use tulipix_photos::ai::background::Stage;
+    let (running, frac) = match ai_job().lock() {
+        Ok(g) => g.clone(),
+        Err(e) => e.into_inner().clone(),
+    };
+    let dl = ai_dl().lock().map(|g| g.clone()).unwrap_or_default();
+
+    let mut stages = Vec::with_capacity(Stage::ALL.len());
+    let mut pending_by_stage = std::collections::HashMap::new();
+    for stage in Stage::ALL {
+        let (label, blurb) = stage_blurb(stage);
+        let pending = tulipix_photos::ai::background::pending_for(pool, stage)
+            .await
+            .unwrap_or(0);
+        pending_by_stage.insert(stage.key(), pending);
+        stages.push(AiStage {
+            stage: stage.key().to_string(),
+            label: label.into(),
+            blurb: blurb.into(),
+            pending,
+            needs: stage_needs(stage),
+            ready: tulipix_photos::ai::load::stage_ready(stage),
+            frac: if running == stage.key() { frac } else { -1.0 },
+        });
+    }
+
+    let mut models = Vec::new();
+    for m in &manifest().models {
+        let Some((label, purpose, stage)) = model_display(&m.name) else { continue };
+        models.push(AiModel {
+            name: m.name.clone(),
+            label: label.into(),
+            purpose: purpose.into(),
+            mb: (m.size_bytes / 1_000_000) as i64,
+            quant: m.quant.clone(),
+            installed: tulipix_photos::ai::models::is_installed(m),
+            frac: dl.get(&m.name).copied().unwrap_or(-1.0),
+            stage: stage.into(),
+            pending: pending_by_stage.get(stage).copied().unwrap_or(-1),
+        });
+    }
+    let installed = models.iter().filter(|m| m.installed).count() as i64;
+    let total = models.len() as i64;
+
+    let machine = AiMachine {
+        ram_mb: total_ram_mb(),
+        onnx: cfg!(feature = "ai-onnx"),
+        installed,
+        total,
+    };
+    // What the headline says. Only stages that can actually run count: a photo
+    // is not "waiting" on a model that is not installed.
+    let ready: Vec<Stage> = Stage::ALL
+        .into_iter()
+        .filter(|st| tulipix_photos::ai::load::stage_ready(*st))
+        .collect();
+    let waiting = tulipix_photos::ai::background::pending_photos(pool, &ready)
+        .await
+        .unwrap_or(0);
+    (stages, models, machine, running, waiting)
+}
+
+/// Installed memory in MB, 0 when it cannot be read. Linux only by design:
+/// every other platform gets the honest 0 and the strip says "Unknown" rather
+/// than a number invented from nothing.
+fn total_ram_mb() -> i64 {
+    let Ok(s) = std::fs::read_to_string("/proc/meminfo") else { return 0 };
+    s.lines()
+        .find_map(|l| l.strip_prefix("MemTotal:"))
+        .and_then(|v| v.split_whitespace().next())
+        .and_then(|kb| kb.parse::<i64>().ok())
+        .map(|kb| kb / 1024)
+        .unwrap_or(0)
+}
+
 // ------------------------------------------------------------- internals ----
 
 fn lock() -> std::sync::MutexGuard<'static, Session> {
@@ -632,6 +1210,17 @@ async fn snapshot(pool: &sqlx::SqlitePool) -> Result<PhotosState> {
     } else {
         (Vec::new(), None)
     };
+    // Five COUNTs over `photo_ai_state` plus the manifest walk. Only the tab
+    // that shows them pays -- except while a pass is running, when the chip
+    // has to keep counting down wherever you are.
+    let running_now = ai_job().lock().map(|g| !g.0.is_empty()).unwrap_or(false);
+    let (ai_stages, ai_models, ai_machine, ai_running, ai_waiting) =
+        if s.category == "ai" || running_now {
+            ai_panel(pool).await
+        } else {
+            (Vec::new(), Vec::new(), AiMachine { ram_mb: 0, onnx: false, installed: 0, total: 0 }, String::new(), 0)
+        };
+    let counts = category_counts(pool, &s).await;
 
     Ok(PhotosState {
         item_count: total,
@@ -656,7 +1245,37 @@ async fn snapshot(pool: &sqlx::SqlitePool) -> Result<PhotosState> {
         has_basemap: basemap_path().is_some(),
         lib_sort: s.lib_sort,
         lib_sort_dir: s.lib_sort_dir,
+        ai_stages,
+        ai_models,
+        ai_machine,
+        ai_running,
+        ai_waiting,
+        ai_when: ai_when(),
+        counts,
     })
+}
+
+/// How many photos are behind each chip.
+///
+/// One pass per snapshot rather than one per chip, and the numbers a tab owns
+/// (People, Things, Albums, Dedupe, Places) come from the lists already built
+/// for them, so only the photo categories cost a query.
+async fn category_counts(pool: &sqlx::SqlitePool, s: &Session) -> Vec<CategoryCount> {
+    let mut out = Vec::new();
+    let mut push = |id: &str, n: i64| out.push(CategoryCount { id: id.into(), count: n });
+    // `category_filter` builds the same WHERE the grid uses, so a chip can
+    // never disagree with the page it opens.
+    for id in ["recent", "starred", "archive", "trash"] {
+        let probe = Session { category: id.into(), query: String::new(), ..s.clone() };
+        let Ok(where_sql) = category_filter(pool, &probe).await else { continue };
+        let sql = format!("SELECT COUNT(*) FROM items LEFT JOIN photo_meta pm ON pm.item_id = items.id WHERE {where_sql}");
+        let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(&*sql))
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+        push(id, n);
+    }
+    out
 }
 
 /// Rows the grid needs, plus the unpaged total for the "show more" count.

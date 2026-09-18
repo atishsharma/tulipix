@@ -5,6 +5,8 @@ pub mod ep;
 pub mod face_clusters;
 pub mod face_merge;
 pub mod faces;
+pub mod indexer;
+pub mod load;
 pub mod models;
 #[cfg(feature = "onnx")]
 pub mod onnx;

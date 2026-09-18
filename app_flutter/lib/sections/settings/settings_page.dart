@@ -18,6 +18,7 @@ import '../status/status_page.dart';
 import 'settings_controller.dart';
 import 'settings_media.dart';
 import 'settings_profile.dart';
+import 'settings_sections.dart';
 import 'settings_system.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -142,6 +143,16 @@ class _SettingsPageState extends State<SettingsPage> {
             'YouTube',
             for (final l in st.libraries) l.path,
           ],
+        'sections' => [
+            'sections',
+            'sidebar',
+            'hide',
+            'disable',
+            'enable',
+            'opens at launch',
+            'reorder',
+            for (final r in st.sections) r.id,
+          ],
         'security' => [..._rowWords(st.security), 'Lock now'],
         // Scrobbling lives on Services; its token row is sent with AI's.
         'services' => [
@@ -254,6 +265,7 @@ class _SettingsPageState extends State<SettingsPage> {
         'playback' => PlaybackTab(controller: _c, state: st),
         'services' => ServicesTab(controller: _c, state: st),
         'ai' => AiTab(controller: _c, state: st),
+        'sections' => SettingsSections(controller: _c),
         'security' => SecurityTab(controller: _c, state: st),
         'data' => DataTab(controller: _c, state: st),
         'advanced' => AdvancedTab(controller: _c, state: st),

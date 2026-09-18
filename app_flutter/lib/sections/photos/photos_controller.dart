@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
 import '../../src/rust/api/photos.dart';
+import 'photos_grid.dart' show kDensities;
 
 /// The tabs, in the order the Slint page shows them.
 /// The tabs, in the order and with the icons and tints ui/page_photos.slint
@@ -65,12 +66,70 @@ const List<PhotoCategory> photoCategories = [
       Color(0xFF3B82F6)),
   PhotoCategory('dedupe', 'Dedupe', Icons.copy_all_outlined, Color(0xFF84CC16),
       Color(0xFF22C55E)),
+  // The on-device models and the passes that use them. Last, because it is the
+  // tab you visit once and then forget — but a tab, not a Settings page, since
+  // what it does is fill People, Things and search, which are right here.
+  PhotoCategory('ai', 'AI', Icons.auto_awesome, Color(0xFF7C3AED),
+      Color(0xFFEC4899)),
 ];
 
 class PhotosController extends ChangeNotifier {
   PhotosState? state;
   Object? error;
   bool busy = false;
+
+  /// Target row height for the justified grid. Cycled by the density button;
+  /// it never leaves this process, so it is not worth a bridge round trip.
+  double density = kDensities[1];
+
+  void cycleDensity() {
+    final i = kDensities.indexOf(density);
+    density = kDensities[(i + 1) % kDensities.length];
+    notifyListeners();
+  }
+
+  /// How many photos are behind a chip, or null when nothing counted it.
+  int? countFor(String id) {
+    final s = state;
+    if (s == null) return null;
+    return switch (id) {
+      'albums' => s.albums.length,
+      'people' => s.people.length,
+      'things' => s.things.length,
+      'dedupe' => s.dedupe.length,
+      'library' => s.folderCount,
+      // The rest are photo counts, which only SQL can answer.
+      _ => s.counts
+          .where((c) => c.id == id)
+          .map((c) => c.count)
+          .firstOrNull,
+    };
+  }
+
+  /// A `Stale` re-read in flight, and whether one more is owed.
+  ///
+  /// An indexing pass reports its progress four times a second and a model
+  /// download once per percent. Each used to start its own full snapshot —
+  /// every list, every count — and they stack up faster than they finish. One
+  /// at a time, then one more if anything arrived while it ran.
+  bool _reReading = false;
+  bool _reReadOwed = false;
+
+  Future<void> staleRefresh() async {
+    if (_reReading) {
+      _reReadOwed = true;
+      return;
+    }
+    _reReading = true;
+    try {
+      do {
+        _reReadOwed = false;
+        await refresh();
+      } while (_reReadOwed);
+    } finally {
+      _reReading = false;
+    }
+  }
 
   /// Item ids, not tile indices: a refresh reorders the grid, and a selection
   /// that survives a star or a trash has to survive that reorder with it.

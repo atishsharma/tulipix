@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
+import '../../shell/section_tabs.dart';
 import '../../src/rust/api/finances.dart';
 import 'finances_accounts.dart';
 import 'finances_controller.dart';
@@ -187,7 +188,8 @@ class _Header extends StatelessWidget {
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                for (final f in finTabs)
+                for (final f in keepTabs('finances', finTabs, (f) => f.id,
+                    active: (f) => tab == f.id))
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: _TabButton(

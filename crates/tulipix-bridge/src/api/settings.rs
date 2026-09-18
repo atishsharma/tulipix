@@ -138,6 +138,39 @@ pub struct SettingsState {
     pub task_frac: f64,
     /// What the last action did. Cleared by the next refresh.
     pub notice: String,
+    // --- Sections ---
+    /// Every section in sidebar order, with its state.
+    pub sections: Vec<SectionRow>,
+    /// all | media | work | photos | lean | custom.
+    pub sections_preset: String,
+    /// The section that opens at launch, already resolved — if the saved choice
+    /// has been hidden this is the fallback, not the choice.
+    pub landing: String,
+}
+
+/// One section, as the Sections panel draws it.
+///
+/// The label, the icon and the accent are the front end's — Dart already has
+/// them in `kSectionMeta` and duplicating them here is how two lists start
+/// disagreeing. What crosses is the id, the state, and the facts only this side
+/// can measure.
+pub struct SectionRow {
+    /// `tulipix_core::sections::ALL` — a storage format, not a display string.
+    pub id: String,
+    /// "shown" | "hidden" | "off".
+    pub mode: String,
+    /// Whether it can be switched at all. Settings is the way back.
+    pub locked: bool,
+    /// The database files this section owns, comma-separated, or "" for one
+    /// that owns none.
+    pub db: String,
+    /// What those files take up right now. Reported so the panel can say, where
+    /// it is visible, that turning a section off deletes none of it.
+    pub bytes: i64,
+    /// Tabs inside the section that are switched off, by the id its page knows
+    /// them by. Which tabs exist is the front end's — only Dart has the list —
+    /// so this is the ones that were taken away, not the ones that are left.
+    pub tabs_off: Vec<String>,
 }
 
 pub enum SettingsCmd {
@@ -158,6 +191,22 @@ pub enum SettingsCmd {
     HomeCardsReset,
     LibAdd { path: String },
     LibRemove { path: String },
+    /// "shown" | "hidden" | "off" for one section.
+    SectionSet { id: String, mode: String },
+    /// The sidebar order, front to back. Settings is dropped whatever position
+    /// it arrives in — it is pinned last.
+    SectionOrder { ids: Vec<String> },
+    /// all | media | work | photos | lean.
+    SectionPreset { name: String },
+    /// Which section opens at launch.
+    SectionLanding { id: String },
+    /// One tab inside one section. `enabled: false` takes it out of that page's
+    /// tab row; the page keeps whichever tab you are standing on until you leave
+    /// it, so the row can never go blank under you.
+    ///
+    /// Not `on`: that is a Dart keyword, and frb renames it to `on_` rather than
+    /// refusing — a field the Rust calls one thing and the Dart another.
+    SectionTab { id: String, tab: String, enabled: bool },
 }
 
 pub async fn settings_dispatch(cmd: SettingsCmd) -> Result<SettingsState> {
@@ -257,6 +306,44 @@ pub async fn settings_dispatch(cmd: SettingsCmd) -> Result<SettingsState> {
             remove_watched(Path::new(&path));
             notice = format!("Stopped watching {path}.");
         }
+        SettingsCmd::SectionSet { id, mode } => {
+            let mut s = load();
+            tulipix_core::sections::set_mode(
+                &mut s,
+                &id,
+                tulipix_core::sections::Mode::parse(&mode),
+            );
+            // Switching off the section the app opens on would leave it opening
+            // onto nothing; `landing` falls back on read, and re-writing it here
+            // is what makes the panel show the fallback rather than the choice
+            // that no longer applies.
+            let land = tulipix_core::sections::landing(&s).to_string();
+            tulipix_core::sections::set_landing(&mut s, &land);
+            save(s);
+            notice = "Sidebar updated.".into();
+        }
+        SettingsCmd::SectionOrder { ids } => {
+            let mut s = load();
+            tulipix_core::sections::set_order(&mut s, &ids);
+            save(s);
+        }
+        SettingsCmd::SectionPreset { name } => {
+            let mut s = load();
+            if tulipix_core::sections::apply_preset(&mut s, &name) {
+                save(s);
+                notice = "Sidebar updated.".into();
+            }
+        }
+        SettingsCmd::SectionLanding { id } => {
+            let mut s = load();
+            tulipix_core::sections::set_landing(&mut s, &id);
+            save(s);
+        }
+        SettingsCmd::SectionTab { id, tab, enabled } => {
+            let mut s = load();
+            tulipix_core::sections::set_tab(&mut s, &id, &tab, enabled);
+            save(s);
+        }
     }
     let mut state = snapshot().await;
     // A detached job that finished since says so on the next snapshot.
@@ -317,6 +404,14 @@ pub(crate) fn enabled_cards(s: &tulipix_core::settings::Settings) -> Vec<String>
     HOME_CARDS
         .iter()
         .filter(|(k, _)| s.flag(&format!("{HOME_CARD_PREFIX}{k}"), true))
+        // A card for a section that is off opens nothing. Eight of the fourteen
+        // card keys are section ids, so the check is the same string; the other
+        // six (the greeting, Continue, the player) are Home's own and are not in
+        // `sections::ALL`, which is why this reads as "if it names a section".
+        .filter(|(k, _)| {
+            !tulipix_core::sections::ALL.contains(k)
+                || tulipix_core::sections::mode_of(s, *k).works()
+        })
         .map(|(k, _)| (*k).to_string())
         .collect()
 }
@@ -376,7 +471,56 @@ async fn snapshot() -> SettingsState {
         task_label,
         task_frac,
         notice: String::new(),
+        sections: section_rows(&s),
+        sections_preset: tulipix_core::sections::current_preset(&s).into(),
+        landing: tulipix_core::sections::landing(&s).into(),
     }
+}
+
+/// The databases each section owns. Named here rather than asked of each
+/// section crate: this is the one place that has to know, and a section that is
+/// off cannot be asked anything.
+fn section_dbs(id: &str) -> &'static [&'static str] {
+    match id {
+        "photos" => &["photos.db"],
+        "videos" => &["videos.db"],
+        "music" => &["music.db", "podcasts.db"],
+        "books" => &["books.db"],
+        "cloud" => &["cloud.db"],
+        "tools" => &["tools.db"],
+        "transfer" => &["transfer.db"],
+        "finances" => &["finances.db"],
+        // Home reads the other sections and Settings is a JSON file.
+        _ => &[],
+    }
+}
+
+fn section_rows(s: &tulipix_core::settings::Settings) -> Vec<SectionRow> {
+    let dir = tulipix_core::paths::data_dir();
+    tulipix_core::sections::ordered(s)
+        .into_iter()
+        .map(|(id, mode)| {
+            let files = section_dbs(id);
+            let bytes = dir
+                .as_ref()
+                .map(|d| {
+                    files
+                        .iter()
+                        .filter_map(|f| std::fs::metadata(d.join(f)).ok())
+                        .map(|m| m.len() as i64)
+                        .sum::<i64>()
+                })
+                .unwrap_or(0);
+            SectionRow {
+                id: id.to_string(),
+                mode: mode.key().to_string(),
+                locked: id == tulipix_core::sections::PINNED,
+                db: files.join(" · "),
+                bytes,
+                tabs_off: tulipix_core::sections::tabs_off(s, id),
+            }
+        })
+        .collect()
 }
 
 // ── the panels ──────────────────────────────────────────────────────────────

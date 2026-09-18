@@ -16,14 +16,13 @@ import '../../platform/pick.dart';
 import '../../design/tokens.dart';
 import '../../design/skin.dart';
 import '../../src/rust/api/photos.dart';
-import 'photo_tile.dart';
 import '../../shell/shell_controller.dart';
+import '../../shell/section_tabs.dart';
 import 'photo_viewer.dart';
+import 'photos_ai.dart';
 import 'photos_controller.dart';
+import 'photos_grid.dart';
 import 'places_map.dart';
-
-const double _kTileExtent = 168;
-const double _kTileGap = 3;
 
 class PhotosPage extends StatefulWidget {
   const PhotosPage({super.key});
@@ -72,10 +71,15 @@ class _PhotosPageState extends State<PhotosPage> {
         PhotosEvent_ScanFinished(:final scanned, :final inserted) =>
           'Scanned $scanned, added $inserted',
         PhotosEvent_ScanFailed(:final message) => 'Scan failed: $message',
+        // Not a scan: an indexing pass or a download moving. The strip keeps
+        // whatever it was saying.
+        PhotosEvent_Stale() => _scanStatus,
       };
     });
     // A finished scan changed the library under the grid.
     if (e is PhotosEvent_ScanFinished) _c.refresh();
+    // Coalesced: these arrive in bursts and each one is a whole snapshot.
+    if (e is PhotosEvent_Stale) unawaited(_c.staleRefresh());
   }
 
   @override
@@ -151,7 +155,8 @@ class _Header extends StatelessWidget {
                     child: Text(
                       crumb.$2,
                       style: TextStyle(
-                        fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
+                        fontFamily:
+                            context.skin.fontFamily ?? Tokens.fontFamily,
                         fontSize: 20,
                         fontWeight: FontWeight.w500,
                         color: Tokens.secPhotos,
@@ -198,6 +203,18 @@ class _Header extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           _SortMenu(controller: controller),
+          IconButton(
+            tooltip: 'Tile size',
+            icon: Icon(
+              controller.density <= kDensities.first
+                  ? Icons.grid_on
+                  : controller.density >= kDensities.last
+                      ? Icons.crop_square
+                      : Icons.grid_view,
+              color: t.nInk2,
+            ),
+            onPressed: controller.cycleDensity,
+          ),
           IconButton(
             tooltip: 'Rescan watched folders',
             icon: Icon(Icons.refresh, color: t.nInk2),
@@ -302,13 +319,18 @@ class _CategoryChips extends StatelessWidget {
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 24),
               children: [
-                for (final c in photoCategories)
+                for (final c in keepTabs('photos', photoCategories, (c) => c.id,
+                    active: (c) => c.isActive(active)))
                   Padding(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 4, vertical: 9),
                     child: _Chip(
                       category: c,
                       active: c.isActive(active),
+                      // Counted once per snapshot rather than once per chip —
+                      // a number beside a tab is the cheapest way to say
+                      // whether it is worth opening.
+                      count: controller.countFor(c.id),
                       onTap: () =>
                           controller.send(PhotosCmd.setCategory(name: c.id)),
                       tokens: t,
@@ -323,18 +345,32 @@ class _CategoryChips extends StatelessWidget {
   }
 }
 
+/// 24,183 → "24k". A chip is 36px tall and the exact number is on the page it
+/// opens; what belongs here is the order of magnitude.
+String _short(int n) {
+  if (n < 1000) return '$n';
+  if (n < 10000) return '${(n / 1000).toStringAsFixed(1)}k';
+  if (n < 1000000) return '${(n / 1000).round()}k';
+  return '${(n / 1000000).toStringAsFixed(1)}M';
+}
+
 class _Chip extends StatelessWidget {
   const _Chip({
     required this.category,
     required this.active,
     required this.onTap,
     required this.tokens,
+    this.count,
   });
 
   final PhotoCategory category;
   final bool active;
   final VoidCallback onTap;
   final Tokens tokens;
+
+  /// Null when nothing counted this tab; 0 shows, because "Trash 0" is an
+  /// answer and a blank chip is not.
+  final int? count;
 
   @override
   Widget build(BuildContext context) {
@@ -365,6 +401,18 @@ class _Chip extends StatelessWidget {
                 color: active ? on : tokens.nInk3,
               ),
             ),
+            if (count != null) ...[
+              const SizedBox(width: 6),
+              Text(
+                _short(count!),
+                style: TextStyle(
+                  fontFamily: skin.fontFamily,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: (active ? on : tokens.nInk3).withValues(alpha: 0.72),
+                ),
+              ),
+            ],
           ],
         ),
       );
@@ -408,6 +456,19 @@ class _Chip extends StatelessWidget {
                     color: active ? Colors.white : tokens.nInk3,
                   ),
                 ),
+                if (count != null) ...[
+                  const SizedBox(width: 6),
+                  Text(
+                    _short(count!),
+                    style: TextStyle(
+                      fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: (active ? Colors.white : tokens.nInk3)
+                          .withValues(alpha: 0.72),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -441,6 +502,7 @@ class _Body extends StatelessWidget {
       'people' => _PeopleGrid(controller: controller, state: state),
       'things' => _ThingsGrid(controller: controller, state: state),
       'dedupe' => _DedupeList(controller: controller, state: state),
+      'ai' => PhotosAiTab(controller: controller, state: state),
       // Without a basemap the map has pins and nothing to draw them over, so
       // the flat grid of geotagged photos stays the honest answer.
       'places' when state.hasBasemap && state.pins.isNotEmpty =>
@@ -459,72 +521,17 @@ class _TileGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (state.tiles.isEmpty) return _emptyFor(context, controller, state);
-    final t = context.tokens;
-    // Groups are contiguous runs over `tiles`, so an ungrouped view is just
-    // one implicit group over the whole list.
-    final List<(String?, List<int>)> groups = state.groups.isEmpty
-        ? [(null, List<int>.generate(state.tiles.length, (i) => i))]
-        : [for (final g in state.groups) (g.label, g.tiles.toList())];
-
-    return CustomScrollView(
-      slivers: [
-        for (final (label, indices) in groups) ...[
-          if (label != null)
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(24, 20, 24, 8),
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: t.nInk,
-                  ),
-                ),
-              ),
-            ),
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            sliver: SliverGrid(
-              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: _kTileExtent,
-                mainAxisSpacing: _kTileGap,
-                crossAxisSpacing: _kTileGap,
-              ),
-              delegate: SliverChildBuilderDelegate(
-                childCount: indices.length,
-                (context, i) {
-                  final tile = state.tiles[indices[i]];
-                  return PhotoTileView(
-                    key: ValueKey(tile.itemId),
-                    tile: tile,
-                    controller: controller,
-                    selected: controller.selected.contains(tile.itemId),
-                    // Once anything is selected a plain tap extends the
-                    // selection rather than opening the photo — the rule
-                    // ui/page_photos.slint calls "Google-Photos style". The
-                    // dot in the corner always toggles, selecting or not.
-                    onTap: () {
-                      if (controller.selecting) {
-                        controller.toggleSelect(tile.itemId);
-                      } else {
-                        openPhotoViewer(context, controller, tile.itemId);
-                      }
-                    },
-                    onStackMenu: tile.stackSize > 1
-                        ? (e) => _stackMenu(context, controller, tile, e)
-                        : null,
-                    onToggleSelect: () => controller.toggleSelect(tile.itemId),
-                  );
-                },
-              ),
-            ),
-          ),
-        ],
-        if (state.moreCount > 0)
-          SliverToBoxAdapter(
-            child: Center(
+    return JustifiedGrid(
+      // The layout depends on the density and on the tile list; a new key
+      // rebuilds the scroll position rather than landing you in the middle of
+      // a library you just re-laid-out.
+      key: ValueKey('${state.category}/${controller.density}'),
+      controller: controller,
+      state: state,
+      onOpen: (tile) => openPhotoViewer(context, controller, tile.itemId),
+      onStackMenu: (tile, e) => _stackMenu(context, controller, tile, e),
+      footer: state.moreCount > 0
+          ? Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: OutlinedButton(
@@ -532,10 +539,8 @@ class _TileGrid extends StatelessWidget {
                   child: Text('Show ${state.moreCount} more'),
                 ),
               ),
-            ),
-          ),
-        const SliverToBoxAdapter(child: SizedBox(height: 24)),
-      ],
+            )
+          : null,
     );
   }
 }
@@ -621,8 +626,8 @@ class _AlbumsGrid extends StatelessWidget {
                 child: Container(
                   width: double.infinity,
                   // An album's cover sits in the skin's mat.
-                  decoration: context.skin.surface(SurfaceRole.art,
-                          radius: Tokens.radiusMd) ??
+                  decoration: context.skin
+                          .surface(SurfaceRole.art, radius: Tokens.radiusMd) ??
                       BoxDecoration(
                         color: t.nTile,
                         borderRadius: BorderRadius.circular(Tokens.radiusMd),
@@ -902,11 +907,27 @@ class _LibSortBar extends StatelessWidget {
 
 Widget _emptyFor(BuildContext context, PhotosController c, PhotosState s) {
   if (s.query.isNotEmpty) {
+    // Searching by meaning is a model away, and a search that quietly fell back
+    // to matching filenames is the single most confusing thing this section
+    // does. Say which search it did, and offer the other one.
+    final clip = s.aiStages.where((x) => x.stage == 'clip').firstOrNull;
+    // Null means nobody counted, not that it is missing -- `ai_stages` rides
+    // along only while the AI tab is open or a pass is running. Claiming
+    // "photo search is not set up" on no evidence would be a nag.
+    final canMean = clip == null || (clip.ready && clip.pending == 0);
     return _Empty(
       icon: Icons.search_off,
       title: 'Nothing matches "${s.query}"',
-      detail: 'Search covers filenames, camera, tags and named people.',
-      action: ('Clear search', () => c.send(const PhotosCmd.search(query: ''))),
+      detail: canMean
+          ? 'Search covers filenames, camera, tags and named people.'
+          : 'Searched filenames, camera, tags and named people — not what is '
+              'in the photo. The AI tab can index that too.',
+      action: canMean
+          ? ('Clear search', () => c.send(const PhotosCmd.search(query: '')))
+          : (
+              'Set up photo search',
+              () => c.send(const PhotosCmd.setCategory(name: 'ai'))
+            ),
     );
   }
   return switch (s.category) {
@@ -1125,12 +1146,18 @@ class _PeopleGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     if (state.people.isEmpty) {
-      return const _Empty(
+      // "It runs when the machine is idle" was true and useless: there was no
+      // way to make it run, and no way to tell whether it ever had. The button
+      // is the fix; the sentence was only ever the symptom.
+      return _Empty(
         icon: Icons.person_search_outlined,
         title: 'No people yet',
-        detail:
-            'Faces are grouped by the background indexer. It runs when the machine is idle; '
-            'clusters appear here as it finds them.',
+        detail: 'Face detection has not been over this library. It finds every '
+            'photo of the same person and groups them, on this computer.',
+        action: (
+          'Set up faces',
+          () => controller.send(const PhotosCmd.setCategory(name: 'ai'))
+        ),
       );
     }
     return GridView.builder(
@@ -1235,11 +1262,15 @@ class _ThingsGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     if (state.things.isEmpty) {
-      return const _Empty(
+      return _Empty(
         icon: Icons.sell_outlined,
         title: 'Nothing tagged yet',
-        detail:
-            'Objects are detected by the background indexer. Tags appear here as it works through the library.',
+        detail: 'Object tagging has not been over this library. One pass names '
+            'what is in your photos and fills this whole tab.',
+        action: (
+          'Set up tags',
+          () => controller.send(const PhotosCmd.setCategory(name: 'ai'))
+        ),
       );
     }
     return GridView.builder(
@@ -1289,7 +1320,8 @@ class _ThingsGrid extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
+                          fontFamily:
+                              context.skin.fontFamily ?? Tokens.fontFamily,
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
                           color: Colors.white,
@@ -1298,7 +1330,8 @@ class _ThingsGrid extends StatelessWidget {
                       Text(
                         '${tag.count}',
                         style: TextStyle(
-                          fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
+                          fontFamily:
+                              context.skin.fontFamily ?? Tokens.fontFamily,
                           fontSize: 11,
                           color: Colors.white70,
                         ),
@@ -1360,7 +1393,8 @@ class _DedupeList extends StatelessWidget {
                       child: Text(
                         identical ? 'SHA-256' : 'pHash',
                         style: TextStyle(
-                          fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
+                          fontFamily:
+                              context.skin.fontFamily ?? Tokens.fontFamily,
                           fontSize: 10.5,
                           fontWeight: FontWeight.w700,
                           color: identical

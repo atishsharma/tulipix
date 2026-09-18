@@ -53,6 +53,17 @@ pub struct ShellState {
     pub system_accent: String,
     /// "Honour OS font scale". Off pins text at 100 % whatever the OS asks.
     pub follow_os_font_scale: bool,
+    /// The sections in the sidebar, in order, as Settings → Sections left them.
+    /// Ids from `tulipix_core::sections::ALL`. The shell builds these pages and
+    /// no others — an IndexedStack that builds all ten at launch is ten pages
+    /// of state for however many you actually opened.
+    pub sections: Vec<String>,
+    /// Which one opens at launch, already resolved against what is shown.
+    pub landing: String,
+    /// Tabs switched off inside sections, as `<section>:<tab>`. Flat rather
+    /// than a map per section: every page reads the same one line of it, and a
+    /// map would be ten fields that all mean the same thing.
+    pub tabs_off: Vec<String>,
 }
 
 pub enum ShellCmd {
@@ -92,6 +103,9 @@ pub async fn shell_dispatch(cmd: ShellCmd) -> Result<ShellState> {
 async fn snapshot() -> Result<ShellState> {
     // The first snapshot is taken at launch; the auto-rescan loop starts with it.
     crate::api::maintenance::start_auto_rescan();
+    // The photo indexer's own loop. It lived in tulipix-app's runtime, so on
+    // this build nothing ever picked the queue up without a button press.
+    crate::api::photos::start_ai_indexer();
     let s = load();
     let (badge, overdue) = finances_badge().await;
     remind_bills(&s, badge, overdue);
@@ -122,6 +136,12 @@ async fn snapshot() -> Result<ShellState> {
             String::new()
         },
         follow_os_font_scale: s.flag("follow-os-font-scale", true),
+        sections: tulipix_core::sections::visible(&s)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        landing: tulipix_core::sections::landing(&s).into(),
+        tabs_off: tulipix_core::sections::tabs_off_all(&s),
     })
 }
 

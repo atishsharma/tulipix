@@ -7270,101 +7270,16 @@ fn spawn_background_indexer() {
 
 /// Run one stage over one claimed batch, marking every item considered.
 ///
-/// Every item is marked whether or not the stage produced anything, which is
-/// what lets the queue drain — see the note on `photo_ai_state`.
+/// The work itself moved to `tulipix_photos::ai::indexer`: it is the same work
+/// the Flutter build's Run buttons do, and while it lived here only Slint could
+/// reach it. What stays on this side is the *policy* above — idle, battery,
+/// yield to a scan — which is this front end's, not the domain's.
 async fn run_index_stage(
     pool: &sqlx::SqlitePool,
     stage: tulipix_photos::ai::background::Stage,
     batch: Vec<(i64, String)>,
 ) -> Result<()> {
-    use tulipix_photos::ai::background::{self, Stage};
-
-    match stage {
-        Stage::Exif => {
-            // Re-read EXIF for photos that never got a `photo_meta` row — a
-            // library scanned by an older build, or a file whose read failed.
-            let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(scan_concurrency()));
-            let handles: Vec<_> = batch
-                .into_iter()
-                .map(|(id, path)| {
-                    let sem = sem.clone();
-                    tokio::spawn(async move {
-                        let _permit = sem.acquire().await.ok();
-                        let facts = tokio::task::spawn_blocking(move || {
-                            tulipix_photos::exif::read(std::path::Path::new(&path)).unwrap_or_default()
-                        })
-                        .await
-                        .ok();
-                        (id, facts)
-                    })
-                })
-                .collect();
-            for h in handles {
-                let Ok((id, Some(facts))) = h.await else { continue };
-                if let Err(e) = tulipix_photos::exif::write_facts(pool, id, &facts).await {
-                    tracing::warn!(item = id, error = %e, "indexer exif write");
-                    continue;
-                }
-                background::mark_done(pool, id, Stage::Exif, "").await?;
-            }
-        }
-        Stage::Fts => {
-            // The full-text index was only ever built by the "Rebuild search
-            // index" button in Settings → Maintenance, so a freshly scanned
-            // library had an empty `photo_fts`. Keeping it current here is what
-            // makes search work without the user knowing that button exists.
-            for (id, _) in batch {
-                if let Err(e) = tulipix_photos::search::index_item(pool, id).await {
-                    tracing::warn!(item = id, error = %e, "indexer fts");
-                    continue;
-                }
-                background::mark_done(pool, id, Stage::Fts, "").await?;
-            }
-        }
-        Stage::Tags => {
-            // No detector installed is not the same as "detected nothing":
-            // marking these done would drain the queue to a wrong answer and
-            // leave the real model with no work when it arrives.
-            let Some(tagger) = make_tagger() else { return Ok(()) };
-            for (id, path) in batch {
-                let p = std::path::PathBuf::from(&path);
-                match tulipix_photos::ai::tags::ingest_predictions(pool, id, &p, tagger.as_ref(), 0.35).await {
-                    Ok(n) => tracing::debug!(item = id, tags = n, "tagged"),
-                    // A file that cannot be decoded will never tag; mark it
-                    // considered so it stops coming back round.
-                    Err(e) => tracing::debug!(item = id, error = %e, "tag skipped"),
-                }
-                background::mark_done(pool, id, Stage::Tags, tagger.source()).await?;
-            }
-        }
-        Stage::Faces => {
-            let Some((detector, embedder)) = make_face_models() else { return Ok(()) };
-            let mut found = 0usize;
-            for (id, path) in batch {
-                let p = std::path::PathBuf::from(&path);
-                match tulipix_photos::ai::faces::extract_crops(pool, id, &p, detector.as_ref()).await {
-                    Ok(ids) => found += ids.len(),
-                    Err(e) => tracing::debug!(item = id, error = %e, "face detect skipped"),
-                }
-                background::mark_done(pool, id, Stage::Faces, embedder.model_name()).await?;
-            }
-            if found > 0 {
-                // Embed the crops just written, then re-cluster. Clustering is
-                // over the whole library by nature — a new face can merge two
-                // existing piles — so it runs once per batch, not per photo.
-                tulipix_photos::ai::faces::embed_pending(pool, embedder.as_ref(), found as i64 * 2).await?;
-                let n = tulipix_photos::ai::face_clusters::recluster(
-                    pool,
-                    tulipix_photos::ai::face_clusters::DEFAULT_THRESHOLD,
-                )
-                .await?;
-                tracing::debug!(faces = found, people = n, "reclustered");
-            }
-        }
-        // CLIP still needs its embedder — see `LIVE_STAGES`. Kept exhaustive so
-        // adding one is a compile error here rather than a silent no-op.
-        Stage::Clip => {}
-    }
+    tulipix_photos::ai::indexer::run_stage(pool, stage, batch).await?;
     Ok(())
 }
 

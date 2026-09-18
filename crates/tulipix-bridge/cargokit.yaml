@@ -13,11 +13,18 @@
 # the feature the reader still speaks: `kokoro::available()` is false and
 # `tts_engine` steps down to espeak on its own.
 #
-# `ai-onnx` (the real ONNX photo-editor ops) belongs on these same two lines
-# whenever it is wanted; it has been unreachable from a Flutter build for the
-# same reason this file exists.
+# `ai-onnx` is the real ONNX inference -- the photo editor's ops, and the
+# object, face and CLIP passes behind Photos > AI. It had been unreachable from
+# a Flutter build, so `make_tagger` and `make_face_models` compiled as the stubs
+# that answer None: the AI tab said "inference: not in this build", models
+# downloaded perfectly and every Run marked nothing and finished instantly. The
+# Slint build has always had it (`run-dev-lite` in the root justfile).
+#
+# Debug is deliberately still without either, as it was: `stage_ready` answers
+# false for the model passes when the feature is absent, so `just dev` says so
+# rather than offering a Run that cannot work.
 cargo:
   profile:
-    extra_flags: ["--features", "books-tts"]
+    extra_flags: ["--features", "books-tts,ai-onnx"]
   release:
-    extra_flags: ["--features", "books-tts"]
+    extra_flags: ["--features", "books-tts,ai-onnx"]

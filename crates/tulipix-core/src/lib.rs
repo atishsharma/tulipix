@@ -36,6 +36,7 @@ pub mod quota;
 pub mod rtl;
 pub mod scheduler;
 pub mod sec;
+pub mod sections;
 pub mod settings;
 pub mod thumbs;
 pub mod thumbs_queue;

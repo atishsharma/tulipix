@@ -782,26 +782,57 @@ pub(crate) fn stamp_scanned(dirs: &[PathBuf]) {
 /// Read one watched folder again in every section. Books keep their own list
 /// of folders and read them together, as Rescan all does.
 pub(crate) async fn rescan_folder(dir: &Path) -> String {
-    if let Ok(pool) = crate::db::photos_pool().await {
-        crate::api::photos::scan_one(pool, dir).await;
+    // A section switched Off in Settings → Sections is not scanned. This is
+    // what makes Off different from Hidden: hiding Finances tidies the sidebar,
+    // switching it off stops its work. Four sections share this one walk, so
+    // this is the one place that decides for all of them.
+    let s = load();
+    let on = |id: &str| {
+        tulipix_core::sections::mode_of(&s, id).works()
+    };
+    let mut skipped = Vec::new();
+    if on("photos") {
+        if let Ok(pool) = crate::db::photos_pool().await {
+            crate::api::photos::scan_one(pool, dir).await;
+        }
+    } else {
+        skipped.push("photos");
     }
-    crate::api::videos::scan_one(dir).await;
+    if on("videos") {
+        crate::api::videos::scan_one(dir).await;
+    } else {
+        skipped.push("videos");
+    }
     let mut trouble = Vec::new();
-    if let Err(e) = crate::api::music::scan_one(dir).await {
-        tracing::warn!(error = %e, dir = %dir.display(), "music rescan of one folder");
-        trouble.push(format!("music ({e})"));
+    if on("music") {
+        if let Err(e) = crate::api::music::scan_one(dir).await {
+            tracing::warn!(error = %e, dir = %dir.display(), "music rescan of one folder");
+            trouble.push(format!("music ({e})"));
+        }
+    } else {
+        skipped.push("music");
     }
-    if let Ok(pool) = crate::db::books_pool().await
-        && let Err(e) = crate::api::books::run_scan(pool).await
-    {
-        trouble.push(format!("books ({e})"));
+    if on("books") {
+        if let Ok(pool) = crate::db::books_pool().await
+            && let Err(e) = crate::api::books::run_scan(pool).await
+        {
+            trouble.push(format!("books ({e})"));
+        }
+    } else {
+        skipped.push("books");
     }
     let name = folder_name(dir);
-    if trouble.is_empty() {
+    let mut out = if trouble.is_empty() {
         format!("Read {name} again.")
     } else {
         format!("Read {name} again, except {}.", trouble.join(" and "))
+    };
+    // Said rather than silent: a folder that "read again" but produced nothing
+    // in Music is otherwise indistinguishable from a broken scan.
+    if !skipped.is_empty() {
+        out.push_str(&format!(" {} switched off.", skipped.join(", ")));
     }
+    out
 }
 
 /// Delete every cached thumbnail of every file under `dir`: the shared cache's

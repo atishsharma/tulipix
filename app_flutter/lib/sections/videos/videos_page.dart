@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
+import '../../shell/section_tabs.dart';
 import '../../design/skin.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/videos.dart';
@@ -372,7 +373,8 @@ class _CategoryBar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 28),
       child: Row(
         children: [
-          for (final c in kVideoCategories) ...[
+          for (final c in keepTabs('videos', kVideoCategories, (c) => c.id,
+              active: (c) => state.category == c.id)) ...[
             VideoTab(
               hue: c.hue,
               label: c.label,

@@ -47,7 +47,12 @@ const Map<Section, ({String label, IconData icon})> kSectionMeta = {
 /// three Home layouts and the sidebar reach for.
 Color accentFor(Section s) => Tokens.accentOf(s);
 
-/// The eight sections under the APPLICATIONS header, in sidebar order.
+/// The eight sections under the APPLICATIONS header, in the order a fresh
+/// install shows them.
+///
+/// The default, not the list. What is actually drawn is
+/// `ShellController.sections`, which Settings → Sections writes — this is what
+/// that falls back to before the first snapshot lands.
 const List<Section> kApplications = [
   Section.photos,
   Section.videos,
@@ -77,6 +82,15 @@ class Sidebar extends StatelessWidget {
     final c = controller;
     final collapsed = c.collapsed;
     final st = c.state;
+    // (is Home shown, the applications under the header). Settings has its own
+    // row in the dock below, so it is never in this list.
+    final apps = (
+      c.sections.contains(Section.home),
+      [
+        for (final s in c.sections)
+          if (s != Section.home && s != Section.settings) s
+      ],
+    );
     return AnimatedContainer(
       duration: const Duration(milliseconds: 160),
       curve: Curves.easeOut,
@@ -101,20 +115,21 @@ class Sidebar extends StatelessWidget {
               fullscreen: c.appFullscreen,
             ),
             const SizedBox(height: 14),
-            _NavRow(
-              section: Section.home,
-              active: c.section == Section.home,
-              collapsed: collapsed,
-              onTap: () => c.go(Section.home),
-            ),
-            _GroupHeader(collapsed: collapsed),
+            if (apps.$1)
+              _NavRow(
+                section: Section.home,
+                active: c.section == Section.home,
+                collapsed: collapsed,
+                onTap: () => c.go(Section.home),
+              ),
+            if (apps.$2.isNotEmpty) _GroupHeader(collapsed: collapsed),
             // A scroller, not a fixed column: at 700px tall with eight rows and
             // the footer dock, the last application is otherwise cut off.
             Expanded(
               child: ListView(
                 padding: EdgeInsets.zero,
                 children: [
-                  for (final s in kApplications)
+                  for (final s in apps.$2)
                     _NavRow(
                       section: s,
                       active: c.section == s,

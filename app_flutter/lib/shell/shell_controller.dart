@@ -14,11 +14,30 @@ import '../design/tokens.dart';
 
 import '../src/rust/api/shell.dart';
 import '../src/rust/api/status.dart';
+import 'section_tabs.dart';
 import 'window.dart';
 
 /// How often the badge and the health lamp are re-counted. The Slint build runs
 /// the same slow tick for exactly these two figures.
 const Duration kShellTick = Duration(seconds: 30);
+
+/// The saved id list as sections, in order.
+///
+/// Null or empty means the first snapshot has not landed: everything, because a
+/// shell that starts short and fills in would drop every page's State the
+/// moment it did. Unknown ids are dropped — a settings file from a build with a
+/// section this one does not have must not put a hole in the stack.
+List<Section> sectionsFrom(List<String>? ids) {
+  if (ids == null || ids.isEmpty) return Section.values;
+  final out = [
+    for (final id in ids)
+      if (ShellController.byId[id] != null) ShellController.byId[id]!
+  ];
+  // Settings is the way back and is never off, but a settings file written by
+  // a build that did not know that must not be able to strand anyone.
+  if (!out.contains(Section.settings)) out.add(Section.settings);
+  return out;
+}
 
 class ShellController extends ChangeNotifier {
   static final ShellController instance = ShellController._();
@@ -70,6 +89,11 @@ class ShellController extends ChangeNotifier {
   Future<void> send(ShellCmd cmd) async {
     try {
       state = await shellDispatch(cmd: cmd);
+      // Not latched like the section list: a tab row can change under a live
+      // page without costing anybody their scroll position.
+      applyTabsOff(state?.tabsOff ?? const []);
+      _takeLanding();
+      _keepOnScreen();
       notifyListeners();
     } catch (_) {
       // The sidebar has a sensible empty state and a failed count is not worth
@@ -95,9 +119,71 @@ class ShellController extends ChangeNotifier {
   }
 
   void go(Section s) {
+    // A launcher pointing at a section that is not in the sidebar: showing it
+    // would put the shell on a page it never built. Nothing happens instead.
+    if (!sections.contains(s)) return;
     if (section == s) return;
     section = s;
     notifyListeners();
+  }
+
+  /// Section ids → the enum, for the list the bridge sends.
+  static const Map<String, Section> byId = {
+    'home': Section.home,
+    'photos': Section.photos,
+    'videos': Section.videos,
+    'music': Section.music,
+    'books': Section.books,
+    'cloud': Section.cloud,
+    'tools': Section.tools,
+    'transfer': Section.transfer,
+    'finances': Section.finances,
+    'settings': Section.settings,
+  };
+
+  /// The sections in the sidebar, in the saved order, live.
+  ///
+  /// This was latched for the session, because the shell's IndexedStack is
+  /// built from it and Flutter matches a multi-child list by position: a list
+  /// that changed length mid-session re-matched everything after the change and
+  /// threw away its State — the page you were on, its scroll, its controllers.
+  /// The fix was a key per child (see `main.dart`), not a latch: keyed, the
+  /// survivors are recognised as the same child that moved. So the panel takes
+  /// effect where you can see it, and a section switched back on is simply
+  /// built then.
+  List<Section> get sections => sectionsFrom(state?.sections);
+
+  /// Where the shell's IndexedStack should be. -1 is impossible by
+  /// construction — [go] is only reachable from what [sections] drew — but a
+  /// deep link into a hidden section would be, so it falls back rather than
+  /// throwing during layout.
+  int get stackIndex {
+    final i = sections.indexOf(section);
+    return i < 0 ? 0 : i;
+  }
+
+  /// Open on whatever Settings → Sections chose, once, when the first snapshot
+  /// arrives. Before that there is nothing to obey.
+  bool _landed = false;
+  void _takeLanding() {
+    if (_landed) return;
+    final ids = state?.sections;
+    if (ids == null || ids.isEmpty) return;
+    _landed = true;
+    final s = byId[state?.landing ?? ''];
+    if (s != null && sections.contains(s) && section != s) section = s;
+  }
+
+  /// Nobody is left standing on a section that has just been hidden.
+  ///
+  /// `stackIndex` would fall back to 0, which draws the first page while the
+  /// sidebar highlights nothing — the shell quietly showing one thing and
+  /// saying another.
+  void _keepOnScreen() {
+    final list = sections;
+    if (list.isEmpty || list.contains(section)) return;
+    final land = byId[state?.landing ?? ''];
+    section = land != null && list.contains(land) ? land : list.first;
   }
 
   /// How each section answers a deep link — "open Videos *on Live TV*".
@@ -114,6 +200,7 @@ class ShellController extends ChangeNotifier {
   /// Go to [s] and ask it to open [tab]. Fires the opener even when the
   /// section is already up: "Live TV" from Videos still means Live TV.
   void goTab(Section s, String tab) {
+    if (!sections.contains(s)) return;
     go(s);
     _openers[s]?.call(tab);
   }

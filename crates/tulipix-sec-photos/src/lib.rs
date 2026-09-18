@@ -1553,55 +1553,13 @@ pub fn incremented_stem(dir: &std::path::Path, base: &str, ext: &str) -> String 
     format!("{base}-edit")
 }
 
-/// Path to an installed model blob, or `None` when it has not been downloaded.
+/// Where the model loaders live now: `tulipix_photos::ai::load`.
 ///
-/// `<data>/models/<name>-<version>/<name>.onnx` — the layout
-/// `ai::models::local_path` writes to.
-pub fn installed_model(name: &str, version: &str) -> Option<PathBuf> {
-    let p = tulipix_photos::ai::models::models_root()?
-        .join(format!("{name}-{version}"))
-        .join(format!("{name}.onnx"));
-    p.exists().then_some(p)
-}
-
-/// The COCO-80 object tagger, when both the feature and the blob are present.
-///
-/// Returns `None` rather than a Null tagger on purpose: the background indexer
-/// must be able to tell "no detector" from "detector found nothing", because
-/// only the second one should mark a photo considered.
-#[cfg(feature = "ai-onnx")]
-pub fn make_tagger() -> Option<Box<dyn tulipix_photos::ai::tags::Tagger>> {
-    let p = installed_model("yolox-s", "1.0.0")?;
-    match tulipix_photos::ai::onnx::OrtTagger::load(&p) {
-        Ok(t) => Some(Box::new(t)),
-        Err(e) => { tracing::error!(error = %e, "OrtTagger load failed"); None }
-    }
-}
-#[cfg(not(feature = "ai-onnx"))]
-pub fn make_tagger() -> Option<Box<dyn tulipix_photos::ai::tags::Tagger>> { None }
-
-/// Face detection + recognition. Both or neither — detection alone fills
-/// `faces` with rows that can never be clustered.
-#[cfg(feature = "ai-onnx")]
-pub fn make_face_models() -> Option<(
-    Box<dyn tulipix_photos::ai::faces::FaceDetector>,
-    Box<dyn tulipix_photos::ai::faces::FaceEmbedder>,
-)> {
-    let det_path = installed_model("face-det-500m", "1.0.0")?;
-    let rec_path = installed_model("face-rec-500m", "1.0.0")?;
-    let det = tulipix_photos::ai::onnx::OrtFaceDetector::load(&det_path)
-        .map_err(|e| tracing::error!(error = %e, "OrtFaceDetector load failed"))
-        .ok()?;
-    let rec = tulipix_photos::ai::onnx::OrtFaceEmbedder::load(&rec_path)
-        .map_err(|e| tracing::error!(error = %e, "OrtFaceEmbedder load failed"))
-        .ok()?;
-    Some((Box::new(det), Box::new(rec)))
-}
-#[cfg(not(feature = "ai-onnx"))]
-pub fn make_face_models() -> Option<(
-    Box<dyn tulipix_photos::ai::faces::FaceDetector>,
-    Box<dyn tulipix_photos::ai::faces::FaceEmbedder>,
-)> { None }
+/// They were here, in the Slint front end's section crate, which is why the
+/// Flutter bridge could download a model and then never run it — nothing on
+/// that side could build a tagger. Re-exported rather than moved-and-renamed so
+/// this crate's callers read the same as before.
+pub use tulipix_photos::ai::load::{installed_model, make_face_models, make_tagger};
 
 /// Resolve the super-resolution model path: `TULIPIX_SR_MODEL` env override,
 /// else `<data>/models/swin2sr-x4.onnx`. None ⇒ no real model installed.

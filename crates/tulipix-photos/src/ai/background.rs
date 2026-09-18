@@ -124,6 +124,31 @@ pub async fn pending_for(pool: &SqlitePool, stage: Stage) -> anyhow::Result<i64>
     .await?)
 }
 
+/// How many live *photos* are still waiting on at least one of `stages`.
+///
+/// Not the sum of [`pending_for`]: one photo that has had none of five passes
+/// is five pending items and one pending photo, and a headline that adds the
+/// queues up tells somebody who imported 57 photos that 171 are waiting.
+pub async fn pending_photos(pool: &SqlitePool, stages: &[Stage]) -> anyhow::Result<i64> {
+    if stages.is_empty() {
+        return Ok(0);
+    }
+    let holes = vec!["?"; stages.len()].join(",");
+    let sql = format!(
+        "SELECT COUNT(*) FROM items i
+         WHERE i.section = 'photos'
+           AND i.missing_since IS NULL
+           AND (SELECT COUNT(DISTINCT s.stage) FROM photo_ai_state s
+                WHERE s.item_id = i.id AND s.stage IN ({holes})) < {}",
+        stages.len()
+    );
+    let mut q = sqlx::query_scalar(sqlx::AssertSqlSafe(sql));
+    for stage in stages {
+        q = q.bind(stage.key());
+    }
+    Ok(q.fetch_one(pool).await?)
+}
+
 pub async fn pending(pool: &SqlitePool) -> anyhow::Result<PendingCounts> {
     Ok(PendingCounts {
         exif: pending_for(pool, Stage::Exif).await?,
@@ -233,6 +258,33 @@ mod tests {
 
         assert_eq!(pending_for(&pool, Stage::Faces).await.unwrap(), 0);
         assert!(next_batch(&pool, Stage::Faces, 10).await.unwrap().is_empty());
+    }
+
+    /// The headline number. Three photos each owing three passes is nine
+    /// queued items and three waiting photos -- adding the queues up is what
+    /// told somebody with 57 new photos that 171 needed analysis.
+    #[tokio::test]
+    async fn waiting_photos_are_counted_once_not_once_per_stage() {
+        let (_t, pool) = open_pool().await;
+        let want = [Stage::Exif, Stage::Fts, Stage::Tags];
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            ids.push(seed(&pool, &format!("/tmp/w{i}.jpg")).await);
+        }
+        assert_eq!(pending(&pool).await.unwrap().total(), 15);
+        assert_eq!(pending_photos(&pool, &want).await.unwrap(), 3);
+
+        // One pass done for one photo: still three photos waiting.
+        mark_done(&pool, ids[0], Stage::Exif, "").await.unwrap();
+        assert_eq!(pending_photos(&pool, &want).await.unwrap(), 3);
+
+        // All three of its passes done: two left.
+        mark_done(&pool, ids[0], Stage::Fts, "").await.unwrap();
+        mark_done(&pool, ids[0], Stage::Tags, "").await.unwrap();
+        assert_eq!(pending_photos(&pool, &want).await.unwrap(), 2);
+
+        // A stage nobody can run is not something to wait for.
+        assert_eq!(pending_photos(&pool, &[]).await.unwrap(), 0);
     }
 
     #[tokio::test]

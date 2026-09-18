@@ -48,6 +48,12 @@ const List<({String id, String label, IconData icon, Color tint})>
     tint: Color(0xFF8B5CF6)
   ),
   (
+    id: 'sections',
+    label: 'Sections',
+    icon: Icons.tune_outlined,
+    tint: Color(0xFF6366F1)
+  ),
+  (
     id: 'security',
     label: 'Security',
     icon: Icons.lock_outline,
