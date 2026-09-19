@@ -1,0 +1,330 @@
+# Release builds of the Flutter app: Linux (tar.gz), Windows (portable zip),
+# macOS (dmg). The Slint app keeps release.yml until this replaces it.
+#
+# Trigger: a `flutter-v*` tag -- deliberately not `v*`, which is release.yml's
+# and would build the Slint app from the same commit. A tag runs the workflow
+# file in the tagged commit, so this works from flport without a merge. Manual
+# dispatch builds artifacts without publishing (the button needs a copy of this
+# file on the default branch).
+#
+# Every job does the same five things: toolchains, codegen (the bindings are
+# not committed), `flutter build <os> --release` (cargokit compiles the bridge
+# with the features in crates/tulipix-bridge/cargokit.yaml), the bundled tools
+# beside the executable, and an archive.
+#
+# ponytail: one archive per OS. deb/rpm/AppImage and the Inno Setup installer
+# are release.yml's and come across once this build is known good.
+
+name: flutter-release
+on:
+  push:
+    tags: ["flutter-v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  FLUTTER_VERSION: "3.47.4"
+  FRB_VERSION: "2.13.0"
+  # The bridge's release profile is fat LTO in one codegen unit. Right for a
+  # local release, and the same shape that OOM-killed release.yml's runners:
+  # thin LTO over many units is the lever that kept those alive.
+  CARGO_PROFILE_RELEASE_LTO: "thin"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+  CARGO_PROFILE_RELEASE_DEBUG: "false"
+
+jobs:
+  # ── Linux ──────────────────────────────────────────────────────────────────
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift \
+            /usr/local/.ghcup /usr/share/miniconda /opt/az 2>/dev/null || true
+          df -h /
+
+      - name: System deps
+        # Flutter's Linux toolchain (clang, cmake, ninja, GTK 3), libmpv for
+        # media_kit, and what the bridge's -sys crates link: dbus (the tray and
+        # MPRIS), wayland. mold because the committed .cargo/config.toml links
+        # Linux with it.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
+            libstdc++-12-dev libmpv-dev mold libdbus-1-dev libwayland-dev \
+            libxkbcommon-dev lld
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: flutter-ort-v1
+          # ort-sys downloads ONNX Runtime here and points rustc at it; it has
+          # to be cached with target/ or a restored build is sent to a path the
+          # runner never had (see release.yml).
+          cache-directories: ~/.cache/ort.pyke.io
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: flutter_rust_bridge_codegen@${{ env.FRB_VERSION }}
+
+      - name: Resolve version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/flutter-v* ]]; then V="${GITHUB_REF#refs/tags/flutter-v}";
+          else V=$(grep -m1 '^version:' app_flutter/pubspec.yaml | awk '{print $2}' | cut -d+ -f1); fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          mkdir -p dist
+
+      - name: Codegen
+        working-directory: app_flutter
+        run: |
+          flutter pub get
+          flutter_rust_bridge_codegen generate
+
+      - name: Fetch bundled tools (manifest-pinned)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo run -p fetch-resources
+
+      - name: Build whisper-cli (static, pinned v1.9.1)
+        run: |
+          git clone --depth 1 --branch v1.9.1 https://github.com/ggml-org/whisper.cpp /tmp/whisper.cpp
+          cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON
+          cmake --build /tmp/whisper.cpp/build --target whisper-cli
+          install -m755 /tmp/whisper.cpp/build/bin/whisper-cli resources/bin/linux-x86_64/whisper-cli
+
+      - name: Build
+        working-directory: app_flutter
+        env:
+          # lld over mold: mold holds the whole link in memory.
+          RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+          CARGO_BUILD_JOBS: "2"
+        run: flutter build linux --release --build-name "${VERSION%%-*}"
+
+      - name: Package tar.gz
+        # The tools go in resources/bin/<os-arch>/ beside the executable, where
+        # tulipix_core::thumbs::walk_bundled looks. libmpv is not bundled: it is
+        # the system's (libmpv2 on Debian/Ubuntu, mpv on Arch).
+        run: |
+          B=app_flutter/build/linux/x64/release/bundle
+          mkdir -p "$B/resources/bin"
+          cp -r resources/bin/linux-x86_64 "$B/resources/bin/"
+          cp packaging/linux/tulipix.desktop resources/icons/tulipix-256.png "$B/"
+          rm -rf stage && mkdir stage && cp -a "$B" stage/tulipix
+          tar -C stage -czf "dist/tulipix-${VERSION}-linux-x86_64.tar.gz" tulipix
+          ls -la dist/
+
+      - name: Smoke-test the tarball
+        run: |
+          set -euo pipefail
+          rm -rf smoke && mkdir smoke
+          tar -xzf "dist/tulipix-${VERSION}-linux-x86_64.tar.gz" -C smoke
+          test -x smoke/tulipix/tulipix
+          test -s smoke/tulipix/lib/libtulipix_bridge.so \
+            || { echo "::error::the Rust bridge is missing from the bundle"; ls smoke/tulipix/lib; exit 1; }
+          BIN=smoke/tulipix/resources/bin/linux-x86_64
+          for tool in ffmpeg ffprobe yt-dlp rclone exiftool; do
+            "$BIN/$tool" -version >/dev/null 2>&1 || "$BIN/$tool" --version >/dev/null 2>&1 \
+              || { echo "::error::bundled $tool cannot run"; exit 1; }
+          done
+          echo "tarball smoke test passed"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/*
+
+  # ── Windows ────────────────────────────────────────────────────────────────
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: flutter-ort-v1
+          cache-directories: ~\AppData\Local\ort.pyke.io
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: flutter_rust_bridge_codegen@${{ env.FRB_VERSION }}
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/flutter-v* ]]; then V="${GITHUB_REF#refs/tags/flutter-v}";
+          else V=$(grep -m1 '^version:' app_flutter/pubspec.yaml | awk '{print $2}' | cut -d+ -f1); fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+
+      - name: Codegen
+        working-directory: app_flutter
+        run: |
+          flutter pub get
+          flutter_rust_bridge_codegen generate
+
+      - name: Fetch bundled tools
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo run -p fetch-resources
+
+      - name: Pagefile headroom
+        # rustc's link step on the bridge; see release.yml for the history.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $sys = Get-CimInstance Win32_ComputerSystem
+          if ($sys.AutomaticManagedPagefile) {
+            Set-CimInstance -InputObject $sys -Property @{AutomaticManagedPagefile = $false} -ErrorAction SilentlyContinue
+          }
+          Get-CimInstance Win32_PageFileSetting | Remove-CimInstance -ErrorAction SilentlyContinue
+          New-CimInstance -ClassName Win32_PageFileSetting -Property @{
+            Name = 'D:\pagefile.sys'; InitialSize = [uint32]32768; MaximumSize = [uint32]32768
+          } -ErrorAction SilentlyContinue | Out-Null
+          exit 0
+
+      - name: Build
+        working-directory: app_flutter
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: flutter build windows --release --build-name "${VERSION%%-*}"
+
+      - name: Portable zip
+        # media_kit_libs_video puts libmpv beside the exe; the tools go in
+        # resources\bin\windows-x86_64\ where walk_bundled looks.
+        shell: pwsh
+        run: |
+          $B = "app_flutter\build\windows\x64\runner\Release"
+          New-Item -ItemType Directory -Force "$B\resources\bin" | Out-Null
+          Copy-Item -Recurse resources\bin\windows-x86_64 "$B\resources\bin\windows-x86_64"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "$B\*" -DestinationPath "dist\tulipix-$env:VERSION-windows-x86_64-portable.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist/*
+
+  # ── macOS (Apple silicon) ─────────────────────────────────────────────────
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: flutter-ort-v1
+          cache-directories: ~/Library/Caches/ort.pyke.io
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: flutter_rust_bridge_codegen@${{ env.FRB_VERSION }}
+
+      - name: System deps
+        run: brew install ninja
+
+      - name: Resolve version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/flutter-v* ]]; then V="${GITHUB_REF#refs/tags/flutter-v}";
+          else V=$(grep -m1 '^version:' app_flutter/pubspec.yaml | awk '{print $2}' | cut -d+ -f1); fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          mkdir -p dist
+
+      - name: Codegen
+        working-directory: app_flutter
+        run: |
+          flutter pub get
+          flutter_rust_bridge_codegen generate
+
+      - name: Fetch bundled tools
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo run -p fetch-resources
+
+      - name: Build whisper-cli (static, pinned v1.9.1)
+        run: |
+          git clone --depth 1 --branch v1.9.1 https://github.com/ggml-org/whisper.cpp /tmp/whisper.cpp
+          cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON
+          cmake --build /tmp/whisper.cpp/build --target whisper-cli
+          install -m755 /tmp/whisper.cpp/build/bin/whisper-cli resources/bin/macos-aarch64/whisper-cli
+
+      - name: Build
+        working-directory: app_flutter
+        env:
+          CARGO_BUILD_JOBS: "2"   # macos-14 (M1) has ~7 GB
+        run: flutter build macos --release --build-name "${VERSION%%-*}"
+
+      - name: Bundle tools and sign ad hoc
+        # Contents/resources/bin/<os-arch>/: walk_bundled climbs from
+        # Contents/MacOS/tulipix. Ad-hoc signing only -- an unsigned download
+        # has to be opened with right-click > Open the first time.
+        run: |
+          APP=app_flutter/build/macos/Build/Products/Release/tulipix.app
+          mkdir -p "$APP/Contents/resources/bin"
+          cp -R resources/bin/macos-aarch64 "$APP/Contents/resources/bin/macos-aarch64"
+          find "$APP/Contents/resources/bin" -type f | while read -r f; do
+            file "$f" | grep -q "Mach-O" && codesign --force -s - "$f" || true
+          done
+          codesign --force --deep -s - "$APP"
+          rm -rf stage && mkdir stage && cp -R "$APP" stage/Tulipix.app
+          hdiutil create -volname Tulipix -srcfolder stage/Tulipix.app -ov -format UDZO \
+            "dist/tulipix-${VERSION}-macos-aarch64.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-aarch64
+          path: dist/*
+
+  # ── Publish (tags only) ────────────────────────────────────────────────────
+  # A draft pre-release, published by hand once it has been tried. Linux has to
+  # have built; Windows and macOS attach when they did -- their first builds
+  # are this workflow's first builds, and one red job should not hold back the
+  # others.
+  publish:
+    if: always() && startsWith(github.ref, 'refs/tags/flutter-v') && needs.linux.result == 'success'
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**
+          draft: true
+          prerelease: true
+          name: Tulipix ${{ github.ref_name }} (Flutter)
+          body: |
+            The Flutter build of Tulipix.
+
+            - **Linux:** extract the tar.gz and run `tulipix`. Needs libmpv
+              (`libmpv2` on Debian/Ubuntu, `mpv` on Arch).
+            - **Windows:** extract the zip and run `tulipix.exe`.
+            - **macOS (Apple silicon):** open the dmg and drag Tulipix to
+              Applications. It is not notarised: the first time, right-click
+              the app and choose Open.
