@@ -22,9 +22,11 @@ import '../../playback/audio_deck.dart';
 import '../../playback/video_layer.dart';
 import '../../src/rust/api/music.dart';
 import '../../shell/shell_controller.dart';
+import '../../shell/tray_panel.dart';
 import '../../shell/window.dart';
 import 'mini_player.dart' show kMiniSize;
-import 'mini_widget.dart' show MiniStyle, kPillCluster, kPillLyrics;
+import 'mini_widget.dart'
+    show MiniStyle, kPillCluster, kPillClusterNoPin, kPillLyrics;
 import 'music_accent.dart';
 import 'spectrum.dart';
 import 'music_viz.dart' show visStyleNames;
@@ -552,8 +554,8 @@ class MusicController extends ChangeNotifier {
       case MusicEvent_VideoStop():
         // Sent just before every VideoPlay, so this is where the size of the
         // picture being replaced is still known.
-        _ytWatchFull = videoRequest.value?.token == _ytWatchToken &&
-            !videoDocked.value;
+        _ytWatchFull =
+            videoRequest.value?.token == _ytWatchToken && !videoDocked.value;
         clearVideo();
         notifyListeners();
       case MusicEvent_VideoSkips(:final token, :final segments):
@@ -601,6 +603,9 @@ class MusicController extends ChangeNotifier {
         setVolume(value);
       case 'raise':
         presentWindow();
+      case 'panel':
+        // A left click on the status-bar icon: the deck under it.
+        TrayPanel.instance.toggle();
       case 'mini':
         // The tray's item is the WIDGET, not the card. `tray.mini` is
         // `miniwin::open_mini(&w)` in crates/tulipix-app/src/main.rs -- the app
@@ -810,6 +815,17 @@ class MusicController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// The widget's "always on top". On by default, as the Slint widget's
+  /// `pinned` is; kept for the session, not stored -- `on_toggle_pin` there
+  /// does not store it either.
+  bool widgetPinned = true;
+
+  void toggleWidgetPin() {
+    widgetPinned = !widgetPinned;
+    setWindowKeepAbove(widgetPinned);
+    notifyListeners();
+  }
+
   void closeWidget() {
     widgetOpen = false;
     notifyListeners();
@@ -861,7 +877,9 @@ class MusicController extends ChangeNotifier {
   Size get widgetWindow {
     final base = widgetStyle.base;
     final pill = widgetStyle == MiniStyle.pill;
-    final extraW = pill && pillOpen ? kPillCluster : 0.0;
+    final extraW = pill && pillOpen
+        ? (WindowChrome.instance.stacking ? kPillCluster : kPillClusterNoPin)
+        : 0.0;
     final extraH = pill && pillLyrics && hasLyrics ? kPillLyrics : 0.0;
     return Size((base.width + extraW) * widgetScale,
         (base.height + extraH) * widgetScale);
@@ -908,8 +926,7 @@ class MusicController extends ChangeNotifier {
     // amount — which reads as the words not following the song at all rather
     // than as a fixed lag. `audioPositionS` is the same unthrottled source
     // `SeekPill(smooth:)` reads for the progress edge.
-    final live =
-        tickPlaying && audioPositionS > 0 ? audioPositionS : tickPos;
+    final live = tickPlaying && audioPositionS > 0 ? audioPositionS : tickPos;
     final at = live + (state?.lyricsOffsetMs ?? 0) / 1000.0;
     var hit = -1;
     for (var i = 0; i < lines.length; i++) {

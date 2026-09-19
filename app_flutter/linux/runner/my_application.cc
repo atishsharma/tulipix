@@ -1,6 +1,9 @@
 #include "my_application.h"
 
 #include <flutter_linux/flutter_linux.h>
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#endif
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -32,6 +35,22 @@ static gint g_saved_w = 0;
 static gint g_saved_h = 0;
 static gboolean g_saved_max = FALSE;
 static gboolean g_widget_mode = FALSE;
+// The widget's pin. On by default, as `pinned: true` is on the Slint widget;
+// remembered here so a widget reopened later comes back the way it was left.
+static gboolean g_keep_above = TRUE;
+
+// Whether "keep above" means anything. X11 (XWayland included) carries it as
+// _NET_WM_STATE_ABOVE; xdg-shell has no stacking request at all, so on native
+// Wayland `gtk_window_set_keep_above` is dropped on the floor and the widget
+// hides its pin rather than show one that latches on nothing -- the Slint
+// build's `no-stacking-control`.
+static gboolean stacking_works() {
+#ifdef GDK_WINDOWING_X11
+  return GDK_IS_X11_DISPLAY(gdk_display_get_default());
+#else
+  return FALSE;
+#endif
+}
 
 // A size the compositor would not take, and whether we have asked for
 // fullscreen. See `resize_when_free` for what the pair is for.
@@ -162,6 +181,138 @@ static gboolean window_state_cb(GtkWidget* widget, GdkEventWindowState* event,
   return FALSE;
 }
 
+// The tray panel: docs/tray-player-deck.html. A second toplevel with a second
+// FlView on the SAME engine, so it is drawn by the one Dart isolate that holds
+// the deck -- no second engine, no state to mirror. Dart puts a `View` into
+// the tree for it (lib/shell/tray_panel.dart) and takes it out again before it
+// asks for the window to go, so the framework never renders into a view the
+// engine has already dropped.
+static FlEngine* g_engine = nullptr;
+static GtkWindow* g_panel = nullptr;
+static gint g_panel_x = 0;
+// The edge the panel hangs off: the work area's top, or its bottom when the
+// click came from a bottom panel -- in which case the window grows upward.
+static gint g_panel_edge = 0;
+static gboolean g_panel_up = FALSE;
+
+static const gint kPanelWidth = 336;
+static const gint kPanelGuessHeight = 480;
+
+static void panel_move(gint height) {
+  if (g_panel == nullptr) {
+    return;
+  }
+  gtk_window_move(g_panel, g_panel_x,
+                  g_panel_up ? g_panel_edge - height : g_panel_edge);
+}
+
+// Where the tray icon is, as near as can be known: the pointer, which is on it.
+//
+// ponytail: X11 only. Wayland gives an xdg-toplevel no say in its position, so
+// there the compositor places the panel wherever it places a new window. The
+// real answer is a wlr-layer-shell surface anchored to the panel edge (KWin and
+// wlroots, not GNOME) through gtk-layer-shell -- add it if "not under the icon"
+// turns out to matter.
+static void panel_anchor() {
+  gint px = 0;
+  gint py = 0;
+  pointer_root_position(g_main_window, &px, &py);
+  GdkDisplay* display = gtk_widget_get_display(GTK_WIDGET(g_main_window));
+  GdkMonitor* monitor = gdk_display_get_monitor_at_point(display, px, py);
+  GdkRectangle area = {0, 0, 1920, 1080};
+  if (monitor != nullptr) {
+    gdk_monitor_get_workarea(monitor, &area);
+  }
+  g_panel_up = py > area.y + area.height / 2;
+  g_panel_edge = g_panel_up ? area.y + area.height - 6 : area.y + 6;
+  g_panel_x = CLAMP(px - kPanelWidth / 2, area.x + 8,
+                    area.x + area.width - kPanelWidth - 8);
+}
+
+// Clicked past, or Escape: ask Dart to close it, the way a menu goes. Dart
+// answers with `panel(false)` once the view is out of its tree.
+static void panel_dismiss() {
+  if (g_panel != nullptr && g_window_channel != nullptr) {
+    fl_method_channel_invoke_method(g_window_channel, "onPanelDismiss", nullptr,
+                                    nullptr, nullptr, nullptr);
+  }
+}
+
+static gboolean panel_focus_out_cb(GtkWidget* widget, GdkEvent* event,
+                                   gpointer user_data) {
+  panel_dismiss();
+  return FALSE;
+}
+
+// Connected on the toplevel, so it runs before GtkWindow hands the key to the
+// view: Escape never reaches Dart, and does not have to.
+static gboolean panel_key_cb(GtkWidget* widget, GdkEventKey* event,
+                             gpointer user_data) {
+  if (event->keyval == GDK_KEY_Escape) {
+    panel_dismiss();
+    return TRUE;
+  }
+  return FALSE;
+}
+
+static void panel_open() {
+  if (g_panel != nullptr) {
+    gtk_window_present(g_panel);
+    return;
+  }
+  if (g_engine == nullptr || g_main_window == nullptr) {
+    return;
+  }
+  GtkWindow* panel = GTK_WINDOW(gtk_window_new(GTK_WINDOW_TOPLEVEL));
+  // Same alpha and same decoration claim as the main window, for the same
+  // reasons: rounded corners over the desktop, and no KWin frame on top.
+  GdkScreen* screen = gtk_widget_get_screen(GTK_WIDGET(panel));
+  GdkVisual* rgba = gdk_screen_get_rgba_visual(screen);
+  gboolean alpha = rgba != nullptr && gdk_screen_is_composited(screen);
+  if (alpha) {
+    gtk_widget_set_visual(GTK_WIDGET(panel), rgba);
+  }
+  GtkWidget* own_the_decoration = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_show(own_the_decoration);
+  gtk_window_set_titlebar(panel, own_the_decoration);
+  gtk_window_set_decorated(panel, FALSE);
+  gtk_window_set_title(panel, "Tulipix");
+  gtk_window_set_skip_taskbar_hint(panel, TRUE);
+  gtk_window_set_skip_pager_hint(panel, TRUE);
+  gtk_window_set_keep_above(panel, TRUE);
+  gtk_window_set_resizable(panel, FALSE);
+  gtk_window_set_default_size(panel, kPanelWidth, kPanelGuessHeight);
+
+  FlView* view = fl_view_new_for_engine(g_engine);
+  GdkRGBA background_color;
+  gdk_rgba_parse(&background_color, alpha ? "#00000000" : "#000000");
+  fl_view_set_background_color(view, &background_color);
+  gtk_widget_show(GTK_WIDGET(view));
+  gtk_container_add(GTK_CONTAINER(panel), GTK_WIDGET(view));
+
+  g_signal_connect(panel, "focus-out-event", G_CALLBACK(panel_focus_out_cb),
+                   nullptr);
+  g_signal_connect(panel, "key-press-event", G_CALLBACK(panel_key_cb),
+                   nullptr);
+
+  g_panel = panel;
+  panel_anchor();
+  panel_move(kPanelGuessHeight);
+  gtk_window_present(panel);
+  gtk_widget_grab_focus(GTK_WIDGET(view));
+}
+
+static void panel_close() {
+  if (g_panel == nullptr) {
+    return;
+  }
+  // Cleared first: destroying a focused window sends it a focus-out, and that
+  // must not come back to Dart as a second dismiss.
+  GtkWidget* panel = GTK_WIDGET(g_panel);
+  g_panel = nullptr;
+  gtk_widget_destroy(panel);
+}
+
 static void window_method_call_cb(FlMethodChannel* channel,
                                   FlMethodCall* method_call,
                                   gpointer user_data) {
@@ -197,6 +348,8 @@ static void window_method_call_cb(FlMethodChannel* channel,
     g_autoptr(FlValue) info = fl_value_new_map();
     fl_value_set_string_take(info, "custom",
                              fl_value_new_bool(chrome_is_custom()));
+    fl_value_set_string_take(info, "stacking",
+                             fl_value_new_bool(stacking_works()));
     fl_value_set_string_take(
         info, "maximized",
         fl_value_new_bool(g_main_window != nullptr &&
@@ -281,10 +434,8 @@ static void window_method_call_cb(FlMethodChannel* channel,
           if (g_saved_max) {
             gtk_window_unmaximize(g_main_window);
           }
-          // The pin the Slint widget offers, minus the button: on Wayland
-          // there is no stacking request to make and this is a no-op, which is
-          // the same reason `no-stacking-control` drops the pin there.
-          gtk_window_set_keep_above(g_main_window, TRUE);
+          // The pin, as last set (see `keepAbove`).
+          gtk_window_set_keep_above(g_main_window, g_keep_above);
           resize_when_free(g_main_window, map_int(args, "width", 441),
                            map_int(args, "height", 212));
         } else {
@@ -320,6 +471,42 @@ static void window_method_call_cb(FlMethodChannel* channel,
     if (g_main_window != nullptr && args != nullptr &&
         fl_value_get_type(args) == FL_VALUE_TYPE_STRING) {
       gtk_window_set_title(g_main_window, fl_value_get_string(args));
+    }
+    response = FL_METHOD_RESPONSE(
+        fl_method_success_response_new(fl_value_new_null()));
+  } else if (g_strcmp0(name, "keepAbove") == 0) {
+    // The widget's pin. Applied now only while the window IS the widget; the
+    // app itself is never kept above anything.
+    FlValue* args = fl_method_call_get_args(method_call);
+    if (args != nullptr && fl_value_get_type(args) == FL_VALUE_TYPE_BOOL) {
+      g_keep_above = fl_value_get_bool(args);
+      if (g_main_window != nullptr && g_widget_mode) {
+        gtk_window_set_keep_above(g_main_window, g_keep_above);
+      }
+    }
+    response = FL_METHOD_RESPONSE(
+        fl_method_success_response_new(fl_value_new_null()));
+  } else if (g_strcmp0(name, "panel") == 0) {
+    FlValue* args = fl_method_call_get_args(method_call);
+    if (args != nullptr && fl_value_get_type(args) == FL_VALUE_TYPE_BOOL &&
+        fl_value_get_bool(args)) {
+      panel_open();
+    } else {
+      panel_close();
+    }
+    response = FL_METHOD_RESPONSE(
+        fl_method_success_response_new(fl_value_new_null()));
+  } else if (g_strcmp0(name, "panelHeight") == 0) {
+    // The panel measures itself and says how tall it came out; the window is
+    // cut to that, still hanging off the same edge.
+    FlValue* args = fl_method_call_get_args(method_call);
+    if (g_panel != nullptr && args != nullptr &&
+        fl_value_get_type(args) == FL_VALUE_TYPE_INT) {
+      gint height = static_cast<gint>(fl_value_get_int(args));
+      if (height > 0) {
+        gtk_window_resize(g_panel, kPanelWidth, height);
+        panel_move(height);
+      }
     }
     response = FL_METHOD_RESPONSE(
         fl_method_success_response_new(fl_value_new_null()));
@@ -467,6 +654,7 @@ static void my_application_activate(GApplication* application) {
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
 
   g_main_window = window;
+  g_engine = fl_view_get_engine(view);
   g_signal_connect(window, "window-state-event", G_CALLBACK(window_state_cb),
                    nullptr);
   g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();

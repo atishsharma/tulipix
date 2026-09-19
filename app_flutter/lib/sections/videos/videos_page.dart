@@ -9,7 +9,6 @@ import 'package:flutter/material.dart';
 
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
-import '../../shell/section_tabs.dart';
 import '../../design/skin.dart';
 import '../../shell/shell_controller.dart';
 import '../../src/rust/api/videos.dart';
@@ -17,6 +16,7 @@ import 'videos_controller.dart';
 import 'videos_discover.dart';
 import 'videos_library.dart';
 import 'videos_livetv.dart';
+import 'videos_naming.dart';
 import 'videos_splus.dart';
 import 'videos_stream.dart';
 import 'videos_stream_pages.dart';
@@ -85,10 +85,6 @@ class _VideosPageState extends State<VideosPage> {
                     ? _streamActions(st!.stream)
                     : const [],
               ),
-              if (st != null && !_isRemote(st.kind))
-                _CategoryBar(controller: _c, state: st),
-              if (st != null && st.kind == 'tv' && st.showOpen)
-                _ShowBackBar(controller: _c, state: st),
               if (_c.scanRoot != null) _ScanBar(root: _c.scanRoot!),
               if (_c.scanResult != null)
                 _Banner(
@@ -113,12 +109,6 @@ class _VideosPageState extends State<VideosPage> {
       },
     );
   }
-
-  bool _isRemote(String kind) =>
-      kind == 'discover' ||
-      kind == 'stream' ||
-      kind == 'livetv' ||
-      kind == 'splus';
 
   List<Widget> _streamActions(StreamView s) => [
         VideoTab(
@@ -224,16 +214,38 @@ class _Header extends StatelessWidget {
           Text('Videos',
               style: TextStyle(
                   fontSize: 22, fontWeight: FontWeight.w700, color: t.nInk)),
-          const SizedBox(width: 12),
-          for (final k in kVideoKinds) ...[
-            VideoTab(
-              hue: k.hue,
-              label: k.label,
-              active: kind == k.id,
-              onTap: () => controller.send(VideosCmd.setKind(kind: k.id)),
+          const SizedBox(width: 16),
+          // The library, as one control: Movies, Shows and Local are three
+          // views of the same files. The other four are places of their own,
+          // after a divider.
+          Flexible(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _LibrarySegments(
+                    kind: kind,
+                    onPick: (id) => _pick(controller, id),
+                  ),
+                  Container(
+                    width: 1,
+                    height: 22,
+                    margin: const EdgeInsets.symmetric(horizontal: 12),
+                    color: t.nHair,
+                  ),
+                  for (final k in kVideoKinds.skip(3)) ...[
+                    VideoTab(
+                      hue: k.hue,
+                      label: k.label,
+                      active: kind == k.id,
+                      onTap: () => _pick(controller, k.id),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                ],
+              ),
             ),
-            const SizedBox(width: 8),
-          ],
+          ),
           const Spacer(),
           // Stream searches the remote catalogue from its own field; Live TV
           // and Stream Plus have their own too.
@@ -250,20 +262,23 @@ class _Header extends StatelessWidget {
               active: true,
               onTap: () => addVideoFolder(context, controller),
             ),
-            const SizedBox(width: 12),
-            Container(
-              height: 44,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: Tokens.secVideos,
-                borderRadius: BorderRadius.circular(22),
+            // How to name files so they land here: the ten layouts each
+            // side reads. Movies and TV only -- Local is whatever is left.
+            if (kind == 'movies' || kind == 'tv') ...[
+              const SizedBox(width: 8),
+              VideoTab(
+                hue: cInfo,
+                icon: Icons.info_outline,
+                label: 'Naming',
+                onTap: () => openNamingGuide(context, shows: kind == 'tv'),
               ),
-              child: Text('${st?.itemCount ?? 0} videos',
-                  style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white)),
+            ],
+            const SizedBox(width: 12),
+            Text(
+              kind == 'tv'
+                  ? '${st?.shows.length ?? 0} shows'
+                  : '${st?.itemCount ?? 0} ${kind == 'movies' ? 'movies' : 'videos'}',
+              style: TextStyle(fontSize: 12, color: t.nInk3),
             ),
           ],
           if (kind == 'livetv') ...[
@@ -300,6 +315,94 @@ class _Header extends StatelessWidget {
           ],
           ...streamActions,
         ],
+      ),
+    );
+  }
+}
+
+/// A tab picked: the page's movie page closes with it, and entering a tab is
+/// also what loads it.
+void _pick(VideosController controller, String id) {
+  controller.openMoviePage(null);
+  controller.send(VideosCmd.setKind(kind: id));
+}
+
+/// Movies · Shows · Local, one segmented control.
+class _LibrarySegments extends StatelessWidget {
+  const _LibrarySegments({required this.kind, required this.onPick});
+
+  final String kind;
+  final ValueChanged<String> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final skin = context.skin;
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: skin.surface(SurfaceRole.well, radius: 14) ??
+          BoxDecoration(
+            color: t.nChip,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: t.nHair),
+          ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final k in kVideoKinds.take(3))
+            _Segment(
+              label: k.label,
+              active: kind == k.id,
+              onTap: () => onPick(k.id),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Segment extends StatelessWidget {
+  const _Segment(
+      {required this.label, required this.active, required this.onTap});
+
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final skin = context.skin;
+    final ink = active
+        ? (skin.isStandard ? Colors.white : (skin.activeInk ?? Tokens.secVideos))
+        : t.nInk2;
+    final text = Text(label,
+        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: ink));
+    if (!skin.isStandard) {
+      return SkinButton(
+        active: active,
+        radius: 11,
+        height: 32,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        tint: Tokens.secVideos,
+        onTap: onTap,
+        child: Center(widthFactor: 1, child: text),
+      );
+    }
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          height: 32,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          decoration: BoxDecoration(
+            color: active ? Tokens.secVideos : Colors.transparent,
+            borderRadius: BorderRadius.circular(11),
+          ),
+          child: Center(widthFactor: 1, child: text),
+        ),
       ),
     );
   }
@@ -353,81 +456,6 @@ class _NowPlayingPill extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _CategoryBar extends StatelessWidget {
-  const _CategoryBar({required this.controller, required this.state});
-
-  final VideosController controller;
-  final VideosState state;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Container(
-      height: 54,
-      color: t.panel,
-      padding: const EdgeInsets.symmetric(horizontal: 28),
-      child: Row(
-        children: [
-          for (final c in keepTabs('videos', kVideoCategories, (c) => c.id,
-              active: (c) => state.category == c.id)) ...[
-            VideoTab(
-              hue: c.hue,
-              label: c.label,
-              active: state.category == c.id,
-              onTap: () => controller.send(VideosCmd.setCategory(name: c.id)),
-            ),
-            const SizedBox(width: 8),
-          ],
-          const Spacer(),
-          VideoTab(
-            hue: cBack,
-            icon: Icons.refresh,
-            label: 'Clear thumbs',
-            onTap: () => controller.send(const VideosCmd.clearThumbs()),
-          ),
-          const SizedBox(width: 8),
-          VideoTab(
-            hue: cDl,
-            icon: Icons.sync,
-            label: 'Rescan',
-            onTap: () => controller.send(const VideosCmd.scan()),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ShowBackBar extends StatelessWidget {
-  const _ShowBackBar({required this.controller, required this.state});
-
-  final VideosController controller;
-  final VideosState state;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Container(
-      height: 44,
-      color: t.panel,
-      padding: const EdgeInsets.symmetric(horizontal: 28),
-      child: Row(
-        children: [
-          VideoTab(
-            icon: Icons.chevron_left,
-            label: 'Shows',
-            onTap: () => controller.send(const VideosCmd.showBack()),
-          ),
-          const SizedBox(width: 10),
-          Text(state.showTitle,
-              style: TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w700, color: t.nInk)),
-        ],
       ),
     );
   }

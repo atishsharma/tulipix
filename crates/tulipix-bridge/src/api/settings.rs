@@ -1298,6 +1298,28 @@ fn crash_when(secs: i64) -> String {
     }
 }
 
+/// Which display system the next launch uses, and which this one got.
+///
+/// X11 here means XWayland inside a Wayland session: the old protocol, which
+/// still lets an app keep a window above the others and put one where it
+/// wants -- the widget's pin, the tray panel under its icon. Wayland is the
+/// sharper text at fractional scales and the future, and has neither.
+fn display_rows(s: &S) -> Vec<SettingItem> {
+    // The runner sets GDK_BACKEND from the setting before GTK starts, so the
+    // environment is the answer for this session. No WAYLAND_DISPLAY at all
+    // is a plain X11 session, where the choice makes no difference.
+    let x11 = std::env::var("GDK_BACKEND").is_ok_and(|b| b.starts_with("x11"))
+        || std::env::var_os("WAYLAND_DISPLAY").is_none();
+    vec![
+        choice(s, "ui.display-backend", "Display system",
+            "Takes effect the next time Tulipix starts. X11 runs through XWayland and brings \
+             back the widget's always-on-top pin and the tray panel opening under its icon; \
+             it can look soft at fractional scaling. GDK_BACKEND, if you set it, wins",
+            &["Automatic", "Wayland", "X11"]),
+        stat("This session", if x11 { "X11" } else { "Wayland" }, "ok"),
+    ]
+}
+
 fn advanced(s: &S) -> Vec<SettingItem> {
     let cache_mb = tulipix_core::thumbs::cache_size().map(|b| b / (1024 * 1024)).unwrap_or(0);
     let mut rows = vec![
@@ -1393,6 +1415,15 @@ fn advanced(s: &S) -> Vec<SettingItem> {
         stat("Tools formats", &tools_formats(), "ok"),
         stat("Book formats", &book_formats(), "ok"),
     ];
+    // Linux only: Windows and macOS have one display system and nothing to
+    // pick. Read by the runner (`linux/runner/main.cc`) straight out of
+    // settings.json before GTK starts -- which is why it is "next launch":
+    // the backend is fixed the moment the first window opens.
+    if cfg!(target_os = "linux") {
+        if let Some(at) = rows.iter().position(|r| r.key == "follow-os-font-scale") {
+            rows.splice(at + 1..at + 1, display_rows(s));
+        }
+    }
     // The MCP rows that only mean anything once the server is on go in beside
     // their switch, not at the end of the tab.
     if let Some(at) = rows.iter().position(|r| r.key == tulipix_core::mcp::ENABLED_FLAG) {

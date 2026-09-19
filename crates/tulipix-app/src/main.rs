@@ -7837,6 +7837,7 @@ fn kick_section_scan(
                     // outside the transaction above: it does its own multi-table
                     // work.
                     classify_tv_episode(&pool, id, &f.path).await;
+                    classify_movie(&pool, id, &f.path).await;
                     // TMDB/TVDB poster scrape runs in background so it doesn't
                     // block the scan loop (np.p3.tmdb).
                     let pool2 = pool.clone();

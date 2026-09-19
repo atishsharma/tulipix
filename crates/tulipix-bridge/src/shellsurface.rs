@@ -198,7 +198,8 @@ fn start_tray() {
                     "tray.shuffle" => "shuffle",
                     "tray.repeat.off" | "tray.repeat.all" | "tray.repeat.one" => "repeat",
                     "tray.mini" => "mini",
-                    "tray.popup" => "raise",
+                    // The deck under the icon: tray_panel.dart.
+                    "tray.popup" => "panel",
                     "tray.quit" => "quit",
                     _ => return,
                 };

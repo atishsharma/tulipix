@@ -19,6 +19,7 @@ pub mod ffprobe;
 pub mod folders;
 pub mod last_accessed;
 pub mod livetv;
+pub mod naming;
 pub mod personal_pool;
 pub mod pre_roll;
 pub mod scan;

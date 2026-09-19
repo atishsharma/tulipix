@@ -514,6 +514,14 @@ class _VideoStageState extends State<_VideoStage> {
   void initState() {
     super.initState();
     _open();
+    // `autofocus` only takes focus when nothing else holds it, and the movie
+    // and show pages hold it (their own Escape goes back). Ask outright, or
+    // Escape went to the page underneath instead of minimising.
+    if (!widget.docked) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _focus.requestFocus();
+      });
+    }
   }
 
   @override

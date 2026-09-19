@@ -60,6 +60,33 @@ pub struct VideoTile {
     /// TV episode coordinates. Both 0 when the file is not an episode.
     pub season: i64,
     pub episode: i64,
+
+    // What the library knows about it beyond the file: the stage, the rails
+    // and the movie page draw these. Empty or 0 wherever it knows nothing.
+    /// The movie's title, the show's title for an episode, else the file stem.
+    pub title: String,
+    pub year: i64,
+    pub overview: String,
+    pub runtime_min: i64,
+    /// "4K", "1440p", "1080p", "720p", "SD" from the probed height; empty
+    /// before ffprobe has run.
+    pub res: String,
+    /// "HDR10", "HDR10+", "Dolby Vision", "HLG", or empty for SDR/unknown.
+    pub hdr: String,
+    /// "Mono", "Stereo", "5.1", "7.1", or empty.
+    pub channels: String,
+    /// When it entered the library, unix seconds.
+    pub added: i64,
+    /// The file's own date, unix seconds: what Local groups by month.
+    pub mtime: i64,
+    /// An episode's own title and air date, from TMDB.
+    pub ep_title: String,
+    pub air_date: i64,
+    /// A backdrop already on disk; empty until `videos_ensure_backdrop` has
+    /// fetched one.
+    pub backdrop: String,
+    /// An episode's own 16:9 still, on disk; empty until TMDB has sent one.
+    pub still: String,
 }
 
 /// One TV show card: poster, title, episode count.
@@ -69,6 +96,41 @@ pub struct ShowCard {
     pub title: String,
     pub cover: String,
     pub count: i64,
+    pub year: i64,
+    pub overview: String,
+    /// Episodes without a finished watch. Equal to `count` for a show not
+    /// started, 0 for one finished.
+    pub unwatched: i64,
+    /// Same as a tile's: on disk already, or empty.
+    pub backdrop: String,
+}
+
+// A chip's count: the same shape Photos uses, shared so the bindings have one
+// class.
+pub use super::photos::CategoryCount;
+
+/// One chapter, from the file's own chapter marks.
+#[derive(Debug, Clone, Default)]
+pub struct VideoChapter {
+    pub title: String,
+    pub start: f64,
+}
+
+/// What the movie page shows beyond the tile: the file, as ffprobe and the
+/// disk see it. Fetched when the page opens, not carried on every tile.
+#[derive(Debug, Clone, Default)]
+pub struct MovieDetail {
+    /// "HEVC · 3840×1600 · HDR10"
+    pub video: String,
+    /// "E-AC-3 · 5.1"
+    pub audio: String,
+    pub container: String,
+    /// "38.2 GB"
+    pub size: String,
+    pub path: String,
+    /// Subtitle files beside the video, by language where the name says one.
+    pub subtitles: Vec<String>,
+    pub chapters: Vec<VideoChapter>,
 }
 
 /// A season's worth of episode tiles, for the drilled-in show browser. The
@@ -513,6 +575,17 @@ pub struct VideosState {
     pub seasons: Vec<VideoSeason>,
     pub show_open: bool,
     pub show_title: String,
+    /// The open show's own card: year, overview, backdrop, unwatched count.
+    pub show_info: ShowCard,
+
+    /// Movies' front page: what is in progress, and the newest eight. Empty
+    /// on every other tab, and while a search or a filter is on.
+    pub rail_continue: Vec<VideoTile>,
+    pub rail_recent: Vec<VideoTile>,
+    /// A count for every filter chip on this tab.
+    pub counts: Vec<CategoryCount>,
+    /// added | title | year | runtime.
+    pub sort: String,
 
     pub discover_trending_movies: Vec<DiscoverCard>,
     pub discover_trending_shows: Vec<DiscoverCard>,
@@ -539,8 +612,11 @@ pub enum VideosCmd {
     /// tv | movies | local | discover | livetv | stream | splus. Entering a tab
     /// is also what loads it, the way `set-kind` does on the Slint side.
     SetKind { kind: String },
-    /// library | continue | starred | archive | trash.
+    /// library | continue | starred | archive | trash, and the three filters
+    /// that are not places: unwatched | 4k | hdr.
     SetCategory { name: String },
+    /// added | title | year | runtime.
+    SetSort { key: String },
     Search { query: String },
     ShowMore,
     AddFolder { path: String },
@@ -754,6 +830,7 @@ impl Session {
         let mut ui = VideosState {
             kind: "local".into(),
             category: "library".into(),
+            sort: "added".into(),
             ..Default::default()
         };
         crate::vid_stream::init_view(&mut ui.stream);
@@ -868,6 +945,137 @@ pub async fn videos_ensure_thumb(item_id: i64) -> Result<Option<String>> {
         return Ok(Some(p));
     }
     Ok(render_frame(PathBuf::from(abs)).await)
+}
+
+/// Fetch (or return the cached) backdrop for the stage and the detail pages.
+///
+/// `show_id` > 0 asks for a show's; otherwise `item_id` is a movie, or an
+/// episode whose show's backdrop stands in. Lazy for the same reason posters
+/// are: the stage asks for the one title it is showing, not three hundred.
+/// No key is needed -- TMDB serves images openly -- only a path the scraper
+/// stored, which is why an unscraped title has none.
+pub async fn videos_ensure_backdrop(item_id: i64, show_id: i64) -> Result<Option<String>> {
+    let pool = pool().await?;
+    let path: Option<String> = if show_id > 0 {
+        sqlx::query_scalar("SELECT backdrop_path FROM shows WHERE id = ?")
+            .bind(show_id)
+            .fetch_optional(pool)
+            .await?
+            .flatten()
+    } else {
+        sqlx::query_scalar(
+            "SELECT COALESCE(mv.backdrop_path, sh.backdrop_path) FROM items i \
+             LEFT JOIN movies mv ON mv.item_id = i.id \
+             LEFT JOIN episodes e ON e.item_id = i.id \
+             LEFT JOIN shows sh ON sh.id = e.show_id WHERE i.id = ?",
+        )
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await?
+        .flatten()
+    };
+    let (Some(path), Some(dir)) = (path, poster_cache_dir()) else { return Ok(None) };
+    if let Some(hit) = cached_tmdb_backdrop(&path, &dir) {
+        return Ok(Some(hit));
+    }
+    let url = tmdb_backdrop_url(&path);
+    Ok(tulipix_videos::tmdb::cache_image(tulipix_core::net::http(), &url, &dir)
+        .await
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned()))
+}
+
+/// The movie page's second half: the file as ffprobe and the disk see it,
+/// its chapters and the subtitles beside it.
+///
+/// Chapters are read out of the file the first time a page asks and kept in
+/// `chapters` after that; nothing read them before, so a library scanned
+/// before this has none stored.
+pub async fn videos_movie_detail(item_id: i64) -> Result<MovieDetail> {
+    let pool = pool().await?;
+    #[allow(clippy::type_complexity)]
+    let row: Option<(String, i64, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<String>, Option<i64>)> =
+        sqlx::query_as(
+            "SELECT i.abs_path, i.size, vm.container, vm.video_codec, vm.audio_codec, \
+                    vm.width, vm.height, vm.hdr, vm.audio_channels \
+             FROM items i LEFT JOIN video_meta vm ON vm.item_id = i.id WHERE i.id = ?",
+        )
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await?;
+    let Some((abs, size, container, vcodec, acodec, width, height, hdr, channels)) = row else {
+        return Ok(MovieDetail::default());
+    };
+    let codec = |c: Option<String>| c.map(|c| c.to_uppercase().replace("EAC3", "E-AC-3")).unwrap_or_default();
+    let video = [
+        codec(vcodec),
+        match (width, height) {
+            (Some(w), Some(h)) if w > 0 && h > 0 => format!("{w}\u{00d7}{h}"),
+            _ => String::new(),
+        },
+        hdr_label(hdr.as_deref()),
+    ]
+    .into_iter()
+    .filter(|x| !x.is_empty())
+    .collect::<Vec<_>>()
+    .join(" \u{00b7} ");
+    let audio = [codec(acodec), channel_label(channels)]
+        .into_iter()
+        .filter(|x| !x.is_empty())
+        .collect::<Vec<_>>()
+        .join(" \u{00b7} ");
+
+    let mut chapters = tulipix_videos::chapters::list_for(pool, item_id).await.unwrap_or_default();
+    if chapters.is_empty() {
+        let src = PathBuf::from(&abs);
+        chapters = tokio::task::spawn_blocking(move || tulipix_videos::chapters::extract(&src))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+        if !chapters.is_empty() {
+            let _ = tulipix_videos::chapters::store(pool, item_id, &chapters).await;
+        }
+    }
+    let subtitles = tulipix_videos::sub_local::find_siblings(Path::new(&abs), &[])
+        .into_iter()
+        .map(|c| match c.language {
+            Some(l) => format!("{l} ({})", c.ext),
+            None => c
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string(),
+        })
+        .collect();
+
+    Ok(MovieDetail {
+        video,
+        audio,
+        container: container.unwrap_or_default(),
+        size: fmt_size(size),
+        path: abs,
+        subtitles,
+        chapters: chapters
+            .into_iter()
+            .map(|c| VideoChapter {
+                title: c.title.unwrap_or_else(|| format!("Chapter {}", c.idx + 1)),
+                start: c.start_s,
+            })
+            .collect(),
+    })
+}
+
+fn fmt_size(bytes: i64) -> String {
+    let b = bytes.max(0) as f64;
+    if b >= 1e9 {
+        format!("{:.1} GB", b / 1e9)
+    } else if b >= 1e6 {
+        format!("{:.0} MB", b / 1e6)
+    } else {
+        format!("{:.0} KB", b / 1e3)
+    }
 }
 
 /// The resolved URL of the armed Stream file, ready for the clipboard.
@@ -1244,6 +1452,13 @@ async fn apply(cmd: VideosCmd) -> Result<()> {
             });
             refresh_library().await?;
         }
+        VideosCmd::SetSort { key } => {
+            with(|s| {
+                s.ui.sort = key;
+                s.limit = PAGE;
+            });
+            refresh_library().await?;
+        }
         VideosCmd::Search { query } => {
             with(|s| {
                 s.ui.query = query;
@@ -1265,6 +1480,7 @@ async fn apply(cmd: VideosCmd) -> Result<()> {
         }
         VideosCmd::Scan => {
             scan_watched().await;
+            reread_names(pool().await?).await;
             refresh_library().await?;
         }
         VideosCmd::ClearThumbs => {
@@ -1324,18 +1540,74 @@ fn is_local_kind(kind: &str) -> bool {
 
 // -------------------------------------------------------- local library ----
 
-/// One library row, joined across `video_meta`, `watch_progress` and the
-/// scraper's two tables.
+/// One library row, joined across `video_meta`, `watch_progress`, `items` and
+/// the scraper's tables.
+#[derive(sqlx::FromRow)]
 struct Row {
     abs_path: String,
     item_id: i64,
-    starred: bool,
-    watched: bool,
-    progress: f64,
-    duration: String,
+    starred: i64,
+    finished: i64,
+    pos: f64,
+    dur: Option<f64>,
     season: i64,
     episode: i64,
     poster: Option<String>,
+    title: Option<String>,
+    year: Option<i64>,
+    overview: Option<String>,
+    runtime_min: Option<i64>,
+    height: Option<i64>,
+    hdr: Option<String>,
+    channels: Option<i64>,
+    added: i64,
+    mtime: i64,
+    ep_title: Option<String>,
+    air_date: Option<i64>,
+    backdrop_path: Option<String>,
+    still: Option<String>,
+}
+
+/// The WHERE for a category. The three filters that are not places --
+/// unwatched, 4k, hdr -- are narrowings of the library, like it.
+fn category_filter(category: &str) -> &'static str {
+    const LIB: &str = "vm.deleted_at IS NULL AND vm.archived = 0";
+    match category {
+        "continue" => {
+            "vm.deleted_at IS NULL AND vm.archived = 0 AND vm.last_accessed IS NOT NULL \
+             AND COALESCE(wp.finished,0) = 0 AND COALESCE(wp.position_s,0) > 0"
+        }
+        "starred" => "vm.deleted_at IS NULL AND vm.starred = 1",
+        "archive" => "vm.deleted_at IS NULL AND vm.archived = 1",
+        "trash" => "vm.deleted_at IS NOT NULL",
+        "unwatched" => {
+            "vm.deleted_at IS NULL AND vm.archived = 0 AND COALESCE(wp.finished,0) = 0"
+        }
+        "4k" => "vm.deleted_at IS NULL AND vm.archived = 0 AND COALESCE(vm.height,0) >= 1600",
+        "hdr" => {
+            "vm.deleted_at IS NULL AND vm.archived = 0 \
+             AND COALESCE(vm.hdr,'sdr') NOT IN ('sdr','')"
+        }
+        _ => LIB,
+    }
+}
+
+/// What the kind lets the tab show. Movies restricts to movies; TV to
+/// episodes, and to one show's once drilled in. `show_id` is an i64 out of our
+/// own `shows` table, never off the wire, so interpolating it is safe.
+fn kind_clause(kind: &str, show_id: Option<i64>) -> String {
+    match kind {
+        "movies" => " AND vm.item_id IN (SELECT item_id FROM movies)".into(),
+        "tv" => match show_id {
+            Some(id) => format!(" AND ep.show_id = {id}"),
+            None => " AND ep.item_id IS NOT NULL".into(),
+        },
+        // Local is what is neither: the personal videos.
+        "local" => " AND vm.item_id NOT IN (SELECT item_id FROM movies) \
+                     AND ep.item_id IS NULL"
+            .into(),
+        _ => String::new(),
+    }
 }
 
 /// The rows belonging to `category`, already ordered the way the tab wants
@@ -1346,34 +1618,21 @@ async fn rows_for(
     kind: &str,
     show_id: Option<i64>,
     query: &str,
+    sort: &str,
 ) -> Vec<Row> {
-    let (filter, mut order): (&str, String) = match category {
-        "continue" => (
-            "vm.deleted_at IS NULL AND vm.archived = 0 AND vm.last_accessed IS NOT NULL \
-             AND COALESCE(wp.finished,0) = 0 AND COALESCE(wp.position_s,0) > 0",
-            "vm.last_accessed DESC".into(),
-        ),
-        "starred" => ("vm.deleted_at IS NULL AND vm.starred = 1", "i.added DESC, i.id DESC".into()),
-        "archive" => ("vm.deleted_at IS NULL AND vm.archived = 1", "i.added DESC, i.id DESC".into()),
-        "trash" => ("vm.deleted_at IS NOT NULL", "vm.deleted_at DESC".into()),
-        _ => ("vm.deleted_at IS NULL AND vm.archived = 0", "i.added DESC, i.id DESC".into()),
+    let filter = category_filter(category);
+    let order: &str = match (category, kind, show_id.is_some()) {
+        (_, "tv", true) => "ep.season, ep.episode",
+        ("continue", ..) => "vm.last_accessed DESC",
+        ("trash", ..) => "vm.deleted_at DESC",
+        _ => match sort {
+            "title" => "COALESCE(mv.title, sh.title, i.abs_path) COLLATE NOCASE",
+            "year" => "COALESCE(mv.year, sh.year, 0) DESC, i.added DESC",
+            "runtime" => "COALESCE(vm.duration_s, 0) DESC",
+            _ => "i.added DESC, i.id DESC",
+        },
     };
-    // The kind narrows what the tab is allowed to show. Movies restricts to
-    // scraped movies; TV restricts to episodes, and to one show's episodes once
-    // drilled in, ordered by season then number.
-    let kind_clause: String = match kind {
-        "movies" => " AND vm.item_id IN (SELECT item_id FROM movies)".into(),
-        "tv" => {
-            order = "ep.season, ep.episode".into();
-            match show_id {
-                // `show_id` is an i64 read out of our own `shows` table, never
-                // off the wire, so interpolating it cannot be an injection.
-                Some(id) => format!(" AND ep.show_id = {id}"),
-                None => " AND ep.item_id IS NOT NULL".into(),
-            }
-        }
-        _ => String::new(),
-    };
+    let kinds = kind_clause(kind, show_id);
     let sql = format!(
         "SELECT i.abs_path, vm.item_id, vm.starred, \
                 COALESCE(wp.finished,0) AS finished, \
@@ -1381,46 +1640,142 @@ async fn rows_for(
                 COALESCE(wp.duration_s, vm.duration_s) AS dur, \
                 COALESCE(ep.season, 0) AS season, \
                 COALESCE(ep.episode, 0) AS episode, \
-                COALESCE(mv.poster_local, sh.poster_local) AS poster \
+                COALESCE(mv.poster_local, sh.poster_local) AS poster, \
+                COALESCE(mv.title, sh.title) AS title, \
+                COALESCE(mv.year, sh.year) AS year, \
+                COALESCE(mv.overview, sh.overview) AS overview, \
+                COALESCE(mv.runtime_min, ep.runtime_min) AS runtime_min, \
+                vm.height AS height, vm.hdr AS hdr, vm.audio_channels AS channels, \
+                i.added AS added, i.mtime AS mtime, \
+                ep.title AS ep_title, ep.air_date AS air_date, \
+                COALESCE(mv.backdrop_path, sh.backdrop_path) AS backdrop_path, \
+                ep.still_path AS still \
          FROM video_meta vm \
          JOIN items i ON i.id = vm.item_id \
          LEFT JOIN watch_progress wp ON wp.item_id = vm.item_id \
          LEFT JOIN episodes ep ON ep.item_id = vm.item_id \
          LEFT JOIN shows sh ON sh.id = ep.show_id \
          LEFT JOIN movies mv ON mv.item_id = vm.item_id \
-         WHERE {filter}{kind_clause} ORDER BY {order}",
+         WHERE {filter}{kinds} ORDER BY {order}",
     );
-    let rows: Vec<(String, i64, i64, i64, f64, Option<f64>, i64, i64, Option<String>)> =
+    let rows: Vec<Row> =
         sqlx::query_as(sqlx::AssertSqlSafe(&*sql)).fetch_all(pool).await.unwrap_or_default();
 
+    // The search box matches the title the library knows as well as the file
+    // name: "arrival" should find `Arrival.2016.1080p.mkv`.
     let q = query.trim().to_lowercase();
     rows.into_iter()
-        .filter(|(abs, ..)| {
+        .filter(|r| {
             q.is_empty()
-                || Path::new(abs)
+                || r.title.as_deref().is_some_and(|t| t.to_lowercase().contains(&q))
+                || Path::new(&r.abs_path)
                     .file_name()
                     .and_then(|s| s.to_str())
-                    .map(|n| n.to_lowercase().contains(&q))
-                    .unwrap_or(false)
-        })
-        .map(|(abs_path, item_id, starred, finished, pos, dur, season, episode, poster)| {
-            let progress = match dur {
-                Some(d) if d > 0.0 => (pos / d).clamp(0.0, 1.0),
-                _ => 0.0,
-            };
-            Row {
-                abs_path,
-                item_id,
-                starred: starred != 0,
-                watched: finished != 0,
-                progress,
-                duration: dur.map(fmt_duration).unwrap_or_default(),
-                season,
-                episode,
-                poster,
-            }
+                    .is_some_and(|n| n.to_lowercase().contains(&q))
         })
         .collect()
+}
+
+/// How many titles each filter chip on a tab would show: one query per chip,
+/// only on the tabs that draw them.
+async fn category_counts(pool: &sqlx::SqlitePool, kind: &str) -> Vec<CategoryCount> {
+    let mut out = Vec::new();
+    for name in ["library", "unwatched", "continue", "starred", "4k", "hdr", "archive", "trash"] {
+        let sql = format!(
+            "SELECT COUNT(*) FROM video_meta vm \
+             LEFT JOIN watch_progress wp ON wp.item_id = vm.item_id \
+             LEFT JOIN episodes ep ON ep.item_id = vm.item_id \
+             WHERE {}{}",
+            category_filter(name),
+            kind_clause(kind, None),
+        );
+        let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(&*sql))
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+        out.push(CategoryCount { id: name.into(), count });
+    }
+    out
+}
+
+fn res_label(height: Option<i64>) -> String {
+    match height.unwrap_or(0) {
+        0 => String::new(),
+        h if h >= 1600 => "4K".into(),
+        h if h >= 1300 => "1440p".into(),
+        h if h >= 900 => "1080p".into(),
+        h if h >= 600 => "720p".into(),
+        _ => "SD".into(),
+    }
+}
+
+fn hdr_label(hdr: Option<&str>) -> String {
+    match hdr.unwrap_or("") {
+        "hdr10" => "HDR10",
+        "hdr10+" => "HDR10+",
+        "dolby_vision" => "Dolby Vision",
+        "hlg" => "HLG",
+        _ => "",
+    }
+    .into()
+}
+
+fn channel_label(n: Option<i64>) -> String {
+    match n.unwrap_or(0) {
+        0 => "",
+        1 => "Mono",
+        2 => "Stereo",
+        6 => "5.1",
+        8 => "7.1",
+        _ => "Surround",
+    }
+    .into()
+}
+
+/// A row as the grid draws it. `index` is its place in the play map.
+fn tile_of(r: &Row, index: i64) -> VideoTile {
+    let progress = match r.dur {
+        Some(d) if d > 0.0 => (r.pos / d).clamp(0.0, 1.0),
+        _ => 0.0,
+    };
+    let file = Path::new(&r.abs_path);
+    let label = file.file_name().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    VideoTile {
+        item_id: r.item_id,
+        index,
+        path: r.abs_path.clone(),
+        // A poster already on disk goes straight in; everything else waits
+        // for the tile to ask, which is what keeps opening the tab cheap.
+        thumb: r.poster.clone().filter(|p| Path::new(p).exists()).unwrap_or_default(),
+        label,
+        starred: r.starred != 0,
+        watched: r.finished != 0,
+        progress,
+        duration: r.dur.map(fmt_duration).unwrap_or_default(),
+        season: r.season,
+        episode: r.episode,
+        title: r.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| stem.to_string()),
+        year: r.year.unwrap_or(0),
+        overview: r.overview.clone().unwrap_or_default(),
+        runtime_min: r
+            .runtime_min
+            .or_else(|| r.dur.map(|d| (d / 60.0).round() as i64))
+            .unwrap_or(0),
+        res: res_label(r.height),
+        hdr: hdr_label(r.hdr.as_deref()),
+        channels: channel_label(r.channels),
+        added: r.added,
+        mtime: r.mtime,
+        ep_title: r.ep_title.clone().unwrap_or_default(),
+        air_date: r.air_date.unwrap_or(0),
+        backdrop: r
+            .backdrop_path
+            .as_deref()
+            .and_then(|b| poster_cache_dir().and_then(|d| cached_tmdb_backdrop(b, &d)))
+            .unwrap_or_default(),
+        still: r.still.clone().filter(|p| Path::new(p).exists()).unwrap_or_default(),
+    }
 }
 
 /// `H:MM:SS`, or `M:SS` under an hour. Empty for anything under a second, which
@@ -1441,11 +1796,13 @@ pub(crate) fn fmt_duration(secs: f64) -> String {
 /// Rebuild the grid for whatever tab is on screen.
 ///
 /// The TV tab, not drilled into a show and on the Library sub-tab, draws show
-/// cards and a Next Up rail instead of a tile grid — the one place the section
-/// shows something other than posters of files.
+/// cards and a Next Up rail instead of a tile grid. Movies on the Library
+/// sub-tab, with nothing searched, also gets its two rails. Every tile any of
+/// them draws plays through the one index -> path map, so the rails append to
+/// it rather than carrying paths of their own.
 async fn refresh_library() -> Result<()> {
     let pool = pool().await?;
-    let (category, kind, query, show_id, limit) = with(|s| {
+    let (category, kind, query, show_id, limit, sort) = with(|s| {
         if !std::mem::take(&mut s.keep_limit) {
             s.limit = PAGE;
         }
@@ -1455,35 +1812,29 @@ async fn refresh_library() -> Result<()> {
             s.ui.query.clone(),
             s.show_id,
             s.limit,
+            s.ui.sort.clone(),
         )
     });
+    let counts = category_counts(pool, &kind).await;
 
     if kind == "tv" && show_id.is_none() && category == "library" {
-        let cards = show_cards(pool).await;
+        let cards = show_cards(pool, &query).await;
         let next = tulipix_videos::episodes::next_up(pool, 12).await.unwrap_or_default();
-        with(|s| {
-            s.ui.shows = cards;
-            s.ui.tiles.clear();
-            s.ui.seasons.clear();
-            s.ui.show_open = false;
-            s.ui.more_count = 0;
-            s.ui.item_count = s.ui.shows.len() as i64;
-        });
-        // The Next Up rail plays through the same index → path map the grid
-        // uses, so its entries are appended to that map rather than carrying
-        // paths of their own.
         let mut tiles: Vec<VideoTile> = Vec::new();
         let mut paths: Vec<String> = Vec::new();
         let mut ids: Vec<i64> = Vec::new();
         for n in &next {
-            let abs: Option<String> =
-                sqlx::query_scalar("SELECT abs_path FROM items WHERE id = ?")
-                    .bind(n.episode.item_id)
-                    .fetch_optional(pool)
-                    .await
-                    .ok()
-                    .flatten();
-            let Some(abs) = abs else { continue };
+            let row: Option<(String, Option<String>)> = sqlx::query_as(
+                "SELECT i.abs_path, sh.backdrop_path FROM items i \
+                 JOIN episodes e ON e.item_id = i.id JOIN shows sh ON sh.id = e.show_id \
+                 WHERE i.id = ?",
+            )
+            .bind(n.episode.item_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+            let Some((abs, backdrop)) = row else { continue };
             let dur_s = n.episode.runtime_min.unwrap_or(0) as f64 * 60.0;
             let progress = match (n.resume_position_s, dur_s > 0.0) {
                 (Some(p), true) => (p / dur_s).clamp(0.0, 1.0),
@@ -1499,6 +1850,12 @@ async fn refresh_library() -> Result<()> {
                     .clone()
                     .filter(|p| Path::new(p).exists())
                     .unwrap_or_default(),
+                still: n
+                    .episode
+                    .still_path
+                    .clone()
+                    .filter(|p| Path::new(p).exists())
+                    .unwrap_or_default(),
                 label: format!(
                     "{} · S{:02}E{:02}{}",
                     n.show_title,
@@ -1506,17 +1863,34 @@ async fn refresh_library() -> Result<()> {
                     n.episode.episode,
                     n.episode.title.as_deref().map(|t| format!(" — {t}")).unwrap_or_default()
                 ),
-                starred: false,
-                watched: false,
                 progress,
                 duration: n.episode.runtime_min.map(|m| format!("{m} min")).unwrap_or_default(),
                 season: n.episode.season,
                 episode: n.episode.episode,
+                title: n.show_title.clone(),
+                runtime_min: n.episode.runtime_min.unwrap_or(0),
+                ep_title: n.episode.title.clone().unwrap_or_default(),
+                overview: n.episode.overview.clone().unwrap_or_default(),
+                backdrop: backdrop
+                    .as_deref()
+                    .and_then(|b| poster_cache_dir().and_then(|d| cached_tmdb_backdrop(b, &d)))
+                    .unwrap_or_default(),
+                ..Default::default()
             });
             paths.push(abs);
             ids.push(n.episode.item_id);
         }
         with(|s| {
+            s.ui.item_count = cards.len() as i64;
+            s.ui.shows = cards;
+            s.ui.tiles.clear();
+            s.ui.seasons.clear();
+            s.ui.show_open = false;
+            s.ui.show_info = ShowCard::default();
+            s.ui.more_count = 0;
+            s.ui.rail_continue.clear();
+            s.ui.rail_recent.clear();
+            s.ui.counts = counts;
             s.ui.next_up = tiles;
             s.paths = paths;
             s.ids = ids;
@@ -1524,7 +1898,7 @@ async fn refresh_library() -> Result<()> {
         return Ok(());
     }
 
-    let rows = rows_for(pool, &category, &kind, show_id, &query).await;
+    let rows = rows_for(pool, &category, &kind, show_id, &query, &sort).await;
     let total = rows.len();
     let held_back = total.saturating_sub(limit);
 
@@ -1532,32 +1906,34 @@ async fn refresh_library() -> Result<()> {
     let mut paths: Vec<String> = Vec::with_capacity(total.min(limit));
     let mut ids: Vec<i64> = Vec::with_capacity(total.min(limit));
     for r in rows.iter().take(limit) {
-        let label = Path::new(&r.abs_path)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_string();
-        tiles.push(VideoTile {
-            item_id: r.item_id,
-            index: tiles.len() as i64,
-            path: r.abs_path.clone(),
-            // A poster already on disk goes straight in; everything else waits
-            // for the tile to ask, which is what keeps opening the tab cheap.
-            thumb: r
-                .poster
-                .clone()
-                .filter(|p| Path::new(p).exists())
-                .unwrap_or_default(),
-            label,
-            starred: r.starred,
-            watched: r.watched,
-            progress: r.progress,
-            duration: r.duration.clone(),
-            season: r.season,
-            episode: r.episode,
-        });
+        tiles.push(tile_of(r, paths.len() as i64));
         paths.push(r.abs_path.clone());
         ids.push(r.item_id);
+    }
+
+    // Movies' front page: the rails over the grid.
+    let mut rail_continue = Vec::new();
+    let mut rail_recent = Vec::new();
+    if kind == "movies" && category == "library" && query.trim().is_empty() {
+        for r in rows_for(pool, "continue", &kind, None, "", "added").await.iter().take(12) {
+            rail_continue.push(tile_of(r, paths.len() as i64));
+            paths.push(r.abs_path.clone());
+            ids.push(r.item_id);
+        }
+        // Newest first whatever the grid is sorted by: the grid's own rows
+        // are that order already unless another sort is on.
+        let by_added: Vec<Row>;
+        let recent: Vec<&Row> = if sort == "added" {
+            rows.iter().take(8).collect()
+        } else {
+            by_added = rows_for(pool, "library", &kind, None, "", "added").await;
+            by_added.iter().take(8).collect()
+        };
+        for r in recent {
+            rail_recent.push(tile_of(r, paths.len() as i64));
+            paths.push(r.abs_path.clone());
+            ids.push(r.item_id);
+        }
     }
 
     // Drilled into a show: group the episodes by season. The rows already come
@@ -1588,52 +1964,104 @@ async fn refresh_library() -> Result<()> {
     } else {
         Vec::new()
     };
+    let show_info = match show_id {
+        Some(id) if drilled => show_card(pool, id).await.unwrap_or_default(),
+        _ => ShowCard::default(),
+    };
 
     with(|s| {
         s.ui.show_open = drilled;
+        s.ui.show_info = show_info;
         s.ui.tiles = tiles;
         s.ui.seasons = seasons;
         s.ui.item_count = total as i64;
         s.ui.more_count = held_back as i64;
+        s.ui.rail_continue = rail_continue;
+        s.ui.rail_recent = rail_recent;
+        s.ui.counts = counts;
         s.paths = paths;
         s.ids = ids;
-        if !(kind == "tv" && show_id.is_none() && category == "library") {
-            s.ui.shows.clear();
-            s.ui.next_up.clear();
-        }
+        s.ui.shows.clear();
+        s.ui.next_up.clear();
     });
     Ok(())
 }
 
-/// Show cards: title, episode count, and the best poster there is — the TMDB
-/// one where the scraper found it, otherwise the first episode's own frame.
-async fn show_cards(pool: &sqlx::SqlitePool) -> Vec<ShowCard> {
-    let rows: Vec<(i64, String, i64, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT s.id, s.title, COUNT(e.item_id) AS n, \
-                (SELECT i.abs_path FROM episodes e2 JOIN items i ON i.id = e2.item_id \
-                 WHERE e2.show_id = s.id ORDER BY e2.season, e2.episode LIMIT 1) AS cover, \
-                s.poster_local \
-         FROM shows s JOIN episodes e ON e.show_id = s.id \
-         GROUP BY s.id ORDER BY s.title",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+/// The select every show card is built from: title, year, overview, how many
+/// episodes and how many of them are unwatched, the first episode's file for a
+/// frame, and the artwork already on disk.
+const SHOW_SELECT: &str = "SELECT s.id, s.title, s.year, s.overview, COUNT(e.item_id) AS n, \
+        SUM(CASE WHEN COALESCE(wp.finished,0) = 0 THEN 1 ELSE 0 END) AS unwatched, \
+        (SELECT i.abs_path FROM episodes e2 JOIN items i ON i.id = e2.item_id \
+         WHERE e2.show_id = s.id ORDER BY e2.season, e2.episode LIMIT 1) AS cover, \
+        s.poster_local, s.backdrop_path \
+     FROM shows s JOIN episodes e ON e.show_id = s.id \
+     LEFT JOIN watch_progress wp ON wp.item_id = e.item_id";
 
+type ShowRow = (
+    i64,
+    String,
+    Option<i64>,
+    Option<String>,
+    i64,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+async fn card_of(row: ShowRow) -> ShowCard {
+    let (id, title, year, overview, count, unwatched, cover, poster, backdrop) = row;
+    let art = match poster.filter(|p| Path::new(p).exists()) {
+        Some(p) => p,
+        // Rendered here rather than lazily: a show card has no item id to
+        // hand back, so there is nothing for Dart to ask about later.
+        None => match cover {
+            Some(abs) => render_frame(PathBuf::from(abs)).await.unwrap_or_default(),
+            None => String::new(),
+        },
+    };
+    ShowCard {
+        id,
+        title,
+        cover: art,
+        count,
+        year: year.unwrap_or(0),
+        overview: overview.unwrap_or_default(),
+        unwatched,
+        backdrop: backdrop
+            .as_deref()
+            .and_then(|b| poster_cache_dir().and_then(|d| cached_tmdb_backdrop(b, &d)))
+            .unwrap_or_default(),
+    }
+}
+
+/// Every show with an episode, narrowed by the search box.
+async fn show_cards(pool: &sqlx::SqlitePool, query: &str) -> Vec<ShowCard> {
+    let sql = format!("{SHOW_SELECT} GROUP BY s.id ORDER BY s.title COLLATE NOCASE");
+    let rows: Vec<ShowRow> =
+        sqlx::query_as(sqlx::AssertSqlSafe(&*sql)).fetch_all(pool).await.unwrap_or_default();
+    let q = query.trim().to_lowercase();
     let mut out = Vec::with_capacity(rows.len());
-    for (id, title, count, cover, poster) in rows {
-        let art = match poster.filter(|p| Path::new(p).exists()) {
-            Some(p) => p,
-            // Rendered here rather than lazily: a show card has no item id to
-            // hand back, so there is nothing for Dart to ask about later.
-            None => match cover {
-                Some(abs) => render_frame(PathBuf::from(abs)).await.unwrap_or_default(),
-                None => String::new(),
-            },
-        };
-        out.push(ShowCard { id, title, cover: art, count });
+    for row in rows {
+        if !q.is_empty() && !row.1.to_lowercase().contains(&q) {
+            continue;
+        }
+        out.push(card_of(row).await);
     }
     out
+}
+
+/// One show's card, for the header of its own page.
+async fn show_card(pool: &sqlx::SqlitePool, id: i64) -> Option<ShowCard> {
+    let sql = format!("{SHOW_SELECT} WHERE s.id = ? GROUP BY s.id");
+    let row: Option<ShowRow> = sqlx::query_as(sqlx::AssertSqlSafe(&*sql))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    Some(card_of(row?).await)
 }
 
 /// Render (or return the cached) 2:3 frame for one video file.
@@ -1922,6 +2350,22 @@ fn cached_tmdb_poster(poster_path: &str, dir: &Path) -> Option<String> {
     p.exists().then(|| p.to_string_lossy().into_owned())
 }
 
+/// TMDB's backdrop size: wide enough for the stage without a 4K download.
+fn tmdb_backdrop_url(backdrop_path: &str) -> String {
+    let base = tmdb_image_base();
+    format!("{}/w1280{backdrop_path}", base.trim_end_matches("/w500"))
+}
+
+/// A backdrop's cached file, if it has been fetched. Same naming as
+/// `tulipix_videos::tmdb::cache_image`, so a hit here is its file.
+fn cached_tmdb_backdrop(backdrop_path: &str, dir: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(tmdb_backdrop_url(backdrop_path).as_bytes());
+    let p = dir.join(format!("{}.jpg", h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()));
+    p.exists().then(|| p.to_string_lossy().into_owned())
+}
+
 /// "YYYY-MM-DD" → "Jun 14, 2025". Anything shorter comes back as it arrived.
 fn fmt_release_date(s: &str) -> String {
     if s.len() < 10 {
@@ -2022,6 +2466,7 @@ async fn ingest_new(pool: &sqlx::SqlitePool) {
             .flatten();
         let Some(abs) = abs else { continue };
         classify_episode(pool, id, Path::new(&abs)).await;
+        classify_movie(pool, id, Path::new(&abs)).await;
         scrape_tmdb(pool, id, Path::new(&abs)).await;
         // TMDB is wrong about anime often enough to be worth a second look:
         // absolute episode numbering, romaji titles, OVAs folded into the
@@ -2031,62 +2476,138 @@ async fn ingest_new(pool: &sqlx::SqlitePool) {
     }
 }
 
-/// `S01E05`, `1x05`, `s1.e5` — the shapes a release actually uses.
-///
-/// Deliberately the same scanner the Slint build carries, character for
-/// character: a file that groups into a show in one build and not the other is
-/// a library that disagrees with itself.
-pub(crate) fn parse_season_episode(name: &str) -> Option<(i64, i64)> {
-    let lower = name.to_ascii_lowercase();
-    let lb = lower.as_bytes();
-    let mut i = 0;
-    while i < lb.len() {
-        if lb[i] == b's' {
-            let s0 = i + 1;
-            let mut j = s0;
-            while j < lb.len() && lb[j].is_ascii_digit() && j - s0 < 2 {
-                j += 1;
-            }
-            if j == s0 {
-                i += 1;
-                continue;
-            }
-            let season: i64 = lower[s0..j].parse().ok()?;
-            let mut k = j;
-            while k < lb.len() && matches!(lb[k], b'.' | b' ' | b'_' | b'-') {
-                k += 1;
-            }
-            if k < lb.len() && lb[k] == b'e' {
-                let e0 = k + 1;
-                let mut e = e0;
-                while e < lb.len() && lb[e].is_ascii_digit() && e - e0 < 3 {
-                    e += 1;
-                }
-                if e > e0 {
-                    let episode: i64 = lower[e0..e].parse().ok()?;
-                    return Some((season, episode));
-                }
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Link a tagged file to the show named by its parent directory.
+/// Link an episode to its show, by whatever its name and folders say -- the
+/// ten layouts `tulipix_videos::naming` reads, the same ones the Shows tab's
+/// info popup lists.
 async fn classify_episode(pool: &sqlx::SqlitePool, item_id: i64, path: &Path) {
-    let Some(name) = path.file_name().and_then(|s| s.to_str()) else { return };
-    let Some((season, episode)) = parse_season_episode(name) else { return };
-    let title = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|s| s.to_str())
-        .unwrap_or("Unknown Show")
-        .to_string();
-    let Some(show_id) = get_or_create_show(pool, &title).await else { return };
+    let Some(ep) = tulipix_videos::naming::parse_episode(path) else { return };
+    let (season, episode) = (ep.season, ep.episode);
+    let Some(show_id) = get_or_create_show(pool, &ep.show).await else { return };
     let _ =
         tulipix_videos::episodes::upsert(pool, item_id, show_id, season, episode, None, None, None, None, None)
             .await;
+}
+
+/// An episode's own title, overview, air date, runtime and still, once its
+/// show is matched on TMDB. Nothing fetched these before: the show page drew
+/// file names because the `episodes` columns for them were never filled.
+async fn scrape_episode(
+    pool: &sqlx::SqlitePool,
+    client: &tulipix_videos::tmdb::TmdbClient,
+    item_id: i64,
+    dir: &Path,
+) {
+    use tulipix_videos::tmdb::MetadataProvider as _;
+    let row: Option<(Option<i64>, i64, i64, Option<String>)> = sqlx::query_as(
+        "SELECT sh.tmdb_id, e.season, e.episode, e.title FROM episodes e \
+         JOIN shows sh ON sh.id = e.show_id WHERE e.item_id = ?",
+    )
+    .bind(item_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let Some((Some(tmdb), season, episode, None)) = row else { return };
+    let Ok(Some(meta)) = client.episode(tmdb, season, episode).await else { return };
+    let still = match &meta.still_path {
+        Some(p) => client.cache_poster(p, dir).await.ok().map(|l| l.to_string_lossy().into_owned()),
+        None => None,
+    };
+    let _ = sqlx::query(
+        "UPDATE episodes SET title = ?, overview = ?, air_date = ?, runtime_min = ?, \
+         still_path = COALESCE(?, still_path), updated = ? WHERE item_id = ?",
+    )
+    .bind(&meta.title)
+    .bind(&meta.overview)
+    .bind(meta.air_date_unix)
+    .bind(meta.runtime_min)
+    .bind(still)
+    .bind(now_secs())
+    .bind(item_id)
+    .execute(pool)
+    .await;
+}
+
+/// Read every video's name again, not just the new ones.
+///
+/// `ingest_new` classifies a file once, when it arrives. A library organised
+/// after it was added -- renamed into `Show/Season 01/`, given its years --
+/// would otherwise keep the grouping it had on day one, including the shows
+/// the old reader named "Season 01". Only the show, season and episode are
+/// rewritten: an episode's scraped title and overview survive a rescan.
+async fn reread_names(pool: &sqlx::SqlitePool) {
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT i.id, i.abs_path FROM items i JOIN video_meta vm ON vm.item_id = i.id \
+         WHERE vm.deleted_at IS NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for (id, abs) in rows {
+        let path = Path::new(&abs);
+        if let Some(ep) = tulipix_videos::naming::parse_episode(path) {
+            let Some(show_id) = get_or_create_show(pool, &ep.show).await else { continue };
+            let _ = sqlx::query(
+                "INSERT INTO episodes (item_id, show_id, season, episode, updated) \
+                 VALUES (?, ?, ?, ?, ?) \
+                 ON CONFLICT(item_id) DO UPDATE SET show_id = excluded.show_id, \
+                 season = excluded.season, episode = excluded.episode",
+            )
+            .bind(id)
+            .bind(show_id)
+            .bind(ep.season)
+            .bind(ep.episode)
+            .bind(now_secs())
+            .execute(pool)
+            .await;
+        } else {
+            classify_movie(pool, id, path).await;
+        }
+    }
+    // A show nothing points at any more is one the old reader made up.
+    let _ = sqlx::query("DELETE FROM shows WHERE id NOT IN (SELECT show_id FROM episodes)")
+        .execute(pool)
+        .await;
+    // Episodes scanned before their titles were fetched. Bounded, because a
+    // rescan is something you wait for: the rest are picked up by the next.
+    if let (Some(key), Some(dir)) = (tmdb_api_key(), poster_cache_dir()) {
+        let client = tmdb_client(key);
+        let missing: Vec<i64> = sqlx::query_scalar(
+            "SELECT e.item_id FROM episodes e JOIN shows sh ON sh.id = e.show_id \
+             WHERE e.title IS NULL AND sh.tmdb_id IS NOT NULL LIMIT 200",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        for id in missing {
+            scrape_episode(pool, &client, id, &dir).await;
+        }
+    }
+}
+
+/// A file named like a movie is one, with or without TMDB.
+///
+/// The Movies tab lists what has a `movies` row, and until now only a TMDB
+/// match wrote one -- so without a key the tab was empty however well the
+/// files were named. The name's title and year go in first; a TMDB match
+/// afterwards overwrites them with the real thing.
+async fn classify_movie(pool: &sqlx::SqlitePool, item_id: i64, path: &Path) {
+    let Some(m) = tulipix_videos::naming::parse_movie(path) else { return };
+    let known: Option<i64> = sqlx::query_scalar("SELECT item_id FROM movies WHERE item_id = ?")
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    if known.is_some() {
+        return;
+    }
+    let meta = tulipix_videos::tmdb::MovieMeta {
+        title: m.title,
+        year: m.year,
+        ..Default::default()
+    };
+    let _ = tulipix_videos::tmdb::upsert_movie(pool, item_id, &meta).await;
 }
 
 async fn get_or_create_show(pool: &sqlx::SqlitePool, title: &str) -> Option<i64> {
@@ -2137,6 +2658,7 @@ async fn scrape_tmdb(pool: &sqlx::SqlitePool, item_id: i64, path: &Path) {
                 .flatten()
                 .flatten();
         if cached.is_some() {
+            scrape_episode(pool, &client, item_id, &dir).await;
             return;
         }
         let title: Option<String> = sqlx::query_scalar("SELECT title FROM shows WHERE id = ?")
@@ -2170,6 +2692,7 @@ async fn scrape_tmdb(pool: &sqlx::SqlitePool, item_id: i64, path: &Path) {
                     .await;
             }
         }
+        scrape_episode(pool, &client, item_id, &dir).await;
         return;
     }
 
@@ -2184,8 +2707,9 @@ async fn scrape_tmdb(pool: &sqlx::SqlitePool, item_id: i64, path: &Path) {
     if cached.is_some() {
         return;
     }
-    let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let parsed = tulipix_videos::agents::parse_filename(name);
+    // Only what reads as a movie is asked about. A phone clip sent to TMDB as
+    // a title search could come back as some film, and then sit in Movies.
+    let Some(parsed) = tulipix_videos::naming::parse_movie(path) else { return };
     let Ok(Some(meta)) = client.search_movie(&parsed.title, parsed.year).await else { return };
     let _ = tulipix_videos::tmdb::upsert_movie(pool, item_id, &meta).await;
     if let Some(pp) = &meta.poster_path {
@@ -2479,16 +3003,6 @@ fn add_watched_folder(dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn season_and_episode_are_read_out_of_the_shapes_releases_actually_use() {
-        assert_eq!(parse_season_episode("Show.S01E05.1080p.mkv"), Some((1, 5)));
-        assert_eq!(parse_season_episode("show s2 e12.mp4"), Some((2, 12)));
-        assert_eq!(parse_season_episode("Show_s01_e105.mkv"), Some((1, 105)));
-        // A film is not an episode, and neither is a stray 's'.
-        assert_eq!(parse_season_episode("Dune Part Two 2024.mkv"), None);
-        assert_eq!(parse_season_episode("seasons.mkv"), None);
-    }
 
     #[test]
     fn a_duration_is_only_printed_once_there_is_one() {

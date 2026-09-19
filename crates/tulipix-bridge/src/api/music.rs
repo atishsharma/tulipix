@@ -12528,7 +12528,9 @@ async fn snapshot() -> Result<MusicState> {
         shuffle: st.shuffle,
         repeat: st.repeat.clone(),
         art_png: Vec::new(),
-        popup: false,
+        // A left click opens the panel. There is no "native" style to pick in
+        // this build: the menu is the right click, always.
+        popup: true,
     });
     Ok(st)
 }

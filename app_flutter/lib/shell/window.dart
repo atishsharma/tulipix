@@ -9,6 +9,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'tray_panel.dart';
+
 const MethodChannel _window = MethodChannel('tulipix/window');
 
 /// Raise and focus the window.
@@ -75,6 +77,18 @@ Future<void> setWindowSize(Size size) => _call('setSize', {
       'height': size.height.round(),
     });
 
+/// Open or drop the tray panel's own toplevel: a second view on this engine,
+/// drawn by this isolate. See lib/shell/tray_panel.dart for the order the two
+/// halves have to happen in.
+Future<void> setPanelWindow(bool on) => _call('panel', on);
+
+/// Cut the panel's window to the height its content came out at.
+Future<void> setPanelHeight(int height) => _call('panelHeight', height);
+
+/// The widget's pin: keep it above other windows, or let it go behind them.
+/// The runner remembers it and applies it whenever the widget opens.
+Future<void> setWindowKeepAbove(bool on) => _call('keepAbove', on);
+
 Future<void> minimizeWindow() => _call('minimize');
 Future<void> toggleMaximizeWindow() => _call('toggleMaximize');
 
@@ -127,8 +141,16 @@ class WindowChrome extends ChangeNotifier {
   bool custom = defaultTargetPlatform == TargetPlatform.linux;
   bool maximized = false;
 
+  /// Whether "keep above" means anything here: X11 and XWayland yes, native
+  /// Wayland no -- xdg-shell has no stacking request. The widget's pin is only
+  /// drawn where it would do something.
+  bool stacking = false;
+
   Future<void> init() async {
     _window.setMethodCallHandler((call) async {
+      // Clicked past or Escaped: the runner asks rather than closing it
+      // itself, because the view has to leave the tree first.
+      if (call.method == 'onPanelDismiss') TrayPanel.instance.close();
       if (call.method == 'onMaximized' && call.arguments is bool) {
         maximized = call.arguments as bool;
         notifyListeners();
@@ -140,6 +162,7 @@ class WindowChrome extends ChangeNotifier {
       if (info == null) return;
       custom = info['custom'] == true;
       maximized = info['maximized'] == true;
+      stacking = info['stacking'] == true;
       notifyListeners();
     } on PlatformException {
       // Handler present but unhappy — keep the system frame.

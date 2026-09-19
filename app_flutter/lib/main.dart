@@ -38,6 +38,7 @@ import 'shell/onboarding/onboarding_flow.dart';
 import 'shell/shell_controller.dart';
 import 'shell/sidebar.dart';
 import 'shell/title_row.dart';
+import 'shell/tray_panel.dart';
 import 'shell/vitals.dart';
 import 'shell/window.dart';
 import 'src/rust/api/music.dart';
@@ -57,7 +58,9 @@ Future<void> main() async {
   // caption row and the resize edges. Asked before the first frame: finding out
   // afterwards means the row appearing a beat after the window does.
   await WindowChrome.instance.init();
-  runApp(const TulipixApp());
+  // Not `runApp`: that draws into the one implicit view, and the tray panel
+  // is a second window on this same engine. See lib/shell/tray_panel.dart.
+  runWidget(const AppViews(app: TulipixApp()));
 }
 
 /// One section's page. Four of them take `visible` because they hold something

@@ -20,10 +20,12 @@ import '../../design/tokens.dart';
 import '../../playback/video_layer.dart';
 import '../../src/rust/api/videos.dart';
 
-/// The seven top-level tabs, in the order the header draws them.
+/// The seven top-level tabs, in the order the header draws them. The first
+/// three are the library, drawn as one segmented control; the other four keep
+/// their pages and sit after a divider (docs/videos-deck.html).
 const kVideoKinds = <({String id, String label, Color hue})>[
-  (id: 'tv', label: 'TV', hue: cInfo),
   (id: 'movies', label: 'Movies', hue: cSave),
+  (id: 'tv', label: 'Shows', hue: cInfo),
   (id: 'local', label: 'Local', hue: cDl),
   (id: 'discover', label: 'Discover', hue: cBack),
   (id: 'livetv', label: 'Live TV', hue: cCopy),
@@ -209,6 +211,39 @@ class VideosController extends ChangeNotifier {
     scanResult = null;
     notifyListeners();
   }
+
+  /// The movie whose page is open, or null for the tab itself. Dart-side
+  /// only: the page is a view of a tile the snapshot already carries, and
+  /// Escape or the tab row close it without a round trip.
+  VideoTile? openMovie;
+
+  void openMoviePage(VideoTile? tile) {
+    openMovie = tile;
+    notifyListeners();
+  }
+
+  /// Backdrops by `item:<id>` or `show:<id>`. A miss is remembered too, so a
+  /// title TMDB never matched is asked about once, not on every hover.
+  final Map<String, String?> _backdrops = {};
+
+  String? backdropCached(int itemId, int showId) =>
+      _backdrops[showId > 0 ? 'show:$showId' : 'item:$itemId'];
+
+  Future<String?> backdropFor(int itemId, int showId) async {
+    final key = showId > 0 ? 'show:$showId' : 'item:$itemId';
+    if (_backdrops.containsKey(key)) return _backdrops[key];
+    String? path;
+    try {
+      path = await videosEnsureBackdrop(itemId: itemId, showId: showId);
+    } catch (_) {
+      path = null;
+    }
+    _backdrops[key] = path;
+    return path;
+  }
+
+  /// The movie page's file details, fetched when it opens.
+  Future<MovieDetail> movieDetail(int itemId) => videosMovieDetail(itemId: itemId);
 
   /// The grid poster for one library item, rendered on first sight.
   Future<String?> thumbFor(int itemId) async {

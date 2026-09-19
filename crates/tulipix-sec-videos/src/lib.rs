@@ -50,40 +50,6 @@ pub fn video_show() -> &'static std::sync::Mutex<Option<i64>> {
     VIDEO_SHOW.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-/// Parse a `SxxEyy` / `SxxExx` season+episode out of a filename. Tolerant of
-/// `s01e01`, `S1E1`, `S01.E01`. Returns (season, episode).
-pub fn parse_season_episode(name: &str) -> Option<(i64, i64)> {
-    let b = name.as_bytes();
-    let lower = name.to_ascii_lowercase();
-    let lb = lower.as_bytes();
-    let mut i = 0;
-    while i < lb.len() {
-        if lb[i] == b's' {
-            // read up to 2 digits for season
-            let mut j = i + 1;
-            let s0 = j;
-            while j < lb.len() && lb[j].is_ascii_digit() && j - s0 < 2 { j += 1; }
-            if j == s0 { i += 1; continue; }
-            let season: i64 = lower[s0..j].parse().ok()?;
-            // optional separator then 'e'
-            let mut k = j;
-            while k < lb.len() && (lb[k] == b'.' || lb[k] == b' ' || lb[k] == b'_' || lb[k] == b'-') { k += 1; }
-            if k < lb.len() && lb[k] == b'e' {
-                let e0 = k + 1;
-                let mut e = e0;
-                while e < lb.len() && lb[e].is_ascii_digit() && e - e0 < 3 { e += 1; }
-                if e > e0 {
-                    let episode: i64 = lower[e0..e].parse().ok()?;
-                    let _ = b; // keep original for potential future use
-                    return Some((season, episode));
-                }
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
 /// Fetch the stored TMDB API key from keychain (None → TMDB scraping disabled).
 pub fn tmdb_api_key() -> Option<String> {
     tulipix_core::api_keys::fetch("tmdb").ok().flatten()
@@ -125,8 +91,8 @@ pub async fn scrape_movie_for_item(
     let cached: Option<String> = sqlx::query_scalar("SELECT poster_local FROM movies WHERE item_id = ?")
         .bind(item_id).fetch_optional(pool).await.ok().flatten().flatten();
     if cached.is_some() { return; }
-    let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let parsed = tulipix_videos::agents::parse_filename(name);
+    // Only what reads as a movie is asked about; see `tulipix_videos::naming`.
+    let Some(parsed) = tulipix_videos::naming::parse_movie(path) else { return; };
     let Ok(Some(meta)) = client.search_movie(&parsed.title, parsed.year).await else { return; };
     let _ = tulipix_videos::tmdb::upsert_movie(pool, item_id, &meta).await;
     if let Some(pp) = &meta.poster_path {
@@ -185,17 +151,26 @@ pub async fn get_or_create_show(pool: &sqlx::SqlitePool, title: &str) -> Option<
         .bind(title).fetch_optional(pool).await.ok().flatten()
 }
 
-/// If `path`'s filename carries an SxxEyy tag, link it as an episode of the
-/// show named by its parent directory.
+/// Link an episode to its show by whatever its name and folders say -- the
+/// layouts `tulipix_videos::naming` reads, shared with the Flutter build so a
+/// file cannot group one way in one build and another way in the other.
 pub async fn classify_tv_episode(pool: &sqlx::SqlitePool, item_id: i64, path: &std::path::Path) {
-    let Some(name) = path.file_name().and_then(|s| s.to_str()) else { return; };
-    let Some((season, episode)) = parse_season_episode(name) else { return; };
-    let show_title = path.parent()
-        .and_then(|p| p.file_name()).and_then(|s| s.to_str())
-        .unwrap_or("Unknown Show").to_string();
-    let Some(show_id) = get_or_create_show(pool, &show_title).await else { return; };
+    let Some(ep) = tulipix_videos::naming::parse_episode(path) else { return; };
+    let (season, episode) = (ep.season, ep.episode);
+    let Some(show_id) = get_or_create_show(pool, &ep.show).await else { return; };
     let _ = tulipix_videos::episodes::upsert(
         pool, item_id, show_id, season, episode, None, None, None, None, None).await;
+}
+
+/// A file named like a movie is one, with or without TMDB: its title and year
+/// go in first, and a TMDB match later overwrites them.
+pub async fn classify_movie(pool: &sqlx::SqlitePool, item_id: i64, path: &std::path::Path) {
+    let Some(m) = tulipix_videos::naming::parse_movie(path) else { return; };
+    let known: Option<i64> = sqlx::query_scalar("SELECT item_id FROM movies WHERE item_id = ?")
+        .bind(item_id).fetch_optional(pool).await.ok().flatten();
+    if known.is_some() { return; }
+    let meta = tulipix_videos::tmdb::MovieMeta { title: m.title, year: m.year, ..Default::default() };
+    let _ = tulipix_videos::tmdb::upsert_movie(pool, item_id, &meta).await;
 }
 
 /// One TV show card for the Videos "TV" tab.

@@ -28,11 +28,14 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../design/app_mark.dart';
+import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../shell/shell_controller.dart';
+import '../../shell/window.dart' show WindowChrome;
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
 import 'music_widgets.dart' show MusicArt;
+import 'player_widgets.dart' show TrackBar;
 
 /// The three size classes the desktop widget can be.
 ///
@@ -69,14 +72,18 @@ enum MiniStyle {
 /// width it had, which is why the pill measures its scale against its height.
 const double kPillCluster = 148;
 
+/// The same, one button short: where there is no pin to draw.
+/// `PILL_CLUSTER_NO_PIN`.
+const double kPillClusterNoPin = 119;
+
 /// Extra HEIGHT the pill takes when its lyrics row is out. `PILL_LYRICS`.
 const double kPillLyrics = 32;
 
-/// Room for the shadow, inside the window rather than around it — the same
-/// asymmetric inset ui/mini_widget.slint uses, spent underneath (2 above
-/// against 12 below) so the shadow reads as the widget standing off the desktop
-/// rather than glowing around it.
-const EdgeInsets kMiniPad = EdgeInsets.fromLTRB(7, 2, 7, 12);
+/// The gap between the window's edge and the widget. None: the widget floats
+/// on the desktop with nothing around it. It used to be a 7/2/7/12 ring for a
+/// drop shadow, which read as a block of colour behind the widget -- the
+/// shadow, and on a compositor without alpha the window's own fill.
+const EdgeInsets kMiniPad = EdgeInsets.zero;
 
 /// The widget's two-colour ramp, and every gradient built from it.
 ///
@@ -148,12 +155,48 @@ class MiniWidgetCard extends StatelessWidget {
     final s = controller.widgetScale;
     final tone = _Tone(t.dark, controller.accent);
     final pill = style == MiniStyle.pill;
+    final skin = context.skin;
+    final body = switch (style) {
+      MiniStyle.bar => _Bar(controller: controller, now: now, tone: tone, s: s),
+      MiniStyle.square =>
+        _Square(controller: controller, now: now, tone: tone, s: s),
+      _ => _PillLayout(controller: controller, now: now, tone: tone, s: s),
+    };
+    final pad = EdgeInsets.fromLTRB(kMiniPad.left * s, kMiniPad.top * s,
+        kMiniPad.right * s, kMiniPad.bottom * s);
+
+    // Every language but Standard: the language's own slab -- Neumorphism's
+    // raised sheet, Glass's pane, Expressive's tonal container -- in place of
+    // the gradient ring, which is Standard's signature and nobody else's. The
+    // page colour goes under it first: the window paints on nothing, and a
+    // glass pane over nothing is a pane you can read the desktop through.
+    if (!skin.isStandard) {
+      final r = (pill ? 16 : 20) * s;
+      return Padding(
+        padding: pad,
+        child: Material(
+          type: MaterialType.transparency,
+          child: Container(
+            decoration: BoxDecoration(
+              color: skin.canvas ?? t.nCanvas,
+              borderRadius: BorderRadius.circular(r),
+            ),
+            // Flat: the language's raised slab is a pair of shadows in
+            // Neumorphism and a drop in Glass, and the widget floats with
+            // none. Its buttons and grooves still speak the language.
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(r),
+              child: body,
+            ),
+          ),
+        ),
+      );
+    }
 
     // Transparent so the gradient ring's rounded corners are not boxed in by a
     // square fill, and inset so the shadow has somewhere to fall.
     return Padding(
-      padding: EdgeInsets.fromLTRB(kMiniPad.left * s, kMiniPad.top * s,
-          kMiniPad.right * s, kMiniPad.bottom * s),
+      padding: pad,
       child: Material(
         // Or every Text in here is drawn with the yellow double underline
         // MaterialApp paints to say "this text has no Material ancestor" — the
@@ -163,30 +206,13 @@ class MiniWidgetCard extends StatelessWidget {
           decoration: BoxDecoration(
             gradient: tone.border,
             borderRadius: BorderRadius.circular((pill ? 16 : 20) * s),
-            boxShadow: [
-              // Downwards only. An even blur in every direction is what a flat
-              // sticker casts; a shadow that sits below the object is what
-              // gives it height.
-              BoxShadow(
-                color: const Color(0x80000000),
-                blurRadius: 16 * s,
-                offset: Offset(0, 6 * s),
-              ),
-            ],
           ),
           padding: EdgeInsets.all(2 * s),
           child: ClipRRect(
             borderRadius: BorderRadius.circular((pill ? 14 : 18) * s),
             child: Container(
               color: t.dark ? const Color(0xE6121422) : const Color(0xE6FBFAFF),
-              child: switch (style) {
-                MiniStyle.bar =>
-                  _Bar(controller: controller, now: now, tone: tone, s: s),
-                MiniStyle.square =>
-                  _Square(controller: controller, now: now, tone: tone, s: s),
-                _ => _PillLayout(
-                    controller: controller, now: now, tone: tone, s: s),
-              },
+              child: body,
             ),
           ),
         ),
@@ -233,6 +259,33 @@ class _WBtnState extends State<_WBtn> {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final w = widget;
+    final skin = context.skin;
+    if (!skin.isStandard) {
+      // The language's round control, the same one the player bar's
+      // transport is: tone 3 is the prominent play button, tone 2 latched on,
+      // and a chrome button (tone 4) keeps its own colour on its glyph so the
+      // five stay tellable apart.
+      final b = SkinButton(
+        width: w.size * w.s,
+        height: w.size * w.s,
+        radius: w.size * w.s / 2,
+        active: w.tone == 2,
+        prominent: w.tone == 3,
+        onTap: w.onTap,
+        child: Icon(
+          skin.icon(w.icon),
+          size: w.isz * w.s,
+          color: switch (w.tone) {
+            3 => skin.onProminent ?? skin.accent,
+            2 => skin.accent,
+            4 => w.fill,
+            _ => skin.inkDim,
+          },
+          fill: w.tone == 2 ? 1 : null,
+        ),
+      );
+      return w.tip == null ? b : Tooltip(message: w.tip!, child: b);
+    }
     final glass = t.dark ? const Color(0x12FFFFFF) : const Color(0x0D1A1040);
     final glassOn = t.dark ? const Color(0x24FFFFFF) : const Color(0x1A1A1040);
     final hair = t.dark ? const Color(0x1AFFFFFF) : const Color(0x1A1A1040);
@@ -309,7 +362,12 @@ class _Pill extends StatelessWidget {
     this.trailing,
     this.onLeading,
     this.knob = false,
+    this.bare = false,
   });
+
+  /// No capsule round it: the volume row, which is a bar and not a second
+  /// seek pill.
+  final bool bare;
 
   final _Tone tone;
   final double s;
@@ -340,14 +398,20 @@ class _Pill extends StatelessWidget {
       fontFeatures: const [FontFeature.tabularFigures()],
     );
 
+    final skin = context.skin;
     return Container(
       height: height * s,
       padding: EdgeInsets.symmetric(horizontal: pad),
-      decoration: BoxDecoration(
-        color: tone.a.withValues(alpha: 0.20),
-        borderRadius: BorderRadius.circular(height * s / 2),
-        border: Border.all(color: tone.a.withValues(alpha: 0.45)),
-      ),
+      // The language's well; Standard's tinted capsule otherwise.
+      decoration: bare
+          ? null
+          : skin.isStandard
+              ? BoxDecoration(
+                  color: tone.a.withValues(alpha: 0.20),
+                  borderRadius: BorderRadius.circular(height * s / 2),
+                  border: Border.all(color: tone.a.withValues(alpha: 0.45)),
+                )
+              : skin.surface(SurfaceRole.well, radius: height * s / 2),
       child: Row(
         children: [
           if (leading != null) ...[
@@ -369,49 +433,64 @@ class _Pill extends StatelessWidget {
                     // A 4px line keeps a 14px hit box so it stays grabbable in
                     // a 17px-tall pill.
                     height: (full ? 14.0 : 12.0) * s,
-                    child: Stack(
-                      alignment: Alignment.centerLeft,
-                      clipBehavior: Clip.none,
-                      children: [
-                        Container(
-                          height: thick,
-                          decoration: BoxDecoration(
-                            color: t.dark
-                                ? const Color(0x24FFFFFF)
-                                : const Color(0x1A1A1040),
-                            borderRadius: BorderRadius.circular(thick / 2),
-                          ),
-                        ),
-                        FractionallySizedBox(
-                          widthFactor: frac.clamp(0.0, 1.0),
-                          child: Container(
-                            height: thick,
-                            decoration: BoxDecoration(
-                              gradient: tone.horiz,
-                              borderRadius: BorderRadius.circular(thick / 2),
+                    // The player bar's own groove in every other language:
+                    // it already knows how each one sinks a track and
+                    // raises a knob.
+                    child: !skin.isStandard
+                        ? Center(
+                            child: TrackBar(
+                              frac: frac,
+                              accent: skin.accent ?? tone.a,
+                              scale: s,
+                              thickness: full ? 6 : 4,
                             ),
-                          ),
-                        ),
-                        if (knob)
-                          Positioned(
-                            left: box.maxWidth * frac.clamp(0.0, 1.0) - 4.5 * s,
-                            child: Container(
-                              width: 9 * s,
-                              height: 9 * s,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: Colors.white,
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: tone.a.withValues(alpha: 0.63),
-                                    blurRadius: 6 * s,
-                                  )
-                                ],
+                          )
+                        : Stack(
+                            alignment: Alignment.centerLeft,
+                            clipBehavior: Clip.none,
+                            children: [
+                              Container(
+                                height: thick,
+                                decoration: BoxDecoration(
+                                  color: t.dark
+                                      ? const Color(0x24FFFFFF)
+                                      : const Color(0x1A1A1040),
+                                  borderRadius:
+                                      BorderRadius.circular(thick / 2),
+                                ),
                               ),
-                            ),
+                              FractionallySizedBox(
+                                widthFactor: frac.clamp(0.0, 1.0),
+                                child: Container(
+                                  height: thick,
+                                  decoration: BoxDecoration(
+                                    gradient: tone.horiz,
+                                    borderRadius:
+                                        BorderRadius.circular(thick / 2),
+                                  ),
+                                ),
+                              ),
+                              if (knob)
+                                Positioned(
+                                  left: box.maxWidth * frac.clamp(0.0, 1.0) -
+                                      4.5 * s,
+                                  child: Container(
+                                    width: 9 * s,
+                                    height: 9 * s,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: Colors.white,
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: tone.a.withValues(alpha: 0.63),
+                                          blurRadius: 6 * s,
+                                        )
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                            ],
                           ),
-                      ],
-                    ),
                   ),
                 );
               },
@@ -542,15 +621,14 @@ class _Transport extends StatelessWidget {
   }
 }
 
-/// Back to app · theme · next layout · close. One component so no style can end
-/// up with different chrome.
+/// Pin · back to app · theme · next layout · close. One component so no style
+/// can end up with different chrome.
 ///
-/// Four, not the Slint build's five: "always on top" is dropped because the
-/// window is kept above for as long as the widget is up rather than toggled —
-/// the same rule as `no-stacking-control` there, and a pin that cannot pin is
-/// worse than no pin. Slint's fifth button is "close to tray"; there is no
-/// tray here, so close gives the window back like the restore button does,
-/// without also jumping the shell to Music.
+/// The pin is drawn only where "keep above" means something (X11, XWayland):
+/// on native Wayland it is dropped, the rule `no-stacking-control` applies in
+/// the Slint build, because a pin that cannot pin is worse than no pin. Close
+/// gives the window back like the restore button does, without also jumping
+/// the shell to Music.
 class _Chrome extends StatelessWidget {
   const _Chrome(
       {required this.controller, required this.tone, required this.s});
@@ -566,6 +644,23 @@ class _Chrome extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (WindowChrome.instance.stacking) ...[
+          _WBtn(
+            icon: controller.widgetPinned
+                ? Icons.push_pin
+                : Icons.push_pin_outlined,
+            // Latched in the record's colour, plain glass when off: `tone:
+            // root.pinned ? 2 : 1` on the Slint pin.
+            tone: controller.widgetPinned ? 2 : 1,
+            s: s,
+            ramp: tone,
+            tip: controller.widgetPinned
+                ? 'Always on top — on'
+                : 'Always on top — off',
+            onTap: controller.toggleWidgetPin,
+          ),
+          gap,
+        ],
         _WBtn(
           icon: Icons.open_in_full,
           tone: 4,
@@ -1343,6 +1438,7 @@ class _Vol extends StatelessWidget {
     final t = context.tokens;
     final full = height >= 26;
     return _Pill(
+      bare: true,
       tone: tone,
       s: s,
       height: height,

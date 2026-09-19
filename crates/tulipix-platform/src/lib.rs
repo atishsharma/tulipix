@@ -298,12 +298,14 @@ mod linux_tray {
     }
 
     impl ksni::Tray for TulipixTray {
-        /// Any click opens the menu, not just the right one. The host draws the
-        /// menu itself — an app cannot ask it to — so this property is the only
-        /// way to say "left click means menu too". It replaces `activate`
-        /// entirely, which is why the header row below carries what a left
-        /// click used to do.
-        const MENU_ON_ACTIVATE: bool = true;
+        /// Left click is `activate`, right click is the menu. This was `true`
+        /// — every click the menu — while the popup was the only thing a left
+        /// click could have opened and the Flutter build had no popup at all.
+        /// Both builds have one now (docs/tray-player-deck.html), and a status
+        /// item whose click opens a menu that offers the panel is one click
+        /// more than the deck is for. Hosts that never call `activate` (GNOME's
+        /// AppIndicator extension) still reach the panel from the menu row.
+        const MENU_ON_ACTIVATE: bool = false;
 
         fn id(&self) -> String {
             "tulipix".into()
@@ -348,9 +350,8 @@ mod linux_tray {
                     StandardItem {
                         label: clip(&self.np.title, 34),
                         icon_data: self.np.art_png.clone(),
-                        // The popup tray style's window has no click of its own
-                        // left (see MENU_ON_ACTIVATE) — the track row is where
-                        // it lives now.
+                        // The same door as a left click, for hosts that
+                        // only ever show the menu.
                         activate: Box::new(|t: &mut Self| {
                             let _ = t.tx.send(if t.np.popup { "tray.popup" } else { "tray.open" });
                         }),
@@ -438,11 +439,10 @@ mod linux_tray {
 
             // The Popup tray style, given a row of its own.
             //
-            // `MENU_ON_ACTIVATE` means the host opens this menu on EVERY click
-            // and never calls `activate`, so the only way into the popup window
+            // For hosts that open this menu on every click and never call
+            // `activate`: without the row the only way into the popup window
             // was the now-playing header — a row that only exists while
-            // something is playing. Picking "Popup" in Settings with a silent
-            // player therefore did nothing at all, which is exactly the report.
+            // something is playing.
             if self.np.popup {
                 items.push(
                     StandardItem {

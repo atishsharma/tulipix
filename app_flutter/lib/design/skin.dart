@@ -289,7 +289,6 @@ class _SkinButtonState extends State<SkinButton> {
             width: widget.width,
             height: widget.height,
             padding: widget.padding,
-            alignment: Alignment.center,
             decoration: context.skin.control(
               active: widget.active,
               hovered: enabled && (_hovered || _focused),
@@ -298,7 +297,9 @@ class _SkinButtonState extends State<SkinButton> {
               radius: widget.radius,
               tint: widget.tint,
             ),
-            child: widget.child,
+            // widthFactor 1: a Container's own alignment would fill every
+            // loose width it is offered, so a button in a Wrap went full width.
+            child: Center(widthFactor: 1, child: widget.child),
           ),
         ),
       ),

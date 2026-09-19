@@ -673,7 +673,9 @@ class TrackBar extends StatelessWidget {
   }
 }
 
-/// Volume, with mute living inside the pill rather than beside it.
+/// Volume: mute, the bar, the number -- on nothing. It used to sit in a tinted
+/// capsule, which made it read as a second, different seek bar beside the real
+/// one; the bare bar is the seek bar's own `TrackBar`, so the two now match.
 class VolPill extends StatelessWidget {
   const VolPill({
     super.key,
@@ -703,13 +705,7 @@ class VolPill extends StatelessWidget {
     return Container(
       width: width,
       height: 30 * s,
-      padding: EdgeInsets.only(left: 6 * s, right: 10 * s),
-      decoration: skin.surface(SurfaceRole.well, radius: 15 * s) ??
-          BoxDecoration(
-        color: tint.withValues(alpha: 0.20),
-        borderRadius: BorderRadius.circular(15 * s),
-        border: Border.all(color: tint.withValues(alpha: 0.45)),
-      ),
+      padding: EdgeInsets.only(left: 2 * s, right: 2 * s),
       child: Row(
         children: [
           InkResponse(
