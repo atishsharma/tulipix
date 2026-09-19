@@ -34,7 +34,9 @@ class _SettingsPageState extends State<SettingsPage> {
   final SettingsController _c = SettingsController();
   final TextEditingController _search = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
-  String _tab = 'profile';
+  // Static, so the tab outlives this State. Applying a preset rebuilds the
+  // shell, and a fresh State opened on You & Home instead of where you were.
+  static String _tab = 'profile';
 
   /// What the search finds on You & Home and Status, whose words are not
   /// rows. The other tabs are searched through their rows.

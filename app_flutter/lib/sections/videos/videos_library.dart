@@ -157,79 +157,100 @@ class _Stage extends StatelessWidget {
     required this.controller,
     required this.subject,
     this.onStar,
+    this.rail,
   });
 
   final VideosController controller;
   final _Subject subject;
   final VoidCallback? onStar;
 
+  /// Continue watching / Next up, drawn inside the stage on the art's faded
+  /// foot rather than as a block of its own under it.
+  final Widget? rail;
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
     final s = subject;
     final scrim = t.nCanvas;
-    return SizedBox(
-      height: 420,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          // A cut, not a flash: the old picture fades under the new one.
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 420),
-            layoutBuilder: (current, previous) => Stack(
-              fit: StackFit.expand,
-              children: [...previous, if (current != null) current],
-            ),
-            child: _Backdrop(
-              key: ValueKey(s.key),
-              controller: controller,
-              itemId: s.itemId,
-              showId: s.showId,
-              known: s.backdrop,
-              poster: s.poster,
-            ),
-          ),
-          DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  scrim,
-                  scrim.withValues(alpha: 0.7),
-                  scrim.withValues(alpha: 0)
-                ],
-                stops: const [0, 0.34, 0.72],
+    return Stack(
+      children: [
+        // The art at 90%: clear, not frosted. The scrims only darken where
+        // the words sit and where the stage meets the page.
+        Positioned.fill(
+          child: Opacity(
+            opacity: 0.9,
+            // A cut, not a flash: the old picture fades under the new one.
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 420),
+              layoutBuilder: (current, previous) => Stack(
+                fit: StackFit.expand,
+                children: [...previous, if (current != null) current],
+              ),
+              child: _Backdrop(
+                key: ValueKey(s.key),
+                controller: controller,
+                itemId: s.itemId,
+                showId: s.showId,
+                known: s.backdrop,
+                poster: s.poster,
               ),
             ),
           ),
-          DecoratedBox(
+        ),
+        Positioned.fill(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  scrim.withValues(alpha: 0.72),
+                  scrim.withValues(alpha: 0.3),
+                  scrim.withValues(alpha: 0)
+                ],
+                stops: const [0, 0.35, 0.62],
+              ),
+            ),
+          ),
+        ),
+        Positioned.fill(
+          child: DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.bottomCenter,
                 end: Alignment.topCenter,
                 colors: [scrim, scrim.withValues(alpha: 0)],
-                stops: const [0, 0.55],
+                stops: [0, rail == null ? 0.4 : 0.5],
               ),
             ),
           ),
-          Positioned(
-            left: _pad,
-            right: _pad,
-            bottom: 30,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 640),
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 220),
-                layoutBuilder: (current, previous) => Stack(
-                  alignment: Alignment.bottomLeft,
-                  children: [...previous, if (current != null) current],
+        ),
+        ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 420),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.end,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(_pad, 96, _pad, 0),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 640),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 220),
+                    layoutBuilder: (current, previous) => Stack(
+                      alignment: Alignment.bottomLeft,
+                      children: [...previous, if (current != null) current],
+                    ),
+                    child: _StageCopy(
+                        key: ValueKey(s.key), subject: s, onStar: onStar),
+                  ),
                 ),
-                child: _StageCopy(
-                    key: ValueKey(s.key), subject: s, onStar: onStar),
               ),
-            ),
+              SizedBox(height: rail == null ? 30 : 34),
+              if (rail != null) rail!,
+            ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -277,6 +298,18 @@ class _StageCopy extends StatelessWidget {
             style: TextStyle(fontSize: 14, height: 1.5, color: t.nInk2),
           ),
         ],
+        if (s.progress > 0) ...[
+          const SizedBox(height: 18),
+          SizedBox(
+            width: 360,
+            child: Row(children: [
+              Expanded(child: _GradientBar(value: s.progress)),
+              const SizedBox(width: 10),
+              Text('${(s.progress * 100).round()}%',
+                  style: TextStyle(fontSize: 12, color: t.nInk2)),
+            ]),
+          ),
+        ],
         const SizedBox(height: 18),
         Wrap(
           spacing: 10,
@@ -293,18 +326,6 @@ class _StageCopy extends StatelessWidget {
               ),
           ],
         ),
-        if (s.progress > 0) ...[
-          const SizedBox(height: 16),
-          SizedBox(
-            width: 360,
-            child: Row(children: [
-              Expanded(child: _Bar(value: s.progress)),
-              const SizedBox(width: 10),
-              Text('${(s.progress * 100).round()}%',
-                  style: TextStyle(fontSize: 12, color: t.nInk2)),
-            ]),
-          ),
-        ],
       ],
     );
   }
@@ -335,6 +356,10 @@ class _Backdrop extends StatefulWidget {
 class _BackdropState extends State<_Backdrop> {
   String? _path;
 
+  /// The file's own thumb, for a title with neither a backdrop nor a poster
+  /// in the snapshot -- a movie TMDB has not matched.
+  String? _thumb;
+
   @override
   void initState() {
     super.initState();
@@ -346,18 +371,19 @@ class _BackdropState extends State<_Backdrop> {
           .backdropFor(widget.itemId, widget.showId)
           .then((p) => mounted && p != null ? setState(() => _path = p) : null);
     }
+    if (widget.poster.isEmpty && widget.itemId > 0) {
+      widget.controller.thumbFor(widget.itemId).then(
+          (p) => mounted && p != null ? setState(() => _thumb = p) : null);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final path = _path;
     if (path != null && path.isNotEmpty) return _Pic(path: path);
-    if (widget.poster.isNotEmpty) {
-      return ImageFiltered(
-        imageFilter: ImageFilter.blur(sigmaX: 40, sigmaY: 40),
-        child: _Pic(path: widget.poster),
-      );
-    }
+    if (widget.poster.isNotEmpty) return _Pic(path: widget.poster);
+    final thumb = _thumb;
+    if (thumb != null && thumb.isNotEmpty) return _Pic(path: thumb);
     return DecoratedBox(
       decoration: BoxDecoration(
         gradient: RadialGradient(
@@ -421,6 +447,17 @@ class _MoviesHomeState extends State<_MoviesHome> {
         ? st.railContinue.first
         : (st.railRecent.isNotEmpty ? st.railRecent.first : null);
     void open(VideoTile t) => c.openMoviePage(t);
+    Widget continueCard(VideoTile t) => _Wide(
+          controller: c,
+          tile: t,
+          title: t.title,
+          sub: [if (t.year > 0) '${t.year}', t.res, t.hdr]
+              .where((x) => x.isNotEmpty)
+              .join(' · '),
+          corner: '${_left(t)} left',
+          onTap: () => c.send(VideosCmd.play(index: t.index)),
+          onHover: () => _hover(t),
+        );
 
     if (st.itemCount == 0 && st.category == 'library' && st.query.isEmpty) {
       return VideosEmpty(
@@ -450,26 +487,26 @@ class _MoviesHomeState extends State<_MoviesHome> {
               ),
               onStar: () => c.send(
                   VideosCmd.tileAction(index: focus!.index, action: 'star')),
+              rail: st.railContinue.isEmpty
+                  ? null
+                  : _stageRail(
+                      'Continue watching',
+                      '${st.railContinue.take(4).length}',
+                      height: 212,
+                      children: [
+                        for (final t in st.railContinue.take(4))
+                          continueCard(t),
+                      ],
+                    ),
             ),
           ),
-        if (front && st.railContinue.isNotEmpty)
+        if (front && focus == null && st.railContinue.isNotEmpty)
           _rail(
             'Continue watching',
-            '${st.railContinue.length}',
+            '${st.railContinue.take(4).length}',
             height: 212,
             children: [
-              for (final t in st.railContinue)
-                _Wide(
-                  controller: c,
-                  tile: t,
-                  title: t.title,
-                  sub: [if (t.year > 0) '${t.year}', t.res, t.hdr]
-                      .where((x) => x.isNotEmpty)
-                      .join(' · '),
-                  corner: '${_left(t)} left',
-                  onTap: () => c.send(VideosCmd.play(index: t.index)),
-                  onHover: () => _hover(t),
-                ),
+              for (final t in st.railContinue.take(4)) continueCard(t),
             ],
           ),
         if (front && st.railRecent.isNotEmpty)
@@ -552,27 +589,39 @@ Widget _rail(String title, String note,
     SliverToBoxAdapter(
       child: Padding(
         padding: const EdgeInsets.only(top: 22),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: _pad),
-              child: _Heading(title, note),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: height,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: _pad),
-                itemCount: children.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 16),
-                itemBuilder: (_, i) => children[i],
-              ),
-            ),
-          ],
-        ),
+        child: _railBody(title, note, height: height, children: children),
       ),
+    );
+
+/// A rail inside the stage: a quiet label, no heading block, so it reads as
+/// part of the hero.
+Widget _stageRail(String title, String note,
+        {required double height, required List<Widget> children}) =>
+    _railBody(title, note, height: height, children: children, size: 14);
+
+Widget _railBody(String title, String note,
+        {required double height,
+        required List<Widget> children,
+        double size = 17}) =>
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: _pad),
+          child: _Heading(title, note, size: size),
+        ),
+        SizedBox(height: size < 17 ? 10 : 12),
+        SizedBox(
+          height: height,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: _pad),
+            itemCount: children.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 16),
+            itemBuilder: (_, i) => children[i],
+          ),
+        ),
+      ],
     );
 
 Widget _posterGrid<T>(List<T> items, Widget Function(T) cell,
@@ -1067,10 +1116,26 @@ class _ShowsHomeState extends State<_ShowsHome> {
             })
         .toList();
     void open(ShowCard s) => c.send(VideosCmd.openShow(showId: s.id));
+    Widget nextCard(VideoTile t) => _Wide(
+          controller: c,
+          tile: t,
+          title: t.title,
+          sub: 'S${t.season} · E${t.episode}'
+              '${t.epTitle.isNotEmpty ? '  ${t.epTitle}' : ''}',
+          corner: t.progress > 0
+              ? '${_left(t)} left'
+              : (t.runtimeMin > 0 ? '${t.runtimeMin}m' : ''),
+          onTap: () => c.send(VideosCmd.play(index: t.index)),
+          onHover: () {
+            final card = _cardFor(t);
+            if (card != null) _hover(card.id);
+          },
+        );
+    final staged = focus != null && st.query.isEmpty;
 
     return CustomScrollView(
       slivers: [
-        if (focus != null && st.query.isEmpty)
+        if (staged)
           SliverToBoxAdapter(
             child: Builder(builder: (context) {
               final f = focus!;
@@ -1085,32 +1150,25 @@ class _ShowsHomeState extends State<_ShowsHome> {
                       : open(f),
                   onOpen: () => open(f),
                 ),
+                rail: st.nextUp.isEmpty
+                    ? null
+                    : _stageRail(
+                        'Next up',
+                        '${st.nextUp.take(4).length}',
+                        height: 212,
+                        children: [
+                          for (final t in st.nextUp.take(4)) nextCard(t)
+                        ],
+                      ),
               );
             }),
           ),
-        if (st.nextUp.isNotEmpty && st.query.isEmpty)
+        if (!staged && st.nextUp.isNotEmpty && st.query.isEmpty)
           _rail(
             'Next up',
-            '${st.nextUp.length}',
+            '${st.nextUp.take(4).length}',
             height: 212,
-            children: [
-              for (final t in st.nextUp)
-                _Wide(
-                  controller: c,
-                  tile: t,
-                  title: t.title,
-                  sub: 'S${t.season} · E${t.episode}'
-                      '${t.epTitle.isNotEmpty ? '  ${t.epTitle}' : ''}',
-                  corner: t.progress > 0
-                      ? '${_left(t)} left'
-                      : (t.runtimeMin > 0 ? '${t.runtimeMin}m' : ''),
-                  onTap: () => c.send(VideosCmd.play(index: t.index)),
-                  onHover: () {
-                    final card = _cardFor(t);
-                    if (card != null) _hover(card.id);
-                  },
-                ),
-            ],
+            children: [for (final t in st.nextUp.take(4)) nextCard(t)],
           ),
         SliverToBoxAdapter(
           child: Padding(
@@ -2469,6 +2527,34 @@ class _Box extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The stage's progress: twice the rails' bar, in a gradient.
+class _GradientBar extends StatelessWidget {
+  const _GradientBar({required this.value});
+
+  final double value;
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+        borderRadius: BorderRadius.circular(9),
+        child: Container(
+          height: 8,
+          color: context.tokens.nHair,
+          alignment: Alignment.centerLeft,
+          child: FractionallySizedBox(
+            widthFactor: value.clamp(0.0, 1.0),
+            child: const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Tokens.secVideos, Color(0xFFEC4899)],
+                ),
+              ),
+              child: SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
 }
 
 class _Bar extends StatelessWidget {

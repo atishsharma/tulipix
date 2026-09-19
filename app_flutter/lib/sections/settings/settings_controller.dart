@@ -24,6 +24,12 @@ const List<({String id, String label, IconData icon, Color tint})>
     tint: Color(0xFF7C3AED)
   ),
   (
+    id: 'sections',
+    label: 'Sections',
+    icon: Icons.tune_outlined,
+    tint: Color(0xFF6366F1)
+  ),
+  (
     id: 'libraries',
     label: 'Libraries',
     icon: Icons.folder_outlined,
@@ -46,12 +52,6 @@ const List<({String id, String label, IconData icon, Color tint})>
     label: 'AI Features',
     icon: Icons.auto_awesome_outlined,
     tint: Color(0xFF8B5CF6)
-  ),
-  (
-    id: 'sections',
-    label: 'Sections',
-    icon: Icons.tune_outlined,
-    tint: Color(0xFF6366F1)
   ),
   (
     id: 'security',

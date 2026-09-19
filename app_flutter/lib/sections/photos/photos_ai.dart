@@ -638,41 +638,45 @@ class _ModelRow extends StatelessWidget {
               // against the buttons that act on it.
               Expanded(
                 flex: 4,
-                child: Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  alignment: WrapAlignment.end,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    _Pill(
-                      label: dl
-                          ? 'Downloading'
-                          : model.installed
-                              ? 'Installed'
-                              : 'Not downloaded',
-                      tone: dl
-                          ? kAiTint
-                          : model.installed
-                              ? Tokens.ok
-                              : null,
-                    ),
-                    _Pill(label: '${model.mb} MB'),
-                    _Pill(label: model.quant),
-                    _Pill(
-                      label: model.stage.isEmpty
-                          ? 'editor tool'
-                          : (stage?.label ?? model.stage),
-                    ),
-                    // What it has been worth so far. A row that says only
-                    // "Installed · 154 MB" never answers the question people
-                    // actually have, which is whether it did anything.
-                    if (model.installed && model.pending >= 0)
+                // One line, whatever the width: a list row, not a card. Too
+                // narrow and it scrolls from the right, keeping the status in
+                // view beside the button.
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  reverse: true,
+                  child: Row(
+                    spacing: 6,
+                    children: [
                       _Pill(
-                        label: model.pending == 0
-                            ? 'Everything indexed'
-                            : '${_n(model.pending)} waiting',
+                        label: dl
+                            ? 'Downloading'
+                            : model.installed
+                                ? 'Installed'
+                                : 'Not downloaded',
+                        tone: dl
+                            ? kAiTint
+                            : model.installed
+                                ? Tokens.ok
+                                : null,
                       ),
-                  ],
+                      _Pill(label: '${model.mb} MB'),
+                      _Pill(label: model.quant),
+                      _Pill(
+                        label: model.stage.isEmpty
+                            ? 'editor tool'
+                            : (stage?.label ?? model.stage),
+                      ),
+                      // What it has been worth so far. A row that says only
+                      // "Installed · 154 MB" never answers the question people
+                      // actually have, which is whether it did anything.
+                      if (model.installed && model.pending >= 0)
+                        _Pill(
+                          label: model.pending == 0
+                              ? 'Everything indexed'
+                              : '${_n(model.pending)} waiting',
+                        ),
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(width: 12),
@@ -795,7 +799,6 @@ class _Pill extends StatelessWidget {
         color: t.nChip,
         borderRadius: BorderRadius.circular(999),
       ),
-      alignment: Alignment.center,
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [

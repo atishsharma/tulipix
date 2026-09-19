@@ -947,6 +947,19 @@ pub async fn videos_ensure_thumb(item_id: i64) -> Result<Option<String>> {
     Ok(render_frame(PathBuf::from(abs)).await)
 }
 
+async fn item_backdrop(pool: &sqlx::SqlitePool, item_id: i64) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT COALESCE(mv.backdrop_path, sh.backdrop_path) FROM items i \
+         LEFT JOIN movies mv ON mv.item_id = i.id \
+         LEFT JOIN episodes e ON e.item_id = i.id \
+         LEFT JOIN shows sh ON sh.id = e.show_id WHERE i.id = ?",
+    )
+    .bind(item_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten())
+}
+
 /// Fetch (or return the cached) backdrop for the stage and the detail pages.
 ///
 /// `show_id` > 0 asks for a show's; otherwise `item_id` is a movie, or an
@@ -963,16 +976,21 @@ pub async fn videos_ensure_backdrop(item_id: i64, show_id: i64) -> Result<Option
             .await?
             .flatten()
     } else {
-        sqlx::query_scalar(
-            "SELECT COALESCE(mv.backdrop_path, sh.backdrop_path) FROM items i \
-             LEFT JOIN movies mv ON mv.item_id = i.id \
-             LEFT JOIN episodes e ON e.item_id = i.id \
-             LEFT JOIN shows sh ON sh.id = e.show_id WHERE i.id = ?",
-        )
-        .bind(item_id)
-        .fetch_optional(pool)
-        .await?
-        .flatten()
+        let mut path = item_backdrop(pool, item_id).await?;
+        // Scraping only runs on files as they arrive, so a movie added before
+        // there was a key -- or before its name read as a movie -- was never
+        // asked about. Ask now; the page remembers a miss, so this is once.
+        if path.is_none() {
+            let abs: Option<String> = sqlx::query_scalar("SELECT abs_path FROM items WHERE id = ?")
+                .bind(item_id)
+                .fetch_optional(pool)
+                .await?;
+            if let Some(abs) = abs {
+                scrape_tmdb(pool, item_id, Path::new(&abs)).await;
+                path = item_backdrop(pool, item_id).await?;
+            }
+        }
+        path
     };
     let (Some(path), Some(dir)) = (path, poster_cache_dir()) else { return Ok(None) };
     if let Some(hit) = cached_tmdb_backdrop(&path, &dir) {
