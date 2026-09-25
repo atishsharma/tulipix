@@ -5514,6 +5514,7 @@ version = "1.0.1"
 dependencies = [
  "ab_glyph",
  "anyhow",
+ "chacha20poly1305",
  "chrono",
  "fast_qr",
  "flutter_rust_bridge",

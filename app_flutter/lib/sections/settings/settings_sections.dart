@@ -33,6 +33,10 @@ const Map<String, Section> kSectionById = {
   'tools': Section.tools,
   'transfer': Section.transfer,
   'finances': Section.finances,
+  'feeds': Section.feeds,
+  'journal': Section.journal,
+  'kitchen': Section.kitchen,
+  'papers': Section.papers,
   'settings': Section.settings,
 };
 
@@ -63,14 +67,30 @@ const Map<String, (String blurb, String work)> kSectionWork = {
     'Accounts, ledger, bills and planning',
     'recurring and bill rollover'
   ),
+  'feeds': (
+    'Sites, blogs and newsletters, and the morning brief',
+    'feed refreshes while the page is built'
+  ),
+  'journal': (
+    'A private daily log, gathered from the other sections',
+    'nothing in the background'
+  ),
+  'kitchen': (
+    'Recipes, cook mode, a week of meals and the shopping list',
+    'nothing in the background'
+  ),
+  'papers': (
+    'Receipts, bills, IDs and manuals, read and filed, with reminders',
+    'reads new papers and a watched folder while open'
+  ),
   'settings': ('This page', ''),
 };
 
 /// The ready-made shapes, matching `tulipix_core::sections::preset`.
 const List<(String, String, String)> kPresets = [
-  ('all', 'Everything', 'ten sections'),
+  ('all', 'Everything', 'fourteen sections'),
   ('media', 'Media only', 'photos · video · music · books'),
-  ('work', 'Work only', 'files · tools · money'),
+  ('work', 'Work only', 'files · tools · money · papers'),
   ('photos', 'Just Photos', 'one section'),
   ('lean', 'Lean', 'least running in the background'),
 ];

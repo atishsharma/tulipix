@@ -1,0 +1,661 @@
+// The Journal section's store, and the day it gathers.
+//
+// `journal.db` holds only what you wrote: entries, their moods and tags, the
+// photos you kept in them, voice notes, and which gathered rows you switched
+// off for a day. Everything else a day shows is read from the other sections'
+// databases when it is drawn. Nothing is copied in, so a photo deleted in
+// Photos is gone from the journal too, and switching a row off hides it
+// without touching the section it came from.
+
+use std::collections::{BTreeSet, HashMap};
+
+use anyhow::Result;
+use chrono::{Datelike, Local, NaiveDate, NaiveTime, TimeZone};
+use sqlx::SqlitePool;
+
+const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS entries (
+    id      INTEGER PRIMARY KEY,
+    day     TEXT    NOT NULL,             -- the local ISO date it belongs to
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL,
+    body    TEXT    NOT NULL DEFAULT '',
+    words   INTEGER NOT NULL DEFAULT 0,
+    mood    INTEGER NOT NULL DEFAULT 0,   -- 0 unset, 1 rough … 5 great
+    place   TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS entries_day_idx ON entries(day);
+
+CREATE TABLE IF NOT EXISTS entry_tags (
+    entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+    tag      TEXT    NOT NULL,
+    PRIMARY KEY (entry_id, tag)
+);
+
+-- Photos kept in an entry, by their item id in photos.db.
+CREATE TABLE IF NOT EXISTS entry_photos (
+    entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+    photo_id INTEGER NOT NULL,
+    PRIMARY KEY (entry_id, photo_id)
+);
+
+CREATE TABLE IF NOT EXISTS voice_notes (
+    id         INTEGER PRIMARY KEY,
+    entry_id   INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+    path       TEXT    NOT NULL,
+    duration_s REAL    NOT NULL DEFAULT 0,
+    peaks      TEXT    NOT NULL DEFAULT '',     -- comma-separated, 0..1
+    transcript TEXT    NOT NULL DEFAULT '',
+    state      TEXT    NOT NULL DEFAULT 'new',  -- new | done | failed
+    created    INTEGER NOT NULL
+);
+
+-- A gathered row switched off for one day.
+CREATE TABLE IF NOT EXISTS hidden (
+    day    TEXT NOT NULL,
+    source TEXT NOT NULL,                       -- photos | music | …
+    PRIMARY KEY (day, source)
+);
+"#;
+
+pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
+    sqlx::raw_sql(SCHEMA).execute(pool).await?;
+    Ok(())
+}
+
+// ── days ────────────────────────────────────────────────────────────────────
+
+pub fn now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+pub fn today() -> NaiveDate {
+    Local::now().date_naive()
+}
+
+pub fn iso(d: NaiveDate) -> String {
+    d.format("%Y-%m-%d").to_string()
+}
+
+pub fn parse_day(s: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+}
+
+pub fn shift(d: NaiveDate, days: i64) -> NaiveDate {
+    d.checked_add_signed(chrono::TimeDelta::days(days)).unwrap_or(d)
+}
+
+/// Local midnight to the next local midnight, in Unix seconds. `earliest`,
+/// because a clock change at midnight makes midnight ambiguous or missing.
+pub fn bounds(d: NaiveDate) -> (i64, i64) {
+    let at = |d: NaiveDate| {
+        Local
+            .from_local_datetime(&d.and_time(NaiveTime::MIN))
+            .earliest()
+            .map(|t| t.timestamp())
+            .unwrap_or(0)
+    };
+    (at(d), at(shift(d, 1)))
+}
+
+/// The same date `years` back; None for 29 February in a year without one.
+pub fn years_back(d: NaiveDate, years: i32) -> Option<NaiveDate> {
+    NaiveDate::from_ymd_opt(d.year() - years, d.month(), d.day())
+}
+
+pub fn month_start(d: NaiveDate) -> NaiveDate {
+    d.with_day(1).unwrap_or(d)
+}
+
+pub fn days_in_month(d: NaiveDate) -> u32 {
+    let first = month_start(d);
+    let next = first.checked_add_months(chrono::Months::new(1)).unwrap_or(first);
+    (next - first).num_days() as u32
+}
+
+/// "08:12" in local time.
+pub fn clock(unix: i64) -> String {
+    Local
+        .timestamp_opt(unix, 0)
+        .single()
+        .map(|t| t.format("%H:%M").to_string())
+        .unwrap_or_default()
+}
+
+pub fn words(text: &str) -> i64 {
+    text.split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .count() as i64
+}
+
+/// The run that ends today, or yesterday — a day not yet written is not a day
+/// missed — then the longest run ever and the day it ended.
+pub fn streaks(days: &BTreeSet<NaiveDate>, today: NaiveDate) -> (i64, i64, Option<NaiveDate>) {
+    let (mut longest, mut end, mut run) = (0, None, 0);
+    let mut prev: Option<NaiveDate> = None;
+    for &d in days {
+        run = match prev {
+            Some(p) if p.succ_opt() == Some(d) => run + 1,
+            _ => 1,
+        };
+        if run > longest {
+            longest = run;
+            end = Some(d);
+        }
+        prev = Some(d);
+    }
+    let mut d = if days.contains(&today) { today } else { shift(today, -1) };
+    let mut current = 0;
+    while days.contains(&d) {
+        current += 1;
+        d = shift(d, -1);
+    }
+    (current, longest, end)
+}
+
+// ── places ──────────────────────────────────────────────────────────────────
+
+pub fn km(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (la1, lo1, la2, lo2) = (a.0.to_radians(), a.1.to_radians(), b.0.to_radians(), b.1.to_radians());
+    let h = ((la2 - la1) / 2.0).sin().powi(2) + la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2);
+    2.0 * 6371.0 * h.sqrt().asin()
+}
+
+/// Where the day's photos were taken, in the order they were: a new stop each
+/// time the camera moved more than 300 m from the last one.
+///
+/// ponytail: no names — there is no offline geocoder in the app. A place gets
+/// its name from the entry ("Place"); a GeoNames city table would name stops.
+pub fn stops(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for &p in points {
+        if out.last().is_none_or(|&l| km(l, p) > 0.3) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+pub fn route_km(stops: &[(f64, f64)]) -> f64 {
+    stops.windows(2).map(|w| km(w[0], w[1])).sum()
+}
+
+/// Stops fitted into a unit square, north up, keeping the aspect so a walk
+/// along a line of latitude does not become a diagonal. One stop sits in the
+/// middle.
+pub fn fit(stops: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    if stops.is_empty() {
+        return Vec::new();
+    }
+    let k = stops[0].0.to_radians().cos().max(0.01);
+    let xs: Vec<f64> = stops.iter().map(|p| p.1 * k).collect();
+    let ys: Vec<f64> = stops.iter().map(|p| p.0).collect();
+    let (x0, x1) = (xs.iter().cloned().fold(f64::MAX, f64::min), xs.iter().cloned().fold(f64::MIN, f64::max));
+    let (y0, y1) = (ys.iter().cloned().fold(f64::MAX, f64::min), ys.iter().cloned().fold(f64::MIN, f64::max));
+    let span = (x1 - x0).max(y1 - y0);
+    if span <= 0.0 {
+        return vec![(0.5, 0.5); stops.len()];
+    }
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    xs.iter()
+        .zip(&ys)
+        .map(|(x, y)| (0.5 + (x - cx) / span * 0.8, 0.5 - (y - cy) / span * 0.8))
+        .collect()
+}
+
+// ── what the other sections know about a day ────────────────────────────────
+
+/// One section's part of a day, before it is formatted.
+pub struct Gathered {
+    pub source: &'static str,
+    /// When it started, for the order and the clock. Money has a date and no
+    /// time, so it sorts at noon and prints no clock.
+    pub at: i64,
+    pub timed: bool,
+    pub title: String,
+    pub ids: Vec<i64>,
+}
+
+/// Morning, afternoon, evening or night, from a local clock.
+fn part_of_day(unix: i64) -> &'static str {
+    let h = Local.timestamp_opt(unix, 0).single().map(|t| t.format("%H").to_string());
+    match h.and_then(|h| h.parse::<u32>().ok()).unwrap_or(12) {
+        5..=11 => "in the morning",
+        12..=16 => "in the afternoon",
+        17..=21 => "in the evening",
+        _ => "at night",
+    }
+}
+
+fn plural(n: i64, one: &str, many: &str) -> String {
+    if n == 1 { format!("1 {one}") } else { format!("{n} {many}") }
+}
+
+/// The day's photos: every id, in order, and where each was taken.
+pub async fn day_photos(day: NaiveDate) -> Vec<(i64, i64, Option<(f64, f64)>)> {
+    let Ok(p) = crate::db::photos_pool().await else { return Vec::new() };
+    let (a, b) = bounds(day);
+    sqlx::query_as::<_, (i64, i64, Option<f64>, Option<f64>)>(
+        "SELECT i.id, pm.taken_at, pm.gps_lat, pm.gps_lon FROM photo_meta pm \
+         JOIN items i ON i.id = pm.item_id \
+         WHERE pm.taken_at >= ? AND pm.taken_at < ? \
+           AND i.missing_since IS NULL AND pm.deleted_at IS NULL \
+         ORDER BY pm.taken_at",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_all(p)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(id, at, lat, lon)| (id, at, lat.zip(lon)))
+    .collect()
+}
+
+fn photos_row(photos: &[(i64, i64, Option<(f64, f64)>)]) -> Option<Gathered> {
+    let first = photos.first()?;
+    let last = photos.last()?;
+    let n = photos.len() as i64;
+    let when = if last.1 - first.1 > 6 * 3600 { "across the day" } else { part_of_day(first.1) };
+    Some(Gathered {
+        source: "photos",
+        at: first.1,
+        timed: true,
+        title: format!("{} {when}", plural(n, "photo", "photos")),
+        ids: photos.iter().take(6).map(|p| p.0).collect(),
+    })
+}
+
+/// Plays on a day: (when, seconds heard, artist).
+async fn day_plays(day: NaiveDate) -> Vec<(i64, f64, String)> {
+    let Ok(p) = crate::db::music_pool().await else { return Vec::new() };
+    let (a, b) = bounds(day);
+    sqlx::query_as::<_, (i64, i64, String, f64)>(
+        "SELECT h.played_at, h.ms_played, COALESCE(ar.name, ''), COALESCE(tm.duration_s, 0) \
+         FROM play_history h \
+         LEFT JOIN track_meta tm ON tm.item_id = h.item_id \
+         LEFT JOIN artists ar ON ar.id = tm.artist_id \
+         WHERE h.played_at >= ? AND h.played_at < ? ORDER BY h.played_at",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_all(p)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    // A play the player timed is what was heard; an untimed one counts whole.
+    .map(|(at, ms, artist, dur)| (at, if ms > 0 { ms as f64 / 1000.0 } else { dur }, artist))
+    .collect()
+}
+
+/// Artists by plays, most first.
+fn top_artists(plays: &[(i64, f64, String)]) -> Vec<(String, i64)> {
+    let mut n: HashMap<&str, i64> = HashMap::new();
+    for (_, _, a) in plays {
+        if !a.is_empty() {
+            *n.entry(a.as_str()).or_default() += 1;
+        }
+    }
+    let mut v: Vec<(String, i64)> = n.into_iter().map(|(a, c)| (a.to_string(), c)).collect();
+    v.sort_by(|x, y| y.1.cmp(&x.1).then_with(|| x.0.cmp(&y.0)));
+    v
+}
+
+fn music_row(plays: &[(i64, f64, String)]) -> Option<Gathered> {
+    let first = plays.first()?;
+    let minutes = (plays.iter().map(|p| p.1).sum::<f64>() / 60.0).round() as i64;
+    let names: Vec<String> = top_artists(plays).into_iter().take(2).map(|a| a.0).collect();
+    let who = if names.is_empty() {
+        plural(plays.len() as i64, "track", "tracks")
+    } else {
+        names.join(", ")
+    };
+    Some(Gathered {
+        source: "music",
+        at: first.0,
+        timed: true,
+        title: format!("{who} · {}", plural(minutes.max(1), "minute", "minutes")),
+        ids: Vec::new(),
+    })
+}
+
+/// Spending on a day, in the base currency: the first thing bought and the
+/// total. Income and transfers are not what a diary means by "spent".
+async fn day_spend(day: NaiveDate) -> Option<(i64, String, i64, i64)> {
+    let p = crate::db::finances_pool().await.ok()?;
+    let rows = sqlx::query_as::<_, (i64, String, i64)>(
+        "SELECT base_minor, description, created_at FROM transactions \
+         WHERE occurred_on = ? AND kind = 'expense' ORDER BY created_at, id",
+    )
+    .bind(iso(day))
+    .fetch_all(p)
+    .await
+    .unwrap_or_default();
+    let (first, desc, created) = rows.first()?.clone();
+    let total: i64 = rows.iter().map(|r| r.0.abs()).sum();
+    Some((first.abs(), desc, total, created))
+}
+
+fn money(minor: i64) -> String {
+    tulipix_finances::money::format_minor(minor, &tulipix_finances::fx::base_currency())
+}
+
+fn finances_row(day: NaiveDate, spend: Option<(i64, String, i64, i64)>) -> Option<Gathered> {
+    let (first, desc, total, created) = spend?;
+    let (a, b) = bounds(day);
+    let timed = created >= a && created < b;
+    let head = if desc.trim().is_empty() { money(first) } else { format!("{} at {}", money(first), desc.trim()) };
+    Some(Gathered {
+        source: "finances",
+        at: if timed { created } else { a + 12 * 3600 },
+        timed,
+        title: if total == first { head } else { format!("{head} · {} spent", money(total)) },
+        ids: Vec::new(),
+    })
+}
+
+/// What was watched: films by title, episodes as "Show S2 E3", anything else
+/// by its file name. Only the last position of each is kept by Videos, so a
+/// film started one day and finished the next shows on the second.
+async fn videos_row(day: NaiveDate) -> Option<Gathered> {
+    let p = crate::db::videos_pool().await.ok()?;
+    let (a, b) = bounds(day);
+    let rows = sqlx::query_as::<_, (i64, String)>(
+        "SELECT wp.updated, COALESCE(m.title, s.title || ' S' || e.season || ' E' || e.episode, i.abs_path, '') \
+         FROM watch_progress wp JOIN items i ON i.id = wp.item_id \
+         LEFT JOIN movies m ON m.item_id = wp.item_id \
+         LEFT JOIN episodes e ON e.item_id = wp.item_id \
+         LEFT JOIN shows s ON s.id = e.show_id \
+         WHERE wp.updated >= ? AND wp.updated < ? ORDER BY wp.updated",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_all(p)
+    .await
+    .unwrap_or_default();
+    let (at, first) = rows.first()?.clone();
+    let name = |s: &str| std::path::Path::new(s).file_stem().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+    let first = if first.contains('/') || first.contains('\\') { name(&first) } else { first };
+    let more = rows.len() - 1;
+    Some(Gathered {
+        source: "videos",
+        at,
+        timed: true,
+        title: if more == 0 { format!("Watched {first}") } else { format!("Watched {first} and {more} more") },
+        ids: Vec::new(),
+    })
+}
+
+async fn books_row(day: NaiveDate) -> Option<Gathered> {
+    let p = crate::db::books_pool().await.ok()?;
+    let (a, b) = bounds(day);
+    let rows = sqlx::query_as::<_, (i64, String, f64)>(
+        "SELECT p.updated_at, COALESCE(b.title, ''), p.percent FROM progress p \
+         JOIN books b ON b.id = p.book_id \
+         WHERE p.updated_at >= ? AND p.updated_at < ? ORDER BY p.updated_at",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_all(p)
+    .await
+    .unwrap_or_default();
+    let (at, title, pct) = rows.first()?.clone();
+    let more = rows.len() - 1;
+    let pct = pct.clamp(0.0, 100.0).round() as i64;
+    Some(Gathered {
+        source: "books",
+        at,
+        timed: true,
+        title: if more == 0 {
+            format!("Read {title} · {pct}% through")
+        } else {
+            format!("Read {title} and {}", plural(more as i64, "other book", "other books"))
+        },
+        ids: Vec::new(),
+    })
+}
+
+/// Everything the other sections have for a day, in the order it happened,
+/// plus the photos' coordinates for the map.
+pub async fn gather(day: NaiveDate) -> (Vec<Gathered>, Vec<(f64, f64)>) {
+    let (photos, plays, spend, videos, books) =
+        tokio::join!(day_photos(day), day_plays(day), day_spend(day), videos_row(day), books_row(day));
+    let points: Vec<(f64, f64)> = photos.iter().filter_map(|p| p.2).collect();
+    let mut rows: Vec<Gathered> =
+        [photos_row(&photos), music_row(&plays), finances_row(day, spend), videos, books]
+            .into_iter()
+            .flatten()
+            .collect();
+    rows.sort_by_key(|r| r.at);
+    (rows, points)
+}
+
+/// A year-ago day in one line, for "On this day" when nothing was written:
+/// what the photos and the music say about it.
+pub struct Echo {
+    pub photos: Vec<i64>,
+    pub photo_count: i64,
+    pub artist: String,
+    pub artist_plays: i64,
+    pub spent: i64,
+}
+
+pub async fn echo(day: NaiveDate) -> Echo {
+    let (photos, plays, spend) = tokio::join!(day_photos(day), day_plays(day), day_spend(day));
+    let top = top_artists(&plays).into_iter().next().unwrap_or_default();
+    Echo {
+        photo_count: photos.len() as i64,
+        photos: photos.iter().take(3).map(|p| p.0).collect(),
+        artist: top.0,
+        artist_plays: top.1,
+        spent: spend.map(|s| s.2).unwrap_or(0),
+    }
+}
+
+pub fn spent_text(minor: i64) -> String {
+    money(minor)
+}
+
+/// First photo of every day in a month, for the calendar's Photos view.
+pub async fn month_photos(first: NaiveDate) -> HashMap<String, i64> {
+    let Ok(p) = crate::db::photos_pool().await else { return HashMap::new() };
+    let (a, _) = bounds(first);
+    let (b, _) = bounds(shift(first, days_in_month(first) as i64));
+    // SQLite returns the bare column from the row MIN picked.
+    sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT date(pm.taken_at, 'unixepoch', 'localtime') AS d, i.id, MIN(pm.taken_at) \
+         FROM photo_meta pm JOIN items i ON i.id = pm.item_id \
+         WHERE pm.taken_at >= ? AND pm.taken_at < ? \
+           AND i.missing_since IS NULL AND pm.deleted_at IS NULL \
+         GROUP BY d",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_all(p)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(d, id, _)| (d, id))
+    .collect()
+}
+
+/// Photos taken in a span, for "96 of 412 taken".
+pub async fn photos_between(a: i64, b: i64) -> i64 {
+    let Ok(p) = crate::db::photos_pool().await else { return 0 };
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM photo_meta pm JOIN items i ON i.id = pm.item_id \
+         WHERE pm.taken_at >= ? AND pm.taken_at < ? \
+           AND i.missing_since IS NULL AND pm.deleted_at IS NULL",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_one(p)
+    .await
+    .unwrap_or(0)
+}
+
+/// Local days with a photo in them, over a span.
+pub async fn photo_days(a: i64, b: i64) -> BTreeSet<String> {
+    let Ok(p) = crate::db::photos_pool().await else { return BTreeSet::new() };
+    sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT date(pm.taken_at, 'unixepoch', 'localtime') FROM photo_meta pm \
+         JOIN items i ON i.id = pm.item_id \
+         WHERE pm.taken_at >= ? AND pm.taken_at < ? AND i.missing_since IS NULL",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_all(p)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .collect()
+}
+
+/// Artists heard before noon, per local day, over a span.
+pub async fn morning_artists(a: i64, b: i64) -> HashMap<String, Vec<String>> {
+    let Ok(p) = crate::db::music_pool().await else { return HashMap::new() };
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT date(h.played_at, 'unixepoch', 'localtime'), ar.name FROM play_history h \
+         JOIN track_meta tm ON tm.item_id = h.item_id JOIN artists ar ON ar.id = tm.artist_id \
+         WHERE h.played_at >= ? AND h.played_at < ? \
+           AND CAST(strftime('%H', h.played_at, 'unixepoch', 'localtime') AS INTEGER) < 12",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_all(p)
+    .await
+    .unwrap_or_default();
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for (d, artist) in rows {
+        out.entry(d).or_default().push(artist);
+    }
+    out
+}
+
+// ── voice ───────────────────────────────────────────────────────────────────
+
+/// A WAV's length and a coarse loudness outline: `n` buckets, each its
+/// loudest sample, scaled so the loudest bucket is 1. 16-bit PCM only, which
+/// is what every recorder here is asked for.
+pub fn wave(bytes: &[u8], n: usize) -> (f64, Vec<f64>) {
+    let (mut rate, mut channels, mut data) = (16000u32, 1u16, &bytes[0..0]);
+    let mut i = 12;
+    while i + 8 <= bytes.len() {
+        let id = &bytes[i..i + 4];
+        let len = u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]]) as usize;
+        let body = i + 8;
+        if id == b"fmt " && body + 4 <= bytes.len() {
+            channels = u16::from_le_bytes([bytes[body + 2], bytes[body + 3]]).max(1);
+            if body + 8 <= bytes.len() {
+                rate = u32::from_le_bytes([bytes[body + 4], bytes[body + 5], bytes[body + 6], bytes[body + 7]]).max(1);
+            }
+        }
+        if id == b"data" {
+            // A recorder stopped by a signal can leave the size at 0 or at
+            // u32::MAX: the rest of the file is the data either way.
+            let end = if len == 0 || body + len > bytes.len() { bytes.len() } else { body + len };
+            data = &bytes[body..end];
+            break;
+        }
+        i = body + len + (len & 1);
+    }
+    let samples: Vec<i16> = data.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+    let secs = samples.len() as f64 / channels as f64 / rate as f64;
+    if samples.is_empty() || n == 0 {
+        return (secs, Vec::new());
+    }
+    let per = samples.len().div_ceil(n);
+    let peaks: Vec<f64> = samples
+        .chunks(per)
+        .map(|c| c.iter().map(|s| (*s as f64).abs()).fold(0.0, f64::max))
+        .collect();
+    let top = peaks.iter().cloned().fold(1.0, f64::max);
+    (secs, peaks.into_iter().map(|p| (p / top * 100.0).round() / 100.0).collect())
+}
+
+// ── questions ───────────────────────────────────────────────────────────────
+
+pub const PROMPTS: [&str; 16] = [
+    "What surprised you today?",
+    "What would you like to remember about today in a year?",
+    "Who did you talk to, and what stayed with you?",
+    "What took longer than it should have?",
+    "What was the best thing you ate?",
+    "What are you looking forward to this week?",
+    "What did you notice on the way somewhere?",
+    "What made you laugh?",
+    "What would you do differently tomorrow?",
+    "What are you still thinking about?",
+    "What did you finish, and what did you start?",
+    "Where did you feel most like yourself today?",
+    "What did you learn that you did not know this morning?",
+    "What is one small thing that went right?",
+    "What are you putting off, and why?",
+    "What would you tell yourself from a year ago?",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn d(s: &str) -> NaiveDate {
+        parse_day(s).unwrap()
+    }
+
+    #[test]
+    fn words_count_what_reads_as_words() {
+        assert_eq!(words("Took the long way home — six photos."), 7);
+        assert_eq!(words("  \n "), 0);
+    }
+
+    #[test]
+    fn a_streak_survives_until_the_day_after_is_over() {
+        let days: BTreeSet<NaiveDate> = ["2026-09-16", "2026-09-17", "2026-09-18", "2026-09-10", "2026-09-11"]
+            .iter()
+            .map(|s| d(s))
+            .collect();
+        // Today unwritten: yesterday's run still counts.
+        assert_eq!(streaks(&days, d("2026-09-19")), (3, 3, Some(d("2026-09-18"))));
+        // A day missed: the run is over.
+        assert_eq!(streaks(&days, d("2026-09-20")).0, 0);
+    }
+
+    #[test]
+    fn stops_ignore_jitter_and_the_route_adds_up() {
+        let pts = [(51.4500, -2.6000), (51.4501, -2.6001), (51.4500, -2.5800), (51.4400, -2.5800)];
+        let s = stops(&pts);
+        assert_eq!(s.len(), 3);
+        let r = route_km(&s);
+        assert!(r > 2.4 && r < 2.6, "{r}");
+        let f = fit(&s);
+        assert!(f.iter().all(|p| (0.0..=1.0).contains(&p.0) && (0.0..=1.0).contains(&p.1)));
+        assert_eq!(fit(&s[..1]), vec![(0.5, 0.5)]);
+    }
+
+    #[test]
+    fn a_wav_gives_its_length_and_outline() {
+        let samples: Vec<i16> = (0..16000).map(|i| if i < 8000 { 1000 } else { 4000 }).collect();
+        let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let mut wav = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes()); // PCM
+        wav.extend(1u16.to_le_bytes()); // mono
+        wav.extend(16000u32.to_le_bytes());
+        wav.extend(32000u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend(0u32.to_le_bytes()); // left unfinished by a signal
+        wav.extend(&data);
+        let (secs, peaks) = wave(&wav, 4);
+        assert!((secs - 1.0).abs() < 1e-9);
+        assert_eq!(peaks, vec![0.25, 0.25, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn leap_days_have_no_echo_in_ordinary_years() {
+        assert_eq!(years_back(d("2028-02-29"), 1), None);
+        assert_eq!(years_back(d("2026-09-19"), 3), Some(d("2023-09-19")));
+        assert_eq!(days_in_month(d("2026-02-10")), 28);
+    }
+}

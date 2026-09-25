@@ -488,8 +488,12 @@ fn section_dbs(id: &str) -> &'static [&'static str] {
         "books" => &["books.db"],
         "cloud" => &["cloud.db"],
         "tools" => &["tools.db"],
-        "transfer" => &["transfer.db"],
+        "transfer" => &["transfers.db"],
         "finances" => &["finances.db"],
+        "feeds" => &["feeds.db"],
+        "journal" => &["journal.db"],
+        "kitchen" => &["kitchen.db"],
+        "papers" => &["papers.db"],
         // Home reads the other sections and Settings is a JSON file.
         _ => &[],
     }

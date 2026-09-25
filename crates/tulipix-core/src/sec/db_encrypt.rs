@@ -161,9 +161,9 @@ pub fn state() -> State {
 /// the thumbnail cache holds no index, and the settings file is not a
 /// database.
 pub fn section_paths() -> Vec<std::path::PathBuf> {
-    const FILES: [&str; 10] = [
+    const FILES: [&str; 14] = [
         "photos", "videos", "music", "books", "cloud", "podcasts", "radio", "youtube", "tools",
-        "transfers",
+        "transfers", "feeds", "journal", "kitchen", "papers",
     ];
     FILES.iter().filter_map(|s| paths::db_path(s)).collect()
 }

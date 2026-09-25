@@ -138,6 +138,10 @@ class ShellController extends ChangeNotifier {
     'tools': Section.tools,
     'transfer': Section.transfer,
     'finances': Section.finances,
+    'feeds': Section.feeds,
+    'journal': Section.journal,
+    'kitchen': Section.kitchen,
+    'papers': Section.papers,
     'settings': Section.settings,
   };
 

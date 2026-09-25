@@ -13,6 +13,19 @@ pub mod api;
 mod acme;
 mod cast_serve;
 mod db;
+// Same reason as the modules below: the Feeds section's parser, extractor and
+// store. No Slint section shares it, so it lives with its only caller and
+// `api::feeds` maps what crosses.
+mod feeds;
+// The same for Journal: its store and the queries that gather a day from the
+// other sections' databases. `api::journal` maps what crosses.
+mod journal;
+// And Kitchen: the ingredient parser, the recipe extractor and the phone
+// page for the shopping list.
+mod kitchen;
+// And Papers: reading a paper, telling what it is, the vault's sealing and
+// the phone page that sends scans in.
+mod papers;
 // Not under `api/`, so `rust_input: crate::api` never scans it: the mpv
 // transport is an implementation detail of the Music section, not part of the
 // Dart-facing contract.

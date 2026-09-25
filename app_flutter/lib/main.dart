@@ -20,11 +20,15 @@ import 'design/skin.dart';
 import 'design/tokens.dart';
 import 'sections/books/books_page.dart';
 import 'sections/cloud/cloud_page.dart';
+import 'sections/feeds/feeds_page.dart';
 import 'sections/finances/finances_page.dart';
 import 'sections/home/home_page.dart';
+import 'sections/journal/journal_page.dart';
+import 'sections/kitchen/kitchen_page.dart';
 import 'sections/music/music_controller.dart';
 import 'sections/music/music_overlay.dart';
 import 'sections/music/music_page.dart';
+import 'sections/papers/papers_page.dart';
 import 'sections/photos/photos_page.dart';
 import 'sections/settings/settings_page.dart';
 import 'sections/tools/tools_page.dart';
@@ -63,7 +67,7 @@ Future<void> main() async {
   runWidget(const AppViews(app: TulipixApp()));
 }
 
-/// One section's page. Four of them take `visible` because they hold something
+/// One section's page. Seven of them take `visible` because they hold something
 /// that should stop when it is not on screen — a poll, a queue ticker.
 Widget _pageFor(Section s, Section at) => switch (s) {
       Section.home => HomePage(visible: at == Section.home),
@@ -75,6 +79,10 @@ Widget _pageFor(Section s, Section at) => switch (s) {
       Section.tools => ToolsPage(visible: at == Section.tools),
       Section.transfer => TransferPage(visible: at == Section.transfer),
       Section.finances => const FinancesPage(),
+      Section.feeds => FeedsPage(visible: at == Section.feeds),
+      Section.journal => JournalPage(visible: at == Section.journal),
+      Section.kitchen => KitchenPage(visible: at == Section.kitchen),
+      Section.papers => PapersPage(visible: at == Section.papers),
       Section.settings => SettingsPage(visible: at == Section.settings),
     };
 

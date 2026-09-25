@@ -40,6 +40,10 @@ const Map<Section, ({String label, IconData icon})> kSectionMeta = {
     label: 'Finances',
     icon: Icons.account_balance_wallet_outlined
   ),
+  Section.feeds: (label: 'Feeds', icon: Icons.rss_feed),
+  Section.journal: (label: 'Journal', icon: Icons.edit_note),
+  Section.kitchen: (label: 'Kitchen', icon: Icons.restaurant_outlined),
+  Section.papers: (label: 'Papers', icon: Icons.description_outlined),
   Section.settings: (label: 'Settings', icon: Icons.settings_outlined),
 };
 
@@ -47,7 +51,7 @@ const Map<Section, ({String label, IconData icon})> kSectionMeta = {
 /// three Home layouts and the sidebar reach for.
 Color accentFor(Section s) => Tokens.accentOf(s);
 
-/// The eight sections under the APPLICATIONS header, in the order a fresh
+/// The twelve sections under the APPLICATIONS header, in the order a fresh
 /// install shows them.
 ///
 /// The default, not the list. What is actually drawn is
@@ -62,6 +66,10 @@ const List<Section> kApplications = [
   Section.tools,
   Section.transfer,
   Section.finances,
+  Section.feeds,
+  Section.journal,
+  Section.kitchen,
+  Section.papers,
 ];
 
 class Sidebar extends StatelessWidget {
@@ -123,24 +131,40 @@ class Sidebar extends StatelessWidget {
                 onTap: () => c.go(Section.home),
               ),
             if (apps.$2.isNotEmpty) _GroupHeader(collapsed: collapsed),
-            // A scroller, not a fixed column: at 700px tall with eight rows and
-            // the footer dock, the last application is otherwise cut off.
+            // Every application on screen at once: the rows give up height
+            // together, open or collapsed, before the rail ever scrolls. Only a
+            // window too short for the floor below falls back to a scroller.
             Expanded(
-              child: ListView(
-                padding: EdgeInsets.zero,
-                children: [
+              child: LayoutBuilder(builder: (context, box) {
+                final natural = collapsed ? 46.0 : 52.0;
+                const gap = 6.0;
+                final n = apps.$2.length;
+                final scale = n == 0
+                    ? 1.0
+                    : (box.maxHeight / n / (natural + gap))
+                        .clamp(0.0, 1.0)
+                        .toDouble();
+                final floor = collapsed ? 30.0 : 32.0;
+                final h = natural * scale < floor ? floor : natural * scale;
+                final g = gap * scale;
+                final rows = [
                   for (final s in apps.$2)
                     _NavRow(
                       section: s,
                       active: c.section == s,
                       collapsed: collapsed,
+                      height: h,
+                      gap: g,
                       badge:
                           s == Section.finances ? (st?.financesBadge ?? 0) : 0,
                       alarm: st?.financesOverdue ?? false,
                       onTap: () => c.go(s),
                     ),
-                ],
-              ),
+                ];
+                return n * (h + g) <= box.maxHeight + 0.5
+                    ? Column(children: rows)
+                    : ListView(padding: EdgeInsets.zero, children: rows);
+              }),
             ),
             const SizedBox(height: 8),
             Container(height: 1, color: t.outline),
@@ -187,12 +211,21 @@ class _NavRow extends StatefulWidget {
     required this.onTap,
     this.badge = 0,
     this.alarm = false,
+    this.height,
+    this.gap = 6,
   });
 
   final Section section;
   final bool active;
   final bool collapsed;
   final VoidCallback onTap;
+
+  /// The row's height when the rail is fitting every application in; null
+  /// is the full 52 (46 collapsed).
+  final double? height;
+
+  /// Space under the row, shrunk in step with [height].
+  final double gap;
 
   /// Count of things wanting attention. 0 hides the badge. Only Finances sets
   /// one today; it lives on the row rather than on that one section so a second
@@ -216,7 +249,7 @@ class _NavRowState extends State<_NavRow> {
     final t = context.tokens;
     final accent = accentFor(widget.section);
     final meta = kSectionMeta[widget.section]!;
-    final h = widget.collapsed ? 46.0 : 52.0;
+    final h = widget.height ?? (widget.collapsed ? 46.0 : 52.0);
     // A skin draws the open row as its latched control in the section's own
     // colour, and the hovered one as its hover. At rest a row is bare on the
     // rail: nine raised rows would be a keyboard, not a list.
@@ -230,7 +263,7 @@ class _NavRowState extends State<_NavRow> {
           )
         : null;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: EdgeInsets.only(bottom: widget.gap),
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
         onEnter: (_) => setState(() => _hover = true),
@@ -291,9 +324,12 @@ class _NavRowState extends State<_NavRow> {
   }
 
   Widget _glyph(Color accent, Tokens t) {
+    final full = widget.collapsed ? 21.0 : 19.0;
+    final h = widget.height ?? (widget.collapsed ? 46.0 : 52.0);
     final icon = Icon(
       context.skin.icon(kSectionMeta[widget.section]!.icon),
-      size: widget.collapsed ? 21 : 19,
+      // A short row keeps its glyph in proportion rather than touching the edge.
+      size: (h * 0.5).clamp(14.0, full).toDouble(),
       color: widget.active ? accent : t.textDim,
     );
     // Collapsed, the badge has no label to sit after, so it rides the glyph.

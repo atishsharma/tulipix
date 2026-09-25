@@ -22,6 +22,10 @@ enum Section {
   tools,
   transfer,
   finances,
+  feeds,
+  journal,
+  kitchen,
+  papers,
   settings,
 }
 
@@ -131,6 +135,22 @@ class Tokens extends ThemeExtension<Tokens> {
   // over-budget, and an accent that reads as an alarm would make every screen
   // look like a problem.
   static const Color secFinances = Color(0xFF84CC16); // lime
+  // The deck's orange, which is Transfer's too. Its gradient runs on to
+  // [secFeeds2], and that end is what tells the two apart at a glance.
+  static const Color secFeeds = Color(0xFFF97316); // orange
+  static const Color secFeeds2 = Color(0xFFEF4444); // red
+  // The deck's amber, running on to orange. Amber is [warn] too, which is
+  // fine here: the journal has nothing that warns.
+  static const Color secJournal = Color(0xFFF59E0B); // amber
+  static const Color secJournal2 = Color(0xFFF97316); // orange
+  // The deck's lime, which is Finances' too; the run on to yellow is what
+  // tells the two apart, as orange-to-red does for Feeds and Transfer.
+  static const Color secKitchen = Color(0xFF84CC16); // lime
+  static const Color secKitchen2 = Color(0xFFEAB308); // yellow
+  // The deck's teal, which is Cloud's too; the run on to sky blue tells them
+  // apart.
+  static const Color secPapers = Color(0xFF14B8A6); // teal
+  static const Color secPapers2 = Color(0xFF0EA5E9); // sky
   static const Color secStatus = Color(0xFF7C3AED); // violet
   static const Color secSettings = Color(0xFF94A3B8); // slate
 
@@ -172,6 +192,10 @@ class Tokens extends ThemeExtension<Tokens> {
         Section.tools => secTools,
         Section.transfer => secTransfer,
         Section.finances => secFinances,
+        Section.feeds => secFeeds,
+        Section.journal => secJournal,
+        Section.kitchen => secKitchen,
+        Section.papers => secPapers,
         Section.settings => secSettings,
       };
 

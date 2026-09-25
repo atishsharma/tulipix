@@ -86,6 +86,9 @@ fast_qr = { version = "0.14", default-features = false }
 # the same formula tulipix-videos uses for its own TMDB cache -- so both builds
 # hit the same files rather than downloading the artwork twice.
 sha2 = "0.11"
+# Papers' vault: files and their text sealed at rest. Already in the lockfile
+# (age pulls it in); `getrandom` above makes the nonces, so no RNG feature.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 # ACME (RFC 8555), for the transfer server's optional real certificate.
 #
 # `default-features = false` matters more than usual here: the default is

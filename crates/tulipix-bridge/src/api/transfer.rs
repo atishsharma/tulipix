@@ -1275,7 +1275,7 @@ fn sample_rates(live: &[(String, u64)]) -> HashMap<String, u64> {
 /// `fast_qr::Module` is a `u8` packing the module's type in the high bits and
 /// its dark/light bit in bit 0; `value()` reads that bit. The one line here
 /// that depends on that representation.
-fn render_qr(url: &str) -> Option<QrCode> {
+pub(crate) fn render_qr(url: &str) -> Option<QrCode> {
     if url.is_empty() {
         return None;
     }

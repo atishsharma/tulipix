@@ -5,15 +5,19 @@
 // one name for each of them, so the Sections panel can offer the row without
 // importing five pages, and one filter every tab row runs through.
 //
-// Five of the ten sections have a tab row that is a list. Books draws filter
+// Nine of the fourteen sections have a tab row that is a list. Books draws filter
 // chips whose active states are each computed differently, Cloud is a wizard
 // and a browser rather than tabs, Transfer is one page of cards, Home's cards
 // already have their own switches in Settings › Home, and Settings is the way
 // back and keeps everything. Those five are not listed, and the panel shows no
 // chips for them rather than chips that do nothing.
 
+import '../sections/feeds/feeds_controller.dart' show feedTabs;
 import '../sections/finances/finances_controller.dart' show finTabs;
+import '../sections/journal/journal_controller.dart' show journalTabs;
+import '../sections/kitchen/kitchen_controller.dart' show kitchenTabs;
 import '../sections/music/music_controller.dart' show musicViews;
+import '../sections/papers/papers_controller.dart' show papersTabs;
 import '../sections/photos/photos_controller.dart' show photoCategories;
 import '../sections/tools/tools_controller.dart' show toolTabs;
 import '../sections/videos/videos_controller.dart' show kVideoCategories;
@@ -27,6 +31,10 @@ final Map<String, List<TabEntry>> sectionTabs = {
   'music': [for (final v in musicViews) (id: v.id, label: v.label)],
   'tools': [for (final t in toolTabs) (id: t.id, label: t.label)],
   'finances': [for (final f in finTabs) (id: f.id, label: f.label)],
+  'feeds': [for (final f in feedTabs) (id: f.id, label: f.label)],
+  'journal': [for (final f in journalTabs) (id: f.id, label: f.label)],
+  'kitchen': [for (final f in kitchenTabs) (id: f.id, label: f.label)],
+  'papers': [for (final f in papersTabs) (id: f.id, label: f.label)],
 };
 
 /// `<section>:<tab>` for every tab that is off. Rust's spelling, kept as it

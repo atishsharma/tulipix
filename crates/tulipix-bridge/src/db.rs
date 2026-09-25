@@ -33,6 +33,10 @@ static CLOUD: OnceCell<SqlitePool> = OnceCell::const_new();
 static TOOLS: OnceCell<SqlitePool> = OnceCell::const_new();
 static FINANCES: OnceCell<SqlitePool> = OnceCell::const_new();
 static VIDEOS: OnceCell<SqlitePool> = OnceCell::const_new();
+static FEEDS: OnceCell<SqlitePool> = OnceCell::const_new();
+static JOURNAL: OnceCell<SqlitePool> = OnceCell::const_new();
+static KITCHEN: OnceCell<SqlitePool> = OnceCell::const_new();
+static PAPERS: OnceCell<SqlitePool> = OnceCell::const_new();
 
 pub async fn photos_pool() -> Result<&'static SqlitePool> {
     PHOTOS
@@ -126,6 +130,57 @@ pub async fn videos_pool() -> Result<&'static SqlitePool> {
             tulipix_videos::stream::downloads::apply_schema(&pool).await?;
             tulipix_videos::stream::feed_cache::apply_schema(&pool).await?;
             tulipix_videos::splus::schema::apply_schema(&pool).await?;
+            Ok(pool)
+        })
+        .await
+}
+
+/// The feeds database: the sites followed, their articles, and highlights.
+///
+/// Opened by hand rather than through `pool_for`, because `pool_for` is the
+/// Slint build's list and there is no Slint Feeds section — this file has one
+/// reader, and it is here.
+pub async fn feeds_pool() -> Result<&'static SqlitePool> {
+    FEEDS
+        .get_or_try_init(|| async {
+            let pool = tulipix_core::db::DbHandle::open("feeds")?.pool().await?;
+            crate::feeds::apply_schema(&pool).await?;
+            Ok(pool)
+        })
+        .await
+}
+
+/// The journal: entries, moods, tags, kept photos and voice notes. Opened by
+/// hand for the reason Feeds is — there is no Slint Journal section.
+pub async fn journal_pool() -> Result<&'static SqlitePool> {
+    JOURNAL
+        .get_or_try_init(|| async {
+            let pool = tulipix_core::db::DbHandle::open("journal")?.pool().await?;
+            crate::journal::apply_schema(&pool).await?;
+            Ok(pool)
+        })
+        .await
+}
+
+/// The kitchen: recipes, the pantry, the week's plan and the shopping list.
+/// Opened by hand, like Feeds and Journal.
+pub async fn kitchen_pool() -> Result<&'static SqlitePool> {
+    KITCHEN
+        .get_or_try_init(|| async {
+            let pool = tulipix_core::db::DbHandle::open("kitchen")?.pool().await?;
+            crate::kitchen::apply_schema(&pool).await?;
+            Ok(pool)
+        })
+        .await
+}
+
+/// Papers: what each paper is, the fields read off it, its reminders and
+/// where its copy lives. Opened by hand, like Kitchen.
+pub async fn papers_pool() -> Result<&'static SqlitePool> {
+    PAPERS
+        .get_or_try_init(|| async {
+            let pool = tulipix_core::db::DbHandle::open("papers")?.pool().await?;
+            crate::papers::apply_schema(&pool).await?;
             Ok(pool)
         })
         .await

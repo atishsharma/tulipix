@@ -1,6 +1,6 @@
 //! Which sections this install shows, in what order, and which one it opens on.
 //!
-//! Tulipix ships ten sections and nobody wants all ten. Somebody installs it for
+//! Tulipix ships fourteen sections and nobody wants all fourteen. Somebody installs it for
 //! Photos and Music and will never open Finances; somebody else wants Finances
 //! and Transfer and no media at all. The sidebar was a const list, so there was
 //! no way to say so.
@@ -19,9 +19,9 @@ use crate::settings::Settings;
 /// Every section, in the order a fresh install shows them. The ids are a
 /// storage format — they are what `section.<id>` is keyed on — so renaming one
 /// silently resets that section to shown.
-pub const ALL: [&str; 10] = [
+pub const ALL: [&str; 14] = [
     "home", "photos", "videos", "music", "books", "cloud", "tools", "transfer", "finances",
-    "settings",
+    "feeds", "journal", "kitchen", "papers", "settings",
 ];
 
 /// Settings is how you get back. It cannot be hidden, and it is pinned last —
@@ -224,7 +224,7 @@ pub fn preset(name: &str) -> Option<&'static [&'static str]> {
     Some(match name {
         "all" => &ALL,
         "media" => &["home", "photos", "videos", "music", "books", "settings"],
-        "work" => &["home", "cloud", "tools", "transfer", "finances", "settings"],
+        "work" => &["home", "cloud", "tools", "transfer", "finances", "papers", "settings"],
         "photos" => &["photos", "settings"],
         // Nothing that indexes in the background except what you look at.
         "lean" => &["home", "photos", "music", "settings"],
