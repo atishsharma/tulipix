@@ -265,6 +265,18 @@ pub enum PhotosCmd {
     Trash { item_ids: Vec<i64> },
     Restore { item_ids: Vec<i64> },
     AlbumNew { name: String },
+    /// A smart album: every photo its rule matches, read afresh each time the
+    /// album is. Empty text and 0 years are left out; every rule given must
+    /// hold. At least one is required.
+    AlbumNewSmart {
+        name: String,
+        tag: String,
+        person: String,
+        camera: String,
+        year_from: i64,
+        year_to: i64,
+        starred: bool,
+    },
     AlbumRename { album_id: i64, name: String },
     AlbumDelete { album_id: i64 },
     AlbumAdd { album_id: i64, item_ids: Vec<i64> },
@@ -364,7 +376,7 @@ fn events() -> &'static Mutex<Vec<StreamSink<PhotosEvent>>> {
     E.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn emit(event: PhotosEvent) {
+pub(crate) fn emit(event: PhotosEvent) {
     if let Ok(mut sinks) = events().lock() {
         // `add` fails once Dart has cancelled the subscription. Dropping those
         // sinks here is the only place they get collected — the page cancels on
@@ -447,6 +459,11 @@ pub async fn photos_dispatch(cmd: PhotosCmd) -> Result<PhotosState> {
         }
         PhotosCmd::AlbumNew { name } => {
             tulipix_photos::albums::create(pool, &name).await?;
+        }
+        PhotosCmd::AlbumNewSmart { name, tag, person, camera, year_from, year_to, starred } => {
+            let rule = smart_rule(&tag, &person, &camera, year_from, year_to, starred)?;
+            let id = tulipix_photos::albums::create(pool, &name).await?;
+            tulipix_photos::smart_albums::save_rule(pool, id, &rule).await?;
         }
         PhotosCmd::AlbumRename { album_id, name } => {
             tulipix_photos::albums::rename(pool, album_id, &name).await?;
@@ -1449,11 +1466,14 @@ async fn category_filter(pool: &sqlx::SqlitePool, s: &Session) -> Result<String>
         "archive" => format!("{LIVE} AND pm.archived = 1"),
         "trash" => "pm.deleted_at IS NOT NULL".into(),
         "places" => format!("{LIVE} AND pm.gps_lat IS NOT NULL AND pm.gps_lon IS NOT NULL"),
-        "album" => format!(
-            "{LIVE} AND items.id IN \
-             (SELECT item_id FROM album_items WHERE album_id = {})",
-            s.album_id
-        ),
+        "album" => match smart_rule_of(pool, s.album_id).await? {
+            Some(rule) => id_in(LIVE, smart_match(pool, &rule).await?.into_iter()),
+            None => format!(
+                "{LIVE} AND items.id IN \
+                 (SELECT item_id FROM album_items WHERE album_id = {})",
+                s.album_id
+            ),
+        },
         "memories" => {
             let hits = tulipix_photos::memories::on_this_day(pool, now_secs()).await?;
             id_in(LIVE, hits.into_iter().map(|h| h.item_id))
@@ -1523,6 +1543,61 @@ fn month_label(unix: i64) -> String {
         .unwrap_or_else(|| "Undated".into())
 }
 
+/// The rule a smart album is stored with; None for an album filled by hand.
+async fn smart_rule_of(pool: &sqlx::SqlitePool, album_id: i64) -> Result<Option<String>> {
+    let rule: Option<Option<String>> =
+        sqlx::query_scalar("SELECT smart_rule FROM albums WHERE id = ?")
+            .bind(album_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(rule.flatten())
+}
+
+/// The photos a stored rule matches right now.
+async fn smart_match(pool: &sqlx::SqlitePool, rule: &str) -> Result<Vec<i64>> {
+    let rule: serde_json::Value = serde_json::from_str(rule)?;
+    let compiled = tulipix_photos::smart_albums::compile(&rule)?;
+    tulipix_photos::smart_albums::matches(pool, &compiled).await
+}
+
+/// The rule for a new smart album, from the dialog's fields.
+fn smart_rule(
+    tag: &str,
+    person: &str,
+    camera: &str,
+    year_from: i64,
+    year_to: i64,
+    starred: bool,
+) -> Result<serde_json::Value> {
+    use serde_json::json;
+    let mut all = Vec::new();
+    if !tag.trim().is_empty() {
+        all.push(json!({ "tag": tag.trim() }));
+    }
+    if !person.trim().is_empty() {
+        all.push(json!({ "person": person.trim() }));
+    }
+    if !camera.trim().is_empty() {
+        all.push(json!({ "camera": camera.trim() }));
+    }
+    if year_from > 0 {
+        all.push(json!({ "year": { ">=": year_from } }));
+    }
+    if year_to > 0 {
+        all.push(json!({ "year": { "<=": year_to } }));
+    }
+    if starred {
+        all.push(json!({ "starred": true }));
+    }
+    if all.is_empty() {
+        anyhow::bail!("Give the smart album at least one rule");
+    }
+    let rule = json!({ "and": all });
+    // Refused here rather than stored and failing every time it is opened.
+    tulipix_photos::smart_albums::compile(&rule)?;
+    Ok(rule)
+}
+
 async fn albums(pool: &sqlx::SqlitePool) -> Result<Vec<AlbumCard>> {
     let rows: Vec<(i64, String, Option<String>, i64, Option<i64>)> = sqlx::query_as(
         "SELECT a.id, a.name, a.smart_rule, \
@@ -1533,6 +1608,16 @@ async fn albums(pool: &sqlx::SqlitePool) -> Result<Vec<AlbumCard>> {
     )
     .fetch_all(pool)
     .await?;
+    let mut rows = rows;
+    // A smart album holds no album_items: its count and cover are whatever the
+    // rule matches now.
+    for r in rows.iter_mut() {
+        if let Some(rule) = &r.2 {
+            let ids = smart_match(pool, rule).await.unwrap_or_default();
+            r.3 = ids.len() as i64;
+            r.4 = ids.first().copied();
+        }
+    }
     let covers = covers(pool, rows.iter().filter_map(|r| r.4)).await?;
     Ok(rows
         .into_iter()
@@ -1828,6 +1913,20 @@ fn add_watched_folder(dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smart_rule_keeps_only_the_fields_given() {
+        let r = smart_rule(" beach ", "", "", 2020, 0, true).unwrap();
+        assert_eq!(
+            r,
+            serde_json::json!({ "and": [
+                { "tag": "beach" },
+                { "year": { ">=": 2020 } },
+                { "starred": true },
+            ] })
+        );
+        assert!(smart_rule("", " ", "", 0, 0, false).is_err(), "no rule at all is refused");
+    }
 
     #[test]
     fn month_label_buckets_undated_separately() {

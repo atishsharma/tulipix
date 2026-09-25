@@ -1,19 +1,18 @@
 # Release builds of the Flutter app: Linux (tar.gz), Windows (portable zip),
-# macOS (dmg). The Slint app keeps release.yml until this replaces it.
+# macOS (dmg).
 #
-# Trigger: a `flutter-v*` tag -- deliberately not `v*`, which is release.yml's
-# and would build the Slint app from the same commit. A tag runs the workflow
-# file in the tagged commit, so this works from flport without a merge. Manual
-# dispatch builds artifacts without publishing (the button needs a copy of this
-# file on the default branch).
+# Trigger: a `flutter-v*` tag. A tag runs the workflow file in the tagged
+# commit, so this works from any branch. Manual dispatch builds artifacts
+# without publishing (the button needs a copy of this file on the default
+# branch).
 #
 # Every job does the same five things: toolchains, codegen (the bindings are
 # not committed), `flutter build <os> --release` (cargokit compiles the bridge
 # with the features in crates/tulipix-bridge/cargokit.yaml), the bundled tools
 # beside the executable, and an archive.
 #
-# ponytail: one archive per OS. deb/rpm/AppImage and the Inno Setup installer
-# are release.yml's and come across once this build is known good.
+# ponytail: one archive per OS. deb/rpm/AppImage and an installer (the Inno
+# Setup script is in packaging/windows/) come once this build is known good.
 
 name: flutter-release
 on:
@@ -23,10 +22,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  FLUTTER_VERSION: "3.47.4"
+  FLUTTER_VERSION: "3.47.5"
   FRB_VERSION: "2.13.0"
   # The bridge's release profile is fat LTO in one codegen unit. Right for a
-  # local release, and the same shape that OOM-killed release.yml's runners:
+  # local release, and the shape that OOM-killed the old Slint release runners:
   # thin LTO over many units is the lever that kept those alive.
   CARGO_PROFILE_RELEASE_LTO: "thin"
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
@@ -56,7 +55,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
             libstdc++-12-dev libmpv-dev mold libdbus-1-dev libwayland-dev \
-            libxkbcommon-dev lld
+            libxkbcommon-dev lld libssl-dev
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -65,7 +64,7 @@ jobs:
           key: flutter-ort-v1
           # ort-sys downloads ONNX Runtime here and points rustc at it; it has
           # to be cached with target/ or a restored build is sent to a path the
-          # runner never had (see release.yml).
+          # runner never had.
           cache-directories: ~/.cache/ort.pyke.io
       - uses: subosito/flutter-action@v2
         with:
@@ -183,7 +182,7 @@ jobs:
         run: cargo run -p fetch-resources
 
       - name: Pagefile headroom
-        # rustc's link step on the bridge; see release.yml for the history.
+        # The bridge's link step needs more memory than the default pagefile gives.
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -202,6 +201,9 @@ jobs:
         shell: bash
         env:
           CARGO_BUILD_JOBS: "2"
+          # db-encrypt compiles OpenSSL from source here. Git for Windows puts
+          # its own Perl on PATH, which lacks modules OpenSSL's Configure needs.
+          OPENSSL_SRC_PERL: C:/Strawberry/perl/bin/perl.exe
         run: flutter build windows --release --build-name "${VERSION%%-*}"
 
       - name: Portable zip

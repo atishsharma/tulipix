@@ -160,10 +160,14 @@ pub fn state() -> State {
 /// The database files this touches. The section databases and nothing else:
 /// the thumbnail cache holds no index, and the settings file is not a
 /// database.
+///
+/// Every name `DbHandle::open` is ever given has to be here. The open applies
+/// the key to all of them once the switch is on, so a file this list skips
+/// stays plain and then refuses to open under a key.
 pub fn section_paths() -> Vec<std::path::PathBuf> {
-    const FILES: [&str; 14] = [
+    const FILES: [&str; 16] = [
         "photos", "videos", "music", "books", "cloud", "podcasts", "radio", "youtube", "tools",
-        "transfers", "feeds", "journal", "kitchen", "papers",
+        "transfers", "feeds", "journal", "kitchen", "papers", "finances", "genesis",
     ];
     FILES.iter().filter_map(|s| paths::db_path(s)).collect()
 }
@@ -232,10 +236,12 @@ fn convert(path: &std::path::Path, key_hex: &str, to_encrypted: bool) -> Result<
         let mut conn = opts.connect().await?;
         // The target: keyed when it is the one being written.
         let key = if to_encrypted { blob_literal(key_hex) } else { "''".to_string() };
-        sqlx::raw_sql(&format!(
+        // Our own path, quoted by `sql_path`, and our own hex key: nothing a
+        // user typed reaches this string.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "ATTACH DATABASE '{}' AS target KEY {key}",
             sql_path(&tmp)
-        ))
+        )))
         .execute(&mut conn)
         .await?;
         sqlx::raw_sql("SELECT sqlcipher_export('target')")

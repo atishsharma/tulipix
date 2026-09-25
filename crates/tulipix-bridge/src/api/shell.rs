@@ -101,8 +101,10 @@ pub async fn shell_dispatch(cmd: ShellCmd) -> Result<ShellState> {
 }
 
 async fn snapshot() -> Result<ShellState> {
-    // The first snapshot is taken at launch; the auto-rescan loop starts with it.
+    // The first snapshot is taken at launch; the auto-rescan loop and the live
+    // folder watcher start with it.
     crate::api::maintenance::start_auto_rescan();
+    crate::api::maintenance::start_fs_watcher();
     // The photo indexer's own loop. It lived in tulipix-app's runtime, so on
     // this build nothing ever picked the queue up without a button press.
     crate::api::photos::start_ai_indexer();

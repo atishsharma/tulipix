@@ -74,7 +74,7 @@ void main() {
   test('the window is the base size times the widget scale', () {
     expect(c.widgetWindow.width, 441);
     expect(c.widgetWindow.height, 212);
-    c.scaleWidget(1.2); // DEFAULT_SCALE — what the Slint window opens at
+    c.scaleWidget(1.2); // DEFAULT_SCALE — what the widget opens at
     expect(c.widgetWindow.width, closeTo(529.2, 0.01));
     expect(c.widgetWindow.height, closeTo(254.4, 0.01));
   });

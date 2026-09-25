@@ -41,15 +41,14 @@ async-trait = "0.1"
 getrandom.workspace = true
 tokio = { workspace = true }
 # In-process photo decode for the thumbnail cache, so a JPEG/PNG thumb does not
-# cost an ffmpeg subprocess. Same version and feature set as tulipix-photos and
-# tulipix-sec-photos (and Slint's own dependency), so cargo unifies it and this
-# adds nothing to the build that was not already being compiled.
+# cost an ffmpeg subprocess. Same version and feature set as tulipix-photos, so
+# cargo unifies it and this adds nothing to the build.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 
 [features]
-# SQLCipher, compiled in. Off by default: it builds SQLCipher from source and
-# links the system OpenSSL, which is a real build requirement to put on
-# everyone for a setting most people leave off. With it, Settings › Security ›
+# SQLCipher, compiled in. Off by default, so `just dev` and the library tests
+# do not build SQLCipher; release and profile builds turn it on through
+# crates/tulipix-bridge/cargokit.yaml. With it, Settings › Security ›
 # "Encrypt the library database" works; without it, that row says so.
 #
 # libsqlite3-sys is not used directly -- it is here so cargo's feature
@@ -59,6 +58,15 @@ db-encrypt = ["dep:libsqlite3-sys"]
 [dependencies.libsqlite3-sys]
 version = "0.37"
 features = ["bundled-sqlcipher"]
+optional = true
+
+# SQLCipher's crypto per OS: macOS uses CommonCrypto, Linux links the system
+# libcrypto (build needs its headers, libssl-dev), and Windows has no system
+# OpenSSL to find -- the build panics without OPENSSL_DIR -- so OpenSSL is
+# compiled in from source there. That needs Perl (Strawberry, not Git's).
+[target.'cfg(windows)'.dependencies.libsqlite3-sys]
+version = "0.37"
+features = ["bundled-sqlcipher-vendored-openssl"]
 optional = true
 
 # libsqlite3-sys is never named in the code: it is a link-time swap for

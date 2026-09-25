@@ -624,6 +624,152 @@ pub(crate) fn start_auto_rescan() {
     });
 }
 
+/// The live half of watched folders; `start_auto_rescan` is the scheduled
+/// half. Started once, from the shell's first snapshot.
+///
+/// A delete or rename is applied to the section databases at once, and the
+/// pages are told to re-read. A new file makes its watched folder due a rescan
+/// once the folder has been quiet for a few seconds, so a large copy is not
+/// read half-written. A write on its own never starts a scan: that keeps a
+/// scanner from waking itself up.
+pub(crate) fn start_fs_watcher() {
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    // No folders yet is fine: the loop attaches them as they are added.
+    let watcher = match tulipix_core::watcher::spawn(&Default::default(), tx) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!(error = %e, "fs watcher could not start; watched folders rescan on their schedule only");
+            return;
+        }
+    };
+    tulipix_core::watcher::install(watcher);
+    let rt = tokio::runtime::Handle::current();
+    // Book roots are rows in books.db rather than watched folders.
+    rt.spawn(async {
+        if let Ok(pool) = crate::db::books_pool().await {
+            tulipix_books::scan::watch_folders(pool).await;
+        }
+    });
+    let spawned = std::thread::Builder::new()
+        .name("tulipix-fsapply".into())
+        .spawn(move || fs_apply_loop(rx, rt));
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "fs watcher thread did not start");
+    }
+}
+
+fn fs_apply_loop(
+    rx: std::sync::mpsc::Receiver<tulipix_core::watcher::FsEvent>,
+    rt: tokio::runtime::Handle,
+) {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Instant;
+    use tulipix_core::watcher::FsEvent;
+
+    const QUIET: Duration = Duration::from_secs(5);
+    let mut attached: HashSet<PathBuf> = HashSet::new();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut roots_read: Option<Instant> = None;
+    // Watched folder -> when something last landed in it.
+    let mut due: HashMap<PathBuf, Instant> = HashMap::new();
+    loop {
+        // Five writers keep watched_folders.json; re-reading it is how a folder
+        // added anywhere gets attached without a restart.
+        if roots_read.is_none_or(|t| t.elapsed() >= QUIET) {
+            roots = tulipix_common::load_watched_folders();
+            for r in roots.iter().filter(|r| r.is_dir()) {
+                if attached.insert(r.clone()) {
+                    tulipix_core::watcher::watch_path(r);
+                }
+            }
+            roots_read = Some(Instant::now());
+        }
+        let first = match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(e) => Some(e),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
+        if let Some(first) = first {
+            // A burst (a bulk delete, a folder move) becomes one pass.
+            let mut batch = vec![first];
+            std::thread::sleep(Duration::from_millis(350));
+            batch.extend(rx.try_iter());
+            let root_of = |p: &Path| roots.iter().find(|r| p.starts_with(r)).cloned();
+            let mut moved = false;
+            for e in &batch {
+                match e {
+                    FsEvent::Created(p) => {
+                        if let Some(r) = root_of(p.as_path()) {
+                            due.insert(r, Instant::now());
+                        }
+                    }
+                    FsEvent::Modified(p) => {
+                        if let Some(t) = root_of(p.as_path()).and_then(|r| due.get_mut(&r)) {
+                            *t = Instant::now();
+                        }
+                    }
+                    FsEvent::Renamed { to, .. } => {
+                        moved = true;
+                        // Moved in from outside: no row to rename, so read it.
+                        if let Some(r) = root_of(to.as_path()) {
+                            due.insert(r, Instant::now());
+                        }
+                    }
+                    FsEvent::Deleted(_) => moved = true,
+                }
+            }
+            if moved {
+                rt.spawn(apply_fs_moves(batch));
+            }
+        }
+        let ready: Vec<PathBuf> =
+            due.iter().filter(|(_, t)| t.elapsed() >= QUIET).map(|(r, _)| r.clone()).collect();
+        for r in ready {
+            let _in_runtime = rt.enter();
+            // Busy with another job: stays due, and is tried again next second.
+            if start_rescan(r.clone()).is_empty() {
+                due.remove(&r);
+            }
+        }
+    }
+}
+
+/// Deletes and renames, applied where the rows live, then every page that
+/// shows them re-reads.
+async fn apply_fs_moves(batch: Vec<tulipix_core::watcher::FsEvent>) {
+    let pools = [
+        crate::db::photos_pool().await,
+        crate::db::videos_pool().await,
+        crate::db::music_pool().await,
+        crate::db::cloud_pool().await,
+    ];
+    for pool in pools.into_iter().flatten() {
+        for e in &batch {
+            let _ = tulipix_core::watcher::apply_event(pool, e).await;
+        }
+    }
+    // Books keep their own `missing` flag, which apply_event does not know.
+    if let Ok(pool) = crate::db::books_pool().await {
+        if let Ok(n) = tulipix_books::scan::reconcile_missing(pool).await {
+            if n > 0 {
+                crate::api::books::emit(crate::api::books::BooksEvent::ScanFinished {
+                    added: 0,
+                    updated: 0,
+                    missing: n as i64,
+                });
+            }
+        }
+    }
+    crate::api::photos::emit(crate::api::photos::PhotosEvent::Stale);
+    crate::api::videos::emit(crate::api::videos::VideosEvent::Changed);
+    crate::api::music::emit(crate::api::music::MusicEvent::Stale);
+}
+
 async fn auto_rescan_tick() {
     use tulipix_core::libraries::{Library, ScanCadence, Section};
     use tulipix_core::power_aware as pa;

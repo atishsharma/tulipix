@@ -19,7 +19,7 @@ license.workspace = true
 # connection — and porting to reqwest would reintroduce exactly the
 # parser-disagreement gap that closes. `rustls` is already in the lockfile via
 # reqwest, so the marginal cost is ureq itself. The async bridge is one
-# `spawn_blocking` in tulipix-sec-genesis.
+# `spawn_blocking` in the Flutter bridge (api/genesis.rs).
 ureq = "3.3"
 anyhow = { workspace = true }
 sqlx = { workspace = true }

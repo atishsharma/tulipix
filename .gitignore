@@ -52,18 +52,13 @@ QODER.md
 .playwright-mcp/
 docs/
 target/
-target-dev/
-target-dev-lite/
 target-test/
-target-lint/
 .rtk/
 .windsurfrules
 tulipix_plan.html
 .directory/
 .cursorrules
 resources/bin/
-target-dev/
-target-win/
 # brainstorming visual companion artifacts
 .superpowers/
 # mdl upstream source — kept locally for reference, not shipped to GitHub

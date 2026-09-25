@@ -78,6 +78,21 @@ pub fn init_app() {
     // pre-filled issue in the browser and the user decides.
     tulipix_core::crash::install_panic_hook();
 
+    // What each tier may do, and the daily quotas for the app's own API keys.
+    // Unloaded, every capability check fails closed and every quota reads 0.
+    // A local override sits beside the data (or TULIPIX_CAPS_OVERRIDE names
+    // one) and wins key by key.
+    let override_body = std::env::var_os("TULIPIX_CAPS_OVERRIDE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| tulipix_common::dirs_default().map(|d| d.join("capabilities.local.toml")))
+        .and_then(|p| std::fs::read_to_string(p).ok());
+    if let Err(e) = tulipix_core::caps::load_from_toml(
+        include_str!("../../../../resources/capabilities.toml"),
+        override_body.as_deref(),
+    ) {
+        tracing::warn!(error = %e, "capabilities load failed; every check denies");
+    }
+
     // yt-dlp goes stale on its own schedule: sites change, and a binary a few
     // weeks old starts answering 403 on downloads that worked yesterday. This
     // is the weekly check — background thread, at most one network call a week,

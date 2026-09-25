@@ -32,10 +32,11 @@ import 'package:tulipix/design/tokens.dart';
 
 void main() {
   group('DesignLanguage', () {
-    test('Standard is spelled as Slint spells it, and Slint-only names are '
-        'Standard', () {
+    test('Standard keeps its stored id, and retired names read as Standard',
+        () {
       expect(DesignLanguage.standard.id, 'standard');
-      // What the Slint build still writes for the two Flutter dropped.
+      // What a settings file from the old Slint build holds for the two
+      // languages Flutter dropped.
       expect(DesignLanguage.fromId('clay'), DesignLanguage.standard);
       expect(DesignLanguage.fromId('skeuo'), DesignLanguage.standard);
     });

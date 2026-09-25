@@ -5,9 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 # Core of the Finances section: schema, money arithmetic, ledger queries,
-# recurrence engine, import. Deliberately free of Slint and of every UI type —
-# that lives in tulipix-sec-finances — so this crate runs in the light CI `test`
-# job with no renderer, no libmpv and no display.
+# recurrence engine, import. Deliberately free of every UI type, so this crate
+# runs in the light CI `test` job with no renderer, no libmpv and no display.
 
 [dependencies]
 anyhow = { workspace = true }

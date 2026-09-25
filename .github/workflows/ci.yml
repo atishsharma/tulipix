@@ -1,9 +1,6 @@
-# The test suite, scoped lints, and a compile check of the per-OS code that a
-# Linux runner cannot see.
-#
-# Deliberately not a release build. release.yml already does the heavy
-# skia builds and takes over an hour; this is meant to finish in
-# minutes, so it uses the lean femtovg feature set and skips packaging.
+# The Rust libraries' test suite, scoped lints, and a compile check of the
+# per-OS code that a Linux runner cannot see. The Flutter app and its bridge
+# are built by flutter-release.yml.
 #
 # Manual only. It used to run on every push, which meant a three-push session
 # spent 18 jobs on the same tree and left the release build queueing behind its
@@ -29,13 +26,7 @@ env:
 # decision a CI file should make. A tuned rustfmt.toml would be the way in.
 
 jobs:
-  # Named packages rather than `--workspace --exclude`, because of how the
-  # renderer feature works: slint pulls its winit backend by default, and that
-  # backend only compiles when a renderer feature is selected — which happens in
-  # tulipix-app. Excluding the app from a workspace build therefore leaves slint
-  # with no renderer and fails inside i-slint-backend-winit, in code that is not
-  # ours. These 14 crates touch no slint at all and hold ~1,013 of the 1,047
-  # tests; the slint-dependent ones are covered by test-ui and check-app below.
+  # Named packages, so a crate joins CI on purpose rather than by accident.
   test:
     runs-on: ubuntu-24.04
     steps:
@@ -87,84 +78,6 @@ jobs:
           -p tulipix-plugins -p tulipix-cli -p tulipix-transfer -p tulipix-genesis
           -p tulipix-finances --all-targets --
           -A warnings -D clippy::correctness -D clippy::suspicious
-
-  # Compile-check the app itself in the lean renderer configuration. `check`
-  # rather than `build`: this is about catching type errors in main.rs, and a
-  # full link of the app is what makes release.yml slow and memory-hungry.
-  check-app:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with: { key: ci-app }
-      - name: System deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            mold libdbus-1-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libwayland-dev
-      # `genesis` is opt-in and lives behind --no-default-features here, so it
-      # has to be named explicitly or tulipix-sec-genesis is never compiled by
-      # any job — which is exactly how four type errors in it reached a push.
-      - run: cargo check -p tulipix-app --no-default-features --features renderer-femtovg,genesis,finances
-
-  # The UI-glue crates' own tests (~30). They need a renderer selected, which
-  # only tulipix-app's features can do, so the app is built alongside them —
-  # with femtovg, which skips the skia-bindings C++ build on the runner.
-  test-ui:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with: { key: ci-ui }
-      - name: System deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            mold libdbus-1-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libwayland-dev
-      # Unlike check-app, this job codegens and links real test binaries for
-      # tulipix-app and every sec crate — the heaviest thing in CI after a
-      # release build, and it has died at exit 143 twice, the second time seven
-      # minutes into one crate with the runner itself shutting down.
-      #
-      # The image already ships a 4 GB /swapfile (a first attempt to create one
-      # failed with "Text file busy"), so the kill happened with ~20 GB
-      # available, which is more than a single rustc should ever want. Add room
-      # on /mnt, the large ephemeral disk, and measure instead of guessing
-      # again: the sampler below prints the trajectory as it goes, so even a
-      # killed job leaves evidence of how close to the limit it got.
-      - name: Give the runner more swap
-        run: |
-          sudo fallocate -l 12G /mnt/swapfile
-          sudo chmod 600 /mnt/swapfile
-          sudo mkswap /mnt/swapfile
-          sudo swapon /mnt/swapfile
-          swapon --show
-          free -h
-      - name: Test the UI-glue crates
-        env:
-          CARGO_BUILD_JOBS: "1"
-          CARGO_PROFILE_TEST_DEBUG: "false"
-          CARGO_PROFILE_DEV_DEBUG: "false"
-          # Fewer codegen units means fewer LLVM modules alive at once. It costs
-          # some parallelism, which this job has already given up via -j 1.
-          CARGO_PROFILE_TEST_CODEGEN_UNITS: "4"
-          CARGO_PROFILE_DEV_CODEGEN_UNITS: "4"
-        run: |
-          ( while sleep 20; do
-              free -m | awk 'NR==2 {printf "mem: used %sM avail %sM", $3, $7}'
-              free -m | awk 'NR==3 {printf "  swap: used %sM\n", $3}'
-            done ) &
-          sampler=$!
-          trap 'kill $sampler 2>/dev/null' EXIT
-          cargo test --no-fail-fast -p tulipix-sec-videos -p tulipix-sec-books \
-            -p tulipix-sec-music -p tulipix-sec-transfer -p tulipix-sec-genesis \
-          -p tulipix-sec-finances \
-            -p tulipix-app \
-            --no-default-features --features tulipix-app/renderer-femtovg,tulipix-app/genesis
 
   # tulipix-platform is where the per-OS shell integration lives: the AppleScript
   # trash call, the PowerShell one, explorer.exe launches, assoc/ftype. All of it

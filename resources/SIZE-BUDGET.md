@@ -19,7 +19,7 @@
 | exiftool (Perl bundle) | ~25 MB |
 | **Bundled total** | **~305 MB** |
 
-App binary (Slint UI + crates, release LTO): ~25-40 MB → total stays under cap.
+App (Flutter engine + Rust bridge, release): ~40-60 MB → total stays under cap.
 
 ## Audit
 ```bash

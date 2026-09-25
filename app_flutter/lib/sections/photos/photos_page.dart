@@ -601,6 +601,23 @@ class _AlbumsGrid extends StatelessWidget {
         action: ('New album', () => _promptNewAlbum(context, controller)),
       );
     }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+          child: FilledButton.tonalIcon(
+            onPressed: () => _promptNewAlbum(context, controller),
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('New album'),
+          ),
+        ),
+        Expanded(child: _albumGrid(context, t)),
+      ],
+    );
+  }
+
+  Widget _albumGrid(BuildContext context, Tokens t) {
     return GridView.builder(
       padding: const EdgeInsets.all(20),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
@@ -745,6 +762,9 @@ Future<String?> _promptText(
   return out?.trim();
 }
 
+/// What the New album dialog hands back when "Smart album…" is pressed.
+const _smart = '\u0000smart';
+
 Future<void> _promptNewAlbum(BuildContext context, PhotosController c) async {
   final field = TextEditingController();
   final name = await showDialog<String>(
@@ -758,6 +778,10 @@ Future<void> _promptNewAlbum(BuildContext context, PhotosController c) async {
       ),
       actions: [
         TextButton(
+          onPressed: () => Navigator.pop(ctx, _smart),
+          child: const Text('Smart album…'),
+        ),
+        TextButton(
             onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
         FilledButton(
           onPressed: () => Navigator.pop(ctx, field.text),
@@ -766,9 +790,102 @@ Future<void> _promptNewAlbum(BuildContext context, PhotosController c) async {
       ],
     ),
   );
+  final typed = field.text.trim();
   field.dispose();
+  if (name == _smart) {
+    if (context.mounted) await _promptSmartAlbum(context, c, typed);
+    return;
+  }
   final trimmed = name?.trim() ?? '';
   if (trimmed.isNotEmpty) await c.send(PhotosCmd.albumNew(name: trimmed));
+}
+
+/// A smart album fills itself: every photo matching all the rules given,
+/// read afresh each time the album is opened.
+Future<void> _promptSmartAlbum(
+  BuildContext context,
+  PhotosController c,
+  String name,
+) async {
+  final fields = {
+    for (final k in ['name', 'tag', 'person', 'camera', 'from', 'to'])
+      k: TextEditingController(),
+  };
+  fields['name']!.text = name;
+  var starred = false;
+  Widget box(String key, String label, {String? hint, bool year = false}) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: TextField(
+          controller: fields[key],
+          keyboardType: year ? TextInputType.number : null,
+          decoration: InputDecoration(labelText: label, hintText: hint),
+        ),
+      );
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) => AlertDialog(
+        title: const Text('New smart album'),
+        content: SizedBox(
+          width: 380,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                box('name', 'Name'),
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 10),
+                  child: Text('Photos that match every rule you fill in:'),
+                ),
+                box('tag', 'Tag', hint: 'beach'),
+                box('person', 'Person', hint: 'A name from People'),
+                box('camera', 'Camera', hint: 'Part of the model, e.g. Pixel'),
+                Row(
+                  children: [
+                    Expanded(child: box('from', 'From year', year: true)),
+                    const SizedBox(width: 12),
+                    Expanded(child: box('to', 'To year', year: true)),
+                  ],
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: starred,
+                  onChanged: (v) => setLocal(() => starred = v),
+                  title: const Text('Starred only'),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    ),
+  );
+  final v = {for (final e in fields.entries) e.key: e.value.text.trim()};
+  for (final f in fields.values) {
+    f.dispose();
+  }
+  if (ok != true || v['name']!.isEmpty) return;
+  await c.send(PhotosCmd.albumNewSmart(
+    name: v['name']!,
+    tag: v['tag']!,
+    person: v['person']!,
+    camera: v['camera']!,
+    yearFrom: int.tryParse(v['from']!) ?? 0,
+    yearTo: int.tryParse(v['to']!) ?? 0,
+    starred: starred,
+  ));
 }
 
 class _FolderList extends StatelessWidget {

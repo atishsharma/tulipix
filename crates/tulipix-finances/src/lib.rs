@@ -1,9 +1,8 @@
 //! Finances — core.
 //!
-//! Everything in this section that is not Slint. The UI glue lives in
-//! `tulipix-sec-finances`; nothing here knows a window exists, which is what
-//! lets the money arithmetic and the recurrence engine be tested in CI with no
-//! renderer and no display.
+//! Everything in this section that is not UI. Nothing here knows a window
+//! exists, which is what lets the money arithmetic and the recurrence engine be
+//! tested in CI with no renderer and no display.
 //!
 //! # The shape of the model
 //!

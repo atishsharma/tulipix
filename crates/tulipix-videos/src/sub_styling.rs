@@ -1,12 +1,7 @@
 //! Subtitle styling — engine-independent.
 //!
-//! Slint draws the overlay; mpv produces the cue text + timing. The struct
-//! here is what the user edits in Settings → Subtitles, persisted as JSON,
-//! and projected onto either path via the helpers below:
-//!  * `to_mpv_options()` — flag tuples for the mpv subtitle renderer
-//!    (used when mpv's own renderer handles the track, e.g. ASS files).
-//!  * `to_slint_props()` — design-token-style strings that the Slint overlay
-//!    binds directly (used for SRT/VTT we render ourselves).
+//! The struct here is what the user edits in Settings → Subtitles, persisted
+//! as JSON, and projected onto mpv's subtitle renderer by `to_mpv_options()`.
 
 use serde::{Deserialize, Serialize};
 
@@ -80,25 +75,6 @@ impl SubtitleStyle {
         opts.push(("sub-pos".into(), format!("{:.0}", (0.5 + self.vertical_offset) * 100.0)));
         opts
     }
-
-    pub fn to_slint_props(&self) -> Vec<(String, String)> {
-        vec![
-            ("font-family".into(), self.font_family.clone()),
-            ("font-size".into(), format!("{:.0}px", self.font_size_px)),
-            ("font-weight".into(), (if self.bold { "700" } else { "400" }).into()),
-            ("font-style".into(), (if self.italic { "italic" } else { "normal" }).into()),
-            ("color".into(), with_alpha(&self.color, self.opacity)),
-            ("text-stroke".into(), match self.edge {
-                SubEdge::Outline => format!("2px {}", self.edge_color),
-                SubEdge::Shadow  => format!("0 2px 4px {}", self.edge_color),
-                SubEdge::Box     => format!("4px {}", self.edge_color),
-                SubEdge::None    => "none".into(),
-            }),
-            ("line-height".into(), format!("{:.2}", self.line_spacing)),
-            ("vertical-anchor".into(), format!("{:?}", self.anchor).to_lowercase()),
-            ("vertical-offset".into(), format!("{:.1}%", self.vertical_offset * 100.0)),
-        ]
-    }
 }
 
 fn with_alpha(hex: &str, opacity: f32) -> String {
@@ -145,13 +121,6 @@ mod tests {
         let mut s = SubtitleStyle::default();
         s.edge = SubEdge::Box;
         assert!(s.to_mpv_options().iter().any(|(k, _)| k == "sub-back-color"));
-    }
-
-    #[test]
-    fn slint_props_carry_stroke_string() {
-        let s = SubtitleStyle::default();
-        let props = s.to_slint_props();
-        assert!(props.iter().any(|(k, v)| k == "text-stroke" && v.contains("2px")));
     }
 
     #[test]

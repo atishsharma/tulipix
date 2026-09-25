@@ -17,14 +17,16 @@
 # object, face and CLIP passes behind Photos > AI. It had been unreachable from
 # a Flutter build, so `make_tagger` and `make_face_models` compiled as the stubs
 # that answer None: the AI tab said "inference: not in this build", models
-# downloaded perfectly and every Run marked nothing and finished instantly. The
-# Slint build has always had it (`run-dev-lite` in the root justfile).
+# downloaded perfectly and every Run marked nothing and finished instantly.
 #
-# Debug is deliberately still without either, as it was: `stage_ready` answers
-# false for the model passes when the feature is absent, so `just dev` says so
-# rather than offering a Run that cannot work.
+# `db-encrypt` is SQLCipher, for Settings › Security's database encryption.
+# See crates/tulipix-core/Cargo.toml for what each OS needs to build it.
+#
+# Debug is deliberately without all three: `stage_ready` answers false for the
+# model passes when the feature is absent, and the encryption row says it is
+# not in this build, so `just dev` offers nothing that cannot work.
 cargo:
   profile:
-    extra_flags: ["--features", "books-tts,ai-onnx"]
+    extra_flags: ["--features", "books-tts,ai-onnx,db-encrypt"]
   release:
-    extra_flags: ["--features", "books-tts,ai-onnx"]
+    extra_flags: ["--features", "books-tts,ai-onnx,db-encrypt"]

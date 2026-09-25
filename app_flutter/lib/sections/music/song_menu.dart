@@ -5,11 +5,9 @@
 // action lived behind a three-dot button on one row shape and nowhere else.
 // This is that menu, as one widget you wrap a row or a tile in.
 //
-// Two rows of Slint's are not here, and it is worth saying why rather than
-// leaving a gap: "Analyze BPM · key · dynamics" decodes the file through
-// `tulipix_sec_music::analysis`, which is a crate that links Slint and so
-// cannot be linked from the bridge. Whatever that pass has already written is
-// read and shown in Properties; nothing here starts one.
+// "Analyse" measures tempo, key and dynamic range for the one track
+// (`music_analyse`, the same pass the library-wide analysis runs) and then
+// opens Properties, which is where those numbers are shown.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -100,6 +98,7 @@ Future<void> showSongMenu(
       const PopupMenuDivider(),
       _row('props', Icons.info_outline, 'Properties'),
       _row('tags', Icons.edit_outlined, 'Edit media info for library'),
+      _row('analyse', Icons.speed, 'Analyse BPM · key · dynamics'),
       _row(
           'sonic',
           Icons.auto_awesome,
@@ -147,6 +146,13 @@ Future<void> showSongMenu(
       await songProperties(context, c, tr);
     case 'tags':
       await editTags(context, c, tr);
+    case 'analyse':
+      // A few seconds of ffmpeg decode; the answer lands in Properties.
+      await musicAnalyse(itemId: tr.itemId);
+      if (!context.mounted) return;
+      await c.refresh();
+      if (!context.mounted) return;
+      await songProperties(context, c, tr);
     case 'sonic':
       await c.send(MusicCmd.songSonic(itemId: tr.itemId));
     case 'stems':
@@ -314,7 +320,7 @@ Future<void> songProperties(
                 line(
                   'Analysis',
                   props.analysis.isEmpty
-                      ? 'Not analysed — run it from the Slint build'
+                      ? 'Not analysed yet — Analyse is in the song menu'
                       : props.analysis,
                 ),
                 if (props.hasVideo) line('Music video', 'Linked'),

@@ -385,6 +385,7 @@ pub fn cloud_events(sink: StreamSink<CloudEvent>) {
 /// Unmount everything this process mounted. Leaving a FUSE mount behind after
 /// the window closes makes the next `rclone mount` on that directory fail, and
 /// the directory itself unreadable until someone runs `fusermount -u` by hand.
+/// Called from the app's exit hook.
 pub async fn cloud_shutdown() -> Result<()> {
     let mounts: Vec<String> = lock().mounts.values().cloned().collect();
     for path in mounts {
@@ -392,6 +393,66 @@ pub async fn cloud_shutdown() -> Result<()> {
     }
     lock().mounts.clear();
     Ok(())
+}
+
+/// The `rclone mount` processes this run started, by mount point. On Linux and
+/// macOS the OS unmount ends them; Windows has no unmount call for a WinFsp
+/// mount, so ending the process is the unmount there.
+fn mount_children() -> MutexGuard<'static, std::collections::HashMap<String, tokio::process::Child>> {
+    static C: OnceLock<Mutex<std::collections::HashMap<String, tokio::process::Child>>> = OnceLock::new();
+    C.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Once per process, before the first snapshot: mounts the database says are
+/// up. One still up (the app crashed, or was killed) goes back into the
+/// session, so Unmount can find it; one that is gone is marked unmounted.
+async fn reconcile_mounts() {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let Ok(pool) = cloud_pool().await else { return };
+    let rows: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT m.remote_id, r.name, m.mount_path FROM mounts m \
+         JOIN remotes r ON r.id = m.remote_id WHERE m.status = 'mounted'",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for (id, name, path) in rows {
+        if is_mounted(&path) {
+            lock().mounts.insert(name, path);
+        } else {
+            mount::set_status(pool, id, "unmounted").await.ok();
+        }
+    }
+}
+
+/// Whether something is mounted at `path` right now.
+fn is_mounted(path: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // Field 5 of mountinfo is the mount point, with spaces as \040.
+        let want = path.trim_end_matches('/').replace(' ', "\\040");
+        std::fs::read_to_string("/proc/self/mountinfo")
+            .map(|t| t.lines().any(|l| l.split(' ').nth(4) == Some(want.as_str())))
+            .unwrap_or(false)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let needle = format!(" on {} (", path.trim_end_matches('/'));
+        std::process::Command::new("mount")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&needle))
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        // A WinFsp mount point exists only while rclone holds it.
+        std::path::Path::new(path).exists()
+    }
 }
 
 // ------------------------------------------------------------------ rclone ---
@@ -526,9 +587,10 @@ async fn unmount_path(path: &str) {
         no_window(&mut c);
         let _ = c.arg(path).status().await;
     }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = path;
+    // After the OS unmount, never before: a FUSE daemon killed first leaves
+    // "transport endpoint is not connected" until something unmounts it.
+    if let Some(mut child) = mount_children().remove(path) {
+        let _ = child.start_kill();
     }
 }
 
@@ -548,6 +610,7 @@ async fn apply(cmd_in: CloudCmd) -> Result<()> {
     match cmd_in {
         CloudCmd::Refresh => {
             sync_remotes().await?;
+            reconcile_mounts().await;
         }
 
         // --- browsing ---
@@ -848,8 +911,9 @@ async fn apply(cmd_in: CloudCmd) -> Result<()> {
             };
             let args = mount::mount_args_cached(&name, &path, kind, vfs, &max_age);
             // `mount` never returns while the mount is up, so it is spawned and
-            // left alone. Its liveness is the mount point, not the child.
-            cmd().args(&args).spawn()?;
+            // kept: `unmount_path` ends it, which on Windows is the unmount.
+            let child = cmd().args(&args).spawn()?;
+            mount_children().insert(path.clone(), child);
             let pool = cloud_pool().await?;
             if let Ok(Some(id)) = remotes::id_of(pool, &name).await {
                 mount::record(pool, id, &path, kind, false).await.ok();

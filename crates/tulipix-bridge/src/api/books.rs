@@ -743,7 +743,7 @@ fn events() -> &'static OnceLock<StreamSink<BooksEvent>> {
     &E
 }
 
-fn emit(e: BooksEvent) {
+pub(crate) fn emit(e: BooksEvent) {
     if let Some(sink) = events().get() {
         let _ = sink.add(e);
     }

@@ -14,10 +14,10 @@
 //! The cells stay: `pool_for` hands back a cloned `SqlitePool`, and these
 //! return `&'static` so callers can hold one across an await without cloning.
 //!
-//! Schema application is a write, and it is one-directional: a Flutter build
+//! Schema application is a write, and it is one-directional: a dev build
 //! pointed at the real data directory can migrate photos.db forward under the
-//! shipping Slint app. Run through `just --justfile justfile.flutter dev`,
-//! which redirects XDG_* at a throwaway copy.
+//! installed app. Run through `just dev`, which redirects XDG_* at a throwaway
+//! copy.
 
 use anyhow::Result;
 use sqlx::SqlitePool;

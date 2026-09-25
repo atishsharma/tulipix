@@ -73,13 +73,13 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 kamadak-exif = "0.6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff", "ico"] }
 # The generated radio station tile (`name_tile`): letters rasterised from the
-# bundled Sora, as tulipix-sec-music already does for its now-playing tile.
+# bundled Sora.
 ab_glyph = "0.2"
 
 # Transfer. The QR is a module matrix, not an image: Dart paints the squares,
 # which is a twentieth of the bytes and stays crisp when the code is enlarged.
-# default-features off for the same reason tulipix-sec-transfer does it — the
-# image converters go through resvg + tiny-skia to rasterise an SVG.
+# default-features off: the image converters go through resvg + tiny-skia to
+# rasterise an SVG.
 fast_qr = { version = "0.14", default-features = false }
 
 # Videos. Poster and channel-logo caches are keyed by a hash of the remote URL,
@@ -118,21 +118,9 @@ instant-acme = { version = "0.8.5", default-features = false, features = ["ring"
 # the root workspace: a second rustls in one process is a second root store.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
 
-# There is no slint in this file, and that is the point. It used to be here --
-# `renderer-software`, declared purely so `slint/backend-winit`'s compile_error!
-# would stop firing -- because tulipix-common carried an unconditional slint dep
-# for two histogram helpers nothing here calls. That dep is `optional` now,
-# behind tulipix-common's `histogram` feature, which only the three Slint-only
-# crates turn on. 289 crates of slint, winit, fontique and the software renderer
-# left this cdylib's build with it. Do not re-add it; if something here ever
-# fails to link for want of a renderer, the real cause is a new path into
-# `histogram`, and that path is the bug.
-
-# Frozen domain crates, by relative path.
+# Domain crates, by relative path.
 #
-# `tulipix-common` used to be excluded here on the grounds that it depends on
-# slint and nothing the bridge links may. It no longer does (see above), so it
-# is an ordinary dependency: `pool_for` -- which tulipix-status needs too -- and
+# `tulipix-common`: `pool_for` -- which tulipix-status needs too -- and
 # `quotes::shuffled`, the Home page's quote shelf.
 tulipix-common = { path = "../tulipix-common" }
 tulipix-core = { path = "../tulipix-core" }
@@ -158,13 +146,8 @@ tulipix-finances = { path = "../tulipix-finances" }
 # sqlx and reqwest only, which is what makes it linkable here.
 tulipix-videos = { path = "../tulipix-videos" }
 # Status: `collect()` -- one JSON snapshot of every section, and the only place
-# these figures are derived. The browser dashboard, the Slint page and the
-# Flutter page all render this same Value, which is why none of them can
-# disagree about a number.
-#
-# It reaches tulipix-common for `pool_for`, which is what used to make this the
-# one dependency here that dragged slint in. It no longer does -- see the note
-# above the domain-crate block.
+# these figures are derived. The browser dashboard and the Flutter page both
+# render this same Value, which is why they cannot disagree about a number.
 tulipix-status = { path = "../tulipix-status" }
 # Genesis: LibGen search, mirror ranking, record pages, covers and downloads.
 # Blocking (ureq) by design; every call from here goes through `spawn_blocking`.

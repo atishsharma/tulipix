@@ -45,6 +45,7 @@ import 'shell/title_row.dart';
 import 'shell/tray_panel.dart';
 import 'shell/vitals.dart';
 import 'shell/window.dart';
+import 'src/rust/api/cloud.dart' show cloudShutdown;
 import 'src/rust/api/music.dart';
 import 'src/rust/api/transfer.dart';
 import 'src/rust/api/videos.dart';
@@ -136,6 +137,12 @@ class _TulipixAppState extends State<TulipixApp> {
         // goes, and this is what drops the hooks that would otherwise write a
         // position back against a session nobody is watching.
         videosShutdown();
+        // rclone mounts outlive the app otherwise, and a mount point left
+        // behind cannot be mounted again until someone unmounts it by hand.
+        // Capped: a wedged unmount must not keep the window from closing.
+        try {
+          await cloudShutdown().timeout(const Duration(seconds: 3));
+        } catch (_) {}
         return AppExitResponse.exit;
       },
     );
