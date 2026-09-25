@@ -73,6 +73,10 @@ pub struct PapersState {
     pub accounts: Vec<AccountPick>,
     /// tesseract is installed: scans and photos can be read.
     pub can_ocr: bool,
+    /// The Cloud remote Papers is backed up to every day, or "".
+    pub backup: String,
+    /// Cloud's remotes, for the backup picker.
+    pub remotes: Vec<String>,
 }
 
 pub struct PaperAlert {
@@ -85,6 +89,13 @@ pub struct PaperAlert {
     pub ring: String,
     pub title: String,
     pub body: String,
+    /// The Finances transaction behind it, for Open bill; 0 for none.
+    pub fin_id: i64,
+    /// ISO day a renewal should start by, for Plan renewal; "" when the kind
+    /// does not renew.
+    pub plan_on: String,
+    /// A bill or contract that can be shopped around before it rolls over.
+    pub compare: bool,
 }
 
 pub struct InboxPaper {
@@ -104,6 +115,8 @@ pub struct InboxPaper {
     /// "£649.00 in Finances".
     pub finance: String,
     pub thumb: String,
+    /// Why the collection was suggested: "like your 6 other Currys papers".
+    pub why: String,
 }
 
 pub struct KindCount {
@@ -145,6 +158,10 @@ pub struct PaperView {
     pub snippet: String,
     /// Has a date that runs out: Snooze and Renewed apply.
     pub dated: bool,
+    /// Photos taken on the paper's day and the three after, newest last.
+    pub photos: Vec<i64>,
+    /// "Photos from 14–17 Sep"; "" with none.
+    pub photos_line: String,
 }
 
 pub struct PaperField {
@@ -248,6 +265,12 @@ pub enum PapersCmd {
     SaveCopy { id: i64, to: String },
     /// "" stops watching.
     WatchFolder { path: String },
+    /// A calendar event on the day the renewal has to start.
+    PlanRenewal { id: i64 },
+    /// A web search for the same cover elsewhere.
+    Compare { id: i64 },
+    /// A Cloud remote to copy Papers to every day; "" stops.
+    SetBackup { remote: String },
 }
 
 // ----------------------------------------------------------------- session ---
@@ -371,6 +394,65 @@ pub async fn papers_draft(id: i64) -> Result<PaperDraft> {
 pub async fn papers_phone() -> Result<PhoneLink> {
     let url = p::phone::publish().await?;
     Ok(PhoneLink { qr: crate::api::transfer::render_qr(&url), url })
+}
+
+/// A plain copy of the paper for another section to send — Share hands it to
+/// Transfer. A vault paper is unsealed into the folder emptied on lock, so the
+/// vault must be open.
+pub async fn papers_plain_path(id: i64) -> Result<String> {
+    Ok(plain_copy(papers_pool().await?, id).await?.to_string_lossy().into_owned())
+}
+
+/// What Papers does with the section closed, on the shell's half-minute tick:
+/// read what landed in the watched folder, send reminders that came due, and
+/// refresh the copy of papers.db the Cloud backup carries. Nothing at all
+/// until Papers has been opened once and made its database.
+pub(crate) async fn background_tick() {
+    if !tulipix_core::paths::db_path("papers").is_some_and(|f| f.exists()) {
+        return;
+    }
+    let Ok(pool) = papers_pool().await else { return };
+    if let Err(e) = scan_watched(pool, false).await {
+        tracing::info!(error = %e, "papers: the watched folder could not be read");
+    }
+    remind(pool).await;
+    static LAST_COPY: Mutex<Option<Instant>> = Mutex::new(None);
+    let due = {
+        let mut last = LAST_COPY.lock().unwrap_or_else(|e| e.into_inner());
+        let due = last.is_none_or(|t| t.elapsed() > Duration::from_secs(6 * 3600));
+        if due {
+            *last = Some(Instant::now());
+        }
+        due
+    };
+    // Only worth copying when a Cloud job carries it off the machine.
+    if due
+        && let Ok(root) = p::dir("")
+        && !crate::api::cloud::backup_job(&root.to_string_lossy(), None).await.unwrap_or_default().is_empty()
+    {
+        snapshot_db(pool).await.ok();
+    }
+}
+
+/// papers.db, consistent, beside the files the backup job copies. The vault's
+/// text is sealed in it already.
+async fn snapshot_db(pool: &SqlitePool) -> Result<()> {
+    let to = p::dir("backup")?.join("papers.db");
+    tokio::fs::remove_file(&to).await.ok();
+    sqlx::query("VACUUM INTO ?").bind(to.to_string_lossy().into_owned()).execute(pool).await?;
+    Ok(())
+}
+
+/// The day a renewal should start: early enough for the kind's usual wait.
+/// None for kinds that do not renew. Never before today.
+fn plan_on(kind: &str, end: NaiveDate) -> Option<NaiveDate> {
+    let lead = match kind {
+        // "Renewal takes up to 10 weeks."
+        "id" => 70,
+        "contract" | "bill" => 30,
+        _ => return None,
+    };
+    Some((end - chrono::TimeDelta::days(lead)).max(today()))
 }
 
 /// A file sent from the phone page.
@@ -498,6 +580,41 @@ async fn apply(pool: &'static SqlitePool, cmd: PapersCmd) -> Result<()> {
             say(format!("Saved a copy of {}", r.title));
         }
         PapersCmd::WatchFolder { path } => watch(pool, path.trim()).await?,
+        PapersCmd::PlanRenewal { id } => {
+            let r = row(pool, id).await?.ok_or_else(|| anyhow!("that paper is gone"))?;
+            let end = r.end().ok_or_else(|| anyhow!("this paper has no date to renew by"))?;
+            let start = plan_on(&r.kind, end).ok_or_else(|| anyhow!("this kind of paper does not renew"))?;
+            crate::ics::open(
+                &format!("renew-{id}"),
+                &[crate::ics::Event {
+                    uid: format!("paper-{id}-{}", r.expires),
+                    day: start,
+                    title: format!("Start renewing: {}", r.title),
+                    note: format!("{} {}. {}", r.label(), p::long_day(end), p::advice(&r.kind)).trim().to_string(),
+                }],
+            )?;
+            say(format!("Sent to your calendar for {}", p::long_day(start)));
+        }
+        PapersCmd::Compare { id } => {
+            let r = row(pool, id).await?.ok_or_else(|| anyhow!("that paper is gone"))?;
+            let what = if r.merchant.is_empty() { r.title.clone() } else { format!("{} {}", r.merchant, p::kind_label(&r.kind)) };
+            let url = reqwest::Url::parse_with_params("https://duckduckgo.com/", &[("q", format!("compare {what} renewal"))])?;
+            crate::api::transfer::open_url(url.as_str());
+        }
+        PapersCmd::SetBackup { remote } => {
+            let remote = remote.trim();
+            let root = p::dir("")?;
+            let dst = if remote.is_empty() { String::new() } else { format!("{remote}:Tulipix/Papers") };
+            if !remote.is_empty() {
+                snapshot_db(pool).await?;
+            }
+            crate::api::cloud::backup_job(&root.to_string_lossy(), Some(&dst)).await?;
+            say(if remote.is_empty() {
+                "Papers is no longer backed up".to_string()
+            } else {
+                format!("Backed up to {remote} every day; vault papers go up still sealed")
+            });
+        }
     }
     Ok(())
 }
@@ -588,6 +705,17 @@ async fn read_one(pool: &'static SqlitePool, id: i64) -> Result<()> {
     let money_kind = matches!(kind, "receipt" | "bill" | "warranty" | "medical" | "other");
     let merchant = guess.merchant.filter(|_| money_kind).map(|m| p::proper(&m)).unwrap_or_default();
     let amount = guess.amount_minor.filter(|_| money_kind);
+    // What the same shop's papers were filed as beats the word table: a bill
+    // the table reads as a receipt, corrected once, stays corrected.
+    let learned: Option<String> = if merchant.is_empty() {
+        None
+    } else {
+        sqlx::query_scalar("SELECT kind FROM papers WHERE filed = 1 AND merchant = ? ORDER BY id DESC LIMIT 1")
+            .bind(&merchant)
+            .fetch_optional(pool)
+            .await?
+    };
+    let kind = learned.as_deref().unwrap_or(kind);
     let title = p::title(kind, &merchant, &r.text, &name, doc);
     let collection = suggest(pool, kind, &merchant).await?;
     let fin = match (amount, doc) {
@@ -952,8 +1080,9 @@ async fn watched(pool: &SqlitePool) -> Result<String> {
 /// New files in the watched folder, read in. At most every half minute unless
 /// forced; a file is only ever taken once, so one deleted here stays deleted.
 ///
-/// ponytail: polled when the section refreshes, not a filesystem watcher. A
-/// scan saved while Papers is closed is read the next time it opens.
+/// ponytail: polled on the shell's half-minute tick (`background_tick`), so a
+/// scan lands within 30 s with Papers closed; a `notify` watcher if that lag
+/// ever matters.
 async fn scan_watched(pool: &'static SqlitePool, force: bool) -> Result<i64> {
     {
         let mut s = lock();
@@ -992,10 +1121,8 @@ async fn scan_watched(pool: &'static SqlitePool, force: bool) -> Result<i64> {
 
 /// A desktop notification 30 days and 7 days before anything runs out — once
 /// each, per date. Filed papers only; a snoozed one waits out its week.
-///
-/// ponytail: sent when Papers refreshes, which it does on opening and when the
-/// app starts. A computer left on for a month without opening it sends them
-/// late.
+/// Checked on every refresh and on the shell's tick, so they arrive on the day
+/// whichever section is open.
 async fn remind(pool: &SqlitePool) {
     let t = today();
     let rows: Vec<(i64, String, String, String, String, String)> = match sqlx::query_as(
@@ -1212,6 +1339,9 @@ async fn snapshot(pool: &'static SqlitePool) -> Result<PapersState> {
                 ring: p::ring(*days),
                 title: p::when_line(&r.title, r.label(), *days, r.end().unwrap_or(t)),
                 body,
+                fin_id: r.fin_txn.unwrap_or(0),
+                plan_on: r.end().and_then(|e| plan_on(&r.kind, e)).map(|d| d.to_string()).unwrap_or_default(),
+                compare: matches!(r.kind.as_str(), "bill" | "contract"),
             });
         }
         let mut matched: Vec<String> = Vec::new();
@@ -1236,14 +1366,22 @@ async fn snapshot(pool: &'static SqlitePool) -> Result<PapersState> {
                 ring: n.to_string(),
                 title: if n == 1 { "1 receipt isn’t in Finances".into() } else { format!("{n} receipts aren’t in Finances") },
                 body: format!("{names} {} card payments.", if n == 1 { "matches" } else { "match" }),
+                fin_id: 0,
+                plan_on: String::new(),
+                compare: false,
             });
         }
         let rows = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(&*format!("SELECT {LIGHT} FROM papers WHERE filed = 0 ORDER BY id DESC")))
             .fetch_all(pool)
             .await?;
+        let mut whys = Vec::with_capacity(rows.len());
+        for r in &rows {
+            whys.push(why(pool, &r.merchant, &r.kind, &r.collection).await);
+        }
         inbox = rows
             .into_iter()
-            .map(|r| {
+            .zip(whys)
+            .map(|(r, why)| {
                 let line = match r.status.as_str() {
                     "reading" => "Reading…".to_string(),
                     "failed" => r.error.clone(),
@@ -1276,6 +1414,7 @@ async fn snapshot(pool: &'static SqlitePool) -> Result<PapersState> {
                     line,
                     collection: r.collection,
                     vault: r.vault,
+                    why,
                 }
             })
             .collect();
@@ -1454,7 +1593,33 @@ async fn snapshot(pool: &'static SqlitePool) -> Result<PapersState> {
         names,
         accounts,
         can_ocr: can_ocr(),
+        backup: crate::api::cloud::backup_job(&p::dir("")?.to_string_lossy(), None).await.unwrap_or_default(),
+        remotes: crate::api::cloud::remote_names().await,
     })
+}
+
+/// The reason under a suggestion, from the papers already filed there.
+async fn why(pool: &SqlitePool, merchant: &str, kind: &str, collection: &str) -> String {
+    if collection.is_empty() {
+        return String::new();
+    }
+    let count = |sql: &'static str, key: &str| {
+        sqlx::query_scalar::<_, i64>(sql).bind(key.to_string()).bind(collection.to_string()).fetch_one(pool)
+    };
+    if !merchant.is_empty() {
+        let n = count("SELECT COUNT(*) FROM papers WHERE filed = 1 AND merchant = ? AND collection = ?", merchant)
+            .await
+            .unwrap_or(0);
+        if n > 0 {
+            return format!("like your {} from {merchant}", plural(n, "other paper", "other papers"));
+        }
+    }
+    let n = count("SELECT COUNT(*) FROM papers WHERE filed = 1 AND kind = ? AND collection = ?", kind).await.unwrap_or(0);
+    if n > 0 {
+        format!("where {} like it {} filed", n, if n == 1 { "is" } else { "are" })
+    } else {
+        String::new()
+    }
 }
 
 async fn paper_view(pool: &SqlitePool, id: i64, unlocked: bool, query: &str) -> Result<Option<PaperView>> {
@@ -1506,7 +1671,33 @@ async fn paper_view(pool: &SqlitePool, id: i64, unlocked: bool, query: &str) -> 
         Some(tid) => fin_link(tid).await,
         None => None,
     };
+    // Photos from the day it was bought and the three after: the thing as it
+    // arrived, the damage for a claim. Not for a sealed paper.
+    let (mut photos, mut photos_line) = (Vec::new(), String::new());
+    if let Some(d) = r.day().filter(|_| !locked && matches!(r.kind.as_str(), "receipt" | "warranty" | "medical" | "other")) {
+        let mut last = None;
+        for i in 0..4 {
+            let day = d + chrono::TimeDelta::days(i);
+            let got = crate::journal::day_photos(day).await;
+            if !got.is_empty() {
+                last = Some(day);
+            }
+            photos.extend(got.into_iter().map(|p| p.0));
+        }
+        // ponytail: every photo of those days, capped; a link table would keep
+        // only the ones the user says belong.
+        photos.truncate(8);
+        if let Some(end) = last {
+            photos_line = if end == d {
+                format!("Photos from {}", d.format("%-d %b"))
+            } else {
+                format!("Photos from {}–{}", d.format("%-d"), end.format("%-d %b"))
+            };
+        }
+    }
     Ok(Some(PaperView {
+        photos,
+        photos_line,
         can_add: r.amount_minor.is_some() && finance.is_none(),
         snippet: p::snippet(&text, query),
         thumb: if r.vault { String::new() } else { r.thumb.clone() },

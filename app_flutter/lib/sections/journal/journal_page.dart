@@ -16,9 +16,11 @@ import '../../design/first_load.dart';
 import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../shell/section_tabs.dart';
+import '../../src/rust/api/dialog.dart';
 import '../../src/rust/api/journal.dart';
 import '../home/home_shared.dart' show LazyCover;
 import 'journal_controller.dart';
+import 'journal_editor.dart';
 import 'journal_views.dart';
 
 /// The writing face: the Books reader's.
@@ -245,6 +247,12 @@ class _HeaderState extends State<_Header> {
             ),
             const SizedBox(width: 10),
           ],
+          IconButton(
+            tooltip: 'Export as Markdown',
+            onPressed: st == null ? null : () => _export(c),
+            icon: Icon(Icons.ios_share, size: 19, color: t.nInk2),
+          ),
+          const SizedBox(width: 4),
           FilledButton.icon(
             style: FilledButton.styleFrom(backgroundColor: kJournal2),
             onPressed: st == null
@@ -261,6 +269,20 @@ class _HeaderState extends State<_Header> {
         ],
       ),
     );
+  }
+}
+
+/// Every entry as Markdown files in a folder, one a day, with kept photos.
+Future<void> _export(JournalController c) async {
+  final to = await dialogPickFolder(title: 'Export the journal to', initial: '');
+  if (to == null || to.isEmpty) return;
+  try {
+    final n = await journalExport(folder: to, photos: true);
+    c.say(n == 0
+        ? 'Nothing written yet to export'
+        : 'Exported ${plural(n.toInt(), 'day')} as Markdown');
+  } catch (e) {
+    c.say(plainError(e));
   }
 }
 
@@ -463,9 +485,27 @@ class _DayHead extends StatelessWidget {
                       color: t.nInk3),
                   const SizedBox(width: 5),
                   Flexible(
-                    child: Text(st.daySub,
+                    child: Text(
+                        [
+                          if (st.weather.isNotEmpty) st.weather,
+                          st.daySub,
+                        ].join(' · '),
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(fontSize: 12.5, color: t.nInk3)),
+                  ),
+                  IconButton(
+                    tooltip: st.weatherOn
+                        ? 'Hide the weather'
+                        : 'Show each day’s weather — asks open-meteo.com with the date and a rough location',
+                    iconSize: 15,
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () =>
+                        c.send(JournalCmd.setWeather(on_: !st.weatherOn)),
+                    icon: Icon(
+                        st.weatherOn
+                            ? Icons.wb_sunny
+                            : Icons.wb_sunny_outlined,
+                        color: st.weatherOn ? kJournal : t.nInk3),
                   ),
                 ],
               ),
@@ -644,8 +684,7 @@ class _EntryCard extends StatefulWidget {
 }
 
 class _EntryCardState extends State<_EntryCard> {
-  late final TextEditingController _text =
-      TextEditingController(text: widget.e.body);
+  late final MarkdownController _text = MarkdownController(text: widget.e.body);
   final FocusNode _focus = FocusNode();
   Timer? _save;
   bool _dirty = false;
@@ -661,6 +700,10 @@ class _EntryCardState extends State<_EntryCard> {
     super.initState();
     if (widget.focus) _grab();
     if (_recording) _startTick();
+    // The formatting bar shows while you are writing.
+    _focus.addListener(() {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
@@ -772,6 +815,11 @@ class _EntryCardState extends State<_EntryCard> {
               ),
             ],
           ),
+          if (_focus.hasFocus)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: MarkdownBar(text: _text, onEdit: () => _changed('')),
+            ),
           TextField(
             controller: _text,
             focusNode: _focus,
@@ -1360,7 +1408,7 @@ class _Rail extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (p.stops > 0 || p.names.isNotEmpty) ...[
-          _PlacesCard(p: p),
+          _PlacesCard(c: c, p: p),
           const SizedBox(height: 14),
         ],
         if (st.otd.isNotEmpty) ...[
@@ -1376,8 +1424,9 @@ class _Rail extends StatelessWidget {
 }
 
 class _PlacesCard extends StatelessWidget {
-  const _PlacesCard({required this.p});
+  const _PlacesCard({required this.c, required this.p});
 
+  final JournalController c;
   final PlacesView p;
 
   @override
@@ -1400,6 +1449,11 @@ class _PlacesCard extends StatelessWidget {
               child: CustomPaint(
                 painter: _MapPainter(
                   points: [for (final m in p.points) Offset(m.x, m.y)],
+                  labels: p.labels,
+                  labelStyle: TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w600,
+                      color: t.nInk2),
                   ground: kJournal.withValues(alpha: t.dark ? 0.08 : 0.06),
                   road: t.nInk3.withValues(alpha: 0.18),
                   water: const Color(0xFF38BDF8).withValues(alpha: 0.35),
@@ -1429,6 +1483,19 @@ class _PlacesCard extends StatelessWidget {
                   Text('From where the day’s photos were taken',
                       style: TextStyle(fontSize: 11.5, color: t.nInk3)),
                 ],
+                if (p.canName)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      style: TextButton.styleFrom(
+                          padding: EdgeInsets.zero,
+                          visualDensity: VisualDensity.compact),
+                      onPressed: () =>
+                          c.send(const JournalCmd.getPlaceNames()),
+                      icon: const Icon(Icons.travel_explore, size: 15),
+                      label: const Text('Name the towns · a 3 MB download, once'),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -1442,10 +1509,13 @@ class _PlacesCard extends StatelessWidget {
 /// roads and a river for texture (not geography), and the route between
 /// the pins in the order they were visited.
 ///
-/// ponytail: no tiles. An offline tile set would make the lines real.
+/// ponytail: no tiles. An offline tile set would make the lines real; the
+/// towns come from GeoNames once it is fetched.
 class _MapPainter extends CustomPainter {
   _MapPainter({
     required this.points,
+    required this.labels,
+    required this.labelStyle,
     required this.ground,
     required this.road,
     required this.water,
@@ -1454,6 +1524,11 @@ class _MapPainter extends CustomPainter {
   });
 
   final List<Offset> points;
+
+  /// A town per pin; only a change of town is written, so a day in one city
+  /// says its name once.
+  final List<String> labels;
+  final TextStyle labelStyle;
   final Color ground;
   final Color road;
   final Color water;
@@ -1498,11 +1573,33 @@ class _MapPainter extends CustomPainter {
       canvas.drawCircle(p, 7, Paint()..color = pinRing);
       canvas.drawCircle(p, 5, Paint()..color = route);
     }
+    var last = '';
+    for (var i = 0; i < at.length && i < labels.length; i++) {
+      final name = labels[i];
+      if (name.isEmpty || name == last) continue;
+      last = name;
+      final tp = TextPainter(
+        text: TextSpan(text: name, style: labelStyle),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '…',
+      )..layout(maxWidth: w * 0.45);
+      var o = at[i] + const Offset(9, -7);
+      if (o.dx + tp.width > w - 4) o = at[i] + Offset(-9 - tp.width, -7);
+      o = Offset(o.dx, o.dy.clamp(2.0, h - tp.height - 2));
+      final pad = Rect.fromLTWH(o.dx - 3, o.dy - 1, tp.width + 6, tp.height + 2);
+      canvas.drawRRect(RRect.fromRectAndRadius(pad, const Radius.circular(4)),
+          Paint()..color = pinRing.withValues(alpha: 0.85));
+      tp.paint(canvas, o);
+    }
   }
 
   @override
   bool shouldRepaint(_MapPainter old) =>
-      old.points != points || old.ground != ground || old.route != route;
+      old.points != points ||
+      old.labels != labels ||
+      old.ground != ground ||
+      old.route != route;
 }
 
 class _OtdMini extends StatelessWidget {

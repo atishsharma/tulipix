@@ -5,9 +5,9 @@
 // grouping are `crate::feeds`; this file keeps the session (which tab, which
 // source, which article is open) and maps rows into what Dart draws.
 //
-// Nothing refreshes on its own schedule here. The page asks on open and every
-// half hour while it is built, which is what the Slint podcast refresh does
-// for its own feeds.
+// The page asks on open and every half hour while it is built, which is what
+// the Slint podcast refresh does for its own feeds; `background_tick` keeps
+// the same half hour from the shell while the page is closed.
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -52,6 +52,17 @@ pub struct FeedsState {
 
     /// Folder names in use, for the Follow dialog.
     pub folders: Vec<String>,
+    /// The model on the user's own server that writes summaries; "" when
+    /// summaries are the extractive ones.
+    pub summarizer: String,
+    /// That server's address, for the dialog that sets it.
+    pub summarizer_url: String,
+    /// The mailbox newsletters are read from: "you@fastmail.com · Newsletters";
+    /// "" when none is set.
+    pub mail: String,
+    /// Its server and folder, for the dialog that sets it.
+    pub mail_host: String,
+    pub mail_folder: String,
 }
 
 pub struct Brief {
@@ -117,6 +128,8 @@ pub struct ArticleView {
     pub full: bool,
     /// Quotes already kept from it, to mark in the text.
     pub highlights: Vec<String>,
+    /// The summary came from the user's model server.
+    pub summary_model: bool,
 }
 
 pub struct HighlightRow {
@@ -161,6 +174,12 @@ pub enum FeedsCmd {
     OpenOriginal { id: i64 },
     /// Fetch the article's page for the text the feed left out.
     FullText { id: i64 },
+    /// The mailbox newsletters come from, signed in to before it is kept. An
+    /// empty `host` forgets it and its password.
+    SetMail { host: String, port: i64, user: String, password: String, folder: String },
+    /// The model server that writes summaries, tried before it is kept.
+    /// An empty `url` goes back to the extractive summaries.
+    SetSummarizer { url: String, model: String },
 }
 
 // ----------------------------------------------------------------- session ---
@@ -216,6 +235,110 @@ pub async fn feeds_dispatch(cmd: FeedsCmd) -> Result<FeedsState> {
     snapshot(pool).await
 }
 
+/// Feeds with the page closed, on the shell's tick: every feed fetched on the
+/// half hour, as the page does while it is built, so the brief is fresh
+/// whichever section the app opened on. Nothing until Feeds has been opened
+/// and made its database.
+pub(crate) async fn background_tick() {
+    if !tulipix_core::paths::db_path("feeds").is_some_and(|f| f.exists()) {
+        return;
+    }
+    {
+        // Claimed before the fetch, so the next tick does not start another.
+        let mut s = lock();
+        if feeds::now() - s.last_refresh < 30 * 60 {
+            return;
+        }
+        s.last_refresh = feeds::now();
+    }
+    let Ok(pool) = feeds_pool().await else { return };
+    if let Err(e) = feeds::refresh_all(pool, &feeds::client()).await {
+        tracing::info!(error = %e, "feeds: the background refresh failed");
+    }
+    if let Err(e) = mail_pass(pool).await {
+        tracing::info!(error = %e, "feeds: the mailbox could not be read");
+    }
+}
+
+/// The mailbox as saved: settings for where, the keychain for the password.
+fn mail_account() -> Option<crate::mail::Account> {
+    let s = crate::api::shell::load();
+    let host = s.text("feeds.mail-host");
+    if host.trim().is_empty() {
+        return None;
+    }
+    Some(crate::mail::Account {
+        port: s.text("feeds.mail-port").parse().unwrap_or(993),
+        user: s.text("feeds.mail-user"),
+        folder: match s.text("feeds.mail-folder") {
+            f if f.trim().is_empty() => "Newsletters".into(),
+            f => f,
+        },
+        password: tulipix_core::api_keys::fetch(crate::mail::KEYCHAIN).ok().flatten().unwrap_or_default(),
+        host,
+    })
+}
+
+/// New issues from the mailbox since the last look, a day of overlap for
+/// clocks that disagree (the Message-ID keeps a letter from arriving twice).
+/// Ok(0) with no mailbox set.
+async fn mail_pass(pool: &SqlitePool) -> Result<usize> {
+    let Some(account) = mail_account() else { return Ok(0) };
+    let today = chrono::Local::now().date_naive();
+    let since = crate::api::shell::load()
+        .text("feeds.mail-since")
+        .parse::<chrono::NaiveDate>()
+        .unwrap_or(today - chrono::TimeDelta::days(14));
+    let raws = crate::mail::fetch(&account, since, 200).await?;
+    let mut added = 0;
+    for raw in raws {
+        if let Some(l) = crate::mail::letter(&raw) {
+            added += feeds::store_mail(pool, &l.address, &l.name, std::slice::from_ref(&l.item)).await?;
+        }
+    }
+    crate::api::shell::put("feeds.mail-since", &(today - chrono::TimeDelta::days(1)).to_string());
+    Ok(added)
+}
+
+/// Unread articles, for the sidebar's badge.
+pub(crate) async fn unread_count() -> i32 {
+    if !tulipix_core::paths::db_path("feeds").is_some_and(|f| f.exists()) {
+        return 0;
+    }
+    let Ok(pool) = feeds_pool().await else { return 0 };
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM articles WHERE read = 0").fetch_one(pool).await.unwrap_or(0) as i32
+}
+
+/// A summary from the user's model server for one article, kept in place of
+/// the extractive one. Its own call: a local model takes seconds, and the
+/// reader should open before it answers.
+pub async fn feeds_summarise(id: i64) -> Result<FeedsState> {
+    let pool = feeds_pool().await?;
+    let (url, model) = summarizer();
+    if url.is_empty() {
+        bail!("no summary server is set");
+    }
+    let (title, body): (String, String) =
+        sqlx::query_as("SELECT title, body FROM articles WHERE id = ?").bind(id).fetch_one(pool).await?;
+    if body.split_whitespace().count() < 60 {
+        bail!("too short to summarise");
+    }
+    let lines = feeds::model_summary(&feeds::client(), &url, &model, &title, &body).await?;
+    sqlx::query("UPDATE articles SET summary = ?, summary_by = 'model' WHERE id = ?")
+        .bind(lines.join("\n"))
+        .bind(id)
+        .execute(pool)
+        .await?;
+    snapshot(pool).await
+}
+
+/// (address, model) of the summary server, both "" when none is set.
+fn summarizer() -> (String, String) {
+    let s = crate::api::shell::load();
+    let url = s.text("feeds.summary-url");
+    if url.trim().is_empty() { (String::new(), String::new()) } else { (url, s.text("feeds.summary-model")) }
+}
+
 /// An article's text as the sentences read-aloud speaks, one at a time. The
 /// same splitter the Books reader uses.
 pub fn feeds_sentences(text: String) -> Vec<String> {
@@ -230,6 +353,52 @@ pub async fn feeds_article_text(id: i64) -> Result<String> {
         .fetch_one(feeds_pool().await?)
         .await?;
     Ok(format!("{title}\n\n{body}"))
+}
+
+/// Follow every feed in an OPML file (another reader's export), in its
+/// folders. Six at a time; one that cannot be reached is counted, not fatal.
+pub async fn feeds_import_opml(path: String) -> Result<FeedsState> {
+    let pool = feeds_pool().await?;
+    let xml = tokio::fs::read_to_string(&path).await.with_context(|| format!("could not read {path}"))?;
+    let listed = feeds::opml(&xml);
+    if listed.is_empty() {
+        bail!("no feeds in that file — is it an OPML export?");
+    }
+    let have: HashSet<String> = sqlx::query_scalar("SELECT url FROM feeds").fetch_all(pool).await?.into_iter().collect();
+    let fresh: Vec<_> = listed.into_iter().filter(|(url, _, _)| !have.contains(url)).collect();
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(6));
+    let client = feeds::client();
+    let mut jobs = tokio::task::JoinSet::new();
+    for (url, _, folder) in fresh {
+        let (gate, client) = (gate.clone(), client.clone());
+        jobs.spawn(async move {
+            let _slot = gate.acquire_owned().await.ok()?;
+            let (at, parsed) = feeds::discover(&client, &url).await.ok()?;
+            feeds::follow(pool, &at, &folder, &parsed).await.ok()
+        });
+    }
+    let (mut added, mut failed) = (0, 0);
+    while let Some(r) = jobs.join_next().await {
+        match r {
+            Ok(Some(_)) => added += 1,
+            _ => failed += 1,
+        }
+    }
+    say(match failed {
+        0 => format!("Following {}", plural(added, "new feed", "new feeds")),
+        f => format!("Following {} · {} could not be reached", plural(added, "new feed", "new feeds"), plural(f, "feed", "feeds")),
+    });
+    snapshot(pool).await
+}
+
+/// Every followed feed as OPML, for another reader or a backup. Returns how
+/// many were written.
+pub async fn feeds_export_opml(path: String) -> Result<i64> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as("SELECT url, title, folder FROM feeds ORDER BY folder, title")
+        .fetch_all(feeds_pool().await?)
+        .await?;
+    tokio::fs::write(&path, feeds::to_opml(&rows)).await.with_context(|| format!("could not write {path}"))?;
+    Ok(rows.len() as i64)
 }
 
 /// Every highlight as Markdown, grouped by article, written to `path`.
@@ -269,7 +438,9 @@ async fn apply(pool: &'static SqlitePool, cmd: FeedsCmd) -> Result<()> {
     match cmd {
         FeedsCmd::Refresh => {}
         FeedsCmd::Fetch => {
-            let (added, failed) = feeds::refresh_all(pool, &feeds::client()).await?;
+            let (mut added, failed) = feeds::refresh_all(pool, &feeds::client()).await?;
+            let mail = mail_pass(pool).await;
+            added += *mail.as_ref().unwrap_or(&0);
             let mut s = lock();
             s.last_refresh = feeds::now();
             s.notice = match (added, failed) {
@@ -282,6 +453,10 @@ async fn apply(pool: &'static SqlitePool, cmd: FeedsCmd) -> Result<()> {
                     plural(f, "feed", "feeds")
                 ),
             };
+            if let Err(e) = mail {
+                let line = format!("Your mail: {e}");
+                s.notice = if s.notice.is_empty() { line } else { format!("{} · {line}", s.notice) };
+            }
         }
         FeedsCmd::SetTab { tab } => lock().tab = tab,
         FeedsCmd::SetSource { key } => {
@@ -388,6 +563,11 @@ async fn apply(pool: &'static SqlitePool, cmd: FeedsCmd) -> Result<()> {
             say(format!("Following {name} · {}", plural(n as usize, "unread article", "unread articles")));
         }
         FeedsCmd::Unfollow { feed_id } => {
+            // A mail sender comes back with its next issue unless it is muted.
+            sqlx::query("INSERT OR IGNORE INTO muted (url) SELECT url FROM feeds WHERE id = ? AND url LIKE 'mail:%'")
+                .bind(feed_id)
+                .execute(pool)
+                .await?;
             sqlx::query("DELETE FROM feeds WHERE id = ?").bind(feed_id).execute(pool).await?;
             let mut s = lock();
             if s.source == format!("f:{feed_id}") {
@@ -434,6 +614,67 @@ async fn apply(pool: &'static SqlitePool, cmd: FeedsCmd) -> Result<()> {
                 bail!("this article has no web address");
             }
             crate::api::transfer::open_url(&url);
+        }
+        FeedsCmd::SetMail { host, port, user, password, folder } => {
+            let host = host.trim().to_string();
+            if host.is_empty() {
+                crate::api::shell::put("feeds.mail-host", "");
+                tulipix_core::api_keys::delete(crate::mail::KEYCHAIN).ok();
+                say("Newsletters are no longer read from your mail");
+            } else {
+                let folder = if folder.trim().is_empty() { "Newsletters".to_string() } else { folder.trim().to_string() };
+                let password = if password.is_empty() {
+                    tulipix_core::api_keys::fetch(crate::mail::KEYCHAIN).ok().flatten().unwrap_or_default()
+                } else {
+                    password
+                };
+                let account = crate::mail::Account {
+                    host: host.clone(),
+                    port: u16::try_from(port).ok().filter(|p| *p > 0).unwrap_or(993),
+                    user: user.trim().to_string(),
+                    password,
+                    folder: folder.clone(),
+                };
+                // Sign in and open the folder before anything is kept.
+                crate::mail::fetch(&account, chrono::Local::now().date_naive(), 0).await?;
+                tulipix_core::api_keys::store(crate::mail::KEYCHAIN, &account.password)?;
+                let shell = [
+                    ("feeds.mail-host", host.as_str()),
+                    ("feeds.mail-user", account.user.as_str()),
+                    ("feeds.mail-folder", folder.as_str()),
+                    ("feeds.mail-since", ""),
+                ];
+                for (k, v) in shell {
+                    crate::api::shell::put(k, v);
+                }
+                crate::api::shell::put("feeds.mail-port", &account.port.to_string());
+                let n = mail_pass(pool).await?;
+                say(format!("Reading {folder} · {}", plural(n, "newsletter", "newsletters")));
+            }
+        }
+        FeedsCmd::SetSummarizer { url, model } => {
+            let (url, model) = (url.trim().to_string(), model.trim().to_string());
+            if url.is_empty() {
+                crate::api::shell::put("feeds.summary-url", "");
+                say("Summaries are picked from the article again");
+            } else {
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    bail!("the address should start with http:// — e.g. http://localhost:11434");
+                }
+                if model.is_empty() {
+                    bail!("name the model — e.g. llama3.2");
+                }
+                // One small request first, so a wrong address or model says
+                // so here rather than on every article.
+                let sample = "The city council voted on Tuesday to reopen the harbour railway after a two year \
+                    restoration. Trains will run at weekends from May. Volunteers rebuilt the track and two \
+                    steam engines. The council says the line will bring visitors to the waterfront. Tickets \
+                    go on sale next month, with discounts for residents and children under twelve.";
+                feeds::model_summary(&feeds::client(), &url, &model, "Harbour railway to reopen", sample).await?;
+                crate::api::shell::put("feeds.summary-url", &url);
+                crate::api::shell::put("feeds.summary-model", &model);
+                say(format!("Summaries now come from {model}"));
+            }
         }
         FeedsCmd::FullText { id } => {
             if let Err(e) = feeds::fetch_full(pool, &feeds::client(), id).await {
@@ -671,7 +912,14 @@ async fn snapshot(pool: &SqlitePool) -> Result<FeedsState> {
 
     let open = if s.open > 0 { article_view(pool, s.open, &names).await? } else { None };
 
+    let (summarizer_url, summarizer) = summarizer();
+    let mail = mail_account();
     Ok(FeedsState {
+        mail: mail.as_ref().map(|m| format!("{} · {}", m.user, m.folder)).unwrap_or_default(),
+        mail_host: mail.as_ref().map(|m| m.host.clone()).unwrap_or_default(),
+        mail_folder: mail.map(|m| m.folder).unwrap_or_default(),
+        summarizer,
+        summarizer_url,
         tab: s.tab,
         unread,
         has_feeds: !feeds.is_empty(),
@@ -707,15 +955,15 @@ async fn snapshot(pool: &SqlitePool) -> Result<FeedsState> {
 }
 
 async fn article_view(pool: &SqlitePool, id: i64, names: &HashMap<i64, String>) -> Result<Option<ArticleView>> {
-    type Full = (i64, String, String, String, i64, String, String, String, bool, f64, bool);
+    type Full = (i64, String, String, String, i64, String, String, String, bool, f64, bool, String);
     let r: Option<Full> = sqlx::query_as(
-        "SELECT feed_id, title, author, url, published, image, body, summary, saved, progress, full
+        "SELECT feed_id, title, author, url, published, image, body, summary, saved, progress, full, summary_by
          FROM articles WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
     .await?;
-    let Some((feed_id, title, author, url, published, image, body, summary, saved, progress, full)) = r else {
+    let Some((feed_id, title, author, url, published, image, body, summary, saved, progress, full, by)) = r else {
         return Ok(None);
     };
     let highlights: Vec<String> = sqlx::query_scalar("SELECT quote FROM highlights WHERE article_id = ? ORDER BY id")
@@ -738,6 +986,7 @@ async fn article_view(pool: &SqlitePool, id: i64, names: &HashMap<i64, String>) 
         progress,
         full,
         highlights,
+        summary_model: by == "model",
     }))
 }
 
@@ -759,7 +1008,7 @@ async fn brief(pool: &SqlitePool, names: &HashMap<i64, String>) -> Result<(Brief
     if rows.len() < 5 {
         rows = window(feeds::now() - 7 * 86_400).fetch_all(pool).await?;
     }
-    let heads: Vec<(i64, &str)> = rows.iter().map(|r| (r.1, r.2.as_str())).collect();
+    let heads: Vec<(i64, &str, &str)> = rows.iter().map(|r| (r.1, r.2.as_str(), r.5.as_str())).collect();
     let mut groups = feeds::cluster(&heads);
     groups.sort_by_key(|g| {
         let tellers = g.iter().map(|&i| rows[i].1).collect::<HashSet<_>>().len();

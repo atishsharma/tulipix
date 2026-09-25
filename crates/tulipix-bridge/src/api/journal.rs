@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, NaiveDate, TimeZone};
 use sqlx::SqlitePool;
 
 use crate::db::journal_pool;
@@ -31,6 +31,10 @@ pub struct JournalState {
     pub day_title: String,
     /// "Bristol · 2 entries".
     pub day_sub: String,
+    /// "18° and clear" for the day shown; "" when off, unknown or not yet in.
+    pub weather: String,
+    /// Settings: ask Open-Meteo for each day's weather.
+    pub weather_on: bool,
     pub is_today: bool,
     pub entries: Vec<EntryView>,
     /// Said once: the entry just made, for the page to put the cursor in.
@@ -83,7 +87,7 @@ pub struct VoiceView {
 }
 
 pub struct GatherRow {
-    /// photos | music | finances | videos | books.
+    /// photos | music | finances | videos | books | kitchen | feeds | papers.
     pub source: String,
     /// "08:12"; empty when the section keeps no time.
     pub clock: String,
@@ -99,8 +103,13 @@ pub struct PlacesView {
     pub points: Vec<MapPoint>,
     pub stops: i64,
     pub km: f64,
-    /// The places the day's entries name.
+    /// The places the day's entries name — or, when they name none, the
+    /// towns the stops were in.
     pub names: Vec<String>,
+    /// A town for each stop, "" where none is near or the table is not here.
+    pub labels: Vec<String>,
+    /// There are stops to name and the place table has not been fetched.
+    pub can_name: bool,
 }
 
 pub struct MapPoint {
@@ -225,6 +234,10 @@ pub enum JournalCmd {
     RecordStop,
     RecordCancel,
     DeleteVoice { id: i64 },
+    /// Weather on each day, from Open-Meteo, or not.
+    SetWeather { on: bool },
+    /// Fetch the town table once, so stops have names.
+    GetPlaceNames,
 }
 
 // ----------------------------------------------------------------- session ---
@@ -279,6 +292,85 @@ pub async fn journal_dispatch(cmd: JournalCmd) -> Result<JournalState> {
     let pool = journal_pool().await?;
     apply(pool, cmd).await?;
     snapshot(pool).await
+}
+
+/// Every entry as Markdown under `folder`, one file a day at
+/// `YYYY/MM-DD.md`: each entry's time, mood, place and tags, its words, and
+/// its voice notes' transcripts. With `photos`, the kept photos are copied to
+/// `YYYY/MM-DD/` and shown in the file. Plain files any editor opens — the
+/// way out, and a backup that needs no Tulipix. Returns the days written.
+pub async fn journal_export(folder: String, photos: bool) -> Result<i64> {
+    const MOODS: [&str; 6] = ["", "rough", "low", "okay", "good", "great"];
+    let pool = journal_pool().await?;
+    let root = PathBuf::from(folder.trim());
+    if folder.trim().is_empty() {
+        bail!("choose a folder to export to");
+    }
+    let entries: Vec<(i64, String, i64, String, i64, String)> =
+        sqlx::query_as("SELECT id, day, created, body, mood, place FROM entries ORDER BY day, created").fetch_all(pool).await?;
+    let mut tags: HashMap<i64, Vec<String>> = HashMap::new();
+    for (id, tag) in sqlx::query_as::<_, (i64, String)>("SELECT entry_id, tag FROM entry_tags ORDER BY tag").fetch_all(pool).await? {
+        tags.entry(id).or_default().push(tag);
+    }
+    let mut voice: HashMap<i64, Vec<String>> = HashMap::new();
+    for (id, text) in sqlx::query_as::<_, (i64, String)>(
+        "SELECT entry_id, transcript FROM voice_notes WHERE transcript != '' ORDER BY created",
+    )
+    .fetch_all(pool)
+    .await?
+    {
+        voice.entry(id).or_default().push(text);
+    }
+    let mut kept: HashMap<i64, Vec<String>> = HashMap::new();
+    if photos && let Ok(pp) = crate::db::photos_pool().await {
+        for (id, photo) in sqlx::query_as::<_, (i64, i64)>("SELECT entry_id, photo_id FROM entry_photos").fetch_all(pool).await? {
+            let path: Option<String> =
+                sqlx::query_scalar("SELECT abs_path FROM items WHERE id = ?").bind(photo).fetch_optional(pp).await.ok().flatten();
+            if let Some(path) = path {
+                kept.entry(id).or_default().push(path);
+            }
+        }
+    }
+
+    let mut days: BTreeMap<String, Vec<&(i64, String, i64, String, i64, String)>> = BTreeMap::new();
+    for e in entries.iter().filter(|e| !e.3.trim().is_empty() || voice.contains_key(&e.0) || kept.contains_key(&e.0)) {
+        days.entry(e.1.clone()).or_default().push(e);
+    }
+    for (day, list) in &days {
+        let Ok(d) = day.parse::<NaiveDate>() else { continue };
+        let dir = root.join(d.format("%Y").to_string());
+        tokio::fs::create_dir_all(&dir).await?;
+        let stem = d.format("%m-%d").to_string();
+        let mut md = format!("# {}\n", d.format("%A, %-d %B %Y"));
+        for (id, _, created, body, mood, place) in list.iter().map(|e| (&e.0, &e.1, &e.2, &e.3, &e.4, &e.5)) {
+            let clock = chrono::Local.timestamp_opt(*created, 0).single().map(|t| t.format("%H:%M").to_string()).unwrap_or_default();
+            let mut meta = vec![clock];
+            if let Some(m) = MOODS.get(*mood as usize).filter(|m| !m.is_empty()) {
+                meta.push(format!("feeling {m}"));
+            }
+            if !place.is_empty() {
+                meta.push(place.clone());
+            }
+            if let Some(t) = tags.get(id) {
+                meta.push(t.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" "));
+            }
+            md.push_str(&format!("\n## {}\n\n{}\n", meta.join(" · "), body.trim()));
+            for t in voice.get(id).into_iter().flatten() {
+                md.push_str(&format!("\n> 🎙 {}\n", t.trim().replace('\n', "\n> ")));
+            }
+            for src in kept.get(id).into_iter().flatten() {
+                let src = std::path::Path::new(src);
+                let Some(name) = src.file_name() else { continue };
+                let pics = dir.join(&stem);
+                tokio::fs::create_dir_all(&pics).await?;
+                if tokio::fs::copy(src, pics.join(name)).await.is_ok() {
+                    md.push_str(&format!("\n![]({stem}/{})\n", name.to_string_lossy().replace(' ', "%20")));
+                }
+            }
+        }
+        tokio::fs::write(dir.join(format!("{stem}.md")), md).await.with_context(|| format!("could not write {day}"))?;
+    }
+    Ok(days.len() as i64)
 }
 
 /// Transcribe a voice note with whisper-cli, on this computer.
@@ -454,8 +546,46 @@ async fn apply(pool: &'static SqlitePool, cmd: JournalCmd) -> Result<()> {
                 std::fs::remove_file(p).ok();
             }
         }
+        JournalCmd::SetWeather { on } => {
+            crate::api::shell::put("journal.weather", if on { "true" } else { "false" });
+            say(if on { "Each day shows its weather" } else { "No more weather" });
+        }
+        JournalCmd::GetPlaceNames => {
+            let n = j::download_place_names(&crate::feeds::client()).await?;
+            say(format!("{n} towns and cities to name the places you go"));
+        }
     }
     Ok(())
+}
+
+/// The day's weather: from journal.db, or asked once and kept. A day not yet
+/// over is kept in memory only (its high is not in yet), and so is a failure,
+/// so an offline machine asks once a session rather than every refresh.
+async fn day_weather(pool: &SqlitePool, day: NaiveDate) -> String {
+    static SEEN: Mutex<Option<HashMap<NaiveDate, String>>> = Mutex::new(None);
+    if day > j::today() {
+        return String::new();
+    }
+    let kept: Option<String> =
+        sqlx::query_scalar("SELECT text FROM weather WHERE day = ?").bind(j::iso(day)).fetch_optional(pool).await.ok().flatten();
+    if let Some(w) = kept {
+        return w;
+    }
+    if let Some(w) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get(&day) {
+        return w.clone();
+    }
+    let got = match j::where_was(day).await {
+        Some(at) => j::weather_on(&crate::feeds::client(), day, at).await.unwrap_or_else(|e| {
+            tracing::info!(error = %e, "journal: no weather for the day");
+            String::new()
+        }),
+        None => String::new(),
+    };
+    if !got.is_empty() && day < j::today() {
+        sqlx::query("INSERT OR REPLACE INTO weather (day, text) VALUES (?, ?)").bind(j::iso(day)).bind(&got).execute(pool).await.ok();
+    }
+    SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(day, got.clone());
+    got
 }
 
 /// A new entry, or the day's last one when it is still blank — pressing New
@@ -647,6 +777,30 @@ async fn record_start(entry_id: i64) -> Result<()> {
     bail!("no microphone could be opened — tried the recorders this computer has")
 }
 
+/// A few seconds from the microphone into `path`: Kitchen's listening for
+/// "next". The recorders a voice note tries, started and stopped per clip.
+pub(crate) async fn record_clip(path: &std::path::Path, secs: f64) -> Result<()> {
+    let out = path.to_string_lossy().to_string();
+    for (prog, args, q) in recorders(&out).await {
+        let spawned = tokio::process::Command::new(&prog)
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn();
+        let Ok(child) = spawned else { continue };
+        tokio::time::sleep(std::time::Duration::from_secs_f64(secs)).await;
+        let mut r = Rec { child, path: path.to_path_buf(), entry_id: 0, quits_on_q: q };
+        if matches!(r.child.try_wait(), Ok(Some(_))) {
+            continue;
+        }
+        finish(r).await;
+        return Ok(());
+    }
+    bail!("no microphone could be opened — tried the recorders this computer has")
+}
+
 /// Ask the recorder to finish its file, and give it a moment to.
 async fn finish(mut r: Rec) {
     if r.quits_on_q {
@@ -690,7 +844,16 @@ async fn record_stop(pool: &SqlitePool) -> Result<()> {
 
 /// whisper-cli over a 16 kHz WAV, with the model and language the voice
 /// search uses (Settings › AI Features), or the model beside whisper-cli.
-async fn transcribe(wav: &std::path::Path) -> Result<String> {
+/// whisper-cli and a model are both here, or the reason they are not.
+pub(crate) fn transcribe_ready() -> Result<()> {
+    tulipix_core::ai_models::whisper_model_for("voice")
+        .or_else(crate::api::tools::whisper_model)
+        .ok_or_else(|| anyhow!("no speech model — Settings › AI Features"))?;
+    tool("whisper-cli").ok_or_else(|| anyhow!("whisper-cli is missing"))?;
+    Ok(())
+}
+
+pub(crate) async fn transcribe(wav: &std::path::Path) -> Result<String> {
     let model = tulipix_core::ai_models::whisper_model_for("voice")
         .or_else(crate::api::tools::whisper_model)
         .ok_or_else(|| anyhow!("no speech model — Settings › AI Features"))?;
@@ -770,10 +933,15 @@ async fn snapshot(pool: &SqlitePool) -> Result<JournalState> {
     let (rows, points) = j::gather(day).await;
     let day_photos: Vec<i64> = j::day_photos(day).await.into_iter().take(60).map(|p| p.0).collect();
     let stops = j::stops(&points);
+    let labels = j::names_for(&stops);
     let names: Vec<String> = {
         let mut seen = HashSet::new();
-        entries.iter().map(|e| e.place.clone()).filter(|p| !p.is_empty() && seen.insert(p.clone())).collect()
+        let named: Vec<String> =
+            entries.iter().map(|e| e.place.clone()).filter(|p| !p.is_empty() && seen.insert(p.clone())).collect();
+        if named.is_empty() { labels.iter().filter(|l| !l.is_empty() && seen.insert((*l).clone())).cloned().collect() } else { named }
     };
+    let weather_on = crate::api::shell::load().flag("journal.weather", false);
+    let weather = if weather_on && tab == "today" { day_weather(pool, day).await } else { String::new() };
 
     let otd = if matches!(tab.as_str(), "today" | "otd") { otd(pool, day).await? } else { Vec::new() };
 
@@ -810,8 +978,12 @@ async fn snapshot(pool: &SqlitePool) -> Result<JournalState> {
             points: j::fit(&stops).into_iter().map(|(x, y)| MapPoint { x, y }).collect(),
             stops: stops.len() as i64,
             km: (j::route_km(&stops) * 10.0).round() / 10.0,
+            can_name: !stops.is_empty() && !j::has_place_names(),
+            labels,
             names,
         },
+        weather,
+        weather_on,
         entries,
         otd,
         prompt,

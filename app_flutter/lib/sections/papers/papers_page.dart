@@ -15,6 +15,7 @@ import '../../design/first_load.dart';
 import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../shell/section_tabs.dart';
+import '../../shell/shell_controller.dart';
 import '../../src/rust/api/dialog.dart';
 import '../../src/rust/api/papers.dart';
 import '../kitchen/kitchen_page.dart' show Grid, Quiet, Strip, cardDeco, confirm;
@@ -270,6 +271,7 @@ class _HeaderState extends State<_Header> {
             onPressed: st == null ? null : () => showPhone(context, c),
             icon: Icon(Icons.qr_code_scanner, size: 20, color: t.nInk2),
           ),
+          if (st != null) _BackupButton(c: c, st: st),
           const SizedBox(width: 6),
           FilledButton.icon(
             style: FilledButton.styleFrom(backgroundColor: kPapers),
@@ -279,6 +281,46 @@ class _HeaderState extends State<_Header> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Every day, the papers folder (the files, vault papers still sealed, and a
+/// copy of papers.db) to a Cloud remote, as a Cloud sync job.
+class _BackupButton extends StatelessWidget {
+  const _BackupButton({required this.c, required this.st});
+
+  final PapersController c;
+  final PapersState st;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final on = st.backup.isNotEmpty;
+    return PopupMenuButton<String>(
+      tooltip: on ? 'Backed up to ${st.backup} every day' : 'Back up Papers',
+      icon: Icon(on ? Icons.cloud_done_outlined : Icons.cloud_upload_outlined,
+          size: 20, color: on ? kPapers : t.nInk2),
+      onSelected: (v) {
+        if (v == '@cloud') {
+          ShellController.instance.go(Section.cloud);
+        } else {
+          c.send(PapersCmd.setBackup(remote: v));
+        }
+      },
+      itemBuilder: (_) => [
+        if (st.remotes.isEmpty)
+          const PopupMenuItem(
+              value: '@cloud', child: Text('Add a remote in Cloud first'))
+        else
+          for (final r in st.remotes)
+            CheckedPopupMenuItem(
+                value: r, checked: r == st.backup, child: Text('Back up to $r')),
+        if (on) ...[
+          const PopupMenuDivider(),
+          const PopupMenuItem(value: '', child: Text('Stop backing up')),
+        ],
+      ],
     );
   }
 }
@@ -469,6 +511,27 @@ class _AlertCard extends StatelessWidget {
                                 c.send(PapersCmd.snooze(id: a.paperId)),
                             child: const Text('Snooze a week'),
                           ),
+                          if (a.finId != 0)
+                            OutlinedButton.icon(
+                              onPressed: () => ShellController.instance.goOpen(
+                                  Section.finances, 'txn', '${a.finId}'),
+                              icon: const Icon(Icons.receipt_long, size: 15),
+                              label: const Text('Open bill'),
+                            ),
+                          if (a.compare)
+                            OutlinedButton.icon(
+                              onPressed: () =>
+                                  c.send(PapersCmd.compare(id: a.paperId)),
+                              icon: const Icon(Icons.compare_arrows, size: 15),
+                              label: const Text('Compare'),
+                            ),
+                          if (a.planOn.isNotEmpty)
+                            OutlinedButton.icon(
+                              onPressed: () =>
+                                  c.send(PapersCmd.planRenewal(id: a.paperId)),
+                              icon: const Icon(Icons.event_outlined, size: 15),
+                              label: const Text('Plan renewal'),
+                            ),
                           FilledButton.icon(
                             style: FilledButton.styleFrom(
                                 backgroundColor: kPapers),
@@ -708,6 +771,13 @@ class _InboxRow extends StatelessWidget {
                             icon: Icons.credit_card, text: p.finance),
                     ],
                   ),
+                  if (p.why.isNotEmpty) ...[
+                    const SizedBox(height: 5),
+                    Text('Suggested ${p.collection.replaceAll('>', '›')}: ${p.why}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 11.5, color: t.nInk3)),
+                  ],
                 ],
               ],
             ),

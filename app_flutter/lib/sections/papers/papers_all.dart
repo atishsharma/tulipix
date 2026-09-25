@@ -7,8 +7,11 @@
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
+import '../../shell/shell_controller.dart';
 import '../../src/rust/api/dialog.dart';
 import '../../src/rust/api/papers.dart';
+import '../../src/rust/api/transfer.dart';
+import '../journal/journal_page.dart' show PhotoThumb;
 import '../kitchen/kitchen_page.dart' show Grid, Quiet, cardDeco;
 import 'papers_controller.dart';
 import 'papers_page.dart';
@@ -545,7 +548,8 @@ class _Detail extends StatelessWidget {
                 ],
               ),
             ),
-          if (v.finance != null || v.canAdd) section('Linked'),
+          if (v.finance != null || v.canAdd || v.photos.isNotEmpty)
+            section('Linked'),
           if (v.finance case final f?)
             Container(
               decoration: cardDeco(context, radius: 10),
@@ -572,6 +576,22 @@ class _Detail extends StatelessWidget {
                 label: const Text('Add to Finances'),
               ),
             ),
+          if (v.photos.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(v.photosLine, style: TextStyle(fontSize: 12, color: t.nInk3)),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final id in v.photos)
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: PhotoThumb(id: id.toInt(), size: 64),
+                  ),
+              ],
+            ),
+          ],
           if (v.snippet.isNotEmpty) ...[
             section('Found in the text'),
             Container(
@@ -607,6 +627,11 @@ class _Detail extends StatelessWidget {
                 onPressed: v.locked ? null : () => saveCopy(c, v),
                 icon: const Icon(Icons.save_alt, size: 16),
                 label: const Text('Save a copy'),
+              ),
+              OutlinedButton.icon(
+                onPressed: v.locked ? null : () => share(c, v),
+                icon: const Icon(Icons.ios_share, size: 16),
+                label: const Text('Share'),
               ),
               OutlinedButton.icon(
                 onPressed: v.locked
@@ -683,6 +708,18 @@ Future<void> saveCopy(PapersController c, PaperView v) async {
   );
   if (to != null && to.isNotEmpty) {
     await c.send(PapersCmd.saveCopy(id: v.id, to: to));
+  }
+}
+
+/// To a phone or another computer, through Transfer: the file joins
+/// Transfer's tray and Transfer opens with its server started.
+Future<void> share(PapersController c, PaperView v) async {
+  try {
+    final path = await papersPlainPath(id: v.id);
+    await transferDispatch(cmd: TransferCmd.addFiles(paths: [path]));
+    ShellController.instance.goOpen(Section.transfer, 'share');
+  } catch (e) {
+    c.say(plainError(e));
   }
 }
 

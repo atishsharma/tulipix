@@ -692,7 +692,8 @@ class _ReaderState extends State<Reader> {
                                 fontWeight: FontWeight.w600,
                                 color: t.nInk)),
                         const SizedBox(height: 18),
-                        if (a.summary.isNotEmpty) _Summary(c: c, a: a),
+                        if (a.summary.isNotEmpty || c.summarising == a.id)
+                          _Summary(c: c, a: a),
                         for (var i = 0; i < a.paragraphs.length; i++)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 16),
@@ -742,6 +743,7 @@ class _Summary extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    final model = c.state?.summarizer ?? '';
     return Container(
       margin: const EdgeInsets.only(bottom: 22),
       padding: const EdgeInsets.fromLTRB(16, 8, 12, 12),
@@ -763,9 +765,24 @@ class _Summary extends StatelessWidget {
                       fontWeight: FontWeight.w700,
                       color: kFeeds)),
               const SizedBox(width: 8),
-              Text('written on this computer',
-                  style: TextStyle(fontSize: 11, color: t.nInk3)),
+              Flexible(
+                child: Text(
+                    c.summarising == a.id
+                        ? 'writing it with $model…'
+                        : a.summaryModel
+                            ? 'written by $model on your server'
+                            : 'picked from the article on this computer',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: t.nInk3)),
+              ),
               const Spacer(),
+              IconButton(
+                tooltip: 'Where summaries come from',
+                iconSize: 15,
+                visualDensity: VisualDensity.compact,
+                onPressed: () => showSummarizer(context, c),
+                icon: Icon(Icons.tune, color: t.nInk3),
+              ),
               Switch(
                 value: c.summaryOpen,
                 activeTrackColor: kFeeds,
@@ -773,6 +790,20 @@ class _Summary extends StatelessWidget {
               ),
             ],
           ),
+          if (c.summaryOpen && c.summarising == a.id)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: LinearProgressIndicator(minHeight: 2, color: kFeeds),
+            ),
+          if (c.summaryOpen &&
+              c.summaryError.isNotEmpty &&
+              c.summarising == 0 &&
+              !a.summaryModel)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text('The model server: ${c.summaryError}',
+                  style: TextStyle(fontSize: 11, color: t.nInk3)),
+            ),
           if (c.summaryOpen)
             for (final line in a.summary)
               Padding(

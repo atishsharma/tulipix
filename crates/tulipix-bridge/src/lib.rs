@@ -17,6 +17,10 @@ mod db;
 // store. No Slint section shares it, so it lives with its only caller and
 // `api::feeds` maps what crosses.
 mod feeds;
+// Calendar files for Papers' renewals and Kitchen's week.
+mod ics;
+// Feeds' newsletters from the user's own mailbox, over IMAP.
+mod mail;
 // The same for Journal: its store and the queries that gather a day from the
 // other sections' databases. `api::journal` maps what crosses.
 mod journal;

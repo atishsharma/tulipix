@@ -728,27 +728,65 @@ pub fn ocr(path: &std::path::Path) -> Result<Draft> {
 // ── keeping the screen on ───────────────────────────────────────────────────
 
 /// Cook mode holds the screen awake with what the desktop provides:
-/// `systemd-inhibit` on Linux, `caffeinate` on macOS. Dropping the child ends
-/// the hold.
-///
-/// ponytail: Windows needs SetThreadExecutionState through a Win32 call; until
-/// then its screen may dim while cooking.
+/// `systemd-inhibit` on Linux, `caffeinate` on macOS, and on Windows a hidden
+/// PowerShell that calls `SetThreadExecutionState` and sleeps — the flag lasts
+/// as long as the thread that set it, so killing the child lifts it. Dropping
+/// the child ends the hold everywhere.
 pub fn hold_awake() -> Option<tokio::process::Child> {
+    // ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED.
+    const WIN: &str = "$k=Add-Type -Name P -Namespace W -PassThru -MemberDefinition \
+        '[DllImport(\"kernel32.dll\")]public static extern uint SetThreadExecutionState(uint f);'; \
+        [void]$k::SetThreadExecutionState(0x80000003); Start-Sleep -Seconds 86400";
     let (prog, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
         ("caffeinate", &["-d"])
     } else if cfg!(target_os = "linux") {
         ("systemd-inhibit", &["--what=idle", "--who=Tulipix", "--why=Cooking", "sleep", "86400"])
+    } else if cfg!(target_os = "windows") {
+        ("powershell", &["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", WIN])
     } else {
         return None;
     };
-    tokio::process::Command::new(prog)
-        .args(args)
+    let mut cmd = tokio::process::Command::new(prog);
+    cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .ok()
+        .kill_on_drop(true);
+    // CREATE_NO_WINDOW: no console flashes up over the recipe.
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x0800_0000);
+    cmd.spawn().ok()
+}
+
+// ── listening ───────────────────────────────────────────────────────────────
+
+/// What a short clip in cook mode asked for: next, back, repeat, timer or
+/// stop. Only an utterance of a few words counts — a step read aloud that
+/// happens to say "then stop stirring" is not a command, and whisper's guesses
+/// at silence ("Thank you.", "[BLANK_AUDIO]") are not either.
+pub fn command_word(heard: &str) -> Option<&'static str> {
+    let words: Vec<String> = heard
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    if words.is_empty() || words.len() > 4 {
+        return None;
+    }
+    let has = |w: &str| words.iter().any(|x| x == w);
+    if has("next") || has("forward") {
+        Some("next")
+    } else if has("back") || has("previous") {
+        Some("back")
+    } else if has("repeat") || has("again") {
+        Some("repeat")
+    } else if has("timer") {
+        Some("timer")
+    } else if has("stop") || has("pause") {
+        Some("stop")
+    } else {
+        None
+    }
 }
 
 // ── the phone ───────────────────────────────────────────────────────────────
@@ -757,10 +795,9 @@ pub fn hold_awake() -> Option<tokio::process::Child> {
 ///
 /// The same shape as `cast_serve`: one listener for the process, one random
 /// 128-bit path at a time, nothing else answered. The page is rendered from
-/// the database on every request, so it is never stale.
-///
-/// ponytail: ticks on the phone stay on the phone. Posting them back needs a
-/// second route behind the same token.
+/// the database on every request, so it is never stale. A tick is a POST to
+/// `/<token>/tick/<id>/<0|1>` behind the same token, so the basket on the
+/// computer follows the phone.
 pub mod phone {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU16, Ordering};
@@ -824,8 +861,19 @@ pub mod phone {
         let n = s.read(&mut buf).await?;
         let head = String::from_utf8_lossy(&buf[..n]);
         let path = head.split_whitespace().nth(1).unwrap_or("");
+        let method = head.split_whitespace().next().unwrap_or("");
         let want = TOKEN.lock().map(|g| g.clone()).unwrap_or_default();
-        let (status, body) = if !want.is_empty() && path == format!("/{want}") {
+        let tick = path
+            .strip_prefix(&format!("/{want}/tick/"))
+            .filter(|_| !want.is_empty() && method == "POST")
+            .and_then(|rest| rest.split_once('/'))
+            .and_then(|(id, on)| Some((id.parse::<i64>().ok()?, on == "1")));
+        let (status, body) = if let Some((id, done)) = tick {
+            match crate::api::kitchen::phone_tick(id, done).await {
+                Ok(()) => ("200 OK", String::new()),
+                Err(_) => ("404 Not Found", String::new()),
+            }
+        } else if !want.is_empty() && path == format!("/{want}") {
             ("200 OK", crate::api::kitchen::phone_page().await.unwrap_or_else(|_| "<p>The list could not be read.</p>".into()))
         } else {
             ("404 Not Found", "<p>Not here.</p>".to_string())
@@ -845,6 +893,19 @@ mod tests {
 
     fn ing(q: Option<f64>, u: &str, n: &str, note: &str) -> Ing {
         Ing { qty: q, unit: u.into(), name: n.into(), note: note.into() }
+    }
+
+    #[test]
+    fn short_utterances_are_commands_and_sentences_are_not() {
+        assert_eq!(command_word(" Next."), Some("next"));
+        assert_eq!(command_word("Next step, please"), Some("next"));
+        assert_eq!(command_word("go back"), Some("back"));
+        assert_eq!(command_word("Say that again?"), Some("repeat"));
+        assert_eq!(command_word("Start the timer"), Some("timer"));
+        assert_eq!(command_word("Stop."), Some("stop"));
+        assert_eq!(command_word("Thank you."), None);
+        assert_eq!(command_word("[BLANK_AUDIO]"), None);
+        assert_eq!(command_word("Stir, then stop when it thickens and go to the next step"), None);
     }
 
     #[test]

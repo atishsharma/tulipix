@@ -257,8 +257,11 @@ fn has(w: &str, phrase: &str) -> bool {
 /// The words that give each kind away. First in the list wins a tie, so the
 /// rare and certain kinds come before the common ones.
 ///
-/// ponytail: a word table. A small classifier trained on what the user files
-/// would do better once there is enough of it to learn from.
+/// The first guess only: `api::papers::read_one` prefers what the same shop's
+/// filed papers were, and the collection follows the user's own filing.
+///
+/// ponytail: a word table for shops never seen before. A small classifier
+/// trained on what the user files would do better once there is enough of it.
 const SIGNS: &[(&str, &[&str])] = &[
     ("id", &["passport", "driving licence", "driving license", "identity card", "id card", "date of birth", "nationality", "national insurance", "residence permit", "place of birth"]),
     ("medical", &["patient", "nhs", "clinic", "hospital", "prescription", "diagnosis", "blood test", "test results", "vaccination", "dental", "dentist", "gp", "pharmacy"]),

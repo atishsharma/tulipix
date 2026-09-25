@@ -21,7 +21,7 @@ use crate::kitchen::{self as k, AISLES};
 // ------------------------------------------------------------------- state ---
 
 pub struct KitchenState {
-    /// recipes | recipe | cook | plan | shop.
+    /// recipes | recipe | cook | plan | shop | pantry.
     pub tab: String,
     pub notice: String,
     pub total: i64,
@@ -43,6 +43,22 @@ pub struct KitchenState {
     pub accounts: Vec<AccountPick>,
     /// Every recipe by name, for the plan's picker.
     pub picks: Vec<RecipePick>,
+    /// What Kitchen thinks is in the kitchen, by aisle; on the Pantry tab.
+    pub pantry: Vec<PantryGroup>,
+    /// Pantry keys, for the tab's count.
+    pub pantry_n: i64,
+    /// Cook mode is listening for "next", "back", "repeat", "timer", "stop".
+    pub listening: bool,
+    /// The last word heard, and a count that moves each time one is, so the
+    /// page can act on "repeat" or "timer" once.
+    pub heard: String,
+    pub heard_n: i64,
+}
+
+pub struct PantryGroup {
+    pub aisle: String,
+    /// The pantry's keys: "tomato", "olive oil".
+    pub keys: Vec<String>,
 }
 
 pub struct FilterChip {
@@ -236,6 +252,14 @@ pub enum KitchenCmd {
     ClearBasket,
     /// The shop as an expense in Finances.
     LogShop { account_id: i64, amount: String },
+    /// The week shown, as a calendar file the system calendar imports.
+    ExportWeek,
+    /// Something in the kitchen, typed: "2 tins of coconut milk".
+    AddPantry { text: String },
+    /// Start the pantry again: nothing is in stock.
+    ClearPantry,
+    /// Listen for spoken commands in cook mode, or stop.
+    Listen { on: bool },
 }
 
 // ----------------------------------------------------------------- session ---
@@ -288,7 +312,107 @@ fn awake() -> &'static Mutex<Option<tokio::process::Child>> {
     A.get_or_init(|| Mutex::new(None))
 }
 
+/// Move cook mode a step, within the recipe. Nothing when not cooking.
+async fn step(pool: &SqlitePool, delta: i64) -> Result<()> {
+    let id = lock().open;
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM steps WHERE recipe_id = ?").bind(id).fetch_one(pool).await?;
+    let mut s = lock();
+    if let Some(at) = s.cook {
+        s.cook = Some((at + delta).clamp(0, (n - 1).max(0)));
+    }
+    Ok(())
+}
+
+// ── listening ───────────────────────────────────────────────────────────────
+//
+// Two and a half seconds at a time from the microphone, each clip through
+// whisper-cli on this computer. One clip is transcribed while the next
+// records; if whisper falls behind, a clip is dropped rather than queued, so
+// what is heard is always recent. "next" and "back" move the step here; the
+// page acts on "repeat", "timer" and "stop", which live in Dart.
+//
+// ponytail: whisper per clip is a second or two behind on a laptop CPU, and
+// read-aloud can be heard by the microphone (only short utterances count, so
+// a step's text does not). A keyword spotter would be quicker if that lag
+// ever matters.
+
+struct Listen {
+    /// Bumped on every start and stop; a loop from an older start sees the
+    /// change and ends.
+    epoch: std::sync::atomic::AtomicU64,
+    on: std::sync::atomic::AtomicBool,
+    heard: Mutex<(String, i64)>,
+}
+
+static LISTEN: Listen = Listen {
+    epoch: std::sync::atomic::AtomicU64::new(0),
+    on: std::sync::atomic::AtomicBool::new(false),
+    heard: Mutex::new((String::new(), 0)),
+};
+
+fn listening() -> bool {
+    LISTEN.on.load(std::sync::atomic::Ordering::Acquire)
+}
+
+fn stop_listening() {
+    use std::sync::atomic::Ordering;
+    LISTEN.epoch.fetch_add(1, Ordering::AcqRel);
+    LISTEN.on.store(false, Ordering::Release);
+}
+
+fn start_listening(pool: &'static SqlitePool) {
+    use std::sync::atomic::Ordering;
+    let epoch = LISTEN.epoch.fetch_add(1, Ordering::AcqRel) + 1;
+    LISTEN.on.store(true, Ordering::Release);
+    let alive = move || LISTEN.epoch.load(Ordering::Acquire) == epoch;
+    let Some(dir) = tulipix_core::paths::cache_dir().map(|d| d.join("kitchen-listen")) else { return };
+    std::fs::create_dir_all(&dir).ok();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<std::path::PathBuf>(1);
+    tokio::spawn(async move {
+        while let Some(clip) = rx.recv().await {
+            if !alive() {
+                break;
+            }
+            let heard = crate::api::journal::transcribe(&clip).await.unwrap_or_default();
+            if let Some(word) = k::command_word(&heard) {
+                let delta = match word {
+                    "next" => 1,
+                    "back" => -1,
+                    _ => 0,
+                };
+                if delta != 0 {
+                    step(pool, delta).await.ok();
+                }
+                if let Ok(mut h) = LISTEN.heard.lock() {
+                    *h = (word.to_string(), h.1 + 1);
+                }
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let mut i = 0;
+        while alive() {
+            // Four names in turn: one being read, one waiting, one recording.
+            let clip = dir.join(format!("{i}.wav"));
+            i = (i + 1) % 4;
+            if let Err(e) = crate::api::journal::record_clip(&clip, 2.5).await {
+                tracing::info!(error = %e, "kitchen: listening stopped");
+                if alive() {
+                    stop_listening();
+                    say(e.to_string());
+                }
+                break;
+            }
+            // Full: whisper is still on the last one, and this clip is dropped.
+            let _ = tx.try_send(clip);
+        }
+    });
+}
+
 fn set_awake(on: bool) {
+    if !on {
+        stop_listening();
+    }
     if let Ok(mut g) = awake().lock() {
         *g = if on { g.take().or_else(k::hold_awake) } else { None };
     }
@@ -460,13 +584,7 @@ async fn apply(pool: &'static SqlitePool, cmd: KitchenCmd) -> Result<()> {
             drop(s);
             set_awake(true);
         }
-        KitchenCmd::CookStep { delta } => {
-            let id = lock().open;
-            let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM steps WHERE recipe_id = ?").bind(id).fetch_one(pool).await?;
-            let mut s = lock();
-            let at = s.cook.unwrap_or(0) + delta;
-            s.cook = Some(at.clamp(0, (n - 1).max(0)));
-        }
+        KitchenCmd::CookStep { delta } => step(pool, delta).await?,
         KitchenCmd::FinishCook => {
             let id = lock().open;
             sqlx::query("UPDATE recipes SET cooked = cooked + 1, last_cooked = ? WHERE id = ?")
@@ -533,6 +651,53 @@ async fn apply(pool: &'static SqlitePool, cmd: KitchenCmd) -> Result<()> {
             } else {
                 format!("{} from {}", plural(added, "item", "items"), plural(meals, "planned meal", "planned meals"))
             };
+        }
+        KitchenCmd::ExportWeek => {
+            let start = lock().week.unwrap_or_else(|| monday(today()));
+            let w = week_view(pool, start).await?;
+            let mut events = Vec::new();
+            for d in &w.days {
+                let Some(day) = d.day.parse::<NaiveDate>().ok() else { continue };
+                for (meal, slot) in [("Lunch", &d.lunch), ("Dinner", &d.dinner)] {
+                    let what = if slot.title.is_empty() { &slot.label } else { &slot.title };
+                    if what.trim().is_empty() {
+                        continue;
+                    }
+                    events.push(crate::ics::Event {
+                        uid: format!("meal-{}-{}", d.day, meal.to_lowercase()),
+                        day,
+                        title: format!("{meal}: {what}"),
+                        note: String::new(),
+                    });
+                }
+            }
+            if events.is_empty() {
+                bail!("nothing is planned that week");
+            }
+            crate::ics::open(&format!("meals-{}", w.start), &events)?;
+            say(format!("Sent {} to your calendar", plural(events.len() as i64, "meal", "meals")));
+        }
+        KitchenCmd::AddPantry { text } => {
+            let key = k::key(&k::parse_ingredient(&text).name);
+            if key.is_empty() {
+                bail!("what is in the kitchen?");
+            }
+            sqlx::query("INSERT OR IGNORE INTO pantry (key) VALUES (?)").bind(key).execute(pool).await?;
+        }
+        KitchenCmd::Listen { on } => {
+            if on {
+                if lock().cook.is_none() {
+                    bail!("start cooking first");
+                }
+                crate::api::journal::transcribe_ready()?;
+                start_listening(pool);
+            } else {
+                stop_listening();
+            }
+        }
+        KitchenCmd::ClearPantry => {
+            sqlx::query("DELETE FROM pantry").execute(pool).await?;
+            say("The pantry is empty: every recipe will ask for everything");
         }
         KitchenCmd::ToggleItem { id } => {
             sqlx::query("UPDATE shop SET done = 1 - done WHERE id = ?").bind(id).execute(pool).await?;
@@ -1036,7 +1201,27 @@ async fn snapshot(pool: &SqlitePool) -> Result<KitchenState> {
         Vec::new()
     };
 
+    let mut pantry_groups: Vec<PantryGroup> =
+        AISLES.iter().map(|a| PantryGroup { aisle: a.to_string(), keys: Vec::new() }).collect();
+    if tab == "pantry" {
+        let mut sorted: Vec<&String> = have.iter().collect();
+        sorted.sort();
+        for key in sorted {
+            let a = k::aisle(key);
+            if let Some(g) = pantry_groups.iter_mut().find(|g| g.aisle == a) {
+                g.keys.push(key.clone());
+            }
+        }
+    }
+    pantry_groups.retain(|g| !g.keys.is_empty());
+
+    let (heard, heard_n) = LISTEN.heard.lock().map(|h| h.clone()).unwrap_or_default();
     Ok(KitchenState {
+        listening: listening(),
+        heard,
+        heard_n,
+        pantry: pantry_groups,
+        pantry_n: have.len() as i64,
         cooking: cook.is_some() && open_view.is_some(),
         cook_step,
         open: open_view,
@@ -1157,14 +1342,36 @@ pub(crate) async fn phone_page() -> Result<String> {
         h.push_str(&format!("<h2>{}</h2>", esc(&g.aisle)));
         for i in &g.items {
             h.push_str(&format!(
-                "<label><input type=checkbox{}><span>{}</span><span class=q>{}</span></label>",
+                "<label><input type=checkbox data-id={}{}><span>{}</span><span class=q>{}</span></label>",
+                i.id,
                 if i.done { " checked" } else { "" },
                 esc(&i.name),
                 esc(&i.amount)
             ));
         }
     }
+    // Each tick goes back to the computer, so the basket there is the basket
+    // here. A failed post unticks the box rather than pretending it went.
+    h.push_str(
+        "<script>document.querySelectorAll('input[data-id]').forEach(b=>b.onchange=()=>{\
+         fetch(location.pathname+'/tick/'+b.dataset.id+'/'+(b.checked?1:0),{method:'POST'})\
+         .then(r=>{if(!r.ok)throw 0}).catch(()=>{b.checked=!b.checked})})</script>",
+    );
     Ok(h)
+}
+
+/// A tick from the phone page: in the basket, or back out.
+pub(crate) async fn phone_tick(id: i64, done: bool) -> Result<()> {
+    let n = sqlx::query("UPDATE shop SET done = ? WHERE id = ?")
+        .bind(done)
+        .bind(id)
+        .execute(kitchen_pool().await?)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        bail!("that item is not on the list any more");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

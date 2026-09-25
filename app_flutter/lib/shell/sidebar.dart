@@ -155,9 +155,13 @@ class Sidebar extends StatelessWidget {
                       collapsed: collapsed,
                       height: h,
                       gap: g,
-                      badge:
-                          s == Section.finances ? (st?.financesBadge ?? 0) : 0,
-                      alarm: st?.financesOverdue ?? false,
+                      badge: switch (s) {
+                        Section.finances => st?.financesBadge ?? 0,
+                        Section.feeds => st?.feedsUnread ?? 0,
+                        _ => 0,
+                      },
+                      alarm: s == Section.finances &&
+                          (st?.financesOverdue ?? false),
                       onTap: () => c.go(s),
                     ),
                 ];
@@ -227,9 +231,8 @@ class _NavRow extends StatefulWidget {
   /// Space under the row, shrunk in step with [height].
   final double gap;
 
-  /// Count of things wanting attention. 0 hides the badge. Only Finances sets
-  /// one today; it lives on the row rather than on that one section so a second
-  /// section wanting a count needs no second mechanism.
+  /// Count of things wanting attention. 0 hides the badge. Finances sets one
+  /// for bills due, Feeds for unread articles.
   final int badge;
 
   /// Whether that count contains something already late. An overdue bill and a
@@ -370,7 +373,7 @@ class _Badge extends StatelessWidget {
         color: tint,
         borderRadius: BorderRadius.circular(9),
       ),
-      child: Text('$count',
+      child: Text(count > 99 ? '99+' : '$count',
           style: TextStyle(
               fontSize: small ? 9 : 10.5,
               fontWeight: FontWeight.w800,

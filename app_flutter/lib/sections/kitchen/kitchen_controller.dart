@@ -24,6 +24,7 @@ const List<KitchenTab> kitchenTabs = [
   (id: 'cook', label: 'Cook'),
   (id: 'plan', label: 'Plan'),
   (id: 'shop', label: 'Shopping'),
+  (id: 'pantry', label: 'Pantry'),
 ];
 
 const Color kKitchen = Tokens.secKitchen;
@@ -74,6 +75,17 @@ class KitchenController extends ChangeNotifier {
   }
 
   Future<void> refresh() => send(const KitchenCmd.refresh());
+
+  /// A snapshot without the progress line, for polling: the phone's ticks.
+  Future<void> quiet() async {
+    if (busy) return;
+    try {
+      state = await kitchenDispatch(cmd: const KitchenCmd.refresh());
+      notifyListeners();
+    } catch (_) {
+      // The next poll tries again; a strip every five seconds would not help.
+    }
+  }
 
   /// Run a command whose failure belongs in a dialog rather than the strip;
   /// answers the reason, or null when it worked.

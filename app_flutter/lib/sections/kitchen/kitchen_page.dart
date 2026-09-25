@@ -91,6 +91,7 @@ class _KitchenPageState extends State<KitchenPage> {
                         'cook' => CookView(c: _c, st: st),
                         'plan' => PlanView(c: _c, st: st),
                         'shop' => ShopList(c: _c, st: st),
+                        'pantry' => PantryView(c: _c, st: st),
                         _ => _RecipesView(c: _c, st: st),
                       },
               ),

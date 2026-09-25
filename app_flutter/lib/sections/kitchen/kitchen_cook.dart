@@ -1,10 +1,13 @@
-// Kitchen's Cook, Plan and Shopping tabs.
+// Kitchen's Cook, Plan, Shopping and Pantry tabs.
 //
 // Cook is one step at a time, large enough to read from across the counter,
 // with the step's timers and the next step's first one; ← and → move, and
 // Read aloud speaks each step in the Books reader's voice. Plan is the week
 // as lunch and dinner. Shopping is the list by aisle, with the phone page
-// and the shop logged as an expense in Finances.
+// and the shop logged as an expense in Finances. Pantry is what the kitchen
+// is thought to hold, which "Can make now" and the list both trust.
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -33,6 +36,9 @@ class _CookViewState extends State<CookView> {
   final FeedsVoice _voice = FeedsVoice();
   bool _aloud = false;
 
+  /// While the bridge listens, the page asks every second what it heard.
+  Timer? _poll;
+
   @override
   void initState() {
     super.initState();
@@ -44,11 +50,45 @@ class _CookViewState extends State<CookView> {
   @override
   void didUpdateWidget(CookView old) {
     super.didUpdateWidget(old);
-    if (_aloud && widget.st.cookStep != old.st.cookStep) _speak();
+    final st = widget.st;
+    if (_aloud && st.cookStep != old.st.cookStep) _speak();
+    if (st.heardN != old.st.heardN) _heard(st.heard);
+    if (st.listening && _poll == null) {
+      _poll = Timer.periodic(
+          const Duration(seconds: 1), (_) => widget.c.quiet());
+    } else if (!st.listening && _poll != null) {
+      _poll?.cancel();
+      _poll = null;
+    }
+  }
+
+  /// What the bridge heard and left to the page: next and back have already
+  /// moved the step there.
+  void _heard(String word) {
+    final r = widget.st.open;
+    if (r == null) return;
+    final n = widget.st.cookStep.clamp(0, r.steps.length - 1).toInt();
+    final specs = r.steps[n].timers;
+    switch (word) {
+      case 'repeat':
+        _speak();
+      case 'timer':
+        if (specs.isNotEmpty) {
+          final t = widget.c.timerFor(r.id, n, 0, specs[0]);
+          if (!t.running) widget.c.toggle(t);
+        }
+      case 'stop':
+        _voice.stop();
+        for (var i = 0; i < specs.length; i++) {
+          final t = widget.c.timerFor(r.id, n, i, specs[i]);
+          if (t.running) widget.c.toggle(t);
+        }
+    }
   }
 
   @override
   void dispose() {
+    _poll?.cancel();
     _voice.dispose();
     _focus.dispose();
     super.dispose();
@@ -152,8 +192,26 @@ class _CookViewState extends State<CookView> {
                         color: _aloud ? kKitchen : t.nInk3),
                   ),
                 ),
-                Text('Press → for the next step',
-                    style: TextStyle(fontSize: 12, color: t.nInk3)),
+                Tooltip(
+                  message: st.listening
+                      ? 'Stop listening'
+                      : 'Listen for “next”, “back”, “repeat”, “timer” and “stop” — heard by whisper on this computer',
+                  child: IconButton(
+                    onPressed: () =>
+                        c.send(KitchenCmd.listen(on_: !st.listening)),
+                    icon: Icon(st.listening ? Icons.mic : Icons.mic_none,
+                        color: st.listening ? kKitchen : t.nInk3),
+                  ),
+                ),
+                Text(
+                    st.listening
+                        ? (st.heard.isEmpty
+                            ? 'Listening — say “next”'
+                            : 'Heard “${st.heard}”')
+                        : 'Say “next” or press →',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: st.listening ? kKitchen : t.nInk3)),
               ],
             ),
             const SizedBox(height: 26),
@@ -408,6 +466,14 @@ class PlanView extends StatelessWidget {
                   style: TextStyle(fontSize: 12.5, color: t.nInk3)),
             ),
             const Spacer(),
+            IconButton(
+              tooltip: 'Add the week to your calendar',
+              onPressed: w.planned == 0
+                  ? null
+                  : () => c.send(const KitchenCmd.exportWeek()),
+              icon: const Icon(Icons.event_outlined, size: 19),
+            ),
+            const SizedBox(width: 4),
             OutlinedButton.icon(
               onPressed: () => c.send(const KitchenCmd.fillGaps()),
               icon: const Icon(Icons.auto_awesome_outlined, size: 16),
@@ -681,10 +747,21 @@ class ShopList extends StatefulWidget {
 class _ShopListState extends State<ShopList> {
   final TextEditingController _add = TextEditingController();
 
+  /// Once the list is open on a phone, its ticks come back through the
+  /// bridge; this picks them up while the list is on screen.
+  Timer? _poll;
+
   @override
   void dispose() {
+    _poll?.cancel();
     _add.dispose();
     super.dispose();
+  }
+
+  Future<void> _phone() async {
+    await showPhone(context, widget.c);
+    _poll ??= Timer.periodic(
+        const Duration(seconds: 5), (_) => widget.c.quiet());
   }
 
   @override
@@ -720,7 +797,7 @@ class _ShopListState extends State<ShopList> {
               const SizedBox(width: 6),
             ],
             OutlinedButton.icon(
-              onPressed: s.total == 0 ? null : () => showPhone(context, c),
+              onPressed: s.total == 0 ? null : _phone,
               icon: const Icon(Icons.qr_code_2, size: 16),
               label: const Text('Open on phone'),
             ),
@@ -841,6 +918,135 @@ class _Aisle extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+// ------------------------------------------------------------------ pantry --
+
+class PantryView extends StatefulWidget {
+  const PantryView({super.key, required this.c, required this.st});
+
+  final KitchenController c;
+  final KitchenState st;
+
+  @override
+  State<PantryView> createState() => _PantryViewState();
+}
+
+class _PantryViewState extends State<PantryView> {
+  final TextEditingController _add = TextEditingController();
+
+  @override
+  void dispose() {
+    _add.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final c = widget.c;
+    final st = widget.st;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(22, 16, 22, 40),
+      children: [
+        Row(
+          children: [
+            Text('Pantry',
+                style: TextStyle(
+                    fontSize: 18, fontWeight: FontWeight.w800, color: t.nInk)),
+            const SizedBox(width: 10),
+            Flexible(
+              child: Text(
+                  '${plural(st.pantryN, 'thing')} in stock · what “Can make now” and the list go by',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12.5, color: t.nInk3)),
+            ),
+            const Spacer(),
+            if (st.pantryN > 0)
+              TextButton(
+                onPressed: () async {
+                  if (await confirm(context, 'Empty the pantry?',
+                      'Every recipe will ask for everything until you tick things back in.')) {
+                    await c.send(const KitchenCmd.clearPantry());
+                  }
+                },
+                child: const Text('Empty the pantry'),
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Container(
+          decoration: cardDeco(context),
+          padding: const EdgeInsets.fromLTRB(12, 2, 6, 2),
+          child: Row(
+            children: [
+              Icon(Icons.add, size: 18, color: t.nInk3),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _add,
+                  decoration: InputDecoration(
+                    border: InputBorder.none,
+                    hintText: 'Something you have — “rice”, “2 tins of tomatoes”',
+                    hintStyle: TextStyle(fontSize: 13, color: t.nInk3),
+                  ),
+                  onSubmitted: (v) async {
+                    if (v.trim().isEmpty) return;
+                    await c.send(KitchenCmd.addPantry(text: v));
+                    _add.clear();
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        if (st.pantry.isEmpty)
+          const Quiet(
+            icon: Icons.kitchen_outlined,
+            title: 'Nothing in the pantry yet',
+            body:
+                'Tick what you have on a recipe, put the basket away after a shop, or type things in above.',
+          )
+        else
+          Grid(
+            min: 260,
+            children: [
+              for (final g in st.pantry)
+                Container(
+                  decoration: cardDeco(context),
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text('${g.aisle} · ${g.keys.length}',
+                          style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: t.nInk)),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: [
+                          for (final k in g.keys)
+                            InputChip(
+                              label: Text(k, style: const TextStyle(fontSize: 12.5)),
+                              visualDensity: VisualDensity.compact,
+                              tooltip: 'Run out',
+                              onDeleted: () => c.send(
+                                  KitchenCmd.setStock(key: k, have: false)),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+      ],
     );
   }
 }

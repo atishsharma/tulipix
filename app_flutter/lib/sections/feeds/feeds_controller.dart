@@ -84,16 +84,71 @@ class FeedsController extends ChangeNotifier {
     if (at == 0 || DateTime.now().difference(last) > age) fetch();
   }
 
-  /// Open in the reader, then go for the page when the feed sent only part.
+  /// Open in the reader, then go for the page when the feed sent only part,
+  /// then — when a model server is set — for a better summary.
   Future<void> open(int id) async {
     final st = await send(FeedsCmd.open(id: id));
     final view = st?.open;
-    if (view == null || view.full || view.url.isEmpty) return;
-    fullFor = id;
+    if (view == null) return;
+    if (!view.full && view.url.isNotEmpty) {
+      fullFor = id;
+      notifyListeners();
+      await send(FeedsCmd.fullText(id: id));
+      if (fullFor == id) fullFor = 0;
+      notifyListeners();
+    }
+    await _modelSummary(id);
+  }
+
+  /// The article the model server is summarising; 0 when none.
+  int summarising = 0;
+
+  /// Why the last model summary did not come, for a quiet line under it.
+  String summaryError = '';
+
+  Future<void> _modelSummary(int id) async {
+    final st = state;
+    final v = st?.open;
+    if (st == null ||
+        st.summarizer.isEmpty ||
+        v == null ||
+        v.id != id ||
+        v.summaryModel ||
+        v.paragraphs.length < 3) {
+      return;
+    }
+    summarising = id;
+    summaryError = '';
     notifyListeners();
-    await send(FeedsCmd.fullText(id: id));
-    if (fullFor == id) fullFor = 0;
+    try {
+      state = await feedsSummarise(id: id);
+    } catch (e) {
+      summaryError = _plain(e);
+    }
+    if (summarising == id) summarising = 0;
     notifyListeners();
+  }
+
+  /// Set or clear the mailbox; answers the reason when it did not take.
+  Future<String?> setMail(
+      String host, int port, String user, String password, String folder) async {
+    await send(FeedsCmd.setMail(
+        host: host, port: port, user: user, password: password, folder: folder));
+    final e = error;
+    if (e == null) return null;
+    error = null;
+    notifyListeners();
+    return _plain(e);
+  }
+
+  /// Set or clear the model server; answers the reason when it did not take.
+  Future<String?> setSummarizer(String url, String model) async {
+    await send(FeedsCmd.setSummarizer(url: url, model: model));
+    final e = error;
+    if (e == null) return null;
+    error = null;
+    notifyListeners();
+    return _plain(e);
   }
 
   /// Follow, answering whether it worked so the dialog can stay up with the
@@ -105,6 +160,22 @@ class FeedsController extends ChangeNotifier {
     error = null;
     notifyListeners();
     return _plain(e);
+  }
+
+  /// Another reader's OPML export, followed folder by folder.
+  Future<void> importOpml(String path) async {
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      state = await feedsImportOpml(path: path);
+      if (state!.notice.isNotEmpty) say(state!.notice);
+    } catch (e) {
+      error = e;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
   }
 
   void cycleTextSize() {

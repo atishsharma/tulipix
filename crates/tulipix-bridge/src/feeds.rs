@@ -65,10 +65,19 @@ CREATE TABLE IF NOT EXISTS highlights (
     created    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS highlights_article_idx ON highlights(article_id);
+
+-- Mail senders unfollowed: their next issue must not bring them back.
+CREATE TABLE IF NOT EXISTS muted (
+    url TEXT PRIMARY KEY
+);
 "#;
 
 pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(SCHEMA).execute(pool).await?;
+    // Added after the first release of the section; an existing column is
+    // the only error, and it means the work is done.
+    // "model" when a summary came from the user's own model server.
+    sqlx::query("ALTER TABLE articles ADD COLUMN summary_by TEXT NOT NULL DEFAULT ''").execute(pool).await.ok();
     Ok(())
 }
 
@@ -513,7 +522,7 @@ async fn store_items(pool: &SqlitePool, feed_id: i64, items: &[Item]) -> Result<
 /// a failure is kept on its feed so the sources list can say which.
 pub async fn refresh_all(pool: &SqlitePool, client: &reqwest::Client) -> Result<(usize, usize)> {
     let feeds: Vec<(i64, String, String, String)> =
-        sqlx::query_as("SELECT id, url, etag, modified FROM feeds").fetch_all(pool).await?;
+        sqlx::query_as("SELECT id, url, etag, modified FROM feeds WHERE url NOT LIKE 'mail:%'").fetch_all(pool).await?;
     let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(6));
     let mut set = tokio::task::JoinSet::new();
     for (id, url, etag, modified) in feeds {
@@ -600,7 +609,7 @@ pub async fn fetch_full(pool: &SqlitePool, client: &reqwest::Client, id: i64) ->
     let text = readable(&html);
     let image = if image.is_empty() { og_image(&html) } else { image };
     if text.len() > body.len() {
-        sqlx::query("UPDATE articles SET body = ?, summary = ?, image = ?, full = 1 WHERE id = ?")
+        sqlx::query("UPDATE articles SET body = ?, summary = ?, summary_by = '', image = ?, full = 1 WHERE id = ?")
             .bind(&text)
             .bind(summarise(&text).join("\n"))
             .bind(image)
@@ -748,14 +757,87 @@ pub fn summarise(text: &str) -> Vec<String> {
     pick.into_iter().map(|i| clip(&sents[i], 260)).collect()
 }
 
-/// Headlines from different feeds that tell the same story, as groups of
-/// indices into `items` (`(feed id, title)`). Every index lands in exactly one
-/// group; a story nobody else covered is a group of one.
+/// The chat-completions address for what the user typed: a bare server
+/// ("http://localhost:11434"), its `/v1`, or the full path all work.
+pub fn endpoint(url: &str) -> String {
+    let u = url.trim().trim_end_matches('/');
+    if u.ends_with("/chat/completions") {
+        u.to_string()
+    } else if u.ends_with("/v1") {
+        format!("{u}/chat/completions")
+    } else {
+        format!("{u}/v1/chat/completions")
+    }
+}
+
+/// Three sentences from the user's own model server — Ollama, llama.cpp's
+/// server, LM Studio: anything that speaks OpenAI's chat completions. The
+/// extractive `summarise` stays the answer when there is no server.
+pub async fn model_summary(client: &reqwest::Client, url: &str, model: &str, title: &str, body: &str) -> Result<Vec<String>> {
+    let text: String = body.chars().take(8000).collect();
+    let req = serde_json::json!({
+        "model": model,
+        "temperature": 0.2,
+        "stream": false,
+        "messages": [
+            {"role": "system", "content":
+                "Summarise the article in exactly three short sentences, the most important first. \
+                 Plain sentences, one per line, no bullets, no preamble."},
+            {"role": "user", "content": format!("{title}\n\n{text}")},
+        ],
+    });
+    let resp = client
+        .post(endpoint(url))
+        .timeout(std::time::Duration::from_secs(120))
+        .json(&req)
+        .send()
+        .await
+        .context("the summary server did not answer")?;
+    if !resp.status().is_success() {
+        bail!("the summary server said {}", resp.status());
+    }
+    let v: serde_json::Value = resp.json().await.context("the summary server sent something that is not JSON")?;
+    let content = v["choices"][0]["message"]["content"].as_str().unwrap_or_default();
+    let lines = summary_lines(content);
+    if lines.is_empty() {
+        bail!("the summary server sent an empty answer");
+    }
+    Ok(lines)
+}
+
+/// A model's answer as up to three sentences: list marks and numbering off,
+/// a "Here is a summary:" opener dropped.
+pub fn summary_lines(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .map(|l| l.trim().trim_start_matches(['-', '*', '•']).trim())
+        .map(|l| {
+            let digits = l.chars().take_while(|c| c.is_ascii_digit()).count();
+            if digits > 0 && l[digits..].starts_with(['.', ')']) { l[digits + 1..].trim() } else { l }
+        })
+        .filter(|l| !l.is_empty() && !l.ends_with(':'))
+        .take(3)
+        .map(|l| clip(l, 300))
+        .collect()
+}
+
+/// Articles from different feeds that tell the same story, as groups of
+/// indices into `items` (`(feed id, title, summary)`). Every index lands in
+/// exactly one group; a story nobody else covered is a group of one.
 ///
-/// ponytail: title-word overlap, O(n²) over the brief's window (a few hundred
-/// headlines). Photos AI's CLIP text encoder is the upgrade when two sources
-/// describe one event in no common words.
-pub fn cluster(items: &[(i64, &str)]) -> Vec<Vec<usize>> {
+/// Two articles join when their headlines share most of their words, or when
+/// title and summary together are close by TF-IDF cosine — which is what
+/// catches "Brussels forces open the smartphone" and "EU right-to-repair
+/// rules take effect". Weights come from the window itself, so a word every
+/// outlet uses today counts for little.
+///
+/// ponytail: O(n²) over the brief's window (a few hundred articles) and bag of
+/// words; a text-embedding model is the upgrade if Photos ever ships its CLIP
+/// text encoder.
+pub fn cluster(items: &[(i64, &str, &str)]) -> Vec<Vec<usize>> {
+    /// Cosine at or above this is the same story. Measured on real headlines:
+    /// same-story pairs land 0.24–0.39, unrelated ones under 0.08.
+    const SAME: f64 = 0.2;
     fn root(p: &mut [usize], mut i: usize) -> usize {
         while p[i] != i {
             p[i] = p[p[i]];
@@ -763,15 +845,46 @@ pub fn cluster(items: &[(i64, &str)]) -> Vec<Vec<usize>> {
         }
         i
     }
-    let keys: Vec<HashSet<String>> = items.iter().map(|(_, t)| keywords(t).into_iter().collect()).collect();
+    let heads: Vec<HashSet<String>> = items.iter().map(|(_, t, _)| keywords(t).into_iter().collect()).collect();
+    let counts: Vec<HashMap<String, f64>> = items
+        .iter()
+        .map(|(_, t, s)| {
+            let mut tf = HashMap::new();
+            for w in keywords(t).into_iter().chain(keywords(s)) {
+                *tf.entry(w).or_insert(0.0) += 1.0;
+            }
+            tf
+        })
+        .collect();
+    let mut df: HashMap<&str, f64> = HashMap::new();
+    for d in &counts {
+        for w in d.keys() {
+            *df.entry(w.as_str()).or_insert(0.0) += 1.0;
+        }
+    }
+    let n = items.len() as f64;
+    let vecs: Vec<HashMap<&str, f64>> = counts
+        .iter()
+        .map(|d| {
+            let mut v: HashMap<&str, f64> = d.iter().map(|(w, c)| (w.as_str(), c * (1.0 + n / df[w.as_str()]).ln())).collect();
+            let norm = v.values().map(|x| x * x).sum::<f64>().sqrt().max(f64::MIN_POSITIVE);
+            v.values_mut().for_each(|x| *x /= norm);
+            v
+        })
+        .collect();
+    let cos = |a: &HashMap<&str, f64>, b: &HashMap<&str, f64>| -> f64 {
+        let (small, big) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+        small.iter().map(|(w, x)| x * big.get(w).copied().unwrap_or(0.0)).sum()
+    };
     let mut parent: Vec<usize> = (0..items.len()).collect();
     for a in 0..items.len() {
         for b in a + 1..items.len() {
             if items[a].0 == items[b].0 {
                 continue;
             }
-            let shared = keys[a].intersection(&keys[b]).count();
-            if shared >= 2 && shared * 2 >= keys[a].len().min(keys[b].len()) {
+            let shared = heads[a].intersection(&heads[b]).count();
+            let same_head = shared >= 2 && shared * 2 >= heads[a].len().min(heads[b].len());
+            if same_head || cos(&vecs[a], &vecs[b]) >= SAME {
                 let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
                 parent[ra] = rb;
             }
@@ -785,12 +898,40 @@ pub fn cluster(items: &[(i64, &str)]) -> Vec<Vec<usize>> {
     groups.into_values().collect()
 }
 
-/// A newsletter is a folder you named so, or a host that only sends them.
-/// Mail-only newsletters need a mail bridge, which is not built.
+/// A newsletter from the user's mailbox, under a feed per sender at
+/// `mail:<address>` in Newsletters. A sender the user unfollowed stays gone.
+/// Returns the new issues stored.
+pub async fn store_mail(pool: &SqlitePool, address: &str, name: &str, items: &[Item]) -> Result<usize> {
+    let url = format!("mail:{address}");
+    let muted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM muted WHERE url = ?").bind(&url).fetch_one(pool).await?;
+    if muted > 0 {
+        return Ok(0);
+    }
+    let id: i64 = match sqlx::query_scalar::<_, i64>("SELECT id FROM feeds WHERE url = ?").bind(&url).fetch_optional(pool).await? {
+        Some(id) => id,
+        None => {
+            sqlx::query_scalar(
+                "INSERT INTO feeds (url, site, title, folder, added, last_checked) VALUES (?, '', ?, 'Newsletters', ?, ?) RETURNING id",
+            )
+            .bind(&url)
+            .bind(name)
+            .bind(now())
+            .bind(now())
+            .fetch_one(pool)
+            .await?
+        }
+    };
+    let n = store_items(pool, id, items).await?;
+    sqlx::query("UPDATE feeds SET last_checked = ?, error = '' WHERE id = ?").bind(now()).bind(id).execute(pool).await?;
+    Ok(n)
+}
+
+/// A newsletter is a folder you named so, a host that only sends them, or a
+/// sender read from your mail (`mail:`, see `crate::mail`).
 pub fn is_newsletter(url: &str, folder: &str) -> bool {
     const HOSTS: [&str; 6] =
         ["substack.com", "buttondown.", "beehiiv.com", "ghost.io", "kill-the-newsletter.com", "newsletter"];
-    folder.eq_ignore_ascii_case("newsletters") || HOSTS.iter().any(|h| url.contains(h))
+    url.starts_with("mail:") || folder.eq_ignore_ascii_case("newsletters") || HOSTS.iter().any(|h| url.contains(h))
 }
 
 pub fn clip(s: &str, max: usize) -> String {
@@ -837,9 +978,99 @@ pub fn file_stem(title: &str) -> String {
     if s.is_empty() { "Article".into() } else { s }
 }
 
+// ── OPML ────────────────────────────────────────────────────────────────────
+
+/// The feeds in an OPML file as (url, title, folder). A folder is the nearest
+/// enclosing outline with no feed of its own; folders inside folders flatten
+/// to the inner one, since Feeds has one level.
+pub fn opml(xml: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    // One entry per open outline: Some(name) for a folder, None for a feed
+    // written with a closing tag.
+    let mut open: Vec<Option<String>> = Vec::new();
+    let mut rest = xml;
+    loop {
+        let (o, c) = (rest.find("<outline"), rest.find("</outline"));
+        match (o, c) {
+            (Some(o), c) if c.is_none_or(|c| o < c) => {
+                let after = &rest[o + "<outline".len()..];
+                let Some(end) = after.find('>') else { break };
+                let body = &after[..end];
+                let closed = body.trim_end().ends_with('/');
+                let text = attr(body, "text").or_else(|| attr(body, "title")).unwrap_or_default();
+                match attr(body, "xmlUrl").filter(|u| !u.trim().is_empty()) {
+                    Some(url) => {
+                        let folder = open.iter().rev().flatten().next().cloned().unwrap_or_default();
+                        out.push((url.trim().to_string(), text.trim().to_string(), folder));
+                        if !closed {
+                            open.push(None);
+                        }
+                    }
+                    None if !closed => open.push(Some(text.trim().to_string())),
+                    None => {}
+                }
+                rest = &after[end + 1..];
+            }
+            (_, Some(c)) => {
+                open.pop();
+                rest = &rest[c + "</outline".len()..];
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Feeds as OPML 2.0, grouped by folder: (url, title, folder).
+pub fn to_opml(feeds: &[(String, String, String)]) -> String {
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    let line = |url: &str, title: &str| format!("<outline type=\"rss\" text=\"{0}\" title=\"{0}\" xmlUrl=\"{1}\"/>", esc(title), esc(url));
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<opml version=\"2.0\">\n<head><title>Tulipix feeds</title></head>\n<body>\n",
+    );
+    let mut folders: Vec<&str> = feeds.iter().map(|f| f.2.as_str()).filter(|f| !f.is_empty()).collect();
+    folders.sort_unstable();
+    folders.dedup();
+    for (url, title, _) in feeds.iter().filter(|f| f.2.is_empty()) {
+        out.push_str(&format!("  {}\n", line(url, title)));
+    }
+    for folder in folders {
+        out.push_str(&format!("  <outline text=\"{0}\" title=\"{0}\">\n", esc(folder)));
+        for (url, title, _) in feeds.iter().filter(|f| f.2 == folder) {
+            out.push_str(&format!("    {}\n", line(url, title)));
+        }
+        out.push_str("  </outline>\n");
+    }
+    out.push_str("</body>\n</opml>\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opml_keeps_folders_and_goes_round_trip() {
+        let xml = r#"<opml><body>
+            <outline text="Loose" xmlUrl="https://a.example/feed"/>
+            <outline text="Tech"><outline text="Deep &amp; Stack" type="rss" xmlUrl="https://b.example/rss"/>
+              <outline text="Inner"><outline text="C" xmlUrl="https://c.example/atom"></outline></outline>
+            </outline>
+            <outline text="After" xmlUrl="https://d.example/feed"/>
+        </body></opml>"#;
+        let want = vec![
+            ("https://a.example/feed".to_string(), "Loose".to_string(), String::new()),
+            ("https://b.example/rss".into(), "Deep & Stack".into(), "Tech".into()),
+            ("https://c.example/atom".into(), "C".into(), "Inner".into()),
+            ("https://d.example/feed".into(), "After".into(), String::new()),
+        ];
+        assert_eq!(opml(xml), want);
+        let mut back = opml(&to_opml(&want));
+        back.sort();
+        let mut want = want;
+        want.sort();
+        assert_eq!(back, want);
+    }
 
     const RSS: &str = r#"<?xml version="1.0"?><rss version="2.0"
       xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>
@@ -909,15 +1140,43 @@ mod tests {
     #[test]
     fn stories_group_across_feeds_only() {
         let items = [
-            (1, "The EU's new right-to-repair rules take effect"),
-            (2, "Right to repair arrives in Europe"),
-            (1, "Right to repair: what the rules mean"),
-            (3, "Harbour railway reopens in Bristol"),
+            (1, "The EU's new right-to-repair rules take effect", ""),
+            (2, "Right to repair arrives in Europe", ""),
+            (1, "Right to repair: what the rules mean", ""),
+            (3, "Harbour railway reopens in Bristol", ""),
         ];
         let mut groups = cluster(&items);
         groups.iter_mut().for_each(|g| g.sort_unstable());
         groups.sort();
         assert_eq!(groups, vec![vec![0, 1, 2], vec![3]]);
+    }
+
+    #[test]
+    fn model_answers_become_three_plain_lines() {
+        assert_eq!(endpoint("http://localhost:11434/"), "http://localhost:11434/v1/chat/completions");
+        assert_eq!(endpoint("http://h:1234/v1"), "http://h:1234/v1/chat/completions");
+        assert_eq!(endpoint("http://h/v1/chat/completions"), "http://h/v1/chat/completions");
+        let got = summary_lines("Here is a summary:\n1. First thing.\n- Second thing.\n\n• Third thing.\n4) Fourth.");
+        assert_eq!(got, vec!["First thing.", "Second thing.", "Third thing."]);
+    }
+
+    #[test]
+    fn one_story_in_different_words_groups_by_its_summary() {
+        let items = [
+            (1, "EU right-to-repair rules take effect",
+             "Phones sold in the EU must have replaceable batteries and spare parts for seven years. Makers can still pair parts in software."),
+            (2, "Brussels forces open the smartphone",
+             "From today phones sold across the EU need user-replaceable batteries, and spare parts must be sold for seven years."),
+            (3, "A battery that lasts twice as long",
+             "A new battery chemistry doubles cycle life, but it needs more cobalt than today's cells."),
+            (4, "Harbour railway reopens in Bristol",
+             "The restored harbour line runs again after two years of work, with steam trains at weekends."),
+            (5, "Platforms, ten years on", "Platforms win by owning the relationship with users, not the supply of goods."),
+        ];
+        let mut groups = cluster(&items);
+        groups.iter_mut().for_each(|g| g.sort_unstable());
+        groups.sort();
+        assert_eq!(groups, vec![vec![0, 1], vec![2], vec![3], vec![4]]);
     }
 
     #[test]

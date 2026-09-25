@@ -235,6 +235,21 @@ SourceLook sourceLook(String source) => switch (source) {
           icon: Icons.menu_book_outlined,
           tint: Tokens.secBooks
         ),
+      'kitchen' => (
+          label: 'Kitchen',
+          icon: Icons.restaurant_outlined,
+          tint: Tokens.secKitchen
+        ),
+      'feeds' => (
+          label: 'Feeds',
+          icon: Icons.rss_feed,
+          tint: Tokens.secFeeds
+        ),
+      'papers' => (
+          label: 'Papers',
+          icon: Icons.description_outlined,
+          tint: Tokens.secPapers
+        ),
       _ => (label: source, icon: Icons.circle_outlined, tint: Tokens.secSettings),
     };
 

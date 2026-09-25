@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../shell/section_tabs.dart';
+import '../../shell/shell_controller.dart';
 import '../../src/rust/api/finances.dart';
 import 'finances_accounts.dart';
 import 'finances_controller.dart';
@@ -36,6 +37,14 @@ class _FinancesPageState extends State<FinancesPage> {
     // old, the exchange rates — the app may have been left running across a
     // date boundary, and a bill that became due at midnight has to be here now.
     _c.refresh();
+    // "Open bill" from Papers: the ledger, with that transaction's sheet up.
+    ShellController.instance.onOpen(Section.finances, (raw) async {
+      final a = openArg(raw);
+      final id = int.tryParse(a.arg);
+      if (a.verb != 'txn' || id == null) return;
+      await _c.send(const FinancesCmd.setTab(tab: 'txns'));
+      await _c.send(FinancesCmd.txnOpen(id: id));
+    });
   }
 
   @override

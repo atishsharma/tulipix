@@ -1142,6 +1142,28 @@ class _FollowDialogState extends State<_FollowDialog> {
     }
   }
 
+  /// Moving from another reader: its export, followed in its folders.
+  Future<void> _import() async {
+    final path = await dialogPickFile(
+        title: 'Import feeds', initial: '', label: 'OPML', extensions: const ['opml', 'xml']);
+    if (path == null || path.isEmpty || !mounted) return;
+    Navigator.of(context).pop();
+    await widget.c.importOpml(path);
+  }
+
+  Future<void> _export() async {
+    final path = await dialogSaveFile(
+        title: 'Export feeds', fileName: 'Tulipix feeds.opml', label: 'OPML', extensions: const ['opml']);
+    if (path == null || path.isEmpty) return;
+    try {
+      final n = await feedsExportOpml(path: path);
+      widget.c.say('${plural(n.toInt(), 'feed')} written to $path');
+    } catch (e) {
+      widget.c.say(plainError(e));
+    }
+    if (mounted) Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
@@ -1159,6 +1181,22 @@ class _FollowDialogState extends State<_FollowDialog> {
               'all work, and so do newsletters that publish a feed — most '
               'Substack, Buttondown and Ghost ones do.',
               style: TextStyle(fontSize: 12.5, height: 1.5, color: t.nInk2),
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: _busy
+                    ? null
+                    : () {
+                        Navigator.of(context).pop();
+                        showMailbox(context, widget.c);
+                      },
+                icon: const Icon(Icons.mail_outline, size: 16),
+                label: Text(
+                    (widget.c.state?.mail ?? '').isEmpty
+                        ? 'Newsletters that only come by email…'
+                        : 'Reading ${widget.c.state!.mail}'),
+              ),
             ),
             const SizedBox(height: 14),
             TextField(
@@ -1205,6 +1243,16 @@ class _FollowDialogState extends State<_FollowDialog> {
         ),
       ),
       actions: [
+        TextButton.icon(
+          onPressed: _busy ? null : _import,
+          icon: const Icon(Icons.file_open_outlined, size: 16),
+          label: const Text('Import OPML'),
+        ),
+        TextButton(
+          onPressed: _busy ? null : _export,
+          child: const Text('Export'),
+        ),
+        const SizedBox(width: 12),
         TextButton(
           onPressed: _busy ? null : () => Navigator.of(context).pop(),
           child: const Text('Cancel'),
@@ -1220,6 +1268,291 @@ class _FollowDialogState extends State<_FollowDialog> {
                       strokeWidth: 2, color: Colors.white),
                 )
               : const Text('Follow'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Newsletters that only come by email: a folder in the user's own mail,
+/// read over IMAP. Nothing on the server is changed.
+Future<void> showMailbox(BuildContext context, FeedsController c) {
+  return showDialog<void>(
+    context: context,
+    builder: (ctx) => _MailboxDialog(c: c),
+  );
+}
+
+class _MailboxDialog extends StatefulWidget {
+  const _MailboxDialog({required this.c});
+
+  final FeedsController c;
+
+  @override
+  State<_MailboxDialog> createState() => _MailboxDialogState();
+}
+
+class _MailboxDialogState extends State<_MailboxDialog> {
+  late final FeedsState? _st = widget.c.state;
+  late final _host = TextEditingController(text: _st?.mailHost ?? '');
+  final _port = TextEditingController(text: '993');
+  late final _user = TextEditingController(
+      text: (_st?.mail ?? '').split(' · ').first);
+  final _password = TextEditingController();
+  late final _folder = TextEditingController(
+      text: (_st?.mailFolder ?? '').isEmpty ? 'Newsletters' : _st!.mailFolder);
+  bool _busy = false;
+  String _error = '';
+
+  @override
+  void dispose() {
+    for (final c in [_host, _port, _user, _password, _folder]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _save(String host) async {
+    setState(() {
+      _busy = true;
+      _error = '';
+    });
+    final err = await widget.c.setMail(host, int.tryParse(_port.text) ?? 993,
+        _user.text, _password.text, _folder.text);
+    if (!mounted) return;
+    if (err == null) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() {
+        _busy = false;
+        _error = err;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final on = (_st?.mail ?? '').isNotEmpty;
+    InputDecoration deco(String label, IconData icon, [String? hint]) =>
+        InputDecoration(
+            labelText: label, hintText: hint, prefixIcon: Icon(icon, size: 18));
+    return AlertDialog(
+      title: const Text('Newsletters from your mail'),
+      content: SizedBox(
+        width: 480,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Send your newsletters to a folder in the mail you already have, '
+              'with a filter or a rule, and Feeds reads that folder. Each '
+              'sender becomes a source under Newsletters. Nothing on the server '
+              'is marked, moved or deleted, and the password is kept in the '
+              'system keychain. Most providers want an app password here.',
+              style: TextStyle(fontSize: 12.5, height: 1.5, color: t.nInk2),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _host,
+                    enabled: !_busy,
+                    decoration: deco('IMAP server', Icons.dns_outlined,
+                        'imap.fastmail.com'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                SizedBox(
+                  width: 90,
+                  child: TextField(
+                    controller: _port,
+                    enabled: !_busy,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Port'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _user,
+              enabled: !_busy,
+              decoration: deco('Sign in as', Icons.person_outline),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _password,
+              enabled: !_busy,
+              obscureText: true,
+              decoration: deco(on ? 'Password (kept — leave blank)' : 'Password',
+                  Icons.key_outlined),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _folder,
+              enabled: !_busy,
+              onSubmitted: (_) => _save(_host.text),
+              decoration: deco('Folder', Icons.folder_outlined),
+            ),
+            if (_error.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(_error,
+                  style: const TextStyle(fontSize: 12.5, color: Tokens.error)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        if (on)
+          TextButton(
+            onPressed: _busy ? null : () => _save(''),
+            child: const Text('Stop reading mail'),
+          ),
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: kFeeds),
+          onPressed: _busy ? null : () => _save(_host.text),
+          child: _busy
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
+                )
+              : const Text('Sign in and read'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Where summaries come from: picked from the article (the default), or a
+/// model on a server the user runs — Ollama, llama.cpp, LM Studio.
+Future<void> showSummarizer(BuildContext context, FeedsController c) {
+  return showDialog<void>(
+    context: context,
+    builder: (ctx) => _SummarizerDialog(c: c),
+  );
+}
+
+class _SummarizerDialog extends StatefulWidget {
+  const _SummarizerDialog({required this.c});
+
+  final FeedsController c;
+
+  @override
+  State<_SummarizerDialog> createState() => _SummarizerDialogState();
+}
+
+class _SummarizerDialogState extends State<_SummarizerDialog> {
+  late final _url = TextEditingController(
+      text: widget.c.state?.summarizerUrl.isNotEmpty == true
+          ? widget.c.state!.summarizerUrl
+          : 'http://localhost:11434');
+  late final _model =
+      TextEditingController(text: widget.c.state?.summarizer ?? '');
+  bool _busy = false;
+  String _error = '';
+
+  @override
+  void dispose() {
+    _url.dispose();
+    _model.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save(String url) async {
+    setState(() {
+      _busy = true;
+      _error = '';
+    });
+    final err = await widget.c.setSummarizer(url, _model.text);
+    if (!mounted) return;
+    if (err == null) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() {
+        _busy = false;
+        _error = err;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final on = (widget.c.state?.summarizer ?? '').isNotEmpty;
+    return AlertDialog(
+      title: const Text('Summaries from your own model'),
+      content: SizedBox(
+        width: 460,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Out of the box, a summary is three sentences picked from the '
+              'article. A model you run — Ollama, llama.cpp’s server, LM '
+              'Studio — writes better ones. Each article you open is sent to '
+              'this address, so keep it on this computer or your own network.',
+              style: TextStyle(fontSize: 12.5, height: 1.5, color: t.nInk2),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _url,
+              enabled: !_busy,
+              decoration: const InputDecoration(
+                labelText: 'Server',
+                prefixIcon: Icon(Icons.dns_outlined, size: 18),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _model,
+              enabled: !_busy,
+              autofocus: true,
+              onSubmitted: (_) => _save(_url.text),
+              decoration: const InputDecoration(
+                labelText: 'Model',
+                hintText: 'llama3.2, qwen2.5:3b…',
+                prefixIcon: Icon(Icons.memory, size: 18),
+              ),
+            ),
+            if (_error.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(_error,
+                  style: const TextStyle(fontSize: 12.5, color: Tokens.error)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        if (on)
+          TextButton(
+            onPressed: _busy ? null : () => _save(''),
+            child: const Text('Go back to picked sentences'),
+          ),
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: kFeeds),
+          onPressed: _busy ? null : () => _save(_url.text),
+          child: _busy
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
+                )
+              : const Text('Try it and save'),
         ),
       ],
     );

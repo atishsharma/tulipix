@@ -32,6 +32,8 @@ pub struct ShellState {
     /// a bill due on Friday are not the same news, and one dot colour for both
     /// teaches you to ignore the colour.
     pub finances_overdue: bool,
+    /// Unread articles in Feeds; 0 until Feeds has been opened.
+    pub feeds_unread: i32,
     /// "system" | "light" | "dark" | "extra-dark".
     pub theme: String,
     pub reduce_motion: bool,
@@ -108,6 +110,12 @@ async fn snapshot() -> Result<ShellState> {
     // The photo indexer's own loop. It lived in tulipix-app's runtime, so on
     // this build nothing ever picked the queue up without a button press.
     crate::api::photos::start_ai_indexer();
+    // What Papers, Feeds and Cloud do with their pages closed: the watched
+    // folder and reminders, the half-hourly fetch, scheduled syncs. Each keeps
+    // its own pace, so the extra snapshots a Save sends cost nothing.
+    tokio::spawn(crate::api::papers::background_tick());
+    tokio::spawn(crate::api::feeds::background_tick());
+    tokio::spawn(crate::api::cloud::run_due_jobs());
     let s = load();
     let (badge, overdue) = finances_badge().await;
     remind_bills(&s, badge, overdue);
@@ -125,6 +133,7 @@ async fn snapshot() -> Result<ShellState> {
         logo_choice: s.text("profile.logo").parse().unwrap_or(0),
         finances_badge: badge,
         finances_overdue: overdue,
+        feeds_unread: crate::api::feeds::unread_count().await,
         theme: s.theme.clone(),
         reduce_motion: s.reduce_motion,
         app_version: env!("CARGO_PKG_VERSION").to_string(),

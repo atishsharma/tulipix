@@ -1040,12 +1040,7 @@ async fn apply(cmd_in: CloudCmd) -> Result<()> {
                 .into_iter()
                 .find(|j| j.id == id)
                 .ok_or_else(|| anyhow!("no such job"))?;
-            let dir = if job.direction == "bisync" {
-                sync::Direction::BiSync
-            } else {
-                sync::Direction::OneWay
-            };
-            let mut args = sync::sync_args(dir, &job.src, &job.dst, job.bwlimit.as_deref());
+            let mut args = job_args(&job);
             args.push("--progress".into());
             let out = run_progress("Sync", &args).await;
             let ok = out.is_ok();
@@ -1090,6 +1085,79 @@ async fn apply(cmd_in: CloudCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn job_args(job: &jobs::SyncJob) -> Vec<String> {
+    let dir = if job.direction == "bisync" {
+        sync::Direction::BiSync
+    } else {
+        sync::Direction::OneWay
+    };
+    sync::sync_args(dir, &job.src, &job.dst, job.bwlimit.as_deref())
+}
+
+/// Saved jobs whose hour, day or week has come round, one after another. The
+/// shell's tick calls this; the Slint build had a scheduler and this build
+/// saved intervals nothing ever read. A round still running when the next
+/// tick lands is left to finish.
+pub(crate) async fn run_due_jobs() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static BUSY: AtomicBool = AtomicBool::new(false);
+    if !made() || BUSY.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    if let Ok(pool) = cloud_pool().await {
+        let now = chrono::Utc::now().timestamp();
+        for job in jobs::due_jobs(pool, now).await.unwrap_or_default() {
+            let out = run(&job_args(&job)).await;
+            let ok = out.is_ok();
+            if let Err(e) = &out {
+                tracing::info!(error = %e, id = job.id, "cloud: a scheduled sync failed");
+            }
+            log_it("sync", &format!("{} → {} (scheduled)", job.src, job.dst), ok).await;
+            if ok {
+                jobs::mark_ran(pool, job.id).await.ok();
+            }
+        }
+    }
+    BUSY.store(false, Ordering::Release);
+}
+
+/// Cloud has been opened and made its database. Other sections asking about
+/// backups must not create it empty.
+fn made() -> bool {
+    tulipix_core::paths::db_path("cloud").is_some_and(|f| f.exists())
+}
+
+/// Remote names, for another section's "back up to" picker.
+pub(crate) async fn remote_names() -> Vec<String> {
+    if !made() {
+        return Vec::new();
+    }
+    match cloud_pool().await {
+        Ok(pool) => remotes::list(pool).await.unwrap_or_default().into_iter().map(|(n, _)| n).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The daily job that copies `src` to `dst`: its remote, or "" when there is
+/// none. `set` replaces it (`Some("")` removes it).
+pub(crate) async fn backup_job(src: &str, set: Option<&str>) -> Result<String> {
+    if set.is_none() && !made() {
+        return Ok(String::new());
+    }
+    let pool = cloud_pool().await?;
+    let mine: Vec<jobs::SyncJob> = jobs::list_jobs(pool).await?.into_iter().filter(|j| j.src == src).collect();
+    let Some(dst) = set else {
+        return Ok(mine.first().map(|j| j.dst.split(':').next().unwrap_or("").to_string()).unwrap_or_default());
+    };
+    for j in &mine {
+        jobs::delete_job(pool, j.id).await?;
+    }
+    if !dst.is_empty() {
+        jobs::save_job(pool, src, dst, "oneway", None, 86_400).await?;
+    }
+    Ok(dst.split(':').next().unwrap_or("").to_string())
 }
 
 /// Where the browser currently is.

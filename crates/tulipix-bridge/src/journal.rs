@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS voice_notes (
     created    INTEGER NOT NULL
 );
 
+-- The day's weather, once fetched: "18° and clear".
+CREATE TABLE IF NOT EXISTS weather (
+    day  TEXT PRIMARY KEY,
+    text TEXT NOT NULL
+);
+
 -- A gathered row switched off for one day.
 CREATE TABLE IF NOT EXISTS hidden (
     day    TEXT NOT NULL,
@@ -164,8 +170,7 @@ pub fn km(a: (f64, f64), b: (f64, f64)) -> f64 {
 /// Where the day's photos were taken, in the order they were: a new stop each
 /// time the camera moved more than 300 m from the last one.
 ///
-/// ponytail: no names — there is no offline geocoder in the app. A place gets
-/// its name from the entry ("Place"); a GeoNames city table would name stops.
+/// Names come from `name_for`, once the GeoNames table is downloaded.
 pub fn stops(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let mut out: Vec<(f64, f64)> = Vec::new();
     for &p in points {
@@ -174,6 +179,187 @@ pub fn stops(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
         }
     }
     out
+}
+
+// ── place names ─────────────────────────────────────────────────────────────
+//
+// GeoNames' towns and cities over 15,000 people, downloaded once (a 3 MB zip)
+// and kept as name / latitude / longitude. The nearest one within 25 km names
+// a stop. Offline after that one download, and a town rather than a street —
+// "Bristol", not "Harbourside"; the entry's own Place is still the way to say
+// which part.
+
+const GEONAMES: &str = "https://download.geonames.org/export/dump/cities15000.zip";
+
+/// A stop further than this from every town has no name.
+const NAME_KM: f64 = 25.0;
+
+fn places_file() -> Option<std::path::PathBuf> {
+    tulipix_core::paths::data_dir().map(|d| d.join("journal").join("places.tsv"))
+}
+
+pub fn has_place_names() -> bool {
+    places_file().is_some_and(|f| f.exists())
+}
+
+/// GeoNames' tab-separated table as (latitude, longitude, name).
+pub fn parse_geonames(tsv: &str) -> Vec<(f64, f64, String)> {
+    tsv.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            let (name, lat, lon) = (f.get(1)?, f.get(4)?.parse::<f64>().ok()?, f.get(5)?.parse::<f64>().ok()?);
+            (!name.is_empty()).then(|| (lat, lon, name.to_string()))
+        })
+        .collect()
+}
+
+/// The nearest name within `NAME_KM`.
+pub fn nearest(table: &[(f64, f64, String)], p: (f64, f64)) -> Option<&str> {
+    table
+        .iter()
+        // A degree of latitude is 111 km: anything further off is not a
+        // candidate, and the trig is skipped for it.
+        .filter(|(la, _, _)| (la - p.0).abs() < 0.5)
+        .map(|(la, lo, n)| (km((*la, *lo), p), n))
+        .filter(|(d, _)| *d <= NAME_KM)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, n)| n.as_str())
+}
+
+fn table() -> &'static std::sync::Mutex<Option<std::sync::Arc<Vec<(f64, f64, String)>>>> {
+    static T: std::sync::Mutex<Option<std::sync::Arc<Vec<(f64, f64, String)>>>> = std::sync::Mutex::new(None);
+    &T
+}
+
+/// The loaded table, read from disk the first time it is asked for.
+fn loaded() -> Option<std::sync::Arc<Vec<(f64, f64, String)>>> {
+    let mut g = table().lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() {
+        let text = std::fs::read_to_string(places_file()?).ok()?;
+        // The file is ours: name, latitude, longitude.
+        let rows = text
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split('\t');
+                let name = f.next()?.to_string();
+                Some((f.next()?.parse::<f64>().ok()?, f.next()?.parse::<f64>().ok()?, name))
+            })
+            .collect();
+        *g = Some(std::sync::Arc::new(rows));
+    }
+    g.clone()
+}
+
+/// A name for each stop, "" where there is none (or no table yet).
+pub fn names_for(stops: &[(f64, f64)]) -> Vec<String> {
+    let Some(t) = loaded() else { return vec![String::new(); stops.len()] };
+    stops.iter().map(|p| nearest(&t, *p).unwrap_or_default().to_string()).collect()
+}
+
+/// Fetch GeoNames' table once and keep what naming needs. Returns the places.
+pub async fn download_place_names(client: &reqwest::Client) -> Result<usize> {
+    let bytes = client.get(GEONAMES).send().await?.error_for_status()?.bytes().await?;
+    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<(f64, f64, String)>> {
+        use std::io::Read;
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
+        let mut text = String::new();
+        z.by_name("cities15000.txt")?.read_to_string(&mut text)?;
+        Ok(parse_geonames(&text))
+    })
+    .await??;
+    if rows.len() < 1000 {
+        anyhow::bail!("the place table came back short ({} places)", rows.len());
+    }
+    let file = places_file().ok_or_else(|| anyhow::anyhow!("no data folder"))?;
+    if let Some(dir) = file.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    let out: String = rows.iter().map(|(la, lo, n)| format!("{n}\t{la}\t{lo}\n")).collect();
+    tokio::fs::write(&file, out).await?;
+    *table().lock().unwrap_or_else(|e| e.into_inner()) = None;
+    Ok(rows.len())
+}
+
+// ── weather ─────────────────────────────────────────────────────────────────
+//
+// Open-Meteo: no key, and it keeps past days. Asked once per day and kept in
+// journal.db; only the date and a location rounded to about 10 km are sent.
+
+/// Where the day happened: its first photo's location, else the last photo
+/// with one in the month before. None when nothing says.
+pub async fn where_was(day: NaiveDate) -> Option<(f64, f64)> {
+    if let Some(p) = day_photos(day).await.into_iter().find_map(|p| p.2) {
+        return Some(p);
+    }
+    let pool = crate::db::photos_pool().await.ok()?;
+    let (_, end) = bounds(day);
+    let row: Option<(Option<f64>, Option<f64>)> = sqlx::query_as(
+        "SELECT pm.gps_lat, pm.gps_lon FROM photo_meta pm JOIN items i ON i.id = pm.item_id \
+         WHERE pm.taken_at < ? AND pm.taken_at >= ? AND pm.gps_lat IS NOT NULL AND pm.gps_lon IS NOT NULL \
+           AND i.missing_since IS NULL AND pm.deleted_at IS NULL \
+         ORDER BY pm.taken_at DESC LIMIT 1",
+    )
+    .bind(end)
+    .bind(end - 31 * 86_400)
+    .fetch_optional(pool)
+    .await
+    .ok()?;
+    row.and_then(|(a, b)| a.zip(b))
+}
+
+/// WMO weather codes, as a few words.
+pub fn wmo(code: i64) -> &'static str {
+    match code {
+        0 => "clear",
+        1 => "mostly clear",
+        2 => "partly cloudy",
+        3 => "overcast",
+        45 | 48 => "fog",
+        51..=57 => "drizzle",
+        61..=67 => "rain",
+        71..=77 => "snow",
+        80..=82 => "showers",
+        85 | 86 => "snow showers",
+        95..=99 => "thunderstorms",
+        _ => "",
+    }
+}
+
+pub async fn weather_on(client: &reqwest::Client, day: NaiveDate, at: (f64, f64)) -> Result<String> {
+    // The forecast service holds the last three months, the archive the rest
+    // (a few days behind).
+    let recent = (today() - day).num_days() < 80;
+    let base = if recent { "https://api.open-meteo.com/v1/forecast" } else { "https://archive-api.open-meteo.com/v1/archive" };
+    let round = |x: f64| format!("{:.1}", x);
+    let v: serde_json::Value = client
+        .get(base)
+        .query(&[
+            ("latitude", round(at.0)),
+            ("longitude", round(at.1)),
+            ("daily", "weather_code,temperature_2m_max".into()),
+            ("timezone", "auto".into()),
+            ("start_date", day.to_string()),
+            ("end_date", day.to_string()),
+        ])
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let code = v["daily"]["weather_code"][0].as_f64().map(|c| c as i64);
+    let temp = v["daily"]["temperature_2m_max"][0].as_f64();
+    Ok(weather_line(temp, code))
+}
+
+/// "18° and clear"; either half alone when the other is missing.
+pub fn weather_line(temp: Option<f64>, code: Option<i64>) -> String {
+    let sky = code.map(wmo).unwrap_or_default();
+    match (temp, sky) {
+        (Some(t), "") => format!("{}°", t.round() as i64),
+        (Some(t), s) => format!("{}° and {s}", t.round() as i64),
+        (None, s) => s.to_string(),
+    }
 }
 
 pub fn route_km(stops: &[(f64, f64)]) -> f64 {
@@ -415,14 +601,107 @@ async fn books_row(day: NaiveDate) -> Option<Gathered> {
     })
 }
 
+/// The sections that shipped with Journal open their databases on first use;
+/// asking a day of one never opened would create it empty.
+fn made(section: &str) -> bool {
+    tulipix_core::paths::db_path(section).is_some_and(|f| f.exists())
+}
+
+/// What was cooked to the end in cook mode. Kitchen keeps only the last time
+/// each recipe was cooked, so a dish made twice shows on the later day.
+async fn kitchen_row(day: NaiveDate) -> Option<Gathered> {
+    if !made("kitchen") {
+        return None;
+    }
+    let p = crate::db::kitchen_pool().await.ok()?;
+    let (a, b) = bounds(day);
+    let rows = sqlx::query_as::<_, (i64, String)>(
+        "SELECT last_cooked, title FROM recipes WHERE last_cooked >= ? AND last_cooked < ? ORDER BY last_cooked",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_all(p)
+    .await
+    .unwrap_or_default();
+    let (at, first) = rows.first()?.clone();
+    let more = rows.len() - 1;
+    Some(Gathered {
+        source: "kitchen",
+        at,
+        timed: true,
+        title: if more == 0 { format!("Cooked {first}") } else { format!("Cooked {first} and {more} more") },
+        ids: Vec::new(),
+    })
+}
+
+/// Passages kept from articles that day — the reading worth remembering.
+async fn feeds_row(day: NaiveDate) -> Option<Gathered> {
+    if !made("feeds") {
+        return None;
+    }
+    let p = crate::db::feeds_pool().await.ok()?;
+    let (a, b) = bounds(day);
+    let rows = sqlx::query_as::<_, (i64, String)>(
+        "SELECT h.created, a.title FROM highlights h JOIN articles a ON a.id = h.article_id \
+         WHERE h.created >= ? AND h.created < ? ORDER BY h.created",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_all(p)
+    .await
+    .unwrap_or_default();
+    let (at, first) = rows.first()?.clone();
+    let articles: BTreeSet<&str> = rows.iter().map(|r| r.1.as_str()).collect();
+    let n = rows.len() as i64;
+    Some(Gathered {
+        source: "feeds",
+        at,
+        timed: true,
+        title: if articles.len() == 1 {
+            format!("Highlighted “{first}” · {}", plural(n, "passage", "passages"))
+        } else {
+            format!("{} from {} articles", plural(n, "highlight", "highlights"), articles.len())
+        },
+        ids: Vec::new(),
+    })
+}
+
+/// Papers that came in that day. Vault papers stay out: their names are not
+/// for a page that shows without the PIN.
+async fn papers_row(day: NaiveDate) -> Option<Gathered> {
+    if !made("papers") {
+        return None;
+    }
+    let p = crate::db::papers_pool().await.ok()?;
+    let (a, b) = bounds(day);
+    let rows = sqlx::query_as::<_, (i64, String)>(
+        "SELECT created, title FROM papers WHERE vault = 0 AND status = 'read' AND created >= ? AND created < ? ORDER BY created",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_all(p)
+    .await
+    .unwrap_or_default();
+    let (at, first) = rows.first()?.clone();
+    let more = rows.len() - 1;
+    Some(Gathered {
+        source: "papers",
+        at,
+        timed: true,
+        title: if more == 0 { format!("Added {first} to Papers") } else { format!("Added {first} and {more} more to Papers") },
+        ids: Vec::new(),
+    })
+}
+
 /// Everything the other sections have for a day, in the order it happened,
 /// plus the photos' coordinates for the map.
 pub async fn gather(day: NaiveDate) -> (Vec<Gathered>, Vec<(f64, f64)>) {
     let (photos, plays, spend, videos, books) =
         tokio::join!(day_photos(day), day_plays(day), day_spend(day), videos_row(day), books_row(day));
+    let (kitchen, feeds, papers) = tokio::join!(kitchen_row(day), feeds_row(day), papers_row(day));
     let points: Vec<(f64, f64)> = photos.iter().filter_map(|p| p.2).collect();
     let mut rows: Vec<Gathered> =
-        [photos_row(&photos), music_row(&plays), finances_row(day, spend), videos, books]
+        [photos_row(&photos), music_row(&plays), finances_row(day, spend), videos, books, kitchen, feeds, papers]
             .into_iter()
             .flatten()
             .collect();
@@ -597,6 +876,26 @@ pub const PROMPTS: [&str; 16] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stops_take_the_nearest_town_within_reach() {
+        let tsv = "2654675\tBristol\tBristol\t\t51.45523\t-2.59665\tP\n\
+                   2655095\tBath\tBath\t\t51.3751\t-2.36172\tP\n\
+                   bad line\n";
+        let t = parse_geonames(tsv);
+        assert_eq!(t.len(), 2);
+        assert_eq!(nearest(&t, (51.449, -2.60)), Some("Bristol"));
+        assert_eq!(nearest(&t, (51.38, -2.35)), Some("Bath"));
+        assert_eq!(nearest(&t, (48.85, 2.35)), None);
+    }
+
+    #[test]
+    fn weather_reads_like_a_diary() {
+        assert_eq!(weather_line(Some(18.4), Some(0)), "18° and clear");
+        assert_eq!(weather_line(Some(-0.6), Some(71)), "-1° and snow");
+        assert_eq!(weather_line(Some(12.0), Some(999)), "12°");
+        assert_eq!(weather_line(None, Some(61)), "rain");
+    }
 
     fn d(s: &str) -> NaiveDate {
         parse_day(s).unwrap()
