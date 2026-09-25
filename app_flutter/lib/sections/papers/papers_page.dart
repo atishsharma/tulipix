@@ -333,6 +333,7 @@ class TabPill extends StatelessWidget {
     required this.count,
     required this.radius,
     required this.onTap,
+    this.tint = kPapers,
   });
 
   final String label;
@@ -341,11 +342,14 @@ class TabPill extends StatelessWidget {
   final double radius;
   final VoidCallback onTap;
 
+  /// The section's colour; Voice borrows this pill.
+  final Color tint;
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
     return Material(
-      color: on ? kPapers : Colors.transparent,
+      color: on ? tint : Colors.transparent,
       borderRadius: BorderRadius.circular(radius),
       child: InkWell(
         borderRadius: BorderRadius.circular(radius),
@@ -370,14 +374,14 @@ class TabPill extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 5),
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: on ? Colors.white : kPapers,
+                    color: on ? Colors.white : tint,
                     borderRadius: BorderRadius.circular(99),
                   ),
                   child: Text('$count',
                       style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w700,
-                          color: on ? kPapers : Colors.white)),
+                          color: on ? tint : Colors.white)),
                 ),
               ],
             ],

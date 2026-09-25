@@ -44,6 +44,11 @@ const Map<Section, ({String label, IconData icon})> kSectionMeta = {
   Section.journal: (label: 'Journal', icon: Icons.edit_note),
   Section.kitchen: (label: 'Kitchen', icon: Icons.restaurant_outlined),
   Section.papers: (label: 'Papers', icon: Icons.description_outlined),
+  Section.voice: (label: 'Voice', icon: Icons.mic_none_outlined),
+  Section.places: (label: 'Places', icon: Icons.place_outlined),
+  Section.studio: (label: 'Studio', icon: Icons.movie_creation_outlined),
+  Section.archive: (label: 'Archive', icon: Icons.inventory_2_outlined),
+  Section.arcade: (label: 'Arcade', icon: Icons.sports_esports_outlined),
   Section.settings: (label: 'Settings', icon: Icons.settings_outlined),
 };
 
@@ -92,6 +97,12 @@ class Sidebar extends StatelessWidget {
     final st = c.state;
     // (is Home shown, the applications under the header). Settings has its own
     // row in the dock below, so it is never in this list.
+    // Section id → the group that starts there, from Settings → Sections.
+    final groups = {
+      for (final g in st?.sidebarGroups ?? const <String>[])
+        if (g.contains(':'))
+          g.substring(0, g.indexOf(':')): g.substring(g.indexOf(':') + 1),
+    };
     final apps = (
       c.sections.contains(Section.home),
       [
@@ -130,25 +141,40 @@ class Sidebar extends StatelessWidget {
                 collapsed: collapsed,
                 onTap: () => c.go(Section.home),
               ),
-            if (apps.$2.isNotEmpty) _GroupHeader(collapsed: collapsed),
-            // Every application on screen at once: the rows give up height
-            // together, open or collapsed, before the rail ever scrolls. Only a
-            // window too short for the floor below falls back to a scroller.
+            // Groups draw their own dividers; without any, one header for all.
+            if (apps.$2.isNotEmpty && groups.isEmpty)
+              _GroupHeader(collapsed: collapsed),
+            // How the applications meet a window too short for them is
+            // Settings → Sections' choice: every row gives up height together
+            // (shrink), natural rows that scroll (scroll), or natural rows with
+            // whatever does not fit folded into one last row (more).
             Expanded(
               child: LayoutBuilder(builder: (context, box) {
                 final natural = collapsed ? 46.0 : 52.0;
                 const gap = 6.0;
+                final headH = collapsed ? 17.0 : 30.0;
+                final overflow = st?.sidebarOverflow ?? 'shrink';
                 final n = apps.$2.length;
-                final scale = n == 0
+                final heads =
+                    apps.$2.where((s) => groups.containsKey(s.name)).length;
+                final room = box.maxHeight - heads * headH;
+                final scale = overflow != 'shrink' || n == 0
                     ? 1.0
-                    : (box.maxHeight / n / (natural + gap))
-                        .clamp(0.0, 1.0)
-                        .toDouble();
+                    : (room / n / (natural + gap)).clamp(0.0, 1.0).toDouble();
                 final floor = collapsed ? 30.0 : 32.0;
                 final h = natural * scale < floor ? floor : natural * scale;
                 final g = gap * scale;
-                final rows = [
-                  for (final s in apps.$2)
+                var shown = apps.$2;
+                var folded = const <Section>[];
+                if (overflow == 'more' && n * (h + g) > room + 0.5) {
+                  final fit = ((room - h - g) / (h + g)).floor().clamp(0, n);
+                  shown = apps.$2.sublist(0, fit);
+                  folded = apps.$2.sublist(fit);
+                }
+                final rows = <Widget>[
+                  for (final s in shown) ...[
+                    if (groups[s.name] case final name?)
+                      _GroupHeader(collapsed: collapsed, name: name),
                     _NavRow(
                       section: s,
                       active: c.section == s,
@@ -164,8 +190,21 @@ class Sidebar extends StatelessWidget {
                           (st?.financesOverdue ?? false),
                       onTap: () => c.go(s),
                     ),
+                  ],
+                  if (folded.isNotEmpty)
+                    _MoreRow(
+                      sections: folded,
+                      collapsed: collapsed,
+                      height: h,
+                      active: folded.contains(c.section),
+                      onPick: c.go,
+                    ),
                 ];
-                return n * (h + g) <= box.maxHeight + 0.5
+                final used = (shown.length + (folded.isEmpty ? 0 : 1)) *
+                        (h + g) +
+                    shown.where((s) => groups.containsKey(s.name)).length *
+                        headH;
+                return used <= box.maxHeight + 0.5
                     ? Column(children: rows)
                     : ListView(padding: EdgeInsets.zero, children: rows);
               }),
@@ -444,29 +483,100 @@ class _Brand extends StatelessWidget {
 }
 
 class _GroupHeader extends StatelessWidget {
-  const _GroupHeader({required this.collapsed});
+  const _GroupHeader({required this.collapsed, this.name = 'Applications'});
 
   final bool collapsed;
+  final String name;
 
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
     if (collapsed) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Center(
-          child: Container(width: 20, height: 1, color: t.outline),
+      return Tooltip(
+        message: name,
+        child: SizedBox(
+          height: 17,
+          child: Center(
+            child: Container(width: 20, height: 1, color: t.outline),
+          ),
         ),
       );
     }
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(6, 10, 6, 6),
-      child: Text('APPLICATIONS',
-          style: TextStyle(
-              fontSize: 9.5,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1.1,
-              color: t.textDim)),
+    return SizedBox(
+      height: 30,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(6, 10, 6, 6),
+        child: Text(name.toUpperCase(),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                fontSize: 9.5,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.1,
+                color: t.textDim)),
+      ),
+    );
+  }
+}
+
+/// The applications that did not fit, behind one row.
+class _MoreRow extends StatelessWidget {
+  const _MoreRow({
+    required this.sections,
+    required this.collapsed,
+    required this.height,
+    required this.active,
+    required this.onPick,
+  });
+
+  final List<Section> sections;
+  final bool collapsed;
+  final double height;
+  final bool active;
+  final void Function(Section) onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final names = [for (final s in sections) kSectionMeta[s]!.label];
+    return PopupMenuButton<Section>(
+      tooltip: names.join(', '),
+      onSelected: onPick,
+      itemBuilder: (_) => [
+        for (final s in sections)
+          PopupMenuItem(
+            value: s,
+            child: Row(children: [
+              Icon(kSectionMeta[s]!.icon, size: 18, color: accentFor(s)),
+              const SizedBox(width: 10),
+              Text(kSectionMeta[s]!.label),
+            ]),
+          ),
+      ],
+      child: Container(
+        height: height,
+        padding: EdgeInsets.symmetric(horizontal: collapsed ? 0 : 12),
+        decoration: BoxDecoration(
+          color: active ? t.panel2 : null,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          mainAxisAlignment:
+              collapsed ? MainAxisAlignment.center : MainAxisAlignment.start,
+          children: [
+            Icon(Icons.more_horiz, size: 20, color: t.textDim),
+            if (!collapsed) ...[
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text('More: ${names.join(', ')}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 13, color: t.textDim)),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }

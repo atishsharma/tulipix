@@ -775,15 +775,32 @@ pub fn endpoint(url: &str) -> String {
 /// extractive `summarise` stays the answer when there is no server.
 pub async fn model_summary(client: &reqwest::Client, url: &str, model: &str, title: &str, body: &str) -> Result<Vec<String>> {
     let text: String = body.chars().take(8000).collect();
+    let content = chat(
+        client,
+        url,
+        model,
+        "Summarise the article in exactly three short sentences, the most important first. \
+         Plain sentences, one per line, no bullets, no preamble.",
+        &format!("{title}\n\n{text}"),
+    )
+    .await?;
+    let lines = summary_lines(&content);
+    if lines.is_empty() {
+        bail!("the summary server sent an empty answer");
+    }
+    Ok(lines)
+}
+
+/// One question to the user's model server, the answer as text. Feeds'
+/// summaries and Voice's both go through here.
+pub async fn chat(client: &reqwest::Client, url: &str, model: &str, system: &str, user: &str) -> Result<String> {
     let req = serde_json::json!({
         "model": model,
         "temperature": 0.2,
         "stream": false,
         "messages": [
-            {"role": "system", "content":
-                "Summarise the article in exactly three short sentences, the most important first. \
-                 Plain sentences, one per line, no bullets, no preamble."},
-            {"role": "user", "content": format!("{title}\n\n{text}")},
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ],
     });
     let resp = client
@@ -797,12 +814,7 @@ pub async fn model_summary(client: &reqwest::Client, url: &str, model: &str, tit
         bail!("the summary server said {}", resp.status());
     }
     let v: serde_json::Value = resp.json().await.context("the summary server sent something that is not JSON")?;
-    let content = v["choices"][0]["message"]["content"].as_str().unwrap_or_default();
-    let lines = summary_lines(content);
-    if lines.is_empty() {
-        bail!("the summary server sent an empty answer");
-    }
-    Ok(lines)
+    Ok(v["choices"][0]["message"]["content"].as_str().unwrap_or_default().to_string())
 }
 
 /// A model's answer as up to three sentences: list marks and numbering off,

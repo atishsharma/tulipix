@@ -30,6 +30,16 @@ mod kitchen;
 // And Papers: reading a paper, telling what it is, the vault's sealing and
 // the phone page that sends scans in.
 mod papers;
+// And Voice: its store, whisper's timed lines and the tasks said aloud.
+mod voice;
+// And Places: finding trips in the photos' locations.
+mod places;
+// And Studio: picking photos and the ffmpeg lines for movies and books.
+mod studio;
+// And Archive: the catalogue, zip contents and checksums.
+mod archive;
+// And Arcade: reading the game launchers' own files.
+mod arcade;
 // Not under `api/`, so `rust_input: crate::api` never scans it: the mpv
 // transport is an implementation detail of the Music section, not part of the
 // Dart-facing contract.

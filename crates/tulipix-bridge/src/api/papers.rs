@@ -1246,7 +1246,7 @@ fn size(bytes: i64) -> String {
 }
 
 /// FTS words from what was typed: each word a prefix, all of them required.
-fn fts_query(q: &str) -> String {
+pub(crate) fn fts_query(q: &str) -> String {
     q.split_whitespace()
         .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>())
         .filter(|w| !w.is_empty())

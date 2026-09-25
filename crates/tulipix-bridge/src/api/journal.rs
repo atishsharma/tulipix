@@ -590,7 +590,7 @@ async fn day_weather(pool: &SqlitePool, day: NaiveDate) -> String {
 
 /// A new entry, or the day's last one when it is still blank — pressing New
 /// entry twice should not leave an empty page behind.
-async fn new_entry(pool: &SqlitePool, day: NaiveDate, body: &str) -> Result<i64> {
+pub(crate) async fn new_entry(pool: &SqlitePool, day: NaiveDate, body: &str) -> Result<i64> {
     let blank: Option<i64> = sqlx::query_scalar(
         "SELECT id FROM entries e WHERE day = ? AND words = 0 AND mood = 0 AND body = '' \
            AND NOT EXISTS (SELECT 1 FROM voice_notes v WHERE v.entry_id = e.id) \
@@ -641,9 +641,9 @@ fn clean_tag(tag: &str) -> String {
 
 // --------------------------------------------------------------- recording ---
 
-struct Rec {
+pub(crate) struct Rec {
     child: tokio::process::Child,
-    path: PathBuf,
+    pub(crate) path: PathBuf,
     entry_id: i64,
     /// ffmpeg stops on `q`; the desktop recorders on SIGINT.
     quits_on_q: bool,
@@ -672,7 +672,7 @@ fn voice_dir() -> Result<PathBuf> {
 }
 
 /// A tool from the bundle, then from PATH.
-fn tool(name: &str) -> Option<PathBuf> {
+pub(crate) fn tool(name: &str) -> Option<PathBuf> {
     let p = tulipix_core::thumbs::tool_bin(name);
     if p.is_absolute() && p.exists() {
         return Some(p);
@@ -752,6 +752,17 @@ async fn record_start(entry_id: i64) -> Result<()> {
         bail!("already recording");
     }
     let path = voice_dir()?.join(format!("{}-{entry_id}.wav", j::now()));
+    let mut r = start_recorder(&path).await?;
+    r.entry_id = entry_id;
+    if let Ok(mut g) = rec().lock() {
+        *g = Some(r);
+    }
+    Ok(())
+}
+
+/// The first recorder that opens a microphone, writing a 16 kHz WAV to `path`
+/// until [`finish`]. Journal's voice notes and the Voice section both use it.
+pub(crate) async fn start_recorder(path: &std::path::Path) -> Result<Rec> {
     let out = path.to_string_lossy().to_string();
     for (prog, args, q) in recorders(&out).await {
         let spawned = tokio::process::Command::new(&prog)
@@ -766,13 +777,10 @@ async fn record_start(entry_id: i64) -> Result<()> {
         // still running after a moment is listening.
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         if matches!(child.try_wait(), Ok(Some(_))) {
-            std::fs::remove_file(&path).ok();
+            std::fs::remove_file(path).ok();
             continue;
         }
-        if let Ok(mut g) = rec().lock() {
-            *g = Some(Rec { child, path, entry_id, quits_on_q: q });
-        }
-        return Ok(());
+        return Ok(Rec { child, path: path.to_path_buf(), entry_id: 0, quits_on_q: q });
     }
     bail!("no microphone could be opened — tried the recorders this computer has")
 }
@@ -802,7 +810,7 @@ pub(crate) async fn record_clip(path: &std::path::Path, secs: f64) -> Result<()>
 }
 
 /// Ask the recorder to finish its file, and give it a moment to.
-async fn finish(mut r: Rec) {
+pub(crate) async fn finish(mut r: Rec) {
     if r.quits_on_q {
         if let Some(mut stdin) = r.child.stdin.take() {
             use tokio::io::AsyncWriteExt;

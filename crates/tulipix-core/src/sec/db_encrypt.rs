@@ -165,9 +165,9 @@ pub fn state() -> State {
 /// the key to all of them once the switch is on, so a file this list skips
 /// stays plain and then refuses to open under a key.
 pub fn section_paths() -> Vec<std::path::PathBuf> {
-    const FILES: [&str; 16] = [
+    const FILES: [&str; 21] = [
         "photos", "videos", "music", "books", "cloud", "podcasts", "radio", "youtube", "tools",
-        "transfers", "feeds", "journal", "kitchen", "papers", "finances", "genesis",
+        "transfers", "feeds", "journal", "kitchen", "papers", "finances", "genesis", "voice", "places", "studio", "archive", "arcade",
     ];
     FILES.iter().filter_map(|s| paths::db_path(s)).collect()
 }

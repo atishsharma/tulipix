@@ -141,11 +141,44 @@ pub struct SettingsState {
     // --- Sections ---
     /// Every section in sidebar order, with its state.
     pub sections: Vec<SectionRow>,
-    /// all | media | work | photos | lean | custom.
+    /// The preset the current shape matches: an id from `section_presets`,
+    /// or "custom".
     pub sections_preset: String,
+    /// Every preset, built-in first, then the saved ones.
+    pub section_presets: Vec<SectionsPresetRow>,
+    /// The preset picked last, even if changed since. Empty if none.
+    pub sections_last_preset: String,
+    /// Whether the last preset can be taken back.
+    pub sections_can_undo: bool,
+    /// The sidebar's groups, in order.
+    pub section_groups: Vec<SectionsGroup>,
+    /// "cards" | "list" — how the panel draws the sections.
+    pub sections_view: String,
+    /// When the sidebar does not fit: "shrink" | "scroll" | "more".
+    pub sidebar_overflow: String,
+    /// Whether the sidebar draws the groups at all.
+    pub sidebar_dividers: bool,
     /// The section that opens at launch, already resolved — if the saved choice
     /// has been hidden this is the fallback, not the choice.
     pub landing: String,
+}
+
+/// One preset, as the strip at the top of the Sections panel draws it.
+pub struct SectionsPresetRow {
+    /// A built-in id, or `mine:<name>` for a saved one.
+    pub id: String,
+    pub name: String,
+    pub hint: String,
+    /// The applications it shows. Home and Settings always are.
+    pub ids: Vec<String>,
+    pub mine: bool,
+}
+
+/// One sidebar group: a name and the section it starts at ("" for an empty
+/// group at the end).
+pub struct SectionsGroup {
+    pub name: String,
+    pub anchor: String,
 }
 
 /// One section, as the Sections panel draws it.
@@ -196,8 +229,18 @@ pub enum SettingsCmd {
     /// The sidebar order, front to back. Settings is dropped whatever position
     /// it arrives in — it is pinned last.
     SectionOrder { ids: Vec<String> },
-    /// all | media | work | photos | lean.
+    /// A preset id from `section_presets`.
     SectionPreset { name: String },
+    /// Save what is shown now as a preset of this name.
+    SectionPresetSave { name: String },
+    SectionPresetDelete { name: String },
+    /// Put back what the last preset replaced.
+    SectionUndo,
+    /// The sidebar order and its groups (`name=anchor`) together, since a drag
+    /// across a group edge changes both.
+    SectionLayout { ids: Vec<String>, groups: Vec<String> },
+    /// Back to the default order and groups.
+    SectionLayoutReset,
     /// Which section opens at launch.
     SectionLanding { id: String },
     /// One tab inside one section. `enabled: false` takes it out of that page's
@@ -333,6 +376,36 @@ pub async fn settings_dispatch(cmd: SettingsCmd) -> Result<SettingsState> {
                 save(s);
                 notice = "Sidebar updated.".into();
             }
+        }
+        SettingsCmd::SectionPresetSave { name } => {
+            let mut s = load();
+            if tulipix_core::sections::save_mine(&mut s, &name) {
+                save(s);
+                notice = format!("Saved \u{201c}{}\u{201d} as a preset.", name.trim());
+            }
+        }
+        SettingsCmd::SectionPresetDelete { name } => {
+            let mut s = load();
+            tulipix_core::sections::delete_mine(&mut s, &name);
+            save(s);
+        }
+        SettingsCmd::SectionUndo => {
+            let mut s = load();
+            if tulipix_core::sections::undo(&mut s) {
+                save(s);
+                notice = "Put back the sections you had.".into();
+            }
+        }
+        SettingsCmd::SectionLayout { ids, groups } => {
+            let mut s = load();
+            tulipix_core::sections::set_order(&mut s, &ids);
+            tulipix_core::sections::set_groups(&mut s, &groups);
+            save(s);
+        }
+        SettingsCmd::SectionLayoutReset => {
+            let mut s = load();
+            tulipix_core::sections::reset_layout(&mut s);
+            save(s);
         }
         SettingsCmd::SectionLanding { id } => {
             let mut s = load();
@@ -471,7 +544,20 @@ async fn snapshot() -> SettingsState {
         task_frac,
         notice: String::new(),
         sections: section_rows(&s),
-        sections_preset: tulipix_core::sections::current_preset(&s).into(),
+        sections_preset: tulipix_core::sections::current_preset(&s),
+        section_presets: preset_rows(&s),
+        sections_last_preset: tulipix_core::sections::last_preset(&s),
+        sections_can_undo: tulipix_core::sections::can_undo(&s),
+        section_groups: tulipix_core::sections::groups(&s)
+            .into_iter()
+            .map(|(name, anchor)| SectionsGroup { name, anchor })
+            .collect(),
+        sections_view: match s.text("sections.view").as_str() {
+            "list" => "list".into(),
+            _ => "cards".into(),
+        },
+        sidebar_overflow: sidebar_overflow(&s),
+        sidebar_dividers: s.flag("sidebar.dividers", true),
         landing: tulipix_core::sections::landing(&s).into(),
     }
 }
@@ -493,8 +579,44 @@ fn section_dbs(id: &str) -> &'static [&'static str] {
         "journal" => &["journal.db"],
         "kitchen" => &["kitchen.db"],
         "papers" => &["papers.db"],
+        "voice" => &["voice.db"],
+        "places" => &["places.db"],
+        "studio" => &["studio.db"],
+        "archive" => &["archive.db"],
+        "arcade" => &["arcade.db"],
         // Home reads the other sections and Settings is a JSON file.
         _ => &[],
+    }
+}
+
+fn preset_rows(s: &tulipix_core::settings::Settings) -> Vec<SectionsPresetRow> {
+    let own = |v: &[&str]| -> Vec<String> { v.iter().map(|i| i.to_string()).collect() };
+    tulipix_core::sections::PRESETS
+        .iter()
+        .map(|p| SectionsPresetRow {
+            id: p.id.into(),
+            name: p.name.into(),
+            hint: p.hint.into(),
+            ids: own(p.ids),
+            mine: false,
+        })
+        .chain(tulipix_core::sections::mine(s).into_iter().map(|(name, ids)| {
+            SectionsPresetRow {
+                id: format!("{}{name}", tulipix_core::sections::MINE),
+                name,
+                hint: "yours".into(),
+                ids,
+                mine: true,
+            }
+        }))
+        .collect()
+}
+
+/// `sidebar.overflow`, with anything unknown read as the default.
+pub(crate) fn sidebar_overflow(s: &tulipix_core::settings::Settings) -> String {
+    match s.text("sidebar.overflow").as_str() {
+        v @ ("scroll" | "more") => v.into(),
+        _ => "shrink".into(),
     }
 }
 
@@ -517,7 +639,7 @@ fn section_rows(s: &tulipix_core::settings::Settings) -> Vec<SectionRow> {
             SectionRow {
                 id: id.to_string(),
                 mode: mode.key().to_string(),
-                locked: id == tulipix_core::sections::PINNED,
+                locked: tulipix_core::sections::ALWAYS.contains(&id),
                 db: files.join(" · "),
                 bytes,
                 tabs_off: tulipix_core::sections::tabs_off(s, id),

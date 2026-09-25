@@ -26,6 +26,11 @@ enum Section {
   journal,
   kitchen,
   papers,
+  voice,
+  places,
+  studio,
+  archive,
+  arcade,
   settings,
 }
 
@@ -151,6 +156,22 @@ class Tokens extends ThemeExtension<Tokens> {
   // apart.
   static const Color secPapers = Color(0xFF14B8A6); // teal
   static const Color secPapers2 = Color(0xFF0EA5E9); // sky
+  // The deck's rose, running on to purple; nothing else is rose.
+  static const Color secVoice = Color(0xFFF43F5E); // rose
+  static const Color secVoice2 = Color(0xFFA855F7); // purple
+  // Deep teal running on to indigo: Papers and Cloud have teal, and the
+  // indigo end tells a trip from a receipt.
+  static const Color secPlaces = Color(0xFF0D9488); // teal-600
+  static const Color secPlaces2 = Color(0xFF6366F1); // indigo
+  // The deck's orange running on to pink; Feeds' orange runs to red.
+  static const Color secStudio = Color(0xFFF97316); // orange
+  static const Color secStudio2 = Color(0xFFEC4899); // pink
+  // The deck's violet running on to indigo, darker than Photos' violet.
+  static const Color secArchive = Color(0xFF7C3AED); // violet-600
+  static const Color secArchive2 = Color(0xFF4F46E5); // indigo-600
+  // The deck's green running on to cyan; Books is emerald, Finances lime.
+  static const Color secArcade = Color(0xFF22C55E); // green
+  static const Color secArcade2 = Color(0xFF06B6D4); // cyan
   static const Color secStatus = Color(0xFF7C3AED); // violet
   static const Color secSettings = Color(0xFF94A3B8); // slate
 
@@ -196,6 +217,11 @@ class Tokens extends ThemeExtension<Tokens> {
         Section.journal => secJournal,
         Section.kitchen => secKitchen,
         Section.papers => secPapers,
+        Section.voice => secVoice,
+        Section.places => secPlaces,
+        Section.studio => secStudio,
+        Section.archive => secArchive,
+        Section.arcade => secArcade,
         Section.settings => secSettings,
       };
 

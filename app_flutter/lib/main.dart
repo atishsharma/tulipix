@@ -18,6 +18,8 @@ import 'design/app_theme.dart';
 import 'design/design_language.dart';
 import 'design/skin.dart';
 import 'design/tokens.dart';
+import 'sections/arcade/arcade_page.dart';
+import 'sections/archive/archive_page.dart';
 import 'sections/books/books_page.dart';
 import 'sections/cloud/cloud_page.dart';
 import 'sections/feeds/feeds_page.dart';
@@ -31,7 +33,10 @@ import 'sections/music/music_page.dart';
 import 'sections/papers/papers_page.dart';
 import 'sections/photos/photos_page.dart';
 import 'sections/settings/settings_page.dart';
+import 'sections/studio/studio_page.dart';
 import 'sections/tools/tools_page.dart';
+import 'sections/places/places_page.dart';
+import 'sections/voice/voice_page.dart';
 import 'sections/transfer/transfer_page.dart';
 import 'sections/videos/videos_page.dart';
 import 'playback/video_layer.dart';
@@ -84,6 +89,11 @@ Widget _pageFor(Section s, Section at) => switch (s) {
       Section.journal => JournalPage(visible: at == Section.journal),
       Section.kitchen => KitchenPage(visible: at == Section.kitchen),
       Section.papers => PapersPage(visible: at == Section.papers),
+      Section.voice => VoicePage(visible: at == Section.voice),
+      Section.places => PlacesPage(visible: at == Section.places),
+      Section.studio => StudioPage(visible: at == Section.studio),
+      Section.archive => ArchivePage(visible: at == Section.archive),
+      Section.arcade => ArcadePage(visible: at == Section.arcade),
       Section.settings => SettingsPage(visible: at == Section.settings),
     };
 

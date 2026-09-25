@@ -194,7 +194,7 @@ const GEONAMES: &str = "https://download.geonames.org/export/dump/cities15000.zi
 /// A stop further than this from every town has no name.
 const NAME_KM: f64 = 25.0;
 
-fn places_file() -> Option<std::path::PathBuf> {
+pub fn places_file() -> Option<std::path::PathBuf> {
     tulipix_core::paths::data_dir().map(|d| d.join("journal").join("places.tsv"))
 }
 
@@ -202,15 +202,40 @@ pub fn has_place_names() -> bool {
     places_file().is_some_and(|f| f.exists())
 }
 
-/// GeoNames' tab-separated table as (latitude, longitude, name).
-pub fn parse_geonames(tsv: &str) -> Vec<(f64, f64, String)> {
+/// A town from GeoNames, with the country and state it is in — Places counts
+/// those; Journal only needs the name.
+pub struct Town {
+    pub lat: f64,
+    pub lon: f64,
+    pub name: String,
+    /// ISO 3166 alpha-2.
+    pub cc: String,
+    /// GeoNames' first-level code, "11"; `regions.tsv` names "IN.11".
+    pub admin1: String,
+}
+
+/// GeoNames' tab-separated table as towns.
+pub fn parse_towns(tsv: &str) -> Vec<Town> {
     tsv.lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
             let (name, lat, lon) = (f.get(1)?, f.get(4)?.parse::<f64>().ok()?, f.get(5)?.parse::<f64>().ok()?);
-            (!name.is_empty()).then(|| (lat, lon, name.to_string()))
+            (!name.is_empty()).then(|| Town {
+                lat,
+                lon,
+                name: name.to_string(),
+                cc: f.get(8).unwrap_or(&"").to_string(),
+                admin1: f.get(10).unwrap_or(&"").to_string(),
+            })
         })
         .collect()
+}
+
+/// GeoNames' tab-separated table as (latitude, longitude, name). Only the
+/// tests still want it; the table itself is read as `Town`s.
+#[cfg(test)]
+fn parse_geonames(tsv: &str) -> Vec<(f64, f64, String)> {
+    parse_towns(tsv).into_iter().map(|t| (t.lat, t.lon, t.name)).collect()
 }
 
 /// The nearest name within `NAME_KM`.
@@ -257,25 +282,43 @@ pub fn names_for(stops: &[(f64, f64)]) -> Vec<String> {
 }
 
 /// Fetch GeoNames' table once and keep what naming needs. Returns the places.
+///
+/// The file is name, latitude, longitude, country, state: Journal reads the
+/// first three, Places all five. Country and state names come beside it, in
+/// `countries.tsv` and `regions.tsv`; those two are small and optional.
 pub async fn download_place_names(client: &reqwest::Client) -> Result<usize> {
     let bytes = client.get(GEONAMES).send().await?.error_for_status()?.bytes().await?;
-    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<(f64, f64, String)>> {
+    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<Town>> {
         use std::io::Read;
         let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
         let mut text = String::new();
         z.by_name("cities15000.txt")?.read_to_string(&mut text)?;
-        Ok(parse_geonames(&text))
+        Ok(parse_towns(&text))
     })
     .await??;
     if rows.len() < 1000 {
         anyhow::bail!("the place table came back short ({} places)", rows.len());
     }
     let file = places_file().ok_or_else(|| anyhow::anyhow!("no data folder"))?;
-    if let Some(dir) = file.parent() {
-        tokio::fs::create_dir_all(dir).await?;
-    }
-    let out: String = rows.iter().map(|(la, lo, n)| format!("{n}\t{la}\t{lo}\n")).collect();
+    let dir = file.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    tokio::fs::create_dir_all(&dir).await?;
+    let out: String = rows.iter().map(|t| format!("{}\t{}\t{}\t{}\t{}\n", t.name, t.lat, t.lon, t.cc, t.admin1)).collect();
     tokio::fs::write(&file, out).await?;
+    for (url, name, key, value) in [
+        ("https://download.geonames.org/export/dump/countryInfo.txt", "countries.tsv", 0, 4),
+        ("https://download.geonames.org/export/dump/admin1CodesASCII.txt", "regions.tsv", 0, 1),
+    ] {
+        let Ok(text) = async { client.get(url).send().await?.error_for_status()?.text().await }.await else { continue };
+        let kept: String = text
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split('\t').collect();
+                Some(format!("{}\t{}\n", f.get(key)?, f.get(value)?))
+            })
+            .collect();
+        tokio::fs::write(dir.join(name), kept).await.ok();
+    }
     *table().lock().unwrap_or_else(|e| e.into_inner()) = None;
     Ok(rows.len())
 }

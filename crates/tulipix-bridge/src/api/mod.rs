@@ -1,5 +1,7 @@
 //! The Dart-facing surface. Three to four exported symbols per section.
 
+pub mod arcade;
+pub mod archive;
 pub mod books;
 pub mod chat;
 pub mod cloud;
@@ -19,13 +21,16 @@ pub mod music;
 pub mod onboarding;
 pub mod papers;
 pub mod photos;
+pub mod places;
 pub mod scrobble;
 pub mod settings;
+pub mod studio;
 pub mod shell;
 pub mod status;
 pub mod tools;
 pub mod transfer;
 pub mod videos;
+pub mod voice;
 
 /// Runs once, before any other bridge call, from `RustLib.init()` on the Dart
 /// side. Wires Rust panics and `println!` through to the Dart console.

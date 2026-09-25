@@ -37,6 +37,11 @@ static FEEDS: OnceCell<SqlitePool> = OnceCell::const_new();
 static JOURNAL: OnceCell<SqlitePool> = OnceCell::const_new();
 static KITCHEN: OnceCell<SqlitePool> = OnceCell::const_new();
 static PAPERS: OnceCell<SqlitePool> = OnceCell::const_new();
+static VOICE: OnceCell<SqlitePool> = OnceCell::const_new();
+static PLACES: OnceCell<SqlitePool> = OnceCell::const_new();
+static STUDIO: OnceCell<SqlitePool> = OnceCell::const_new();
+static ARCHIVE: OnceCell<SqlitePool> = OnceCell::const_new();
+static ARCADE: OnceCell<SqlitePool> = OnceCell::const_new();
 
 pub async fn photos_pool() -> Result<&'static SqlitePool> {
     PHOTOS
@@ -181,6 +186,64 @@ pub async fn papers_pool() -> Result<&'static SqlitePool> {
         .get_or_try_init(|| async {
             let pool = tulipix_core::db::DbHandle::open("papers")?.pool().await?;
             crate::papers::apply_schema(&pool).await?;
+            Ok(pool)
+        })
+        .await
+}
+
+/// Voice: notes, their timed transcripts, bookmarks and the tasks said in
+/// them. Opened by hand, like Papers.
+pub async fn voice_pool() -> Result<&'static SqlitePool> {
+    VOICE
+        .get_or_try_init(|| async {
+            let pool = tulipix_core::db::DbHandle::open("voice")?.pool().await?;
+            crate::voice::apply_schema(&pool).await?;
+            Ok(pool)
+        })
+        .await
+}
+
+/// Places: which trips were kept or dismissed, their titles, the wishlist.
+/// Everything else is worked out from Photos.
+pub async fn places_pool() -> Result<&'static SqlitePool> {
+    PLACES
+        .get_or_try_init(|| async {
+            let pool = tulipix_core::db::DbHandle::open("places")?.pool().await?;
+            crate::places::apply_schema(&pool).await?;
+            Ok(pool)
+        })
+        .await
+}
+
+/// Studio: projects — what a movie or book is made of, and where it went.
+pub async fn studio_pool() -> Result<&'static SqlitePool> {
+    STUDIO
+        .get_or_try_init(|| async {
+            let pool = tulipix_core::db::DbHandle::open("studio")?.pool().await?;
+            crate::studio::apply_schema(&pool).await?;
+            Ok(pool)
+        })
+        .await
+}
+
+/// Archive: the catalogue of added folders and drives, zip contents, checksums.
+pub async fn archive_pool() -> Result<&'static SqlitePool> {
+    ARCHIVE
+        .get_or_try_init(|| async {
+            let pool = tulipix_core::db::DbHandle::open("archive")?.pool().await?;
+            crate::archive::apply_schema(&pool).await?;
+            Ok(pool)
+        })
+        .await
+}
+
+/// Arcade: favourites, hidden games, notes, timed sessions, ProtonDB's
+/// answers and ROM folders. The games themselves are the launchers'.
+pub async fn arcade_pool() -> Result<&'static SqlitePool> {
+    ARCADE
+        .get_or_try_init(|| async {
+            let pool = tulipix_core::db::DbHandle::open("arcade")?.pool().await?;
+            crate::arcade::apply_schema(&pool).await?;
             Ok(pool)
         })
         .await

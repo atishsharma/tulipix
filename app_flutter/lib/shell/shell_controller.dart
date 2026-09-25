@@ -142,6 +142,11 @@ class ShellController extends ChangeNotifier {
     'journal': Section.journal,
     'kitchen': Section.kitchen,
     'papers': Section.papers,
+    'voice': Section.voice,
+    'places': Section.places,
+    'studio': Section.studio,
+    'archive': Section.archive,
+    'arcade': Section.arcade,
     'settings': Section.settings,
   };
 

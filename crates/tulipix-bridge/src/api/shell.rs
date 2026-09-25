@@ -66,6 +66,11 @@ pub struct ShellState {
     /// than a map per section: every page reads the same one line of it, and a
     /// map would be ten fields that all mean the same thing.
     pub tabs_off: Vec<String>,
+    /// The sidebar's group dividers as `<section>:<name>`, each on the first
+    /// shown section of its group. Empty when dividers are switched off.
+    pub sidebar_groups: Vec<String>,
+    /// When the sidebar does not fit: "shrink" | "scroll" | "more".
+    pub sidebar_overflow: String,
 }
 
 pub enum ShellCmd {
@@ -153,6 +158,15 @@ async fn snapshot() -> Result<ShellState> {
             .collect(),
         landing: tulipix_core::sections::landing(&s).into(),
         tabs_off: tulipix_core::sections::tabs_off_all(&s),
+        sidebar_groups: if s.flag("sidebar.dividers", true) {
+            tulipix_core::sections::sidebar_groups(&s)
+                .into_iter()
+                .map(|(id, n)| format!("{id}:{n}"))
+                .collect()
+        } else {
+            Vec::new()
+        },
+        sidebar_overflow: crate::api::settings::sidebar_overflow(&s),
     })
 }
 

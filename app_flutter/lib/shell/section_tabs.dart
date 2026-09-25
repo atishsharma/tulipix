@@ -12,6 +12,8 @@
 // back and keeps everything. Those five are not listed, and the panel shows no
 // chips for them rather than chips that do nothing.
 
+import '../sections/arcade/arcade_controller.dart' show arcadeTabs;
+import '../sections/archive/archive_controller.dart' show archiveTabs;
 import '../sections/feeds/feeds_controller.dart' show feedTabs;
 import '../sections/finances/finances_controller.dart' show finTabs;
 import '../sections/journal/journal_controller.dart' show journalTabs;
@@ -19,7 +21,10 @@ import '../sections/kitchen/kitchen_controller.dart' show kitchenTabs;
 import '../sections/music/music_controller.dart' show musicViews;
 import '../sections/papers/papers_controller.dart' show papersTabs;
 import '../sections/photos/photos_controller.dart' show photoCategories;
+import '../sections/studio/studio_controller.dart' show studioTabs;
 import '../sections/tools/tools_controller.dart' show toolTabs;
+import '../sections/places/places_controller.dart' show placesTabs;
+import '../sections/voice/voice_controller.dart' show voiceTabs;
 import '../sections/videos/videos_controller.dart' show kVideoCategories;
 
 typedef TabEntry = ({String id, String label});
@@ -35,6 +40,11 @@ final Map<String, List<TabEntry>> sectionTabs = {
   'journal': [for (final f in journalTabs) (id: f.id, label: f.label)],
   'kitchen': [for (final f in kitchenTabs) (id: f.id, label: f.label)],
   'papers': [for (final f in papersTabs) (id: f.id, label: f.label)],
+  'voice': [for (final f in voiceTabs) (id: f.id, label: f.label)],
+  'places': [for (final f in placesTabs) (id: f.id, label: f.label)],
+  'studio': [for (final f in studioTabs) (id: f.id, label: f.label)],
+  'archive': [for (final f in archiveTabs) (id: f.id, label: f.label)],
+  'arcade': [for (final f in arcadeTabs) (id: f.id, label: f.label)],
 };
 
 /// `<section>:<tab>` for every tab that is off. Rust's spelling, kept as it
