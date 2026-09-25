@@ -16,6 +16,7 @@ import '../../shell/shell_controller.dart';
 import '../../src/rust/api/settings.dart';
 import '../status/status_page.dart';
 import 'settings_controller.dart';
+import 'settings_libraries.dart';
 import 'settings_media.dart';
 import 'settings_profile.dart';
 import 'settings_sections.dart';

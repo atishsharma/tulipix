@@ -2984,38 +2984,14 @@ async fn trakt_history_item(
     })
 }
 
-fn watched_path() -> Option<PathBuf> {
-    tulipix_core::paths::config_dir().map(|d| d.join("watched_folders.json"))
-}
-
+// The watched-folder list is `tulipix_core::watched`'s; see there for why
+// there is only one of it.
 fn load_watched_folders() -> Vec<PathBuf> {
-    let Some(p) = watched_path() else { return Vec::new() };
-    let Ok(body) = std::fs::read_to_string(p) else { return Vec::new() };
-    serde_json::from_str::<Vec<String>>(&body)
-        .unwrap_or_default()
-        .into_iter()
-        .map(PathBuf::from)
-        .collect()
+    tulipix_core::watched::load()
 }
 
 fn add_watched_folder(dir: &Path) -> bool {
-    let mut existing = load_watched_folders();
-    if existing.iter().any(|p| p == dir) {
-        return false;
-    }
-    existing.push(dir.to_path_buf());
-    let Some(p) = watched_path() else { return false };
-    if let Some(parent) = p.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let list: Vec<String> = existing.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-    match serde_json::to_string_pretty(&list) {
-        Ok(body) => std::fs::write(p, body).is_ok(),
-        Err(e) => {
-            tracing::warn!(error = %e, "serialise watched folders");
-            false
-        }
-    }
+    tulipix_common::add_watched_folder(dir)
 }
 
 #[cfg(test)]

@@ -765,7 +765,7 @@ async fn stop_service() {
     s.qr_for.clear();
 }
 
-fn inbox_path() -> PathBuf {
+pub(crate) fn inbox_path() -> PathBuf {
     let stored = tulipix_core::settings::Settings::load()
         .map(|s| s.text(INBOX_KEY))
         .unwrap_or_default();

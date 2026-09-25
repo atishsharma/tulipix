@@ -1073,6 +1073,15 @@ async fn watch(pool: &'static SqlitePool, path: &str) -> Result<()> {
     Ok(())
 }
 
+/// The folder Papers takes new files from, or empty. Settings › Libraries
+/// lists it.
+pub(crate) async fn watch_folder() -> String {
+    match papers_pool().await {
+        Ok(pool) => watched(pool).await.unwrap_or_default(),
+        Err(_) => String::new(),
+    }
+}
+
 async fn watched(pool: &SqlitePool) -> Result<String> {
     Ok(sqlx::query_scalar("SELECT value FROM prefs WHERE key = 'watch'").fetch_optional(pool).await?.unwrap_or_default())
 }

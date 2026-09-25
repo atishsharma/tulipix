@@ -58,6 +58,20 @@ pub struct LibraryRow {
     /// Its own auto-rescan cadence, `lib.cadence.<path>`: "manual" | "hourly"
     /// | "daily" | "weekly", or empty for the default.
     pub cadence: String,
+    /// The drive it is on, for grouping: a removable drive's name, a Windows
+    /// drive letter, or "This computer".
+    pub drive: String,
+}
+
+/// A folder one section keeps for itself, outside the watched list: where
+/// Transfer saves what it receives, Studio's output, Papers' inbox, Arcade's
+/// ROM folders, Archive's catalogued drives.
+pub struct LibOwnedRow {
+    /// A section id, as the sidebar knows it.
+    pub section: String,
+    pub label: String,
+    pub path: String,
+    pub exists: bool,
 }
 
 /// A service key's row. The key itself stays in the system keychain and never
@@ -108,6 +122,17 @@ pub struct SettingsState {
     pub default_cadence: String,
     /// `scan.exclude`: the patterns every scan passes over, as typed.
     pub exclusions: String,
+    /// The watched list's file: "ok" | "fresh" (never written) | "unreadable".
+    /// Unreadable lists the backup in its place, and the tab offers to put it
+    /// back.
+    pub lib_health: String,
+    /// When the list was last saved, Unix seconds; 0 never.
+    pub lib_saved_at: i64,
+    /// Folders in the backup, or -1 with no backup.
+    pub lib_backup: i32,
+    /// Filled only while the Libraries tab is open: it opens three sections'
+    /// databases.
+    pub lib_owned: Vec<LibOwnedRow>,
     // The data-driven panels.
     pub playback: Vec<SettingItem>,
     /// Library analysis: tracks measured, tracks there are to measure, and
@@ -224,6 +249,8 @@ pub enum SettingsCmd {
     HomeCardsReset,
     LibAdd { path: String },
     LibRemove { path: String },
+    /// Put the watched list's backup back.
+    LibRestore,
     /// "shown" | "hidden" | "off" for one section.
     SectionSet { id: String, mode: String },
     /// The sidebar order, front to back. Settings is dropped whatever position
@@ -345,9 +372,26 @@ pub async fn settings_dispatch(cmd: SettingsCmd) -> Result<SettingsState> {
                 false => format!("{path} is already watched, or is not a folder."),
             };
         }
+        // The backup back; with none, a new empty list, which is the only way
+        // an unreadable one can be written again.
+        SettingsCmd::LibRestore => {
+            notice = if tulipix_core::watched::backup().is_some() {
+                match tulipix_core::watched::restore_backup() {
+                    Ok(n) => format!("Put back {n} watched {}.", if n == 1 { "folder" } else { "folders" }),
+                    Err(e) => e,
+                }
+            } else {
+                match tulipix_core::watched::set(Vec::new()) {
+                    Ok(()) => "Started a new folder list. Watch your folders again.".into(),
+                    Err(e) => e,
+                }
+            };
+        }
         SettingsCmd::LibRemove { path } => {
-            remove_watched(Path::new(&path));
-            notice = format!("Stopped watching {path}.");
+            notice = match tulipix_core::watched::remove(Path::new(&path)) {
+                Ok(_) => format!("Stopped watching {path}."),
+                Err(e) => e,
+            };
         }
         SettingsCmd::SectionSet { id, mode } => {
             let mut s = load();
@@ -524,6 +568,19 @@ async fn snapshot() -> SettingsState {
             c => c,
         },
         exclusions: s.text("scan.exclude"),
+        lib_health: match tulipix_core::watched::health() {
+            tulipix_core::watched::Health::Ok => "ok",
+            tulipix_core::watched::Health::Fresh => "fresh",
+            tulipix_core::watched::Health::Unreadable => "unreadable",
+        }
+        .into(),
+        lib_saved_at: tulipix_core::watched::saved_at(),
+        lib_backup: tulipix_core::watched::backup().map_or(-1, |b| b.len() as i32),
+        lib_owned: if tab_cell().lock().is_ok_and(|t| *t == "libraries") {
+            owned_folders(&s).await
+        } else {
+            Vec::new()
+        },
         playback: playback(&s),
         analysed,
         analysable,
@@ -1810,6 +1867,19 @@ async fn action(key: &str) -> String {
             }
             crate::api::maintenance::start_rescan(dir)
         }
+        // Several at once, one per line: the Libraries tab's bulk Rescan.
+        k if k.starts_with("lib-rescan-many:") => {
+            let list = watched();
+            let dirs: Vec<PathBuf> = k["lib-rescan-many:".len()..]
+                .lines()
+                .map(PathBuf::from)
+                .filter(|d| list.contains(d))
+                .collect();
+            if dirs.is_empty() {
+                return "None of those folders is watched.".into();
+            }
+            crate::api::maintenance::start_rescan_many(dirs)
+        }
         // What each folder holds, counted when the Libraries tab opens. Says
         // nothing: the figures on the cards are the answer.
         "lib-counts" => {
@@ -2133,63 +2203,29 @@ fn restore(id: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("no config directory on this system"))?;
     backup()?;
     std::fs::create_dir_all(&cfg)?;
-    for f in ["settings.json", "watched_folders.json"] {
-        let from = src.join(f);
-        if from.exists() {
-            std::fs::copy(&from, cfg.join(f))?;
-        }
+    let from = src.join("settings.json");
+    if from.exists() {
+        std::fs::copy(&from, cfg.join("settings.json"))?;
+    }
+    // Through the list's owner, so a section reading it mid-restore sees the
+    // old list or the new one.
+    if let Ok(body) = std::fs::read_to_string(src.join("watched_folders.json")) {
+        let list: Vec<String> = serde_json::from_str(&body)?;
+        tulipix_core::watched::set(list.into_iter().map(PathBuf::from).collect())
+            .map_err(anyhow::Error::msg)?;
     }
     Ok(())
 }
 
 // ── watched folders ─────────────────────────────────────────────────────────
-
-fn watched_path() -> Option<PathBuf> {
-    tulipix_core::paths::config_dir().map(|d| d.join("watched_folders.json"))
-}
+// The list is `tulipix_core::watched`'s: one owner, atomic writes, a backup.
 
 pub(crate) fn watched() -> Vec<PathBuf> {
-    let Some(p) = watched_path() else { return Vec::new() };
-    std::fs::read_to_string(p)
-        .ok()
-        .and_then(|b| serde_json::from_str::<Vec<String>>(&b).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .map(PathBuf::from)
-        .collect()
-}
-
-fn write_watched(list: &[PathBuf]) -> bool {
-    let Some(p) = watched_path() else { return false };
-    if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let out: Vec<String> = list.iter().map(|x| x.to_string_lossy().into_owned()).collect();
-    match serde_json::to_string_pretty(&out) {
-        Ok(body) => std::fs::write(&p, body).is_ok(),
-        Err(e) => {
-            tracing::warn!(error = %e, "settings: serialise watched folders");
-            false
-        }
-    }
+    tulipix_core::watched::load()
 }
 
 fn add_watched(dir: &Path) -> bool {
-    if !dir.is_dir() {
-        return false;
-    }
-    let mut list = watched();
-    if list.iter().any(|x| x == dir) {
-        return false;
-    }
-    list.push(dir.to_path_buf());
-    write_watched(&list)
-}
-
-fn remove_watched(dir: &Path) {
-    let mut list = watched();
-    list.retain(|x| x != dir);
-    write_watched(&list);
+    dir.is_dir() && tulipix_common::add_watched_folder(dir)
 }
 
 /// The watched list, with whether each folder is still on disk. Removing a
@@ -2217,14 +2253,103 @@ fn libraries(s: &S) -> Vec<LibraryRow> {
                 items,
                 last_scan,
                 cadence,
+                drive: drive_of(&p),
             }
         })
         .collect()
 }
 
+/// The drive a folder is on, from its path alone, so a drive that is
+/// unplugged still groups its folders: the name under `/media/<user>`,
+/// `/run/media/<user>`, `/mnt` or `/Volumes`, a Windows drive letter, or
+/// "This computer".
+fn drive_of(p: &Path) -> String {
+    let parts: Vec<String> = p
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(x) => Some(x.to_string_lossy().into_owned()),
+            std::path::Component::Prefix(x) => Some(x.as_os_str().to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    let at = |i: usize| parts.get(i).cloned();
+    let name = match parts.first().map(String::as_str) {
+        Some("media") => at(2),
+        Some("run") if at(1).as_deref() == Some("media") => at(3),
+        Some("mnt" | "Volumes") => at(1),
+        Some(x) if x.len() == 2 && x.ends_with(':') => Some(x.to_ascii_uppercase()),
+        _ => None,
+    };
+    name.unwrap_or_else(|| "This computer".into())
+}
+
+/// The folders sections keep for themselves. A section that is off is left
+/// out rather than woken: its database would be made just to be asked.
+async fn owned_folders(s: &S) -> Vec<LibOwnedRow> {
+    use tulipix_core::sections::{Mode, mode_of};
+    let on = |id: &str| mode_of(s, id) != Mode::Off;
+    let mut out = Vec::new();
+    let mut push = |section: &str, label: &str, path: PathBuf| {
+        out.push(LibOwnedRow {
+            section: section.into(),
+            label: label.into(),
+            exists: path.is_dir(),
+            path: path.to_string_lossy().into_owned(),
+        });
+    };
+    if on("papers") {
+        let p = crate::api::papers::watch_folder().await;
+        if !p.is_empty() {
+            push("papers", "Inbox", PathBuf::from(p));
+        }
+    }
+    if on("transfer") {
+        push("transfer", "Received files", crate::api::transfer::inbox_path());
+    }
+    if on("studio")
+        && let Some(p) = crate::api::studio::out_path()
+    {
+        push("studio", "Finished movies and books", p);
+    }
+    if on("arcade")
+        && let Ok(pool) = crate::db::arcade_pool().await
+    {
+        let roms: Vec<String> = sqlx::query_scalar("SELECT path FROM roms ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+        for p in roms {
+            push("arcade", "ROM folder", PathBuf::from(p));
+        }
+    }
+    if on("archive")
+        && let Ok(pool) = crate::db::archive_pool().await
+    {
+        let roots: Vec<(String, String)> =
+            sqlx::query_as("SELECT path, label FROM roots ORDER BY id")
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+        for (p, label) in roots {
+            let label = if label.trim().is_empty() { "Catalogued".into() } else { label };
+            push("archive", &label, PathBuf::from(p));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drive_is_named_from_the_path() {
+        assert_eq!(drive_of(Path::new("/run/media/al/Photos SSD/2024")), "Photos SSD");
+        assert_eq!(drive_of(Path::new("/media/al/nas/films")), "nas");
+        assert_eq!(drive_of(Path::new("/mnt/backup/music")), "backup");
+        assert_eq!(drive_of(Path::new("/Volumes/Card/DCIM")), "Card");
+        assert_eq!(drive_of(Path::new("/home/al/Pictures")), "This computer");
+    }
 
     /// Every panel opens with a header, or the first rows sit under nothing.
     #[test]

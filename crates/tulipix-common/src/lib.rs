@@ -222,52 +222,24 @@ pub fn human_size(bytes: u64) -> String {
 }
 
 // ---- Watched folders + time (shared by every media section) ----------------
-/// JSON file holding the list of watched root folders, so libraries survive
-/// restarts (the grids re-scan from these on launch).
-pub fn watched_folders_path() -> Option<PathBuf> {
-    tulipix_core::paths::config_dir().map(|d| d.join("watched_folders.json"))
-}
+// The list itself is `tulipix_core::watched`'s: one owner, atomic writes, a
+// backup. These are the names the rest of the app already calls.
 
 pub fn load_watched_folders() -> Vec<PathBuf> {
-    let Some(p) = watched_folders_path() else { return Vec::new(); };
-    let Ok(body) = std::fs::read_to_string(&p) else { return Vec::new(); };
-    serde_json::from_str::<Vec<String>>(&body)
-        .unwrap_or_default()
-        .into_iter()
-        .map(PathBuf::from)
-        .collect()
-}
-
-/// Append `add` to `existing` unless already present (path-equality).
-pub fn merge_watched(mut existing: Vec<PathBuf>, add: &std::path::Path) -> Vec<PathBuf> {
-    if !existing.iter().any(|p| p == add) {
-        existing.push(add.to_path_buf());
-    }
-    existing
-}
-
-pub fn save_watched_folders(folders: &[PathBuf]) {
-    if let Some(p) = watched_folders_path() {
-        let list: Vec<String> = folders.iter().map(|p| p.display().to_string()).collect();
-        if let Ok(body) = serde_json::to_string_pretty(&list) {
-            let _ = std::fs::write(p, body);
-        }
-    }
+    tulipix_core::watched::load()
 }
 
 /// Add `dir` to the watched-folders set (idempotent) and persist. Returns true
 /// if it was newly added.
 pub fn add_watched_folder(dir: &std::path::Path) -> bool {
-    let existing = load_watched_folders();
-    let had = existing.iter().any(|p| p == dir);
-    if !had {
-        save_watched_folders(&merge_watched(existing, dir));
+    let added = tulipix_core::watched::add(dir);
+    if added {
         // Attach the new folder to the running FS watcher so deletes/renames
         // there update the library live, without waiting for a restart.
         tulipix_core::watcher::watch_path(dir);
         log_activity("emerald", "Folder added to library", &dir.display().to_string());
     }
-    !had
+    added
 }
 
 pub use tulipix_core::util::unix_secs_i64 as now_secs;
@@ -970,19 +942,4 @@ pub fn media_set_volume(vol_0_1: f64) {
     });
     #[cfg(not(all(unix, not(target_os = "macos"))))]
     let _ = vol_0_1;
-}
-
-
-#[cfg(test)]
-mod watched_tests {
-    use super::merge_watched;
-    use std::path::{Path, PathBuf};
-
-    #[test]
-    fn merge_watched_dedups_and_appends() {
-        let out = merge_watched(vec![PathBuf::from("/a")], Path::new("/b"));
-        assert_eq!(out, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
-        let same = merge_watched(vec![PathBuf::from("/a")], Path::new("/a"));
-        assert_eq!(same, vec![PathBuf::from("/a")]);
-    }
 }

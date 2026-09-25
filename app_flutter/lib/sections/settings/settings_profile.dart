@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../design/app_mark.dart';
+import '../../design/bloom.dart';
 import '../../design/design_language.dart';
 import '../../design/tokens.dart';
 import '../../design/skin.dart';
@@ -25,6 +26,7 @@ import '../../shell/shell_controller.dart';
 import '../../src/rust/api/settings.dart';
 import '../music/mini_widget.dart';
 import '../music/music_controller.dart';
+import 'bloom_dialog.dart';
 import 'profile_cropper.dart';
 import 'settings_controller.dart';
 import 'settings_kit.dart';
@@ -691,22 +693,44 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  Widget _languageTile({bool fill = false}) => SettingsTile(
-        icon: Icons.layers_outlined,
-        tint: Tokens.brand,
-        title: 'Design language',
-        note: 'How the whole app is drawn',
-        fill: fill,
-        child: _grid2x2([
-          for (final l in DesignLanguage.values)
-            _LanguageCell(
-              language: l,
-              fill: fill,
-              active: l == _languageNow,
-              onTap: () => setState(() => _language = l),
+  Widget _languageTile({bool fill = false}) {
+    final grid = _grid2x2([
+      for (final l in DesignLanguage.values)
+        _LanguageCell(
+          language: l,
+          fill: fill,
+          active: l == _languageNow,
+          onTap: () => _pickLanguage(l),
+        ),
+    ], fill: fill);
+    return SettingsTile(
+      icon: Icons.layers_outlined,
+      tint: Tokens.brand,
+      title: 'Design language',
+      note: 'How the whole app is drawn',
+      fill: fill,
+      child: _languageNow != DesignLanguage.expressive
+          ? grid
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: fill ? MainAxisSize.max : MainAxisSize.min,
+              children: [
+                fill ? Expanded(child: grid) : grid,
+                const SizedBox(height: 8),
+                _BloomRow(
+                    onTap: () => showBloomDialog(context, widget.controller)),
+              ],
             ),
-        ], fill: fill),
-      );
+    );
+  }
+
+  /// Material 3 Expressive opens its colours the moment it is picked, as
+  /// Android's style picker does; after that the Colours row reopens them.
+  void _pickLanguage(DesignLanguage l) {
+    final opening = l == DesignLanguage.expressive && _languageNow != l;
+    setState(() => _language = l);
+    if (opening) showBloomDialog(context, widget.controller);
+  }
 
   /// [fill]: the preview takes whatever height the row leaves, so the picker
   /// row sits at the foot of the tile. Only inside a row of fixed height — in
@@ -1346,6 +1370,55 @@ class _LanguageCell extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 10.5, color: t.textDim)),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Bloom's seed as three dots — primary, secondary, tertiary — and where it
+/// comes from. Opens the colours popup.
+class _BloomRow extends StatelessWidget {
+  const _BloomRow({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final s = bloomScheme(bloom.seed, bloom.style, dark: false);
+    final from = switch (ShellController.instance.state?.bloomSource) {
+      'desktop' => 'desktop accent',
+      'pick' => 'your colour',
+      _ => 'the cover playing',
+    };
+    return Material(
+      color: t.panel2,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 9, 8, 9),
+          child: Row(
+            children: [
+              for (final c in [s.primary, s.secondaryContainer, s.tertiaryContainer])
+                Container(
+                  width: 16,
+                  height: 16,
+                  margin: const EdgeInsets.only(right: 3),
+                  decoration: BoxDecoration(color: c, shape: BoxShape.circle),
+                ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text('Colours · from $from',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: t.text)),
+              ),
+              Icon(Icons.chevron_right, size: 18, color: t.textDim),
+            ],
+          ),
         ),
       ),
     );

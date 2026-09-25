@@ -497,6 +497,26 @@ fn folder_name(dir: &Path) -> String {
 
 /// Read one folder again, detached. The page's bar says it is running; the
 /// notice after says how it went.
+/// Several watched folders read again, one after another, as one job: the
+/// Libraries tab's bulk Rescan.
+pub(crate) fn start_rescan_many(dirs: Vec<PathBuf>) -> String {
+    let n = dirs.len();
+    let Some(guard) = begin("lib-rescan-many", &format!("Reading {n} folders again")) else {
+        return busy();
+    };
+    tokio::spawn(async move {
+        for (i, dir) in dirs.iter().enumerate() {
+            rescan_folder(dir).await;
+            progress((i + 1) as f64 / n as f64);
+        }
+        stamp_scanned(&dirs);
+        refresh_counts().await;
+        done(format!("Read {n} folders again."));
+        drop(guard);
+    });
+    String::new()
+}
+
 pub(crate) fn start_rescan(dir: PathBuf) -> String {
     let key = format!("lib-rescan:{}", dir.display());
     let Some(guard) = begin(&key, &format!("Reading {} again", folder_name(&dir))) else {
@@ -678,8 +698,8 @@ fn fs_apply_loop(
     // Watched folder -> when something last landed in it.
     let mut due: HashMap<PathBuf, Instant> = HashMap::new();
     loop {
-        // Five writers keep watched_folders.json; re-reading it is how a folder
-        // added anywhere gets attached without a restart.
+        // Folders are added from several sections; re-reading the list is how
+        // one added anywhere gets attached without a restart.
         if roots_read.is_none_or(|t| t.elapsed() >= QUIET) {
             roots = tulipix_common::load_watched_folders();
             for r in roots.iter().filter(|r| r.is_dir()) {

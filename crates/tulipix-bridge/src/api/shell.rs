@@ -71,6 +71,20 @@ pub struct ShellState {
     pub sidebar_groups: Vec<String>,
     /// When the sidebar does not fit: "shrink" | "scroll" | "more".
     pub sidebar_overflow: String,
+    /// Material 3 Expressive's colours: where the seed comes from, "cover" |
+    /// "desktop" | "pick". Cover by default.
+    pub bloom_source: String,
+    /// The picked seed as `#rrggbb`; empty until one is picked.
+    pub bloom_seed: String,
+    /// The desktop's accent as `#rrggbb`, read only while it is the seed:
+    /// on Linux each read runs `gsettings`.
+    pub bloom_desktop: String,
+    /// A Flutter `DynamicSchemeVariant` name; `tonalSpot` by default.
+    pub bloom_style: String,
+    /// 0 standard, 0.5 medium, 1 high.
+    pub bloom_contrast: f64,
+    /// Section colours shifted toward the seed.
+    pub bloom_harmonise: bool,
 }
 
 pub enum ShellCmd {
@@ -167,7 +181,33 @@ async fn snapshot() -> Result<ShellState> {
             Vec::new()
         },
         sidebar_overflow: crate::api::settings::sidebar_overflow(&s),
+        bloom_source: match s.text("ui.bloom.source").as_str() {
+            v @ ("desktop" | "pick") => v.into(),
+            _ => "cover".into(),
+        },
+        bloom_seed: s.text("ui.bloom.seed"),
+        bloom_desktop: if s.text("ui.design-language") == "expressive"
+            && s.text("ui.bloom.source") == "desktop"
+        {
+            desktop_accent()
+        } else {
+            String::new()
+        },
+        bloom_style: match s.text("ui.bloom.style") {
+            v if v.is_empty() => "tonalSpot".into(),
+            v => v,
+        },
+        bloom_contrast: s.text("ui.bloom.contrast").parse().unwrap_or(0.0),
+        bloom_harmonise: s.flag("ui.bloom.harmonise", false),
     })
+}
+
+/// The desktop's accent as `#rrggbb`, or empty when it reports none. For the
+/// Bloom colours popup, which shows it before it is the seed.
+pub fn desktop_accent() -> String {
+    tulipix_platform::accent::read_system_accent()
+        .map(|c| c.to_css())
+        .unwrap_or_default()
 }
 
 /// Once a day at most, a notification when bills are coming due, so the badge

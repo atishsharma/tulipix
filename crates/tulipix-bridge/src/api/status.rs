@@ -12,7 +12,7 @@
 //! sparkline crosses as its points rather than as two SVG paths, because a
 //! `CustomPainter` can accumulate a path and Slint cannot.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use serde_json::Value;
@@ -504,39 +504,9 @@ async fn rescan_sections() {
     }
 }
 
-fn watched_path() -> Option<PathBuf> {
-    tulipix_core::paths::config_dir().map(|d| d.join("watched_folders.json"))
-}
-
-/// Add one folder to the shared watched list. Same file, same format as the
-/// four sections that read it, so a folder added here is a folder they see.
+/// Add one folder to the shared watched list (`tulipix_core::watched`).
 fn add_folder(dir: &Path) -> bool {
-    if !dir.is_dir() {
-        return false;
-    }
-    let Some(p) = watched_path() else { return false };
-    let mut existing: Vec<PathBuf> = std::fs::read_to_string(&p)
-        .ok()
-        .and_then(|b| serde_json::from_str::<Vec<String>>(&b).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .map(PathBuf::from)
-        .collect();
-    if existing.iter().any(|x| x == dir) {
-        return false;
-    }
-    existing.push(dir.to_path_buf());
-    if let Some(parent) = p.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let list: Vec<String> = existing.iter().map(|x| x.to_string_lossy().into_owned()).collect();
-    match serde_json::to_string_pretty(&list) {
-        Ok(body) => std::fs::write(&p, body).is_ok(),
-        Err(e) => {
-            tracing::warn!(error = %e, "status: serialise watched folders");
-            false
-        }
-    }
+    dir.is_dir() && tulipix_common::add_watched_folder(dir)
 }
 
 /// Erase every index, setting and cached thumbnail.

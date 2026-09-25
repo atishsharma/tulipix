@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 
 import 'design/app_theme.dart';
+import 'design/bloom.dart';
 import 'design/design_language.dart';
 import 'design/skin.dart';
 import 'design/tokens.dart';
@@ -120,6 +121,10 @@ class _TulipixAppState extends State<TulipixApp> {
   Color? _accent;
   bool _fontScale = true;
 
+  /// Bloom's colours, and whether section accents lean toward its seed.
+  Bloom _bloom = bloom;
+  bool _harmonise = false;
+
   final ShellController _shell = ShellController.instance;
 
   /// Closing the window has to close the listening socket, and stop the audio.
@@ -132,6 +137,8 @@ class _TulipixAppState extends State<TulipixApp> {
   void initState() {
     super.initState();
     _shell.addListener(_onShell);
+    // The cover as Bloom's seed: a new record re-tones the app.
+    MusicController.instance.addListener(_onMusic);
     // The first snapshot also carries the stored theme, which is why this runs
     // before anything is drawn rather than when the sidebar first appears.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -161,6 +168,7 @@ class _TulipixAppState extends State<TulipixApp> {
   @override
   void dispose() {
     _shell.removeListener(_onShell);
+    MusicController.instance.removeListener(_onMusic);
     _lifecycle?.dispose();
     super.dispose();
   }
@@ -187,21 +195,54 @@ class _TulipixAppState extends State<TulipixApp> {
     // counts. Same gate: both are baked into what MaterialApp draws.
     final accent = _shell.systemAccent;
     final fontScale = _shell.followOsFontScale;
+    // Material 3 Expressive's seed. Same gate again: a record whose cover has
+    // the same colour as the last one changes nothing.
+    final next = _bloomNow();
+    final harmonise = language == DesignLanguage.expressive &&
+        (_shell.state?.bloomHarmonise ?? false);
     if (dark == _dark &&
         oled == _oled &&
         language == _language &&
         accent == _accent &&
-        fontScale == _fontScale) {
+        fontScale == _fontScale &&
+        next == _bloom &&
+        harmonise == _harmonise) {
       return;
     }
     Tokens.systemAccent = accent;
+    Tokens.harmoniseTo = harmonise ? next.seed : null;
+    bloom = next;
     setState(() {
       _dark = dark;
       _oled = oled;
       _language = language;
       _accent = accent;
       _fontScale = fontScale;
+      _bloom = next;
+      _harmonise = harmonise;
     });
+  }
+
+  /// Not before the first snapshot: [_onShell] seeds the mini's style once,
+  /// and an empty snapshot would seed it with nothing.
+  void _onMusic() {
+    if (_shell.state != null) _onShell();
+  }
+
+  /// The seed from where Settings says it comes from; Music pink when that
+  /// has none — nothing playing, or a desktop that reports no accent.
+  Bloom _bloomNow() {
+    final st = _shell.state;
+    final seed = switch (st?.bloomSource) {
+      'desktop' => hexColor(st!.bloomDesktop),
+      'pick' => hexColor(st!.bloomSeed),
+      _ => MusicController.instance.accent,
+    };
+    return (
+      seed: seed ?? Tokens.secMusic,
+      style: bloomStyle(st?.bloomStyle ?? ''),
+      contrast: st?.bloomContrast ?? 0,
+    );
   }
 
   IconData get _themeIcon => !_dark

@@ -16,9 +16,10 @@
 // holding a list (see `tulipix_core::sections::groups`), so the panel works on
 // one flat run of group heads and sections, and a drag is a move in that run.
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
-import '../../design/skin.dart';
 import '../../design/tokens.dart';
 import '../../shell/section_tabs.dart';
 import '../../shell/shell_controller.dart';
@@ -26,6 +27,7 @@ import '../../shell/sidebar.dart' show kSectionMeta, accentFor;
 import '../../src/rust/api/settings.dart';
 import '../kitchen/kitchen_page.dart' show askLine, cardDeco, confirm;
 import 'settings_controller.dart';
+import 'settings_kit.dart' show SettingsHead;
 
 /// Section id → the enum, for the rows the bridge sends.
 const Map<String, Section> kSectionById = {
@@ -121,21 +123,6 @@ const Map<String, (String blurb, String work)> kSectionWork = {
 /// taken away, it was never added.
 const Set<String> kBonus = {'voice', 'places', 'studio', 'archive', 'arcade'};
 
-/// The shelf's tag and what each one leans on.
-const Map<String, (String tag, String need)> kBonusNeeds = {
-  'voice': (
-    'transcribes locally',
-    'Uses the whisper model Journal already downloaded, if there is one'
-  ),
-  'places': ('reads photo locations', 'Needs Photos · works best with Journal'),
-  'studio': ('uses ffmpeg', 'Needs Photos · works best with Places and Music'),
-  'archive': ('catalogues drives', 'Scans and checksums only when you ask'),
-  'arcade': (
-    'Steam · Heroic · Lutris',
-    'Reads the launchers\' files; nothing is changed in them'
-  ),
-};
-
 String _mb(int bytes) {
   if (bytes <= 0) return 'no data yet';
   if (bytes < 1024 * 1024) return '${(bytes / 1024).round()} KB';
@@ -193,21 +180,21 @@ class SettingsSections extends StatefulWidget {
 class _SettingsSectionsState extends State<SettingsSections> {
   String? _sel;
   String? _open; // list view: the row showing its tabs
-  String _filter = 'all';
-  String _query = '';
+  /// The filter chip picked; null is the default. That is Shown while a
+  /// preset is in use, since a preset is a choice of what to show, and All
+  /// under Everything, Everything + bonus, or no preset. Picking a preset
+  /// goes back to the default.
+  String? _filter;
   bool _presetsOpen = false;
-  final _find = TextEditingController();
-
-  @override
-  void dispose() {
-    _find.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
     final st = widget.controller.state;
     if (st == null) return const SizedBox.shrink();
+    final filter = _filter ??
+        (const {'', 'all', 'bonus'}.contains(st.sectionsLastPreset)
+            ? 'all'
+            : 'shown');
     final rows = {for (final r in st.sections) r.id: r};
     // Home and Settings are locked on: not listed, not moved.
     final order = [
@@ -223,24 +210,19 @@ class _SettingsSectionsState extends State<SettingsSections> {
     final hidden = count((r) => r.mode == 'hidden');
     final off = count((r) => r.mode == 'off');
 
-    final q = _query.trim().toLowerCase();
     bool pass(String id) {
       final r = rows[id]!;
-      final ok = switch (_filter) {
-        'shown' || 'hidden' || 'off' => r.mode == _filter,
+      return switch (filter) {
+        'shown' || 'hidden' || 'off' => r.mode == filter,
         'bonus' => kBonus.contains(id),
         'busy' => _busy(id) && r.mode != 'off',
         _ => true,
       };
-      return ok &&
-          (q.isEmpty ||
-              _label(id).toLowerCase().contains(q) ||
-              (kSectionWork[id]?.$1 ?? '').toLowerCase().contains(q));
     }
 
     // Drag only when every section is on screen: a move among filtered rows
     // would land next to ones you cannot see.
-    final canDrag = _filter == 'all' && q.isEmpty;
+    final canDrag = filter == 'all';
     final groups = _groups(toks, (id) => added(id) && pass(id), canDrag);
     final sel = listed.contains(_sel) ? _sel! : (listed.isEmpty ? null : listed.first);
     final sidebarPos = {
@@ -257,21 +239,17 @@ class _SettingsSectionsState extends State<SettingsSections> {
     };
 
     final main = <Widget>[
-      _TitleRow(
-        summary: '${listed.length} applications and ${kBonus.length} bonus · '
-            '$shown shown · $hidden hidden · $off off. Home and Settings are '
-            'always there. Order and groups here are the sidebar\'s.',
-        view: view,
-        onView: (v) =>
-            _apply(SettingsCmd.setText(key: 'sections.view', value: v)),
-      ),
+      SettingsHead.forTab('sections', note: ''),
       const SizedBox(height: 14),
       _PresetStrip(
         st: st,
         open: _presetsOpen,
         onToggle: () => setState(() => _presetsOpen = !_presetsOpen),
         onPick: (id) {
-          setState(() => _presetsOpen = false);
+          setState(() {
+            _presetsOpen = false;
+            _filter = null;
+          });
           _apply(SettingsCmd.sectionPreset(name: id));
         },
         onUndo: () => _apply(const SettingsCmd.sectionUndo()),
@@ -308,24 +286,13 @@ class _SettingsSectionsState extends State<SettingsSections> {
             _Chip(
               label: name,
               count: n,
-              on: _filter == id,
+              on: filter == id,
               onTap: () => setState(() => _filter = id),
             ),
-          SizedBox(
-            width: 200,
-            height: 34,
-            child: TextField(
-              controller: _find,
-              onChanged: (v) => setState(() => _query = v),
-              style: const TextStyle(fontSize: 13),
-              decoration: InputDecoration(
-                isDense: true,
-                hintText: 'Find a section',
-                prefixIcon: const Icon(Icons.search, size: 17),
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10)),
-              ),
-            ),
+          _ViewSwitch(
+            view: view,
+            onView: (v) =>
+                _apply(SettingsCmd.setText(key: 'sections.view', value: v)),
           ),
           TextButton.icon(
             icon: const Icon(Icons.add, size: 16),
@@ -367,22 +334,31 @@ class _SettingsSectionsState extends State<SettingsSections> {
             pos: sidebarPos,
             canDrag: canDrag,
             at: at,
-            endAt: _endOf(toks, g.head),
             onSelect: (id) => setState(() => _sel = id),
             onMode: _setMode,
             onDrop: (id, at) => _move(toks, id, at),
             onRename: g.head == null ? null : () => _renameGroup(toks, g.head!),
             onDelete: g.head == null ? null : () => _deleteGroup(toks, g.head!),
           ),
-      if (_filter == 'all' || _filter == 'bonus') ...[
+      if (filter == 'all' || filter == 'bonus') ...[
         const SizedBox(height: 18),
-        const _GroupHead(
-          name: 'Bonus sections',
-          note: 'off by default · nothing is created until you add one',
-        ),
+        const _GroupHead(name: 'Bonus sections'),
         _BonusShelf(rows: rows, onMode: _setMode),
       ],
-      const SizedBox(height: 18),
+    ];
+
+    final aside = <Widget>[
+      if (sel != null)
+        _Details(
+          row: rows[sel]!,
+          pos: sidebarPos[sel],
+          group: _groupOf(toks, sel),
+          onMode: _setMode,
+          onTab: _setTab,
+          onUp: () => _step(toks, sel, -1),
+          onDown: () => _step(toks, sel, 1),
+        ),
+      const SizedBox(height: 14),
       _Panel(
         icon: Icons.rocket_launch_outlined,
         title: 'Opens at launch',
@@ -400,26 +376,6 @@ class _SettingsSectionsState extends State<SettingsSections> {
           ],
         ),
       ),
-    ];
-
-    final aside = <Widget>[
-      if (sel != null)
-        _Details(
-          row: rows[sel]!,
-          pos: sidebarPos[sel],
-          group: _groupOf(toks, sel),
-          onMode: _setMode,
-          onTab: _setTab,
-          onUp: () => _step(toks, sel, -1),
-          onDown: () => _step(toks, sel, 1),
-        ),
-      const SizedBox(height: 14),
-      _SidebarPreview(
-        order: order,
-        rows: rows,
-        toks: toks,
-        dividers: st.sidebarDividers,
-      ),
       const SizedBox(height: 14),
       _LongSidebar(
         overflow: st.sidebarOverflow,
@@ -432,9 +388,12 @@ class _SettingsSectionsState extends State<SettingsSections> {
     ];
 
     return LayoutBuilder(builder: (context, box) {
+      // The same gutter as SettingsPageBody, so the blocks line up with the
+      // other tabs.
+      final g = math.max(16.0, box.maxWidth * 0.02);
       if (box.maxWidth < 1000) {
         return ListView(
-          padding: const EdgeInsets.fromLTRB(4, 4, 4, 32),
+          padding: EdgeInsets.fromLTRB(g, 18, g, 28),
           children: [...main, const SizedBox(height: 18), ...aside],
         );
       }
@@ -443,14 +402,14 @@ class _SettingsSectionsState extends State<SettingsSections> {
         children: [
           Expanded(
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(4, 4, 18, 32),
+              padding: EdgeInsets.fromLTRB(g, 18, 18, 28),
               children: main,
             ),
           ),
           SizedBox(
             width: 300,
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(0, 4, 4, 32),
+              padding: EdgeInsets.fromLTRB(0, 18, g, 28),
               children: aside,
             ),
           ),
@@ -493,14 +452,6 @@ class _SettingsSectionsState extends State<SettingsSections> {
       for (final g in out)
         if (g.ids.isNotEmpty || (keepEmpty && g.head != null)) g
     ];
-  }
-
-  /// Where "the end of this group" is in the run: the next head, or the end.
-  static int _endOf(List<_Tok> toks, int? head) {
-    for (var i = (head ?? -1) + 1; i < toks.length; i++) {
-      if (toks[i].head) return i;
-    }
-    return toks.length;
   }
 
   static String? _groupOf(List<_Tok> toks, String id) {
@@ -603,57 +554,29 @@ class _SettingsSectionsState extends State<SettingsSections> {
 
 // ------------------------------------------------------------------- pieces --
 
-class _TitleRow extends StatelessWidget {
-  const _TitleRow(
-      {required this.summary, required this.view, required this.onView});
+class _ViewSwitch extends StatelessWidget {
+  const _ViewSwitch({required this.view, required this.onView});
 
-  final String summary;
   final String view;
   final void Function(String) onView;
 
   @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Applications',
-                style: TextStyle(
-                  fontFamily: context.skin.fontFamily ?? Tokens.fontFamily,
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700,
-                  color: t.text,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(summary, style: TextStyle(fontSize: 12, color: t.textDim)),
-            ],
-          ),
-        ),
-        const SizedBox(width: 12),
-        SegmentedButton<String>(
-          showSelectedIcon: false,
-          segments: const [
-            ButtonSegment(
-                value: 'cards',
-                icon: Icon(Icons.grid_view_rounded, size: 16),
-                label: Text('Cards')),
-            ButtonSegment(
-                value: 'list',
-                icon: Icon(Icons.view_list_rounded, size: 16),
-                label: Text('List')),
-          ],
-          selected: {view},
-          onSelectionChanged: (v) => onView(v.first),
-        ),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => SegmentedButton<String>(
+        showSelectedIcon: false,
+        style: const ButtonStyle(visualDensity: VisualDensity.compact),
+        segments: const [
+          ButtonSegment(
+              value: 'cards',
+              icon: Icon(Icons.grid_view_rounded, size: 16),
+              label: Text('Cards')),
+          ButtonSegment(
+              value: 'list',
+              icon: Icon(Icons.view_list_rounded, size: 16),
+              label: Text('List')),
+        ],
+        selected: {view},
+        onSelectionChanged: (v) => onView(v.first),
+      );
 }
 
 /// The active preset on one line; opened, every preset as a tile.
@@ -1039,13 +962,11 @@ class _Chip extends StatelessWidget {
 class _GroupHead extends StatelessWidget {
   const _GroupHead({
     required this.name,
-    this.note,
     this.onRename,
     this.onDelete,
   });
 
   final String name;
-  final String? note;
   final VoidCallback? onRename;
   final VoidCallback? onDelete;
 
@@ -1067,10 +988,6 @@ class _GroupHead extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           Expanded(child: Container(height: 1, color: t.outline)),
-          if (note != null) ...[
-            const SizedBox(width: 10),
-            Text(note!, style: TextStyle(fontSize: 11.5, color: t.textDim)),
-          ],
           if (onRename != null)
             IconButton(
               tooltip: 'Rename group',
@@ -1136,7 +1053,6 @@ class _CardGroup extends StatelessWidget {
     required this.pos,
     required this.canDrag,
     required this.at,
-    required this.endAt,
     required this.onSelect,
     required this.onMode,
     required this.onDrop,
@@ -1150,7 +1066,6 @@ class _CardGroup extends StatelessWidget {
   final Map<String, int> pos;
   final bool canDrag;
   final Map<String, int> at;
-  final int endAt;
   final void Function(String) onSelect;
   final void Function(String id, String mode) onMode;
   final void Function(String id, int at) onDrop;
@@ -1159,7 +1074,6 @@ class _CardGroup extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = context.tokens;
     final head = group.head;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1182,8 +1096,11 @@ class _CardGroup extends StatelessWidget {
               : _GroupHead(name: group.name),
         LayoutBuilder(builder: (context, box) {
           const gap = 12.0;
-          final cols = ((box.maxWidth + gap) / (205 + gap)).floor().clamp(1, 8);
+          // Three a row; fewer only when a window is too narrow for three.
+          final cols = box.maxWidth >= 600 ? 3 : (box.maxWidth >= 380 ? 2 : 1);
           final w = (box.maxWidth - gap * (cols - 1)) / cols;
+          // 2:1, every card the same; a floor so the switch always fits.
+          final h = w / 2 < 140 ? 140.0 : w / 2;
           return Wrap(
             spacing: gap,
             runSpacing: gap,
@@ -1191,6 +1108,7 @@ class _CardGroup extends StatelessWidget {
               for (final id in group.ids)
                 SizedBox(
                   width: w,
+                  height: h,
                   child: _Drop(
                     at: at[id]!,
                     onDrop: onDrop,
@@ -1210,51 +1128,10 @@ class _CardGroup extends StatelessWidget {
                     ),
                   ),
                 ),
-              if (canDrag)
-                SizedBox(
-                  width: w,
-                  height: 64,
-                  child: _Drop(
-                    at: endAt,
-                    onDrop: onDrop,
-                    child: (over) => _DropBox(
-                      over: over,
-                      child: Text('Drop a section here',
-                          style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: over ? Tokens.secSettings : t.textDim)),
-                    ),
-                  ),
-                ),
             ],
           );
         }),
       ],
-    );
-  }
-}
-
-class _DropBox extends StatelessWidget {
-  const _DropBox({required this.over, required this.child});
-
-  final bool over;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Container(
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: over ? Tokens.secSettings.withValues(alpha: 0.08) : null,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: over ? Tokens.secSettings : t.outlineStrong,
-          width: 1.5,
-        ),
-      ),
-      child: child,
     );
   }
 }
@@ -1283,14 +1160,12 @@ class _Card extends StatelessWidget {
     final t = context.tokens;
     final id = row.id;
     final c = _accent(id);
-    final tabs = sectionTabs[id];
-    final kept = tabs?.where((e) => !row.tabsOff.contains(e.id)).length;
     final off = row.mode == 'off';
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(14),
       child: Container(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
         foregroundDecoration: selected || over
             ? BoxDecoration(
                 borderRadius: BorderRadius.circular(14),
@@ -1313,19 +1188,29 @@ class _Card extends StatelessWidget {
                 Opacity(
                   opacity: off ? 0.5 : 1,
                   child: Container(
-                    width: 42,
-                    height: 42,
+                    width: 40,
+                    height: 40,
                     decoration: BoxDecoration(
                       gradient: off
                           ? null
                           : LinearGradient(colors: [c, _accent2(id)]),
                       color: off ? t.textDim : null,
-                      borderRadius: BorderRadius.circular(13),
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    child: Icon(_icon(id), size: 21, color: Colors.white),
+                    child: Icon(_icon(id), size: 20, color: Colors.white),
                   ),
                 ),
-                const Spacer(),
+                const SizedBox(width: 11),
+                Expanded(
+                  child: Text(_label(id),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: off ? t.textDim : t.text)),
+                ),
+                const SizedBox(width: 8),
                 switch (row.mode) {
                   'hidden' => const _Tag('Hidden', Tokens.warn),
                   'off' => const _Tag('Off', Tokens.error),
@@ -1339,49 +1224,22 @@ class _Card extends StatelessWidget {
                 },
               ],
             ),
-            const SizedBox(height: 9),
-            Opacity(
-              opacity: off ? 0.6 : 1,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(_label(id),
-                      style: TextStyle(
-                          fontSize: 14.5,
-                          fontWeight: FontWeight.w700,
-                          color: t.text)),
-                  const SizedBox(height: 3),
-                  SizedBox(
-                    height: 34,
-                    child: Text(
-                      switch (row.mode) {
-                        'hidden' =>
-                          'Hidden from the sidebar; ${_workShort(id)} still runs',
-                        'off' => 'Off: hidden and stopped, its data kept',
-                        _ => kSectionWork[id]?.$1 ?? '',
-                      },
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 12, height: 1.4, color: t.textDim),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 9),
-            Wrap(
-              spacing: 5,
-              runSpacing: 5,
-              children: [
-                _Fact(row.bytes > 0 && off
-                    ? '${_mb(row.bytes)} kept'
-                    : _mb(row.bytes)),
-                if (!off) _Fact(_workShort(id)),
-                if (kept != null) _Fact('$kept/${tabs!.length} tabs'),
-              ],
-            ),
+            // Under the title, whatever its length: a one-line blurb leaves
+            // its spare room above the switch, not above itself.
             const SizedBox(height: 10),
+            Text(
+              switch (row.mode) {
+                'hidden' => 'Hidden from the sidebar; ${_workShort(id)} '
+                    'still runs',
+                'off' => 'Off: hidden and stopped, its data kept',
+                _ => kSectionWork[id]?.$1 ?? '',
+              },
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 12, height: 1.35, color: t.textDim),
+            ),
+            const Spacer(),
+            const SizedBox(height: 8),
             _Seg(value: row.mode, enabled: true, expand: true, onPick: onMode),
           ],
         ),
@@ -1438,15 +1296,14 @@ class _ListView extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(70, 9, 40, 9),
+              padding: const EdgeInsets.fromLTRB(80, 9, 36, 9),
               child: Row(children: [
                 Expanded(flex: 3, child: Text('APPLICATION', style: dim)),
                 if (wide) ...[
-                  Expanded(flex: 2, child: Text('BACKGROUND', style: dim)),
                   SizedBox(width: 70, child: Text('DISK', style: dim)),
                   SizedBox(width: 50, child: Text('TABS', style: dim)),
                 ],
-                SizedBox(width: 190, child: Text('STATE', style: dim)),
+                SizedBox(width: 240, child: Text('STATE', style: dim)),
               ]),
             ),
             for (final g in groups) ...[
@@ -1616,15 +1473,6 @@ class _ListRow extends StatelessWidget {
                     ),
                   ),
                   if (wide) ...[
-                    Expanded(
-                      flex: 2,
-                      child: Text(
-                        off ? 'stopped' : (kSectionWork[id]?.$2 ?? ''),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 12, color: t.textDim),
-                      ),
-                    ),
                     SizedBox(
                         width: 70,
                         child: Text(row.bytes > 0 ? _mb(row.bytes) : '—',
@@ -1636,7 +1484,7 @@ class _ListRow extends StatelessWidget {
                             style: num)),
                   ],
                   SizedBox(
-                    width: 170,
+                    width: 240,
                     child: _Seg(
                         value: row.mode,
                         enabled: true,
@@ -1689,133 +1537,72 @@ class _BonusShelf extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    return LayoutBuilder(builder: (context, box) {
-      const gap = 12.0;
-      final cols = ((box.maxWidth + gap) / (240 + gap)).floor().clamp(1, 6);
-      final w = (box.maxWidth - gap * (cols - 1)) / cols;
-      return Wrap(
-        spacing: gap,
-        runSpacing: gap,
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: cardDeco(context),
+      child: Column(
         children: [
-          for (final id in kBonus)
+          for (final (i, id) in kBonus.indexed)
             if (rows[id] case final r?)
-              SizedBox(
-                width: w,
-                child: Container(
-                  clipBehavior: Clip.antiAlias,
-                  foregroundDecoration: r.mode != 'off'
-                      ? BoxDecoration(
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: _accent(id), width: 2),
-                        )
-                      : null,
-                  decoration: cardDeco(context),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Container(
-                        height: 78,
-                        padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [_accent(id), _accent2(id)],
-                          ),
-                        ),
-                        child: Stack(
-                          children: [
-                            Align(
-                              alignment: Alignment.topRight,
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 8, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withValues(alpha: 0.28),
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: Text(
-                                  r.mode != 'off'
-                                      ? '✓ added'
-                                      : kBonusNeeds[id]!.$1,
-                                  style: const TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      color: Colors.white),
-                                ),
-                              ),
-                            ),
-                            Align(
-                              alignment: Alignment.bottomLeft,
-                              child: Row(children: [
-                                Icon(_icon(id), size: 26, color: Colors.white),
-                                const SizedBox(width: 10),
-                                Text(_label(id),
-                                    style: const TextStyle(
-                                        fontSize: 17,
-                                        fontWeight: FontWeight.w700,
-                                        color: Colors.white)),
-                              ]),
-                            ),
-                          ],
-                        ),
+              Container(
+                padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                decoration: i == 0
+                    ? null
+                    : BoxDecoration(
+                        border: Border(top: BorderSide(color: t.outline))),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        color: _accent(id).withValues(alpha: 0.17),
+                        borderRadius: BorderRadius.circular(9),
                       ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(kSectionWork[id]?.$1 ?? '',
-                                style: TextStyle(
-                                    fontSize: 12,
-                                    height: 1.45,
-                                    color: t.textDim)),
-                            const SizedBox(height: 9),
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Icon(Icons.info_outline,
-                                    size: 13, color: t.textDim),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(kBonusNeeds[id]!.$2,
-                                      style: TextStyle(
-                                          fontSize: 11, color: t.textDim)),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 11),
-                            if (r.mode == 'off')
-                              FilledButton.icon(
-                                style: FilledButton.styleFrom(
-                                    backgroundColor: _accent(id)),
+                      child: Icon(_icon(id), size: 17, color: _accent(id)),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(_label(id),
+                              style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: t.text)),
+                          Text(kSectionWork[id]?.$1 ?? '',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style:
+                                  TextStyle(fontSize: 11.5, color: t.textDim)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    SizedBox(
+                      width: 240,
+                      child: r.mode == 'off'
+                          ? Align(
+                              alignment: Alignment.centerRight,
+                              child: OutlinedButton.icon(
                                 icon: const Icon(Icons.add, size: 16),
                                 label: const Text('Add'),
                                 onPressed: () => onMode(id, 'shown'),
-                              )
-                            else ...[
-                              _Seg(
-                                  value: r.mode,
-                                  enabled: true,
-                                  expand: true,
-                                  onPick: (m) => onMode(id, m)),
-                              const SizedBox(height: 6),
-                              Text(
-                                  'In the list above — drag it to another '
-                                  'group. Off puts it back on the shelf.',
-                                  style: TextStyle(
-                                      fontSize: 11, color: t.textDim)),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
+                              ),
+                            )
+                          : _Seg(
+                              value: r.mode,
+                              enabled: true,
+                              expand: true,
+                              onPick: (m) => onMode(id, m)),
+                    ),
+                  ],
                 ),
               ),
         ],
-      );
-    });
+      ),
+    );
   }
 }
 
@@ -1985,97 +1772,6 @@ class _Details extends StatelessWidget {
                 : 'Turning a section off deletes nothing.',
             style: TextStyle(fontSize: 11, color: t.textDim),
           ),
-        ],
-      ),
-    );
-  }
-}
-
-/// The sidebar as these settings will draw it.
-class _SidebarPreview extends StatelessWidget {
-  const _SidebarPreview({
-    required this.order,
-    required this.rows,
-    required this.toks,
-    required this.dividers,
-  });
-
-  final List<String> order;
-  final Map<String, SectionRow> rows;
-  final List<_Tok> toks;
-  final bool dividers;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    // A head shows on the first shown section after it — the same rule as
-    // `tulipix_core::sections::sidebar_groups`.
-    final lines = <Widget>[];
-    String? pending;
-    Widget line(String id, {bool home = false}) => SizedBox(
-          height: 26,
-          child: Row(children: [
-            Container(
-              width: 24,
-              height: 22,
-              decoration: BoxDecoration(
-                color: home ? Tokens.secSettings.withValues(alpha: 0.18) : null,
-                borderRadius: BorderRadius.circular(7),
-              ),
-              child: Icon(_icon(id), size: 14, color: _accent(id)),
-            ),
-            const SizedBox(width: 9),
-            Text(_label(id), style: TextStyle(fontSize: 11.5, color: t.text)),
-          ]),
-        );
-    lines.add(line('home', home: true));
-    for (final tk in toks) {
-      if (tk.head) {
-        pending = tk.id;
-        continue;
-      }
-      if (rows[tk.id]?.mode != 'shown') continue;
-      if (dividers && pending != null) {
-        lines.add(Padding(
-          padding: const EdgeInsets.fromLTRB(2, 6, 0, 3),
-          child: Text(pending.toUpperCase(),
-              style: TextStyle(
-                  fontSize: 9,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 1,
-                  color: t.textDim)),
-        ));
-        pending = null;
-      }
-      lines.add(line(tk.id));
-    }
-    final hiddenNames = [
-      for (final id in order)
-        if (rows[id]?.mode == 'hidden') _label(id)
-    ];
-    return _Panel(
-      icon: Icons.view_sidebar_outlined,
-      title: 'Sidebar preview',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: t.panel2,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: t.outline),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: lines,
-            ),
-          ),
-          if (hiddenNames.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text('Hidden, still working: ${hiddenNames.join(', ')}',
-                style: TextStyle(fontSize: 11, color: t.textDim)),
-          ],
         ],
       ),
     );
@@ -2279,29 +1975,6 @@ class _TabChip extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _Fact extends StatelessWidget {
-  const _Fact(this.label);
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: t.panel2,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-            fontSize: 10.5, fontWeight: FontWeight.w600, color: t.textDim),
       ),
     );
   }

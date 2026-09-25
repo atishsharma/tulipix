@@ -149,16 +149,21 @@ fn lock() -> MutexGuard<'static, Session> {
     }
 }
 
+/// Where finished movies and books go, without making it. Settings ›
+/// Libraries lists it.
+pub(crate) fn out_path() -> Option<PathBuf> {
+    let set = crate::api::shell::load().text("studio.folder");
+    if !set.trim().is_empty() {
+        return Some(PathBuf::from(set));
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join("Videos").join("Tulipix Studio"))
+}
+
 /// Where finished movies and books go: `~/Videos/Tulipix Studio`, where the
 /// Videos section finds them if that folder is in its library.
 fn out_dir() -> Result<PathBuf> {
-    let set = crate::api::shell::load().text("studio.folder");
-    let dir = if !set.trim().is_empty() {
-        PathBuf::from(set)
-    } else {
-        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).ok_or_else(|| anyhow!("no home folder"))?;
-        PathBuf::from(home).join("Videos").join("Tulipix Studio")
-    };
+    let dir = out_path().ok_or_else(|| anyhow!("no home folder"))?;
     std::fs::create_dir_all(&dir).with_context(|| format!("could not make {}", dir.display()))?;
     Ok(dir)
 }

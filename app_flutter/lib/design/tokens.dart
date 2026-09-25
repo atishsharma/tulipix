@@ -8,6 +8,8 @@
 // WCAG: extra-dark bg #050614 on text #f8faff = ~17.8:1 (AAA).
 
 import 'package:flutter/material.dart';
+import 'package:material_color_utilities/material_color_utilities.dart'
+    show Blend;
 
 /// The nine section identities. `Section` in tokens.slint.
 enum Section {
@@ -203,7 +205,26 @@ class Tokens extends ThemeExtension<Tokens> {
   /// is on: every section takes it. main.dart sets it from the shell snapshot.
   static Color? systemAccent;
 
-  static Color accentOf(Section s) => systemAccent ?? switch (s) {
+  /// Bloom's "Tone the section colours too": every section accent leans
+  /// toward this seed, keeping its own hue. Null: off. main.dart sets it.
+  static Color? harmoniseTo;
+  static Color? _harmonisedTo;
+  static final _harmonised = <Color, Color>{};
+
+  static Color accentOf(Section s) {
+    final own = systemAccent ?? _own(s);
+    final to = harmoniseTo;
+    if (to == null) return own;
+    // One seed's worth at a time: the cover as the seed moves it every song.
+    if (to != _harmonisedTo) {
+      _harmonised.clear();
+      _harmonisedTo = to;
+    }
+    return _harmonised[own] ??=
+        Color(Blend.harmonize(own.toARGB32(), to.toARGB32()));
+  }
+
+  static Color _own(Section s) => switch (s) {
         Section.home => secHome,
         Section.photos => secPhotos,
         Section.videos => secVideos,

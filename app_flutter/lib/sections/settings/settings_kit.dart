@@ -188,7 +188,9 @@ class SettingsHead extends StatelessWidget {
               Text(title,
                   style: TextStyle(
                       fontSize: 22, fontWeight: FontWeight.w800, color: t.text)),
-              Text(note, style: TextStyle(fontSize: 12.5, color: t.textDim)),
+              if (note.isNotEmpty)
+                Text(note,
+                    style: TextStyle(fontSize: 12.5, color: t.textDim)),
             ],
           ),
         ),

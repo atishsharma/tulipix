@@ -5301,11 +5301,8 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
             scan_watched().await?;
         }
         MusicCmd::RemoveRoot { path } => {
-            let keep: Vec<PathBuf> = load_watched_folders()
-                .into_iter()
-                .filter(|p| p.to_string_lossy() != path)
-                .collect();
-            save_watched_folders(&keep);
+            tulipix_core::watched::retain(|p| p.to_string_lossy() != path)
+                .map_err(anyhow::Error::msg)?;
         }
         MusicCmd::Scan => scan_watched().await?,
         MusicCmd::RescanFolder { path } => {
@@ -7977,53 +7974,17 @@ fn check_sleep() {
 
 // ---------------------------------------------------------------- library ----
 
-// The watched-folder list is a JSON array of paths in the config dir. This is
-// `tulipix_common::{load,save,add}_watched_folder` minus the slint dependency
-// that crate carries — same file, same format, so both builds see one list.
-// Photos reads the same file; a folder of music inside a photo library is
-// filtered out by extension, not by a second list.
-fn watched_path() -> Option<PathBuf> {
-    tulipix_core::paths::config_dir().map(|d| d.join("watched_folders.json"))
-}
-
+// The watched-folder list is `tulipix_core::watched`'s; see there for why
+// there is only one of it. Photos reads the same list; a folder of music inside
+// a photo library is filtered out by extension, not by a second list.
 fn load_watched_folders() -> Vec<PathBuf> {
-    let Some(p) = watched_path() else { return Vec::new() };
-    let Ok(body) = std::fs::read_to_string(p) else { return Vec::new() };
-    serde_json::from_str::<Vec<String>>(&body)
-        .unwrap_or_default()
-        .into_iter()
-        .map(PathBuf::from)
-        .collect()
-}
-
-fn save_watched_folders(folders: &[PathBuf]) {
-    let Some(p) = watched_path() else { return };
-    if let Some(parent) = p.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let list: Vec<String> = folders
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-    match serde_json::to_string_pretty(&list) {
-        Ok(body) => {
-            if let Err(e) = std::fs::write(p, body) {
-                tracing::warn!(error = %e, "write watched folders");
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, "serialise watched folders"),
-    }
+    tulipix_core::watched::load()
 }
 
 /// `pub(crate)`: the Downloader adds its destination to the same list, so a
 /// download outside the library root is still watched.
 pub(crate) fn add_watched_folder(dir: &Path) {
-    let mut existing = load_watched_folders();
-    if existing.iter().any(|p| p == dir) {
-        return;
-    }
-    existing.push(dir.to_path_buf());
-    save_watched_folders(&existing);
+    tulipix_common::add_watched_folder(dir);
 }
 
 /// Which folders have been reassigned away from My Music. Same file the Slint

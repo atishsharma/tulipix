@@ -11,6 +11,7 @@
 
 import 'package:flutter/material.dart';
 
+import 'bloom.dart';
 import 'design_language.dart';
 import 'languages/expressive.dart';
 import 'languages/glassmorphism.dart';
@@ -137,16 +138,28 @@ class SeekSlot {
 ///
 /// Built once per language and tier. Only a handful can exist, and a skin
 /// constructor is not free: Expressive works out a whole tonal scheme in its.
-/// No skin reads anything from [t] but these four.
-AppSkin skinFor(DesignLanguage language, Tokens t) =>
-    _skins[(language, t.dark, t.oled, t.reduceMotion)] ??= switch (language) {
-      DesignLanguage.standard => const StandardSkin(),
-      DesignLanguage.neumorphism => NeuSkin(t),
-      DesignLanguage.glassmorphism => GlassSkin(t),
-      DesignLanguage.expressive => ExpressiveSkin(t),
-    };
+/// No skin reads anything from [t] but these four; Expressive also reads
+/// [bloom].
+AppSkin skinFor(DesignLanguage language, Tokens t) {
+  // Expressive is also one per Bloom, and with the cover as the seed that is
+  // one per record played.
+  // ponytail: dropped wholesale past 32; an LRU if that ever shows.
+  if (_skins.length > 32) _skins.clear();
+  return _skins[(
+    language,
+    t.dark,
+    t.oled,
+    t.reduceMotion,
+    language == DesignLanguage.expressive ? bloom : null,
+  )] ??= switch (language) {
+    DesignLanguage.standard => const StandardSkin(),
+    DesignLanguage.neumorphism => NeuSkin(t),
+    DesignLanguage.glassmorphism => GlassSkin(t),
+    DesignLanguage.expressive => ExpressiveSkin(t),
+  };
+}
 
-final _skins = <(DesignLanguage, bool, bool, bool), AppSkin>{};
+final _skins = <(DesignLanguage, bool, bool, bool, Bloom?), AppSkin>{};
 
 /// A language's tokens from a handful of roles. Section accents are not among
 /// them: a section keeps its colour in every language.

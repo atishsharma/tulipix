@@ -14,6 +14,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
+import '../bloom.dart';
 import '../clock.dart';
 import '../design_language.dart';
 import '../motion_clock.dart';
@@ -29,14 +30,11 @@ class ExpressiveSkin extends AppSkin {
   final bool reduceMotion;
   final ColorScheme s;
 
-  /// The Music pink as the seed, in the Expressive variant's wider hue spread.
+  /// The Bloom colours' seed, style and contrast (lib/design/bloom.dart).
   /// OLED keeps every role and takes the surfaces down to near-black.
   static ColorScheme _scheme(Tokens t) {
-    final base = ColorScheme.fromSeed(
-      seedColor: Tokens.secMusic,
-      brightness: t.dark ? Brightness.dark : Brightness.light,
-      dynamicSchemeVariant: DynamicSchemeVariant.expressive,
-    );
+    final base = bloomScheme(bloom.seed, bloom.style,
+        dark: t.dark, contrast: bloom.contrast);
     if (!(t.dark && t.oled)) return base;
     return base.copyWith(
       surface: const Color(0xFF000000),

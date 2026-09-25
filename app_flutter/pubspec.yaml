@@ -45,6 +45,9 @@ dependencies:
   # Expressive's icons: Material Symbols Rounded, a variable font whose fill
   # axis Icon.fill drives.
   material_symbols_icons: ^4.2960.0
+  # Blend.harmonize, for Bloom's "Tone the section colours too". Already here
+  # under Flutter itself, which pins the version; `any` takes that pin.
+  material_color_utilities: any
 
 dev_dependencies:
   flutter_test:
