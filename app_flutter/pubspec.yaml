@@ -49,6 +49,16 @@ dependencies:
   # under Flutter itself, which pins the version; `any` takes that pin.
   material_color_utilities: any
 
+
+# media_kit_video 2.0.1 with one line changed on Linux: the render call no
+# longer blocks Flutter's raster thread until each frame's display time, which
+# stuttered every video in the built-in player (third_party/media_kit_video,
+# see TULIPIX.md there). Drop this once upstream passes
+# MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME = 0 itself.
+dependency_overrides:
+  media_kit_video:
+    path: third_party/media_kit_video
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

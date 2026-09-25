@@ -51,6 +51,11 @@ Future<List<_Section>> _gather(VideoOps ops) async {
   final vBitrate = _bitrate(await p('video-bitrate'));
   final pixfmt = await p('video-params/pixelformat');
   final hwdec = await p('hwdec-current');
+  // Frames lost since the file opened: by the decoder (too slow to decode)
+  // and by the output (decoded, but not shown in time). The second is the
+  // one a stutter shows up in.
+  final decDrops = await p('decoder-frame-drop-count');
+  final voDrops = await p('frame-drop-count');
   var fps = await p('container-fps');
   if (fps.isEmpty) fps = await p('estimated-vf-fps');
 
@@ -92,6 +97,13 @@ Future<List<_Section>> _gather(VideoOps ops) async {
       // "no" means libmpv is decoding on the CPU, which is the answer worth
       // having when a film stutters.
       _Fact('Hardware decoding', hwdec),
+      _Fact(
+        'Dropped frames',
+        decDrops.isEmpty && voDrops.isEmpty
+            ? ''
+            : '${voDrops.isEmpty ? '0' : voDrops} shown late · '
+                '${decDrops.isEmpty ? '0' : decDrops} decoded late',
+      ),
     ]),
     _Section('Audio', [
       _Fact('Codec', aCodec),
