@@ -9,7 +9,7 @@
 // Still scaffolding above the sidebar: no custom caption row, no command
 // palette. The lock screen wraps everything (shell/lock/lock_screen.dart).
 
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform, exit;
 import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
@@ -64,8 +64,31 @@ Future<void> main() async {
   Vitals.start();
   // libmpv, for both players. Must run before any `Player` is constructed, and
   // the music controller builds one the moment the Music section is touched.
-  MediaKit.ensureInitialized();
-  await RustLib.init();
+  // A native library that will not load (a DLL missing its runtime, say)
+  // throws here, before the first frame. On Windows the runner only shows its
+  // window once a frame is drawn, so the app sat invisible in Task Manager:
+  // draw the reason instead.
+  //
+  // TULIPIX_SMOKE=<file> is the release workflow's check that a packaged
+  // build can load its native half: the result goes to the file, and the
+  // process exits without opening a window.
+  final smoke = Platform.environment['TULIPIX_SMOKE'];
+  try {
+    MediaKit.ensureInitialized();
+    await RustLib.init();
+  } catch (e, st) {
+    debugPrint('startup failed: $e\n$st');
+    if (smoke != null) {
+      File(smoke).writeAsStringSync('fail: $e');
+      exit(1);
+    }
+    runApp(_StartupFailed(error: '$e'));
+    return;
+  }
+  if (smoke != null) {
+    File(smoke).writeAsStringSync('ok');
+    exit(0);
+  }
   // Whether the runner dropped the system frame, so the shell knows to draw a
   // caption row and the resize edges. Asked before the first frame: finding out
   // afterwards means the row appearing a beat after the window does.
@@ -73,6 +96,53 @@ Future<void> main() async {
   // Not `runApp`: that draws into the one implicit view, and the tray panel
   // is a second window on this same engine. See lib/shell/tray_panel.dart.
   runWidget(const AppViews(app: TulipixApp()));
+}
+
+/// What is drawn when the native half would not load: the error, and the
+/// likeliest fix, where there would otherwise be no window at all.
+class _StartupFailed extends StatelessWidget {
+  const _StartupFailed({required this.error});
+
+  final String error;
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData.dark(),
+        home: Scaffold(
+          body: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 560),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Tulipix could not start',
+                        style: TextStyle(
+                            fontSize: 22, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 12),
+                    Text(
+                        Platform.isWindows
+                            ? 'Part of the app could not be loaded. Install '
+                                'the Microsoft Visual C++ Redistributable '
+                                '(x64), then open Tulipix again. If it still '
+                                'fails, keep every file from the zip in the '
+                                'same folder as tulipix.exe.'
+                            : 'Part of the app could not be loaded.',
+                        style: const TextStyle(fontSize: 14, height: 1.4)),
+                    const SizedBox(height: 16),
+                    SelectableText(error,
+                        style: const TextStyle(
+                            fontSize: 12, fontFamily: 'monospace')),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
 }
 
 /// One section's page. Seven of them take `visible` because they hold something

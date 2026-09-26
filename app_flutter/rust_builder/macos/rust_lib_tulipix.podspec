@@ -21,7 +21,7 @@ A new Flutter FFI plugin project.
   s.source_files     = 'Classes/**/*'
   s.dependency 'FlutterMacOS'
 
-  s.platform = :osx, '10.11'
+  s.platform = :osx, '13.4'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
   s.swift_version = '5.0'
 
@@ -39,6 +39,9 @@ A new Flutter FFI plugin project.
     'DEFINES_MODULE' => 'YES',
     # Flutter.framework does not contain a i386 slice.
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
-    'OTHER_LDFLAGS' => '-force_load ${BUILT_PRODUCTS_DIR}/libtulipix_bridge.a',
+    # The static library carries C++ (ONNX Runtime, whisper) and the now-playing
+    # glue, but a static library does not carry its own link flags: libc++ and
+    # MediaPlayer have to be named here or the app's link fails on them.
+    'OTHER_LDFLAGS' => '-force_load ${BUILT_PRODUCTS_DIR}/libtulipix_bridge.a -lc++ -framework MediaPlayer',
   }
 end

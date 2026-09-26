@@ -1,6 +1,7 @@
 ; Inno Setup script — Tulipix Windows installer.
 ; Compiled in CI:  iscc /DAppVersion=<ver> /DDistDir=..\..\dist packaging\windows\tulipix.iss
-; DistDir must hold: tulipix.exe, libmpv DLL, resources\bin\windows-x86_64\**
+; DistDir is the Flutter Release folder: tulipix.exe, its DLLs, data\, and
+; resources\bin\windows-x86_64\**
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -25,7 +26,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\tulipix.exe
 ; The setup wizard's own icon (relative to this script's dir) so the installer
 ; exe isn't the generic Inno icon. Same .ico the app exe embeds.
-SetupIconFile=..\..\crates\tulipix-app\icon.ico
+SetupIconFile=..\..\app_flutter\windows\runner\resources\app_icon.ico
 WizardStyle=modern
 
 [Files]

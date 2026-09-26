@@ -1,4 +1,4 @@
-platform :osx, '12.0'
+platform :osx, '13.4'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -44,6 +44,9 @@ post_install do |installer|
     # Every pod has to agree with the app, or the Intel slice fails to link.
     target.build_configurations.each do |config|
       config.build_settings['ARCHS'] = 'arm64'
+      # ONNX Runtime's prebuilt objects target macOS 13.4; the app cannot
+      # promise less than its oldest part.
+      config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = '13.4'
     end
   end
 end

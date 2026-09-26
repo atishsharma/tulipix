@@ -1,5 +1,7 @@
-# Release builds of the Flutter app: Linux (tar.gz), Windows (portable zip),
-# macOS (dmg).
+# Release builds of the Flutter app:
+#   Linux    tar.gz, AppImage, .deb, .rpm
+#   Windows  portable zip, setup.exe (Inno Setup)
+#   macOS    dmg (Apple silicon)
 #
 # Trigger: a `flutter-v*` tag. A tag runs the workflow file in the tagged
 # commit, so this works from any branch. Manual dispatch builds artifacts
@@ -11,8 +13,9 @@
 # with the features in crates/tulipix-bridge/cargokit.yaml), the bundled tools
 # beside the executable, and an archive.
 #
-# ponytail: one archive per OS. deb/rpm/AppImage and an installer (the Inno
-# Setup script is in packaging/windows/) come once this build is known good.
+# ponytail: the Linux packages use the system's libmpv rather than bundling
+# it (and ffmpeg under it); bundle it into the AppImage if that proves a
+# support burden.
 
 name: flutter-release
 on:
@@ -55,7 +58,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
             libstdc++-12-dev libmpv-dev mold libdbus-1-dev libwayland-dev \
-            libxkbcommon-dev lld libssl-dev
+            libxkbcommon-dev lld libssl-dev rpm ruby
+          sudo gem install --no-document fpm
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -138,6 +142,46 @@ jobs:
           done
           echo "tarball smoke test passed"
 
+      - name: Package deb, rpm and AppImage
+        # /opt/tulipix holds the bundle, so the executable finds
+        # resources/bin/ beside it; /usr/bin/tulipix is the launcher shim.
+        run: |
+          set -euo pipefail
+          B=app_flutter/build/linux/x64/release/bundle
+          R=pkgroot
+          rm -rf $R && mkdir -p $R/opt $R/usr/bin $R/usr/share/applications \
+            $R/usr/share/icons/hicolor/256x256/apps
+          cp -a "$B" $R/opt/tulipix
+          install -m755 packaging/linux/tulipix-launcher $R/usr/bin/tulipix
+          install -m644 packaging/linux/tulipix.desktop $R/usr/share/applications/tulipix.desktop
+          install -m644 resources/icons/tulipix-256.png $R/usr/share/icons/hicolor/256x256/apps/tulipix.png
+          # deb and rpm versions cannot hold a hyphen; ~ sorts a pre-release
+          # before the release in both.
+          PV="${VERSION//-/\~}"
+          common=(-s dir -C $R -n tulipix -v "$PV" --license "Apache-2.0" \
+            --url "https://github.com/${GITHUB_REPOSITORY}" \
+            --description "Local-first media suite: photos, videos, music, books, tools, cloud" \
+            --maintainer "Tulipix" --architecture x86_64)
+          fpm "${common[@]}" -t deb --depends "libmpv2 | libmpv1" --depends libgtk-3-0 \
+            -p "dist/tulipix-${VERSION}-linux-amd64.deb" .
+          fpm "${common[@]}" -t rpm --depends mpv-libs --depends gtk3 \
+            --rpm-os linux -p "dist/tulipix-${VERSION}-linux-x86_64.rpm" .
+          dpkg-deb -c dist/*.deb | grep -q './opt/tulipix/lib/libtulipix_bridge.so'
+
+          # AppImage: the bundle at the root of the AppDir, run by AppRun.
+          A=Tulipix.AppDir
+          rm -rf $A && cp -a "$B" $A
+          cp packaging/linux/tulipix.desktop $A/tulipix.desktop
+          cp resources/icons/tulipix-256.png $A/tulipix.png
+          printf '#!/bin/sh\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/tulipix" "$@"\n' > $A/AppRun
+          chmod +x $A/AppRun
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool $A \
+            "dist/tulipix-${VERSION}-linux-x86_64.AppImage"
+          ls -la dist/
+
       - uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64
@@ -206,16 +250,50 @@ jobs:
           OPENSSL_SRC_PERL: C:/Strawberry/perl/bin/perl.exe
         run: flutter build windows --release --build-name "${VERSION%%-*}"
 
-      - name: Portable zip
+      - name: Bundle tools and the C++ runtime
         # media_kit_libs_video puts libmpv beside the exe; the tools go in
-        # resources\bin\windows-x86_64\ where walk_bundled looks.
+        # resources\bin\windows-x86_64\ where walk_bundled looks. The bridge
+        # (ONNX Runtime, SQLCipher) and the runner link the Visual C++ runtime
+        # dynamically; a PC without the redistributable could not load
+        # tulipix_bridge.dll and the app never opened. Microsoft allows these
+        # DLLs app-local, beside the exe.
         shell: pwsh
         run: |
           $B = "app_flutter\build\windows\x64\runner\Release"
           New-Item -ItemType Directory -Force "$B\resources\bin" | Out-Null
           Copy-Item -Recurse resources\bin\windows-x86_64 "$B\resources\bin\windows-x86_64"
+          foreach ($d in 'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','msvcp140_1.dll','msvcp140_2.dll','msvcp140_atomic_wait.dll','concrt140.dll') {
+            $src = Join-Path $env:WINDIR "System32\$d"
+            if (Test-Path $src) { Copy-Item $src $B }
+          }
+          Get-ChildItem $B -Filter *.dll | Select-Object Name, Length | Format-Table
+
+      - name: Smoke-test the exe
+        # Loads libmpv and the Rust bridge from the packaged folder, then exits
+        # (TULIPIX_SMOKE in lib/main.dart). A DLL that will not load fails here
+        # rather than on someone's desktop.
+        shell: pwsh
+        run: |
+          $B = Resolve-Path "app_flutter\build\windows\x64\runner\Release"
+          $out = Join-Path $env:RUNNER_TEMP "smoke.txt"
+          $env:TULIPIX_SMOKE = $out
+          $p = Start-Process -FilePath "$B\tulipix.exe" -WorkingDirectory $B -PassThru
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Error "tulipix.exe did not finish starting in 120 s"; exit 1 }
+          $r = if (Test-Path $out) { Get-Content $out -Raw } else { "(no result written; exit code $($p.ExitCode))" }
+          Write-Output "smoke: $r"
+          if ($r -ne 'ok') { Write-Error "tulipix.exe could not start: $r"; exit 1 }
+
+      - name: Portable zip and installer
+        shell: pwsh
+        run: |
+          $B = Resolve-Path "app_flutter\build\windows\x64\runner\Release"
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path "$B\*" -DestinationPath "dist\tulipix-$env:VERSION-windows-x86_64-portable.zip"
+          choco install innosetup -y --no-progress | Out-Null
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DAppVersion=$env:VERSION" "/DDistDir=$B" "/O$((Resolve-Path dist).Path)" packaging\windows\tulipix.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -318,15 +396,25 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**
-          draft: true
-          prerelease: true
-          name: Tulipix ${{ github.ref_name }} (Flutter)
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
+          name: Tulipix ${{ github.ref_name }}
           body: |
-            The Flutter build of Tulipix.
+            ## Downloads
 
-            - **Linux:** extract the tar.gz and run `tulipix`. Needs libmpv
-              (`libmpv2` on Debian/Ubuntu, `mpv` on Arch).
-            - **Windows:** extract the zip and run `tulipix.exe`.
-            - **macOS (Apple silicon):** open the dmg and drag Tulipix to
-              Applications. It is not notarised: the first time, right-click
-              the app and choose Open.
+            **Windows**
+            - `…-windows-x86_64-setup.exe`: installer, with Start menu and
+              optional desktop shortcuts.
+            - `…-windows-x86_64-portable.zip`: extract anywhere and run
+              `tulipix.exe`; keep every file in the folder together.
+
+            **macOS (Apple silicon, macOS 13.4 or later)**
+            - `…-macos-aarch64.dmg`: drag Tulipix to Applications. It is not
+              notarised: the first time, right-click the app and choose Open.
+
+            **Linux (x86_64)**: every package needs libmpv from the system
+            (`libmpv2` on Debian/Ubuntu, `mpv-libs` on Fedora, `mpv` on Arch).
+            - `.deb` for Debian/Ubuntu, `.rpm` for Fedora/openSUSE.
+            - `.AppImage`: `chmod +x` and run.
+            - `.tar.gz`: extract and run `tulipix`.
