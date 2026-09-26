@@ -166,7 +166,8 @@ jobs:
             -p "dist/tulipix-${VERSION}-linux-amd64.deb" .
           fpm "${common[@]}" -t rpm --depends mpv-libs --depends gtk3 \
             --rpm-os linux -p "dist/tulipix-${VERSION}-linux-x86_64.rpm" .
-          dpkg-deb -c dist/*.deb | grep -q './opt/tulipix/lib/libtulipix_bridge.so'
+          # No -q: grep quitting early leaves tar on a closed pipe, and pipefail fails the step.
+          dpkg-deb -c dist/*.deb | grep './opt/tulipix/lib/libtulipix_bridge.so' > /dev/null
 
           # AppImage: the bundle at the root of the AppDir, run by AppRun.
           A=Tulipix.AppDir
@@ -248,6 +249,9 @@ jobs:
           # db-encrypt compiles OpenSSL from source here. Git for Windows puts
           # its own Perl on PATH, which lacks modules OpenSSL's Configure needs.
           OPENSSL_SRC_PERL: C:/Strawberry/perl/bin/perl.exe
+          # Cargo's target dir, out of the deep plugin build tree: OpenSSL's
+          # longest object paths passed MAX_PATH there and cl.exe failed.
+          CARGOKIT_TEMP_DIR: D:/ck
         run: flutter build windows --release --build-name "${VERSION%%-*}"
 
       - name: Bundle tools and the C++ runtime
