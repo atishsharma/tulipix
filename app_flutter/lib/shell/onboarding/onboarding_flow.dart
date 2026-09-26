@@ -605,7 +605,7 @@ class _FlowState extends State<_Flow> {
         kicker: 'Card 5 · Home',
         tint: Tokens.secCloud,
         title: 'What do you want to see when it opens?',
-        blurb: 'All four draw the same snapshot. What differs is what leads — '
+        blurb: 'Every one draws the same snapshot. What differs is what leads — '
             'the thing you were doing, the things you own, or one big picture.',
         children: [
           _PickGrid(

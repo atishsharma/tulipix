@@ -199,19 +199,33 @@ class ShellController extends ChangeNotifier {
   ///
   /// Home's six launchers are doors past a section's front page, and the tab
   /// they want lives in that section's own controller, which the launcher
-  /// cannot reach. Pages register here in `initState`; every page is built at
-  /// launch (the shell is an IndexedStack), so by the time anything is
-  /// clickable they all have.
+  /// cannot reach. Pages register here in `initState`. A section is only
+  /// built the first time it is opened (see `main.dart`), so a link into one
+  /// never visited is held in [_waiting] until its page registers.
   final Map<Section, void Function(String)> _openers = {};
+  final Map<Section, String> _waiting = {};
 
-  void onOpen(Section s, void Function(String) f) => _openers[s] = f;
+  void onOpen(Section s, void Function(String) f) {
+    _openers[s] = f;
+    final tab = _waiting.remove(s);
+    // After the page's first frame: openers call setState, which is not
+    // allowed from inside the initState that registered them.
+    if (tab != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => f(tab));
+    }
+  }
 
   /// Go to [s] and ask it to open [tab]. Fires the opener even when the
   /// section is already up: "Live TV" from Videos still means Live TV.
   void goTab(Section s, String tab) {
     if (!sections.contains(s)) return;
     go(s);
-    _openers[s]?.call(tab);
+    final f = _openers[s];
+    if (f != null) {
+      f(tab);
+    } else {
+      _waiting[s] = tab;
+    }
   }
 
   /// Go to [s] and ask it to open one THING — a book by id, a remote by name,

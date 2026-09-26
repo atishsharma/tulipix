@@ -13,6 +13,7 @@ import 'package:media_kit/media_kit.dart';
 
 import '../../src/rust/api/books.dart' show booksTtsSay;
 import '../../src/rust/api/feeds.dart';
+import '../../playback/audio_deck.dart' show kDefaultVolume;
 
 typedef FeedTab = ({String id, String label});
 
@@ -299,9 +300,9 @@ class FeedsVoice extends ChangeNotifier {
         final path = await booksTtsSay(
             text: sentences[active], voice: '', speed: 1.0);
         if (gen != _gen || !playing) return;
-        final p = _player ??= Player(
+        final p = _player ??= (Player(
           configuration: const PlayerConfiguration(title: 'Tulipix — reading'),
-        );
+        )..setVolume(kDefaultVolume));
         await p.open(Media(path));
         // `completed` also fires for the previous media: wait for the edge.
         await p.stream.completed.firstWhere((done) => done);

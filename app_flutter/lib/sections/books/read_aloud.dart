@@ -23,6 +23,7 @@ import 'package:media_kit/media_kit.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/books.dart';
 import 'books_controller.dart';
+import '../../playback/audio_deck.dart' show kDefaultVolume;
 
 class ReadAloud extends ChangeNotifier {
   ReadAloud(this._books);
@@ -185,10 +186,10 @@ class ReadAloud extends ChangeNotifier {
           final path =
               await booksTtsSay(text: s.text, voice: voice, speed: speed);
           if (gen != _gen || !playing) return;
-          final p = _player ??= Player(
+          final p = _player ??= (Player(
             configuration:
                 const PlayerConfiguration(title: 'Tulipix — reading'),
-          );
+          )..setVolume(kDefaultVolume));
           await p.open(Media(path));
           // `completed` also fires for the previous media, so wait for the
           // edge rather than the current value.

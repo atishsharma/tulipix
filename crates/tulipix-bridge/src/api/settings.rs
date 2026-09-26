@@ -112,7 +112,7 @@ pub struct SettingsState {
     pub logo_choice: i32,
     pub theme: String,
     pub reduce_motion: bool,
-    /// "classic" | "welcome" | "cinema" | "stream".
+    /// "classic" | "welcome" | "cinema" | "stream" | "media" | "play" | "calm" | "today".
     pub home_layout: String,
     pub home_cards: Vec<HomeCardRow>,
     pub home_music_left: bool,
@@ -772,6 +772,11 @@ fn playback(s: &S) -> Vec<SettingItem> {
         txt(s, "playback.sub-color", "Subtitle colour", "A colour code like #ffffff — applies on the next play"),
         stat("Subtitles next to the video", "Loaded automatically (.srt / .vtt / .ass)", "ok"),
         hdr("VIDEO"),
+        // Read by `vmpv::external_player`. Music and audiobooks are not affected.
+        choice(s, "playback.player", "Video player",
+            "Built-in plays inside Tulipix. mpv opens a separate mpv window, which \
+             plays smoother on Linux; falls back to built-in if mpv is not installed",
+            &["Built-in", "mpv"]),
         tog(s, "playback.interpolation", false, "Smoother motion", "Frame interpolation — can be heavy on laptop graphics"),
         tog(s, "playback.upscale", false, "Upscale shaders (Anime4K)", "Sharper upscaling — drop .glsl shader files in the folder below"),
         shader_row(),

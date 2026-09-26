@@ -12,6 +12,7 @@ import 'package:media_kit/media_kit.dart';
 
 import '../../design/tokens.dart';
 import '../../src/rust/api/journal.dart';
+import '../../playback/audio_deck.dart' show kDefaultVolume;
 
 typedef JournalTab = ({String id, String label});
 
@@ -144,7 +145,7 @@ class VoicePlayer extends ChangeNotifier {
   Player _make() {
     final p = Player(
       configuration: const PlayerConfiguration(title: 'Tulipix — voice note'),
-    );
+    )..setVolume(kDefaultVolume);
     _subs.add(p.stream.playing.listen((on) {
       playing = on;
       notifyListeners();

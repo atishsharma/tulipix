@@ -31,8 +31,8 @@ import 'profile_cropper.dart';
 import 'settings_controller.dart';
 import 'settings_kit.dart';
 
-/// The four layouts, in the order they matter in — the default first, which is
-/// the order `cage` places them in on the Slint page.
+/// The layouts, in the order they matter in — the default first, which is
+/// the order `cage` places the first four in on the Slint page.
 ///
 /// The display names are Slint's. The ids are NOT: `home.layout` and every
 /// `home.hidden.<layout>` key on disk hold `welcome` / `classic` / `stream` /
@@ -58,6 +58,27 @@ const List<({String id, String name, String blurb})> kHomeLayoutTiles = [
     id: 'cinema',
     name: 'Cinema',
     blurb: 'A full-bleed hero of what you were watching, rails on a shelf.',
+  ),
+  (
+    id: 'media',
+    name: 'Media',
+    blurb:
+        'Film, song and book on the first screen. Made for the Media preset.',
+  ),
+  (
+    id: 'play',
+    name: 'Play',
+    blurb: 'Big tiles for films, games and music. Made for the Play preset.',
+  ),
+  (
+    id: 'calm',
+    name: 'Calm',
+    blurb: 'One suggestion by the hour, the rest a breath away.',
+  ),
+  (
+    id: 'today',
+    name: 'Today',
+    blurb: 'What needs you, what is half-done, a tile per section.',
   ),
 ];
 
@@ -973,20 +994,19 @@ class _ProfileTabState extends State<ProfileTab> {
       icon: Icons.home_outlined,
       tint: const Color(0xFFF97316),
       title: 'Home layout',
-      note: 'All four draw the same library; each arranges it differently',
+      note: 'All draw the same library; each arranges it differently',
       trailing: [
         Text('In use · ${_layoutName(_st.homeLayout)}',
             style: TextStyle(fontSize: 11, color: t.textDim)),
       ],
-      child: wide
-          ? row(cards)
-          : Column(
-              children: [
-                row(cards.sublist(0, 2)),
-                const SizedBox(height: gap),
-                row(cards.sublist(2)),
-              ],
-            ),
+      child: Column(
+        children: [
+          for (var i = 0; i < cards.length; i += wide ? 4 : 2) ...[
+            if (i > 0) const SizedBox(height: gap),
+            row(cards.sublist(i, (i + (wide ? 4 : 2)).clamp(0, cards.length))),
+          ],
+        ],
+      ),
     );
   }
 
@@ -1995,6 +2015,10 @@ class _LayoutThumb extends StatelessWidget {
           'cinema' => _cinema(context),
           'stream' => _stream(context),
           'welcome' => _welcome(context),
+          'media' => _media(context),
+          'play' => _play(context),
+          'calm' => _calm(context),
+          'today' => _today(context),
           _ => _classic(context),
         },
       ),
@@ -2287,6 +2311,256 @@ class _LayoutThumb extends StatelessWidget {
               borderRadius: BorderRadius.circular(3),
             ),
           ),
+      ],
+    );
+  }
+
+  // Doors across the top, the film wide with two cards beside it, a rail.
+  Widget _media(BuildContext context) {
+    final doors = [
+      if (has('videos')) Tokens.secVideos,
+      if (has('music')) Tokens.secMusic,
+      if (has('books')) Tokens.secBooks,
+      if (has('photos')) Tokens.secPhotos,
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (doors.isNotEmpty) ...[
+          SizedBox(
+            height: 7,
+            child: Row(
+              children: [
+                for (var i = 0; i < doors.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 3),
+                  _bar(doors[i].withValues(alpha: 0.5)),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 4),
+        ],
+        Expanded(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                flex: 64,
+                child: Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(colors: [
+                      Tokens.secVideos.withValues(alpha: 0.6),
+                      Tokens.brand.withValues(alpha: 0.3),
+                    ]),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
+              ),
+              if (has('player') || has('continue')) ...[
+                const SizedBox(width: 4),
+                Expanded(
+                  flex: 36,
+                  child: Column(
+                    children: [
+                      if (has('player'))
+                        _bar(Tokens.secMusic.withValues(alpha: 0.55)),
+                      if (has('player') && has('continue'))
+                        const SizedBox(height: 4),
+                      if (has('continue'))
+                        _bar(Tokens.secBooks.withValues(alpha: 0.55)),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        if (has('continue')) ...[
+          const SizedBox(height: 4),
+          SizedBox(
+            height: 10,
+            child: Row(
+              children: [
+                for (var i = 0; i < 4; i++) ...[
+                  if (i > 0) const SizedBox(width: 3),
+                  _bar(context.tokens.text.withValues(alpha: 0.18)),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  // Dark, a big title on the left, a row of tiles with one lifted.
+  Widget _play(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(4),
+        gradient: RadialGradient(
+          center: const Alignment(0.7, -0.6),
+          colors: [
+            Tokens.secArcade.withValues(alpha: 0.35),
+            const Color(0xFF06070F),
+          ],
+        ),
+      ),
+      padding: const EdgeInsets.all(5),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Spacer(),
+          _pill(Colors.white.withValues(alpha: 0.85), 52, 7),
+          const SizedBox(height: 3),
+          _pill(Colors.white.withValues(alpha: 0.4), 34, 4),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 20,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                for (final (c, h) in [
+                  (Tokens.secVideos, 20.0),
+                  (Tokens.secArcade, 14.0),
+                  (Tokens.secMusic, 14.0),
+                  (Tokens.secBooks, 14.0),
+                ]) ...[
+                  Expanded(
+                    child: Container(
+                      height: h,
+                      decoration: BoxDecoration(
+                        color: c.withValues(alpha: 0.7),
+                        borderRadius: BorderRadius.circular(3),
+                        border: h > 14
+                            ? Border.all(color: Colors.white, width: 1)
+                            : null,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 3),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // A greeting and one suggestion, then three small cards. Mostly air.
+  Widget _calm(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      decoration: BoxDecoration(
+        gradient: RadialGradient(
+          center: const Alignment(-0.8, -1),
+          radius: 1.3,
+          colors: [
+            const Color(0xFFF6D2B4).withValues(alpha: t.dark ? 0.12 : 0.5),
+            Colors.transparent,
+          ],
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (has('hero')) ...[
+            _pill(t.text.withValues(alpha: 0.7), 50, 7),
+            const SizedBox(height: 6),
+          ],
+          Expanded(
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFFB7876A).withValues(alpha: 0.35),
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+          ),
+          if (has('continue')) ...[
+            const SizedBox(height: 5),
+            SizedBox(
+              height: 9,
+              child: Row(
+                children: [
+                  for (var i = 0; i < 3; i++) ...[
+                    if (i > 0) const SizedBox(width: 4),
+                    _bar(t.text.withValues(alpha: 0.16)),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // A hero line, a strip of what needs you, then a bento of section tiles.
+  Widget _today(BuildContext context) {
+    final t = context.tokens;
+    final tiles = [
+      Tokens.secVideos,
+      Tokens.secMusic,
+      Tokens.secPhotos,
+      Tokens.secBooks,
+      Tokens.secFinances,
+      Tokens.secCloud,
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (has('hero')) ...[
+          Container(
+            height: 14,
+            decoration: BoxDecoration(
+              gradient:
+                  const LinearGradient(colors: [Tokens.brand2, Tokens.brand]),
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ),
+          const SizedBox(height: 4),
+        ],
+        SizedBox(
+          height: 5,
+          child: Row(
+            children: [
+              _bar(Tokens.warn.withValues(alpha: 0.55)),
+              const SizedBox(width: 3),
+              _bar(t.text.withValues(alpha: 0.2)),
+              const Spacer(),
+            ],
+          ),
+        ),
+        const SizedBox(height: 4),
+        Expanded(
+          child: Column(
+            children: [
+              for (var r = 0; r < 2; r++) ...[
+                if (r > 0) const SizedBox(height: 3),
+                Expanded(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (var i = 0; i < 3; i++) ...[
+                        if (i > 0) const SizedBox(width: 3),
+                        Expanded(
+                          flex: r == 0 && i == 0 ? 2 : 1,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: tiles[r * 3 + i].withValues(alpha: 0.45),
+                              borderRadius: BorderRadius.circular(3),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ],
     );
   }

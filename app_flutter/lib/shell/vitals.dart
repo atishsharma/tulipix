@@ -11,6 +11,12 @@ import 'dart:io' show ProcessInfo;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
+/// Settings › Advanced › Performance warns past these. First frame within
+/// 5 s counts as a normal start; a session may drop 120 frames before it is
+/// called slow, since opening a heavy section costs a few on its own.
+const int kStartupBudgetMs = 5000;
+const int kSlowFrameBudget = 120;
+
 class Vitals {
   Vitals._();
 

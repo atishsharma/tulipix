@@ -4173,6 +4173,10 @@ fn pref_cover(prefs: &HashMap<String, String>, key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Where playback starts when nothing is saved. 100 is too loud on most
+/// speakers and every headphone; the user's own level is kept once set.
+const DEFAULT_VOLUME: &str = "40";
+
 fn setting(key: &str, default: &str) -> String {
     tulipix_core::settings::Settings::load()
         .ok()
@@ -4237,7 +4241,7 @@ fn audio_args(repeat_one: bool) -> Vec<String> {
         setting("music.exclusive", "0") == "1",
     ));
     args.push(format!("--af={}", full_af(&load_eq().mpv_af())));
-    args.push(format!("--volume={}", setting("music.volume", "80")));
+    args.push(format!("--volume={}", setting("music.volume", DEFAULT_VOLUME)));
     if setting("music.muted", "0") == "1" {
         args.push("--mute=yes".into());
     }
@@ -7936,7 +7940,7 @@ async fn cast_stop() {
 /// that ever moves it out from under the user is the sleep fade, so this is
 /// the undo for that.
 fn restore_volume() {
-    let base = setting("music.volume", "80");
+    let base = setting("music.volume", DEFAULT_VOLUME);
     mpv::set_property("volume", &base);
 }
 
@@ -7967,7 +7971,7 @@ fn check_sleep() {
     const FADE_S: f64 = 60.0;
     let left = deadline.duration_since(now).as_secs_f64();
     if left < FADE_S {
-        let base: f64 = setting("music.volume", "80").parse().unwrap_or(80.0);
+        let base: f64 = setting("music.volume", DEFAULT_VOLUME).parse().unwrap_or(40.0);
         mpv::set_property("volume", &format!("{:.0}", base * (left / FADE_S)));
     }
 }

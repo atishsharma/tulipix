@@ -390,7 +390,7 @@ class _PhotoSlideshowState extends State<PhotoSlideshow>
     _timer?.cancel();
     if (widget.tiles.length < 2) return;
     _timer = Timer.periodic(widget.cycle, (_) {
-      if (!mounted) return;
+      if (!mounted || !TickerMode.valuesOf(context).enabled) return;
       _roll.forward(from: 0).whenComplete(() {
         if (mounted) setState(() => _head += 1);
       });

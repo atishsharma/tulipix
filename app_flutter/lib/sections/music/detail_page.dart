@@ -21,6 +21,7 @@ import 'music_controller.dart';
 import 'music_dialogs.dart';
 import 'music_widgets.dart';
 import 'smart_editor.dart';
+import '../../design/decode.dart';
 
 /// How a detail page's track list is ordered. `natural` is the order the
 /// bridge sent -- disc/track for an album, the stored order for a playlist --
@@ -870,6 +871,7 @@ class _Collage extends StatelessWidget {
                     width: half,
                     height: half,
                     fit: BoxFit.cover,
+                    cacheWidth: decodePx(context, half),
                     // A cover that vanished between the query and the paint is
                     // one blank quarter, not a broken page.
                     errorBuilder: (_, __, ___) =>

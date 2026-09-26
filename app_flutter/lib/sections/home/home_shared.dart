@@ -21,6 +21,7 @@ import '../../src/rust/api/music.dart';
 import '../../src/rust/api/photos.dart';
 import '../../src/rust/api/videos.dart';
 import '../music/music_controller.dart';
+import '../../design/decode.dart';
 
 // ── Surface, Standard branch ────────────────────────────────────────────────
 
@@ -563,7 +564,7 @@ class _LazyCoverState extends State<LazyCover> {
       ),
       child: path == null
           ? plate
-          : Image.file(File(path),
+          : FileArt(path,
               key: ValueKey(path),
               fit: widget.fit,
               alignment: widget.alignment,

@@ -8,7 +8,6 @@
 //
 // The square in the middle flips: the spinning record, the queue, or the words.
 
-import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -21,6 +20,7 @@ import 'music_controller.dart';
 import 'music_widgets.dart';
 import 'player_bar.dart' show Transport;
 import 'player_widgets.dart';
+import '../../design/decode.dart';
 
 /// The host frame, before `miniScale`. `music-mini-w` / `music-mini-h` in
 /// ui/main.slint, which is 300 x 470 for music and books and 300 x 456 for
@@ -738,7 +738,7 @@ class _Face extends StatelessWidget {
                 ),
               );
       case 'lyrics':
-        body = _MiniLyrics(controller: controller, scale: scale);
+        body = MiniLyrics(controller: controller, scale: scale);
       case 'episodes':
         final eps = controller.state?.podEpisodes ?? const <Episode>[];
         body = eps.isEmpty
@@ -838,7 +838,7 @@ Widget miniArt(String path, IconData fallback, double size, Color accent) {
   Widget err(BuildContext _, Object __, StackTrace? ___) => miss();
   return path.startsWith('http')
       ? Image.network(path, fit: BoxFit.cover, errorBuilder: err)
-      : Image.file(File(path), fit: BoxFit.cover, errorBuilder: err);
+      : FileArt(path, errorBuilder: err);
 }
 
 /// The face for a station: no record, no cover, just the artwork if the
@@ -1324,8 +1324,10 @@ class _Tonearm extends CustomPainter {
       old.to != to || old.from != from || old.colour != colour;
 }
 
-class _MiniLyrics extends StatelessWidget {
-  const _MiniLyrics({required this.controller, required this.scale});
+/// Three lines — the one being sung, lit, between its neighbours. Public so
+/// Home's player card can flip to the same face.
+class MiniLyrics extends StatelessWidget {
+  const MiniLyrics({required this.controller, required this.scale});
 
   final MusicController controller;
   final double scale;

@@ -21,6 +21,7 @@ import '../design/tokens.dart';
 import '../src/rust/api/shell.dart';
 import 'lock/lock_controller.dart';
 import 'shell_controller.dart';
+import '../design/decode.dart';
 
 const double kSidebarCollapsed = 68;
 const double kSidebarExpanded = 174;
@@ -631,6 +632,7 @@ class _UserCard extends StatelessWidget {
                         width: 28,
                         height: 28,
                         fit: BoxFit.cover,
+                        cacheWidth: decodePx(context, 28),
                         errorBuilder: (context, error, stack) => face,
                       ),
                     ),

@@ -2134,6 +2134,33 @@ async fn play_item_id(id: i64) -> Result<()> {
     play_path(path, Some(id)).await
 }
 
+/// Start the episode after `item_id`, if there is one. Outside `play_path`
+/// because it calls back into it: spawned from inside, the future's `Send`
+/// check would need its own type.
+fn play_next_episode(item_id: i64) {
+    tokio::spawn(async move {
+        if let Some(next) = next_episode(item_id).await {
+            let _ = play_item_id(next).await;
+        }
+    });
+}
+
+/// The episode after `item_id` in its show — next in the season, else the first
+/// of a later season. `None` for a film, or the show's last episode.
+async fn next_episode(item_id: i64) -> Option<i64> {
+    sqlx::query_scalar(
+        "SELECT n.item_id FROM episodes e JOIN episodes n ON n.show_id = e.show_id \
+         WHERE e.item_id = ? \
+           AND (n.season > e.season OR (n.season = e.season AND n.episode > e.episode)) \
+         ORDER BY n.season, n.episode LIMIT 1",
+    )
+    .bind(item_id)
+    .fetch_optional(pool().await.ok()?)
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Resume where it was left, touch last-accessed, and hand it to mpv. Shared,
 /// because a film started from Home has to reach the Continue strip exactly the
 /// way one started from the grid does.
@@ -2149,10 +2176,16 @@ async fn play_path(path: String, item_id: Option<i64>) -> Result<()> {
             let _ = tulipix_videos::watch_progress::update(pool, id, 1.0, None).await;
         }
     }
-    // The hook exists only to tell Dart the grid moved: `vmpv` writes the
-    // position back into `watch_progress` itself, from the `item_id` above.
-    let on_end: crate::vmpv::PlaybackEnd =
-        std::sync::Arc::new(|_pos: f64, _dur: f64| emit(VideosEvent::Changed));
+    // The hook tells Dart the grid moved (`vmpv` writes the position back into
+    // `watch_progress` itself, from the `item_id` above), and, when an episode
+    // ran to the end, starts the next one — the same way in the in-app player
+    // and in external mpv, since both finish through `vmpv::ended`.
+    let on_end: crate::vmpv::PlaybackEnd = std::sync::Arc::new(move |pos: f64, dur: f64| {
+        emit(VideosEvent::Changed);
+        if let Some(id) = item_id.filter(|_| dur > 0.0 && pos >= dur * 0.98) {
+            play_next_episode(id);
+        }
+    });
     crate::vmpv::play(path, resume, item_id, Vec::new(), Some(on_end));
     refresh_library().await
 }

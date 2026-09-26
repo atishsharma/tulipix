@@ -19,6 +19,7 @@ import 'package:media_kit/media_kit.dart';
 
 import '../design/tokens.dart';
 import '../src/rust/api/videos.dart';
+import 'audio_deck.dart' show kDefaultVolume;
 
 /// How tall [VideoControls] draws below the gradient's fade: the bottom
 /// padding, the button row, the gap, and the seek lane. The subtitle view is
@@ -189,7 +190,7 @@ class VideoOps {
       _premute = volume;
       player.setVolume(0);
     } else {
-      player.setVolume(_premute <= 0 ? 100 : _premute);
+      player.setVolume(_premute <= 0 ? kDefaultVolume : _premute);
     }
   }
 

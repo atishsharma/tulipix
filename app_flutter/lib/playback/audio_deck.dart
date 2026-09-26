@@ -19,6 +19,10 @@ import 'package:media_kit/media_kit.dart';
 
 import '../src/rust/api/music.dart';
 
+/// Where every player starts, 0..100. mpv's own 100 is too loud on most
+/// speakers and every headphone.
+const double kDefaultVolume = 40;
+
 /// Momentary loudness, 0..1, for the visualizer's envelope.
 ///
 /// It used to be an atomic in Rust that the UI polled through a sync bridge
@@ -103,7 +107,7 @@ class AudioDeck {
   /// Volume and mute as mpv holds them. media_kit's `volume` is the same 0..100
   /// scale, but it has no mute of its own — muting is `volume 0` there — so the
   /// deck keeps the flag and the level apart the way mpv does.
-  double _volume = 80.0;
+  double _volume = kDefaultVolume;
   bool _muted = false;
 
   bool _started = false;

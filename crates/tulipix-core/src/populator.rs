@@ -72,28 +72,51 @@ pub async fn populate(pool: &SqlitePool, lib: &Library) -> Result<PopulateStats>
     let mut stats = PopulateStats::default();
     let section = section_str(lib.section);
     let now = now_secs();
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for entry in WalkDir::new(&lib.path).follow_links(false).into_iter().filter_map(|e| e.ok()) {
-        if !entry.file_type().is_file() { continue; }
-        stats.scanned += 1;
-        let path = entry.path();
-        if excluded(path, &lib.exclude_globs) { stats.excluded += 1; continue; }
-        let Ok(meta) = entry.metadata() else { continue; };
-        let abs = path.to_string_lossy().into_owned();
-        seen.push(abs.clone());
-        let inode = inode_of(&meta);
-        let size = meta.len() as i64;
-        let mtime = mtime_of(&meta);
+    // The walk is a stat per file, synchronous; on the blocking pool, so a
+    // large library does not hold the async workers every other section's
+    // calls run on. The database half stays async below.
+    let (root, globs) = (lib.path.clone(), lib.exclude_globs.clone());
+    let (files, scanned, skipped) = tokio::task::spawn_blocking(move || {
+        let (mut files, mut scanned, mut skipped) = (Vec::new(), 0u64, 0u64);
+        for entry in WalkDir::new(&root).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+            if !entry.file_type().is_file() { continue; }
+            scanned += 1;
+            let path = entry.path();
+            if excluded(path, &globs) { skipped += 1; continue; }
+            let Ok(meta) = entry.metadata() else { continue; };
+            files.push((
+                path.to_string_lossy().into_owned(),
+                inode_of(&meta),
+                meta.len() as i64,
+                mtime_of(&meta),
+            ));
+        }
+        (files, scanned, skipped)
+    })
+    .await?;
+    stats.scanned = scanned;
+    stats.excluded = skipped;
 
-        let existing: Option<(i64, i64, i64)> = sqlx::query_as(
-            "SELECT id, size, mtime FROM items WHERE abs_path = ?",
+    // Every row under this root, read once. A lookup per file was one query
+    // per file on every rescan — fifty thousand for a large library, every ten
+    // minutes, each queued with the section's own reads.
+    let prefix = format!("{}%", lib.path.to_string_lossy());
+    type Known = (i64, i64, i64, Option<i64>, String);
+    let known: std::collections::HashMap<String, Known> =
+        sqlx::query_as::<_, (String, i64, i64, i64, Option<i64>, String)>(
+            "SELECT abs_path, id, size, mtime, missing_since, section FROM items WHERE abs_path LIKE ?",
         )
-        .bind(&abs)
-        .fetch_optional(pool)
-        .await?;
+        .bind(&prefix)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|(p, id, size, mtime, missing, sec)| (p, (id, size, mtime, missing, sec)))
+        .collect();
 
-        if let Some((id, prev_size, prev_mtime)) = existing {
+    for (abs, inode, size, mtime) in files {
+        if let Some(&(id, prev_size, prev_mtime, missing, _)) = known.get(&abs) {
             if prev_size != size || prev_mtime != mtime {
                 sqlx::query(
                     "UPDATE items SET inode = ?, size = ?, mtime = ?, missing_since = NULL, updated = ? WHERE id = ?",
@@ -101,7 +124,10 @@ pub async fn populate(pool: &SqlitePool, lib: &Library) -> Result<PopulateStats>
                 .bind(inode).bind(size).bind(mtime).bind(now).bind(id)
                 .execute(pool).await?;
                 stats.updated += 1;
-            } else {
+            } else if missing.is_some() {
+                // Unchanged and present is the common case on a rescan, and it
+                // writes nothing: a write per file took the WAL lock once per
+                // file, every ten minutes, under the section's own queries.
                 sqlx::query("UPDATE items SET missing_since = NULL WHERE id = ?")
                     .bind(id).execute(pool).await?;
             }
@@ -114,22 +140,14 @@ pub async fn populate(pool: &SqlitePool, lib: &Library) -> Result<PopulateStats>
             .execute(pool).await?;
             stats.inserted += 1;
         }
+        seen.insert(abs);
     }
 
-    // Mark removed rows missing (only those rooted under this library).
-    let prefix = format!("{}%", lib.path.to_string_lossy());
-    let stale: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT id, abs_path FROM items WHERE section = ? AND missing_since IS NULL AND abs_path LIKE ?",
-    )
-    .bind(section)
-    .bind(&prefix)
-    .fetch_all(pool)
-    .await?;
-    let seen_set: std::collections::HashSet<_> = seen.into_iter().collect();
-    for (id, path) in stale {
-        if !seen_set.contains(&path) {
+    // Mark removed rows missing (only this section's, under this library).
+    for (path, (id, _, _, missing, sec)) in &known {
+        if sec == section && missing.is_none() && !seen.contains(path) {
             sqlx::query("UPDATE items SET missing_since = ?, updated = ? WHERE id = ?")
-                .bind(now).bind(now).bind(id).execute(pool).await?;
+                .bind(now).bind(now).bind(*id).execute(pool).await?;
             stats.missing += 1;
         }
     }
@@ -238,6 +256,16 @@ mod tests {
         std::fs::remove_file(root.path().join("a.jpg")).unwrap();
         let s3 = populate(&pool, &lib).await.unwrap();
         assert_eq!(s3.missing, 1);
+
+        // Back again: an unchanged file skips its write, a returning one must not.
+        std::fs::write(root.path().join("a.jpg"), b"hello").unwrap();
+        populate(&pool, &lib).await.unwrap();
+        let still: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE missing_since IS NOT NULL")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(still, 0);
     }
 
     #[tokio::test]

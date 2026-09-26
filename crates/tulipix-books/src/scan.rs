@@ -132,18 +132,25 @@ where
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Collect every candidate file up front so `total` is known for the bar.
-    let mut all_files: Vec<PathBuf> = Vec::new();
-    for root in &roots {
-        all_files.extend(
-            WalkDir::new(root)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_file())
-                .map(|e| e.into_path())
-                .filter(|p| format_of(p).is_some()),
-        );
-    }
+    // On the blocking pool: the walk has no await in it, and a large shelf
+    // would otherwise hold an async worker every other section shares.
+    let walk_roots = roots.clone();
+    let all_files: Vec<PathBuf> = tokio::task::spawn_blocking(move || {
+        let mut all_files = Vec::new();
+        for root in &walk_roots {
+            all_files.extend(
+                WalkDir::new(root)
+                    .follow_links(false)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().is_file())
+                    .map(|e| e.into_path())
+                    .filter(|p| format_of(p).is_some()),
+            );
+        }
+        all_files
+    })
+    .await?;
     let total = all_files.len() as u32;
 
     // Known files: path -> (size, mtime) as last indexed. A file whose size or

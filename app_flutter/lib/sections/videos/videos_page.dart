@@ -217,103 +217,113 @@ class _Header extends StatelessWidget {
           const SizedBox(width: 16),
           // The library, as one control: Movies, Shows and Local are three
           // views of the same files. The other four are places of their own,
-          // after a divider.
-          Flexible(
+          // after a divider. Always at full width: when this strip was the
+          // part that scrolled, a wide set of actions on the right (Stream
+          // adds four) pushed Stream Plus out of sight.
+          _LibrarySegments(
+            kind: kind,
+            onPick: (id) => _pick(controller, id),
+          ),
+          Container(
+            width: 1,
+            height: 22,
+            margin: const EdgeInsets.symmetric(horizontal: 12),
+            color: t.nHair,
+          ),
+          for (final k in kVideoKinds.skip(3)) ...[
+            VideoTab(
+              hue: k.hue,
+              label: k.label,
+              active: kind == k.id,
+              onTap: () => _pick(controller, k.id),
+            ),
+            const SizedBox(width: 6),
+          ],
+          const SizedBox(width: 6),
+          // The tab's own actions take what is left, right-aligned, and are
+          // the part that scrolls when that is not enough.
+          Expanded(
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
+              reverse: true,
               child: Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  _LibrarySegments(
-                    kind: kind,
-                    onPick: (id) => _pick(controller, id),
-                  ),
-                  Container(
-                    width: 1,
-                    height: 22,
-                    margin: const EdgeInsets.symmetric(horizontal: 12),
-                    color: t.nHair,
-                  ),
-                  for (final k in kVideoKinds.skip(3)) ...[
-                    VideoTab(
-                      hue: k.hue,
-                      label: k.label,
-                      active: kind == k.id,
-                      onTap: () => _pick(controller, k.id),
+                  // Stream searches the remote catalogue from its own field; Live TV
+                  // and Stream Plus have their own too.
+                  if (!stream && kind != 'livetv' && kind != 'splus') ...[
+                    VideoSearchField(
+                      controller: search,
+                      hint: 'Search videos',
+                      onChanged: (q) =>
+                          controller.send(VideosCmd.search(query: q)),
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: 12),
+                    VideoTab(
+                      hue: cPlay,
+                      label: '+ Add folder',
+                      active: true,
+                      onTap: () => addVideoFolder(context, controller),
+                    ),
+                    // How to name files so they land here: the ten layouts each
+                    // side reads. Movies and TV only -- Local is whatever is left.
+                    if (kind == 'movies' || kind == 'tv') ...[
+                      const SizedBox(width: 8),
+                      VideoTab(
+                        hue: cInfo,
+                        icon: Icons.info_outline,
+                        label: 'Naming',
+                        onTap: () =>
+                            openNamingGuide(context, shows: kind == 'tv'),
+                      ),
+                    ],
+                    const SizedBox(width: 12),
+                    Text(
+                      kind == 'tv'
+                          ? '${st?.shows.length ?? 0} shows'
+                          : '${st?.itemCount ?? 0} ${kind == 'movies' ? 'movies' : 'videos'}',
+                      style: TextStyle(fontSize: 12, color: t.nInk3),
+                    ),
                   ],
+                  if (kind == 'livetv') ...[
+                    VideoSearchField(
+                      controller: search,
+                      width: 300,
+                      hint: 'Search channels',
+                      onChanged: (q) =>
+                          controller.send(VideosCmd.liveSearch(query: q)),
+                    ),
+                    const SizedBox(width: 12),
+                    VideoTab(
+                      hue: cSave,
+                      icon: Icons.list,
+                      label: (st?.live.pickedCount ?? 0) == 0
+                          ? 'Playlists'
+                          : 'Playlists (${st!.live.pickedCount})',
+                      onTap: () =>
+                          openPlaylistPicker(context, controller, st!.live),
+                    ),
+                    const SizedBox(width: 8),
+                    VideoTab(
+                      hue: cBack,
+                      icon: Icons.refresh,
+                      label: (st?.live.busy ?? false) ? 'Loading…' : 'Refresh',
+                      onTap: () {
+                        if (!(st?.live.busy ?? false)) {
+                          controller.send(const VideosCmd.liveRefresh());
+                        }
+                      },
+                    ),
+                    if ((st?.live.nowName ?? '').isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      _NowPlayingPill(controller: controller, live: st!.live),
+                    ],
+                  ],
+                  ...streamActions,
                 ],
               ),
             ),
           ),
-          const Spacer(),
-          // Stream searches the remote catalogue from its own field; Live TV
-          // and Stream Plus have their own too.
-          if (!stream && kind != 'livetv' && kind != 'splus') ...[
-            VideoSearchField(
-              controller: search,
-              hint: 'Search videos',
-              onChanged: (q) => controller.send(VideosCmd.search(query: q)),
-            ),
-            const SizedBox(width: 12),
-            VideoTab(
-              hue: cPlay,
-              label: '+ Add folder',
-              active: true,
-              onTap: () => addVideoFolder(context, controller),
-            ),
-            // How to name files so they land here: the ten layouts each
-            // side reads. Movies and TV only -- Local is whatever is left.
-            if (kind == 'movies' || kind == 'tv') ...[
-              const SizedBox(width: 8),
-              VideoTab(
-                hue: cInfo,
-                icon: Icons.info_outline,
-                label: 'Naming',
-                onTap: () => openNamingGuide(context, shows: kind == 'tv'),
-              ),
-            ],
-            const SizedBox(width: 12),
-            Text(
-              kind == 'tv'
-                  ? '${st?.shows.length ?? 0} shows'
-                  : '${st?.itemCount ?? 0} ${kind == 'movies' ? 'movies' : 'videos'}',
-              style: TextStyle(fontSize: 12, color: t.nInk3),
-            ),
-          ],
-          if (kind == 'livetv') ...[
-            VideoSearchField(
-              controller: search,
-              width: 300,
-              hint: 'Search channels',
-              onChanged: (q) => controller.send(VideosCmd.liveSearch(query: q)),
-            ),
-            const SizedBox(width: 12),
-            VideoTab(
-              hue: cSave,
-              icon: Icons.list,
-              label: (st?.live.pickedCount ?? 0) == 0
-                  ? 'Playlists'
-                  : 'Playlists (${st!.live.pickedCount})',
-              onTap: () => openPlaylistPicker(context, controller, st!.live),
-            ),
-            const SizedBox(width: 8),
-            VideoTab(
-              hue: cBack,
-              icon: Icons.refresh,
-              label: (st?.live.busy ?? false) ? 'Loading…' : 'Refresh',
-              onTap: () {
-                if (!(st?.live.busy ?? false)) {
-                  controller.send(const VideosCmd.liveRefresh());
-                }
-              },
-            ),
-            if ((st?.live.nowName ?? '').isNotEmpty) ...[
-              const SizedBox(width: 8),
-              _NowPlayingPill(controller: controller, live: st!.live),
-            ],
-          ],
-          ...streamActions,
         ],
       ),
     );
@@ -374,10 +384,13 @@ class _Segment extends StatelessWidget {
     final t = context.tokens;
     final skin = context.skin;
     final ink = active
-        ? (skin.isStandard ? Colors.white : (skin.activeInk ?? Tokens.secVideos))
+        ? (skin.isStandard
+            ? Colors.white
+            : (skin.activeInk ?? Tokens.secVideos))
         : t.nInk2;
     final text = Text(label,
-        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: ink));
+        style:
+            TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: ink));
     if (!skin.isStandard) {
       return SkinButton(
         active: active,

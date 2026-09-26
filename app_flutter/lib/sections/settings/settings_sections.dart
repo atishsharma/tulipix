@@ -179,7 +179,6 @@ class SettingsSections extends StatefulWidget {
 
 class _SettingsSectionsState extends State<SettingsSections> {
   String? _sel;
-  String? _open; // list view: the row showing its tabs
   /// The filter chip picked; null is the default. That is Shown while a
   /// preset is in use, since a preset is a choice of what to show, and All
   /// under Everything, Everything + bonus, or no preset. Picking a preset
@@ -230,7 +229,6 @@ class _SettingsSectionsState extends State<SettingsSections> {
           in order.where((id) => rows[id]!.mode == 'shown').indexed)
         id: i + 1
     };
-    final view = st.sectionsView;
     // Where each section sits in the run: dropping on it puts the dragged one
     // there, just before it.
     final at = {
@@ -245,12 +243,13 @@ class _SettingsSectionsState extends State<SettingsSections> {
         st: st,
         open: _presetsOpen,
         onToggle: () => setState(() => _presetsOpen = !_presetsOpen),
-        onPick: (id) {
+        onPick: (id) async {
           setState(() {
             _presetsOpen = false;
             _filter = null;
           });
-          _apply(SettingsCmd.sectionPreset(name: id));
+          await _apply(SettingsCmd.sectionPreset(name: id));
+          _offerHome(id);
         },
         onUndo: () => _apply(const SettingsCmd.sectionUndo()),
         onSave: () async {
@@ -289,11 +288,6 @@ class _SettingsSectionsState extends State<SettingsSections> {
               on: filter == id,
               onTap: () => setState(() => _filter = id),
             ),
-          _ViewSwitch(
-            view: view,
-            onView: (v) =>
-                _apply(SettingsCmd.setText(key: 'sections.view', value: v)),
-          ),
           TextButton.icon(
             icon: const Icon(Icons.add, size: 16),
             label: const Text('New group'),
@@ -307,39 +301,20 @@ class _SettingsSectionsState extends State<SettingsSections> {
         ],
       ),
       const SizedBox(height: 6),
-      if (view == 'list')
-        _ListView(
-          groups: groups,
-          rows: rows,
-          sel: sel,
-          open: _open,
-          canDrag: canDrag,
-          at: at,
-          onSelect: (id) => setState(() {
-            _sel = id;
-            _open = _open == id ? null : id;
-          }),
-          onMode: _setMode,
-          onTab: _setTab,
-          onDrop: (id, at) => _move(toks, id, at),
-          onRename: (i) => _renameGroup(toks, i),
-          onDeleteGroup: (i) => _deleteGroup(toks, i),
-        )
-      else
-        for (final g in groups)
-          _CardGroup(
-            group: g,
-            rows: rows,
-            sel: sel,
-            pos: sidebarPos,
-            canDrag: canDrag,
-            at: at,
-            onSelect: (id) => setState(() => _sel = id),
-            onMode: _setMode,
-            onDrop: (id, at) => _move(toks, id, at),
-            onRename: g.head == null ? null : () => _renameGroup(toks, g.head!),
-            onDelete: g.head == null ? null : () => _deleteGroup(toks, g.head!),
-          ),
+      // One view: a list. What a row holds — its tabs, its database — is in
+      // the panel beside it, for whichever row is selected.
+      _ListView(
+        groups: groups,
+        rows: rows,
+        sel: sel,
+        canDrag: canDrag,
+        at: at,
+        onSelect: (id) => setState(() => _sel = id),
+        onMode: _setMode,
+        onDrop: (id, at) => _move(toks, id, at),
+        onRename: (i) => _renameGroup(toks, i),
+        onDeleteGroup: (i) => _deleteGroup(toks, i),
+      ),
       if (filter == 'all' || filter == 'bonus') ...[
         const SizedBox(height: 18),
         const _GroupHead(name: 'Bonus sections'),
@@ -526,6 +501,25 @@ class _SettingsSectionsState extends State<SettingsSections> {
     await ShellController.instance.refresh();
   }
 
+  /// Media and Play each have a Home made for them. Offered, never switched
+  /// to: a preset is about the sidebar, and Home is a choice of its own.
+  void _offerHome(String preset) {
+    if (!mounted || (preset != 'media' && preset != 'play')) return;
+    if (widget.controller.state?.homeLayout == preset) return;
+    final name = preset == 'media' ? 'Media' : 'Play';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 8),
+        content: Text('There is a Home layout made for the $name preset.'),
+        action: SnackBarAction(
+          label: 'Use Home · $name',
+          onPressed: () => widget.controller
+              .send(SettingsCmd.setHomeLayout(layout: preset)),
+        ),
+      ),
+    );
+  }
+
   void _setMode(String id, String mode) =>
       _apply(SettingsCmd.sectionSet(id: id, mode: mode));
 
@@ -554,32 +548,6 @@ class _SettingsSectionsState extends State<SettingsSections> {
 
 // ------------------------------------------------------------------- pieces --
 
-class _ViewSwitch extends StatelessWidget {
-  const _ViewSwitch({required this.view, required this.onView});
-
-  final String view;
-  final void Function(String) onView;
-
-  @override
-  Widget build(BuildContext context) => SegmentedButton<String>(
-        showSelectedIcon: false,
-        style: const ButtonStyle(visualDensity: VisualDensity.compact),
-        segments: const [
-          ButtonSegment(
-              value: 'cards',
-              icon: Icon(Icons.grid_view_rounded, size: 16),
-              label: Text('Cards')),
-          ButtonSegment(
-              value: 'list',
-              icon: Icon(Icons.view_list_rounded, size: 16),
-              label: Text('List')),
-        ],
-        selected: {view},
-        onSelectionChanged: (v) => onView(v.first),
-      );
-}
-
-/// The active preset on one line; opened, every preset as a tile.
 class _PresetStrip extends StatelessWidget {
   const _PresetStrip({
     required this.st,
@@ -1043,211 +1011,6 @@ Widget _draggable(
   );
 }
 
-// ── cards ───────────────────────────────────────────────────────────────────
-
-class _CardGroup extends StatelessWidget {
-  const _CardGroup({
-    required this.group,
-    required this.rows,
-    required this.sel,
-    required this.pos,
-    required this.canDrag,
-    required this.at,
-    required this.onSelect,
-    required this.onMode,
-    required this.onDrop,
-    this.onRename,
-    this.onDelete,
-  });
-
-  final _Group group;
-  final Map<String, SectionRow> rows;
-  final String? sel;
-  final Map<String, int> pos;
-  final bool canDrag;
-  final Map<String, int> at;
-  final void Function(String) onSelect;
-  final void Function(String id, String mode) onMode;
-  final void Function(String id, int at) onDrop;
-  final VoidCallback? onRename;
-  final VoidCallback? onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    final head = group.head;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (head != null)
-          canDrag
-              ? _Drop(
-                  at: head + 1,
-                  onDrop: onDrop,
-                  child: (over) => Container(
-                    color: over
-                        ? Tokens.secSettings.withValues(alpha: 0.08)
-                        : null,
-                    child: _GroupHead(
-                        name: group.name,
-                        onRename: onRename,
-                        onDelete: onDelete),
-                  ),
-                )
-              : _GroupHead(name: group.name),
-        LayoutBuilder(builder: (context, box) {
-          const gap = 12.0;
-          // Three a row; fewer only when a window is too narrow for three.
-          final cols = box.maxWidth >= 600 ? 3 : (box.maxWidth >= 380 ? 2 : 1);
-          final w = (box.maxWidth - gap * (cols - 1)) / cols;
-          // 2:1, every card the same; a floor so the switch always fits.
-          final h = w / 2 < 140 ? 140.0 : w / 2;
-          return Wrap(
-            spacing: gap,
-            runSpacing: gap,
-            children: [
-              for (final id in group.ids)
-                SizedBox(
-                  width: w,
-                  height: h,
-                  child: _Drop(
-                    at: at[id]!,
-                    onDrop: onDrop,
-                    child: (over) => _draggable(
-                      id: id,
-                      enabled: canDrag,
-                      width: w,
-                      child: _Card(
-                        row: rows[id]!,
-                        pos: pos[id],
-                        selected: sel == id,
-                        over: over,
-                        grip: canDrag,
-                        onTap: () => onSelect(id),
-                        onMode: (m) => onMode(id, m),
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          );
-        }),
-      ],
-    );
-  }
-}
-
-class _Card extends StatelessWidget {
-  const _Card({
-    required this.row,
-    required this.pos,
-    required this.selected,
-    required this.over,
-    required this.grip,
-    required this.onTap,
-    required this.onMode,
-  });
-
-  final SectionRow row;
-  final int? pos;
-  final bool selected;
-  final bool over;
-  final bool grip;
-  final VoidCallback onTap;
-  final void Function(String) onMode;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = context.tokens;
-    final id = row.id;
-    final c = _accent(id);
-    final off = row.mode == 'off';
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-        foregroundDecoration: selected || over
-            ? BoxDecoration(
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                    color: over ? Tokens.secSettings : c, width: 2),
-              )
-            : null,
-        decoration: cardDeco(context),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                if (grip)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 6),
-                    child: Icon(Icons.drag_indicator,
-                        size: 16, color: t.textDim),
-                  ),
-                Opacity(
-                  opacity: off ? 0.5 : 1,
-                  child: Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      gradient: off
-                          ? null
-                          : LinearGradient(colors: [c, _accent2(id)]),
-                      color: off ? t.textDim : null,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Icon(_icon(id), size: 20, color: Colors.white),
-                  ),
-                ),
-                const SizedBox(width: 11),
-                Expanded(
-                  child: Text(_label(id),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: off ? t.textDim : t.text)),
-                ),
-                const SizedBox(width: 8),
-                switch (row.mode) {
-                  'hidden' => const _Tag('Hidden', Tokens.warn),
-                  'off' => const _Tag('Off', Tokens.error),
-                  _ => Text(
-                      pos == null ? '—' : pos!.toString().padLeft(2, '0'),
-                      style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: t.textDim),
-                    ),
-                },
-              ],
-            ),
-            // Under the title, whatever its length: a one-line blurb leaves
-            // its spare room above the switch, not above itself.
-            const SizedBox(height: 10),
-            Text(
-              switch (row.mode) {
-                'hidden' => 'Hidden from the sidebar; ${_workShort(id)} '
-                    'still runs',
-                'off' => 'Off: hidden and stopped, its data kept',
-                _ => kSectionWork[id]?.$1 ?? '',
-              },
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 12, height: 1.35, color: t.textDim),
-            ),
-            const Spacer(),
-            const SizedBox(height: 8),
-            _Seg(value: row.mode, enabled: true, expand: true, onPick: onMode),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 // ── list ────────────────────────────────────────────────────────────────────
 
 class _ListView extends StatelessWidget {
@@ -1255,12 +1018,10 @@ class _ListView extends StatelessWidget {
     required this.groups,
     required this.rows,
     required this.sel,
-    required this.open,
     required this.canDrag,
     required this.at,
     required this.onSelect,
     required this.onMode,
-    required this.onTab,
     required this.onDrop,
     required this.onRename,
     required this.onDeleteGroup,
@@ -1269,12 +1030,10 @@ class _ListView extends StatelessWidget {
   final List<_Group> groups;
   final Map<String, SectionRow> rows;
   final String? sel;
-  final String? open;
   final bool canDrag;
   final Map<String, int> at;
   final void Function(String) onSelect;
   final void Function(String id, String mode) onMode;
-  final void Function(SectionRow, String, bool) onTab;
   final void Function(String id, int at) onDrop;
   final void Function(int head) onRename;
   final void Function(int head) onDeleteGroup;
@@ -1296,7 +1055,7 @@ class _ListView extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(80, 9, 36, 9),
+              padding: const EdgeInsets.fromLTRB(80, 9, 14, 9),
               child: Row(children: [
                 Expanded(flex: 3, child: Text('APPLICATION', style: dim)),
                 if (wide) ...[
@@ -1353,10 +1112,8 @@ class _ListView extends StatelessWidget {
                       grip: canDrag,
                       selected: sel == id,
                       over: over,
-                      open: open == id,
                       onTap: () => onSelect(id),
                       onMode: (m) => onMode(id, m),
-                      onTab: onTab,
                     ),
                   ),
                 ),
@@ -1375,10 +1132,8 @@ class _ListRow extends StatelessWidget {
     required this.grip,
     required this.selected,
     required this.over,
-    required this.open,
     required this.onTap,
     required this.onMode,
-    required this.onTab,
   });
 
   final SectionRow row;
@@ -1386,10 +1141,8 @@ class _ListRow extends StatelessWidget {
   final bool grip;
   final bool selected;
   final bool over;
-  final bool open;
   final VoidCallback onTap;
   final void Function(String) onMode;
-  final void Function(SectionRow, String, bool) onTab;
 
   @override
   Widget build(BuildContext context) {
@@ -1491,33 +1244,8 @@ class _ListRow extends StatelessWidget {
                         expand: true,
                         onPick: onMode),
                   ),
-                  const SizedBox(width: 4),
-                  AnimatedRotation(
-                    turns: open ? 0.5 : 0,
-                    duration: const Duration(milliseconds: 160),
-                    child: Icon(Icons.expand_more, size: 18, color: t.textDim),
-                  ),
                 ],
               ),
-              if (open)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(66, 10, 0, 4),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _TabChips(row: row, onTab: onTab),
-                      const SizedBox(height: 6),
-                      Text(
-                        [
-                          if (row.db.isNotEmpty) row.db,
-                          if (kept != null) '$kept of ${tabs!.length} tabs kept',
-                          if (tabs != null) 'click a tab to take it away',
-                        ].join(' · '),
-                        style: TextStyle(fontSize: 11, color: t.textDim),
-                      ),
-                    ],
-                  ),
-                ),
             ],
           ),
         ),

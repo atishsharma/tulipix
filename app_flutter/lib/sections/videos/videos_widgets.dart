@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
 import '../../design/skin.dart';
+import '../../design/decode.dart';
 
 /// The idle fill for a pill or a ghost button, per theme.
 Color _idle(Tokens t) =>
@@ -507,6 +508,7 @@ class Artwork extends StatelessWidget {
               File(path),
               fit: BoxFit.cover,
               filterQuality: FilterQuality.medium,
+              cacheWidth: decodePx(context, width, height),
               // A poster that vanished between the query and the paint is a
               // stale row, not a crash.
               errorBuilder: (_, __, ___) =>

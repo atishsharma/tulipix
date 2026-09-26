@@ -17,6 +17,7 @@ import 'music_controller.dart';
 import 'music_dialogs.dart';
 import 'music_motion.dart';
 import 'song_menu.dart';
+import '../../design/decode.dart';
 
 /// Artwork with a fallback glyph. `kind`/`key` are what `music_ensure_art`
 /// takes; a null answer paints the placeholder rather than a broken image.
@@ -64,6 +65,7 @@ class MusicArt extends StatelessWidget {
             : Image.file(
                 File(path),
                 fit: BoxFit.cover,
+                cacheWidth: decodePx(context, size),
                 // A cover that was deleted under us is a missing picture, not
                 // a crashed grid.
                 errorBuilder: (_, __, ___) => ColoredBox(

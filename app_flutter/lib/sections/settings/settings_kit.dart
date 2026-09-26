@@ -53,7 +53,9 @@ String humanBytes(num b) {
 /// A home-relative path the way a person writes it.
 String tildePath(String p) {
   final home = Platform.environment['HOME'] ?? '';
-  return home.isNotEmpty && p.startsWith(home) ? '~${p.substring(home.length)}' : p;
+  return home.isNotEmpty && p.startsWith(home)
+      ? '~${p.substring(home.length)}'
+      : p;
 }
 
 /// One tab's rows, looked up by key — or by label, for the keyless readings.
@@ -95,7 +97,8 @@ class Rows {
 /// A tab's scrolling page: its head, then its blocks, on the same gutter as
 /// You & Home.
 class SettingsPageBody extends StatelessWidget {
-  const SettingsPageBody({super.key, required this.head, required this.children});
+  const SettingsPageBody(
+      {super.key, required this.head, required this.children});
 
   final Widget head;
   final List<Widget> children;
@@ -187,10 +190,11 @@ class SettingsHead extends StatelessWidget {
             children: [
               Text(title,
                   style: TextStyle(
-                      fontSize: 22, fontWeight: FontWeight.w800, color: t.text)),
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                      color: t.text)),
               if (note.isNotEmpty)
-                Text(note,
-                    style: TextStyle(fontSize: 12.5, color: t.textDim)),
+                Text(note, style: TextStyle(fontSize: 12.5, color: t.textDim)),
             ],
           ),
         ),
@@ -242,9 +246,8 @@ class SettingsTile extends StatelessWidget {
             color: t.panel2,
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-                color: danger
-                    ? Tokens.error.withValues(alpha: 0.35)
-                    : t.outline),
+                color:
+                    danger ? Tokens.error.withValues(alpha: 0.35) : t.outline),
           ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -351,7 +354,8 @@ class TileGrid extends StatelessWidget {
                     children: [
                       for (var i = 0; i < rows[r].length; i++) ...[
                         if (i > 0) const SizedBox(width: gap),
-                        Expanded(flex: rows[r][i].span, child: rows[r][i].child),
+                        Expanded(
+                            flex: rows[r][i].span, child: rows[r][i].child),
                       ],
                       // A row its tiles do not fill keeps their widths rather
                       // than stretching them across the gap.
@@ -421,7 +425,9 @@ class StatStrip extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    for (var j = i; j < math.min(i + per, stats.length); j++) ...[
+                    for (var j = i;
+                        j < math.min(i + per, stats.length);
+                        j++) ...[
                       if (j > i) const SizedBox(width: 14),
                       Expanded(child: card(stats[j])),
                     ],
@@ -502,8 +508,7 @@ class Spread extends StatelessWidget {
           if (i > 0) ...[
             const Spacer(flex: 2),
             if (divided)
-              Divider(
-                  height: gap < 1 ? 1 : gap, thickness: 1, color: t.outline)
+              Divider(height: gap < 1 ? 1 : gap, thickness: 1, color: t.outline)
             else
               SizedBox(height: gap),
             const Spacer(flex: 2),
@@ -554,7 +559,10 @@ class SettingLine extends StatelessWidget {
       child: below
           ? Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [words, if (c != null) ...[const SizedBox(height: 9), c]],
+              children: [
+                words,
+                if (c != null) ...[const SizedBox(height: 9), c]
+              ],
             )
           : Row(
               children: [
@@ -709,8 +717,8 @@ class Seg extends StatelessWidget {
         color: active ? t.panel : Colors.transparent,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(7),
-          side: BorderSide(
-              color: active ? t.outlineStrong : Colors.transparent),
+          side:
+              BorderSide(color: active ? t.outlineStrong : Colors.transparent),
         ),
         child: InkWell(
           borderRadius: BorderRadius.circular(7),
@@ -751,6 +759,79 @@ class Seg extends StatelessWidget {
               runSpacing: 2,
               children: [for (var i = 0; i < options.length; i++) button(i)],
             ),
+    );
+  }
+}
+
+/// [Seg]'s choice as a dropdown: one line however many options there are, for
+/// a narrow panel where a row of buttons would crowd.
+class Pick extends StatelessWidget {
+  const Pick({
+    super.key,
+    required this.options,
+    required this.value,
+    required this.onPick,
+    this.labels,
+  });
+
+  final List<String> options;
+  final String value;
+  final ValueChanged<String> onPick;
+  final List<String>? labels;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    String label(int i) => labels?[i] ?? options[i];
+    final at = options.indexOf(value);
+    return PopupMenuButton<String>(
+      tooltip: '',
+      initialValue: value,
+      onSelected: (v) {
+        if (v != value) onPick(v);
+      },
+      position: PopupMenuPosition.under,
+      itemBuilder: (_) => [
+        for (var i = 0; i < options.length; i++)
+          PopupMenuItem(
+            value: options[i],
+            height: 36,
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 22,
+                  child: options[i] == value
+                      ? Icon(Icons.check, size: 15, color: t.text)
+                      : null,
+                ),
+                Text(label(i), style: const TextStyle(fontSize: 12.5)),
+              ],
+            ),
+          ),
+      ],
+      child: Container(
+        height: 34,
+        padding: const EdgeInsets.only(left: 12, right: 8),
+        decoration: BoxDecoration(
+          color: t.bg,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: t.outline),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(at < 0 ? value : label(at),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: t.text)),
+            ),
+            Icon(Icons.expand_more, size: 18, color: t.textDim),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -832,7 +913,8 @@ class SmallBtn extends StatelessWidget {
                   SizedBox(
                     width: 12,
                     height: 12,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: ink),
+                    child:
+                        CircularProgressIndicator(strokeWidth: 2, color: ink),
                   )
                 else if (icon != null)
                   Icon(icon, size: 14, color: ink),
@@ -978,8 +1060,8 @@ class _FieldBoxState extends State<FieldBox> {
       decoration: BoxDecoration(
         color: t.bg,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-            color: _focus.hasFocus ? Tokens.brand : t.outlineStrong),
+        border:
+            Border.all(color: _focus.hasFocus ? Tokens.brand : t.outlineStrong),
       ),
       child: Row(
         children: [

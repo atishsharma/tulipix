@@ -91,6 +91,7 @@ class PlaybackTab extends StatelessWidget {
     final sizeRow = rows.key('playback.sub-size');
     final colourRow = rows.key('playback.sub-color');
     final sidecar = rows.label('Subtitles next to the video');
+    final player = rows.key('playback.player');
     final interp = rows.key('playback.interpolation');
     final upscale = rows.key('playback.upscale');
     final awake = rows.label('Keep display awake');
@@ -177,6 +178,7 @@ class PlaybackTab extends StatelessWidget {
                   ),
                   const SizedBox(height: 6),
                   Lines([
+                    if (player != null) RowLine(row: player, controller: c),
                     if (interp != null) RowLine(row: interp, controller: c),
                     if (upscale != null) RowLine(row: upscale, controller: c),
                     SettingLine(

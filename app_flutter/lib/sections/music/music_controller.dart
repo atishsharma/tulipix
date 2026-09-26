@@ -289,7 +289,7 @@ class MusicController extends ChangeNotifier {
   /// Volume and mute as the deck holds them: what every player's volume
   /// control and mute glyph shows. See [audioLevel] for why not the snapshot,
   /// which is only the fallback until Rust has handed the deck a value.
-  double get volume => audioLevel.value?.volume ?? now?.volume ?? 100;
+  double get volume => audioLevel.value?.volume ?? now?.volume ?? kDefaultVolume;
   bool get muted => audioLevel.value?.muted ?? now?.muted ?? false;
 
   Timer? _volumeSend;

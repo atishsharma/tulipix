@@ -6,8 +6,6 @@
 // kitchen_cook.dart. Every surface is drawn from the tokens and the skin; the
 // one liberty is the serif for titles and steps, as in the deck.
 
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 
 import '../../design/first_load.dart';
@@ -18,6 +16,7 @@ import '../../src/rust/api/dialog.dart';
 import '../../src/rust/api/kitchen.dart';
 import 'kitchen_controller.dart';
 import 'kitchen_cook.dart';
+import '../../design/decode.dart';
 
 const String kSerif = 'serif';
 
@@ -1312,9 +1311,8 @@ class Art extends StatelessWidget {
   Widget build(BuildContext context) {
     final plate = _Plate(seed: seed);
     if (path.isEmpty) return plate;
-    return Image.file(
-      File(path),
-      fit: BoxFit.cover,
+    return FileArt(
+      path,
       gaplessPlayback: true,
       errorBuilder: (_, __, ___) => plate,
     );

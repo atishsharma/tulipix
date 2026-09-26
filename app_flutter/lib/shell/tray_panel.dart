@@ -29,6 +29,7 @@ import '../sections/music/player_widgets.dart' show TrackBar;
 import '../src/rust/api/music.dart';
 import 'shell_controller.dart';
 import 'window.dart';
+import '../design/decode.dart';
 
 /// Whether the panel is up. One flag, and the order its window comes and goes
 /// in.
@@ -679,7 +680,9 @@ class _Art extends StatelessWidget {
         child: p == null || p.isEmpty
             ? plain
             : Image.file(File(p),
-                fit: BoxFit.cover, errorBuilder: (_, __, ___) => plain),
+                fit: BoxFit.cover,
+                cacheWidth: decodePx(context, size),
+                errorBuilder: (_, __, ___) => plain),
       ),
     );
   }

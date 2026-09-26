@@ -1882,7 +1882,7 @@ class _AdvancedTabState extends State<AdvancedTab> {
           action: 'Tools',
           onTap: () => _go('tools'),
         ),
-      if ((startup ?? 0) >= 500)
+      if ((startup ?? 0) >= kStartupBudgetMs)
         (
           tint: Tokens.warn,
           title: 'A slow start',
@@ -1898,7 +1898,7 @@ class _AdvancedTabState extends State<AdvancedTab> {
           action: null,
           onTap: null,
         ),
-      if (frames >= 60)
+      if (frames >= kSlowFrameBudget)
         (
           tint: Tokens.warn,
           title: 'Many slow frames',
@@ -2058,9 +2058,9 @@ class _AdvancedTabState extends State<AdvancedTab> {
                 label: 'Startup',
                 value: startup == null ? '…' : '$startup',
                 unit: 'ms',
-                note: 'Budget 500 ms',
-                frac: (startup ?? 0) / 500,
-                tint: (startup ?? 0) < 500 ? Tokens.ok : Tokens.warn,
+                note: 'Budget ${kStartupBudgetMs ~/ 1000} s',
+                frac: (startup ?? 0) / kStartupBudgetMs,
+                tint: (startup ?? 0) < kStartupBudgetMs ? Tokens.ok : Tokens.warn,
               ),
               (
                 label: 'Memory',
@@ -2074,9 +2074,9 @@ class _AdvancedTabState extends State<AdvancedTab> {
                 label: 'Slow frames',
                 value: '$frames',
                 unit: 'this session',
-                note: 'Over 16 ms · fine under 60',
-                frac: frames / 60,
-                tint: frames < 60 ? Tokens.ok : Tokens.warn,
+                note: 'Over 16 ms · fine under $kSlowFrameBudget',
+                frac: frames / kSlowFrameBudget,
+                tint: frames < kSlowFrameBudget ? Tokens.ok : Tokens.warn,
               ),
               (
                 label: 'Thumbnail cache',

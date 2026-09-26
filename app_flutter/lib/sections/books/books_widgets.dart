@@ -16,6 +16,7 @@ import '../../src/rust/api/books.dart';
 import 'book_mockup.dart';
 import 'book_theme.dart';
 import 'books_controller.dart';
+import '../../design/decode.dart';
 
 /// Slint's `alignment: start/end` plus `clip: true`, which is what every tight
 /// block on that page uses. A Column that is a pixel taller than its slot must
@@ -374,6 +375,7 @@ class BookCover extends StatelessWidget {
               Image.file(
                 File(path),
                 fit: fitContain ? BoxFit.contain : BoxFit.cover,
+                cacheWidth: decodePx(context, width, h),
                 errorBuilder: (_, __, ___) =>
                     _Generated(book: book, hue: hue, big: big),
               ),

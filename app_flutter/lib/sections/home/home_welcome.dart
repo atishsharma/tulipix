@@ -106,7 +106,9 @@ class _WelcomeHomeState extends State<WelcomeHome> {
   void _armRa() {
     _raTick?.cancel();
     _raTick = Timer.periodic(const Duration(seconds: 20), (_) {
-      if (mounted) setState(() => _raTab = (_raTab + 1) % 4);
+      if (mounted && TickerMode.valuesOf(context).enabled) {
+        setState(() => _raTab = (_raTab + 1) % 4);
+      }
     });
   }
 

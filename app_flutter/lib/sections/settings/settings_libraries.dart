@@ -90,7 +90,8 @@ String _parentOf(String path) {
 }
 
 class LibrariesTab extends StatefulWidget {
-  const LibrariesTab({super.key, required this.controller, required this.state});
+  const LibrariesTab(
+      {super.key, required this.controller, required this.state});
 
   final SettingsController controller;
   final SettingsState state;
@@ -166,8 +167,8 @@ class _LibrariesTabState extends State<LibrariesTab> {
       return;
     }
     setState(() => _scanning = true);
-    _c.say(why ??
-        'Rescanning every watched folder. You can keep using the app.');
+    _c.say(
+        why ?? 'Rescanning every watched folder. You can keep using the app.');
     try {
       final s = await statusDispatch(cmd: const StatusCmd.rescan());
       if (!mounted) return;
@@ -210,7 +211,8 @@ class _LibrariesTabState extends State<LibrariesTab> {
         if (FileSystemEntity.isDirectorySync(f.path)) f.path,
     ];
     if (dirs.isEmpty) {
-      _c.say('Drop a folder — files are found by watching the folder they are in.');
+      _c.say(
+          'Drop a folder — files are found by watching the folder they are in.');
       return;
     }
     for (final p in dirs) {
@@ -305,7 +307,10 @@ class _LibrariesTabState extends State<LibrariesTab> {
     final byPath = {for (final l in libs) l.path: l};
     final sel = byPath[_sel];
     // Ticks on rows that went away, or were filtered out, do not count.
-    final picked = [for (final l in shown) if (_picked.contains(l.path)) l.path];
+    final picked = [
+      for (final l in shown)
+        if (_picked.contains(l.path)) l.path
+    ];
 
     final main = <Widget>[
       SettingsHead.forTab(
@@ -343,7 +348,8 @@ class _LibrariesTabState extends State<LibrariesTab> {
       if (_scanning || _job.isNotEmpty) ...[
         const SizedBox(height: 12),
         _JobStrip(
-          label: _job.isEmpty ? 'Rescanning every watched folder' : st.taskLabel,
+          label:
+              _job.isEmpty ? 'Rescanning every watched folder' : st.taskLabel,
           frac: _job.isEmpty ? -1 : st.taskFrac,
         ),
       ],
@@ -514,7 +520,8 @@ class _LibrariesTabState extends State<LibrariesTab> {
             tooltip: 'How often these are read again by themselves',
             onSelected: (v) async {
               for (final p in picked) {
-                await _c.send(SettingsCmd.setText(key: 'lib.cadence.$p', value: v));
+                await _c
+                    .send(SettingsCmd.setText(key: 'lib.cadence.$p', value: v));
               }
             },
             itemBuilder: (_) => [
@@ -522,7 +529,8 @@ class _LibrariesTabState extends State<LibrariesTab> {
                 PopupMenuItem(value: e.key, child: Text(e.value)),
             ],
             child: const IgnorePointer(
-              child: SmallBtn(label: 'Read again…', icon: Icons.schedule, onTap: _noop),
+              child: SmallBtn(
+                  label: 'Read again…', icon: Icons.schedule, onTap: _noop),
             ),
           ),
           SmallBtn(
@@ -553,7 +561,8 @@ class _LibrariesTabState extends State<LibrariesTab> {
 
   // ── the table ─────────────────────────────────────────────────────────────
 
-  Widget _table(List<LibraryRow> libs, List<LibraryRow> shown, List<String> picked) {
+  Widget _table(
+      List<LibraryRow> libs, List<LibraryRow> shown, List<String> picked) {
     final t = context.tokens;
     final Widget body;
     if (libs.isEmpty) {
@@ -579,7 +588,8 @@ class _LibrariesTabState extends State<LibrariesTab> {
         for (final grp in _groups(shown)) {
           final gone = grp.rows.every((l) => !l.exists);
           // An unplugged drive folds to one line by default.
-          final folded = (_by == 'drive' && gone) != _flipped.contains(grp.name);
+          final folded =
+              (_by == 'drive' && gone) != _flipped.contains(grp.name);
           if (grp.name.isNotEmpty) {
             rows.add(_GroupHead(
               name: grp.name,
@@ -718,8 +728,7 @@ class _LibrariesTabState extends State<LibrariesTab> {
             Text('Its music goes to',
                 style: TextStyle(fontSize: 11.5, color: t.textDim)),
             const SizedBox(height: 6),
-            Seg(
-              full: true,
+            Pick(
               options: _musicShelves.keys.toList(),
               labels: _musicShelves.values.toList(),
               value: l.musicSection,
@@ -731,8 +740,7 @@ class _LibrariesTabState extends State<LibrariesTab> {
             Text('Read again automatically',
                 style: TextStyle(fontSize: 11.5, color: t.textDim)),
             const SizedBox(height: 6),
-            Seg(
-              full: true,
+            Pick(
               options: ['', ..._cadences.keys],
               labels: ['Default', ..._cadences.values],
               value: l.cadence,
@@ -762,7 +770,8 @@ class _LibrariesTabState extends State<LibrariesTab> {
                 SmallBtn(
                   label: 'Thumbnails',
                   tooltip: 'Redraw this folder\'s thumbnails',
-                  onTap: busy ? null : () => _c.sendAction('lib-thumbs:${l.path}'),
+                  onTap:
+                      busy ? null : () => _c.sendAction('lib-thumbs:${l.path}'),
                 ),
               ] else
                 SmallBtn(
@@ -773,13 +782,16 @@ class _LibrariesTabState extends State<LibrariesTab> {
                     await _load();
                   },
                 ),
-              SmallBtn(
-                label: 'Stop watching',
-                ghost: true,
-                tooltip: 'Nothing indexed from it is deleted',
-                onTap: () => _remove([l.path]),
-              ),
             ],
+          ),
+          const SizedBox(height: 10),
+          Center(
+            child: SmallBtn(
+              label: 'Stop watching',
+              danger: true,
+              tooltip: 'Nothing indexed from it is deleted',
+              onTap: () => _remove([l.path]),
+            ),
           ),
         ],
       ),
@@ -798,8 +810,7 @@ class _LibrariesTabState extends State<LibrariesTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Seg(
-            full: true,
+          Pick(
             options: _cadences.keys.toList(),
             labels: _cadences.values.toList(),
             value: st.defaultCadence,
@@ -854,7 +865,9 @@ class _Recovery extends StatelessWidget {
               children: [
                 Text('The folder list could not be read',
                     style: TextStyle(
-                        fontSize: 13.5, fontWeight: FontWeight.w700, color: t.text)),
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w700,
+                        color: t.text)),
                 const SizedBox(height: 2),
                 Text(
                   has
@@ -897,7 +910,10 @@ class _HealthLine extends StatelessWidget {
     final saved = st.libSavedAt;
     final parts = [
       '$n ${n == 1 ? 'folder' : 'folders'}',
-      if (n > 0) missing == 0 ? 'all on disk' : '${n - missing} on disk, $missing missing',
+      if (n > 0)
+        missing == 0
+            ? 'all on disk'
+            : '${n - missing} on disk, $missing missing',
       if (lib != null) '${lib!.libItems} items',
       if (lib != null) lib!.libBytes,
       if (saved > 0) 'list saved ${_since(saved)}',
@@ -989,7 +1005,8 @@ class _SecChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(name,
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: k)),
+          style:
+              TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: k)),
     );
   }
 }
@@ -997,7 +1014,8 @@ class _SecChip extends StatelessWidget {
 const double _wSec = 170, _wItems = 80, _wRead = 100, _wState = 96;
 
 class _HeadRow extends StatelessWidget {
-  const _HeadRow({required this.wide, required this.ticked, required this.onTick});
+  const _HeadRow(
+      {required this.wide, required this.ticked, required this.onTick});
 
   final bool wide;
 
@@ -1021,7 +1039,8 @@ class _HeadRow extends StatelessWidget {
 
     return Container(
       padding: const EdgeInsets.fromLTRB(6, 4, 14, 4),
-      decoration: BoxDecoration(border: Border(bottom: BorderSide(color: t.outline))),
+      decoration:
+          BoxDecoration(border: Border(bottom: BorderSide(color: t.outline))),
       child: Row(children: [
         Checkbox(
           value: ticked,
@@ -1081,8 +1100,7 @@ class _GroupHead extends StatelessWidget {
               size: 18, color: t.textDim),
           const SizedBox(width: 6),
           Icon(icon,
-              size: 16,
-              color: by == 'section' ? _tintOf(name) : t.textDim),
+              size: 16, color: by == 'section' ? _tintOf(name) : t.textDim),
           const SizedBox(width: 8),
           Text(name,
               style: TextStyle(
@@ -1091,8 +1109,10 @@ class _GroupHead extends StatelessWidget {
           Text(
             [
               '$count ${count == 1 ? 'folder' : 'folders'}',
-              if (unplugged) 'unplugged'
-              else if (missing > 0) '$missing missing',
+              if (unplugged)
+                'unplugged'
+              else if (missing > 0)
+                '$missing missing',
             ].join(' · '),
             style: TextStyle(
                 fontSize: 12, color: unplugged ? Tokens.warn : t.textDim),
@@ -1141,13 +1161,14 @@ class _Row extends StatelessWidget {
     final chips = sections.take(2).toList();
     final more = sections.length - chips.length;
     return Material(
-      color: selected ? Tokens.brand.withValues(alpha: 0.08) : Colors.transparent,
+      color:
+          selected ? Tokens.brand.withValues(alpha: 0.08) : Colors.transparent,
       child: InkWell(
         onTap: onTap,
         child: Container(
           padding: const EdgeInsets.fromLTRB(6, 3, 14, 3),
-          decoration:
-              BoxDecoration(border: Border(bottom: BorderSide(color: t.outline))),
+          decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: t.outline))),
           child: Opacity(
             opacity: dim ? 0.6 : 1,
             child: Row(children: [
@@ -1318,7 +1339,10 @@ class _JobStrip extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                         color: t.text)),
               ),
-              Text(known ? '${(frac.clamp(0.0, 1.0) * 100).floor()}%' : 'Working…',
+              Text(
+                  known
+                      ? '${(frac.clamp(0.0, 1.0) * 100).floor()}%'
+                      : 'Working…',
                   style: TextStyle(
                       fontSize: 11.5,
                       color: t.textDim,

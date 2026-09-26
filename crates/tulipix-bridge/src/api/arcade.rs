@@ -262,6 +262,29 @@ pub async fn arcade_dispatch(cmd: ArcadeCmd) -> Result<ArcadeState> {
     snapshot(pool).await
 }
 
+/// The last `limit` games played, newest first, hidden ones left out. For
+/// Home's Play layout, which must not move the section's own filter to get it.
+pub async fn arcade_recent(limit: i64) -> Result<Vec<GameTile>> {
+    let pool = arcade_pool().await?;
+    let all = games(pool, false).await?;
+    let marks: HashMap<String, (bool, bool)> =
+        sqlx::query_as::<_, (String, i64, i64)>("SELECT key, fav, hidden FROM marks")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|(k, f, h)| (k, (f != 0, h != 0)))
+            .collect();
+    let mut v: Vec<&Game> = all
+        .iter()
+        .filter(|x| x.last_played > 0 && !marks.get(&x.key).is_some_and(|m| m.1))
+        .collect();
+    v.sort_by(|a, b| b.last_played.cmp(&a.last_played));
+    Ok(v.into_iter()
+        .take(limit.max(0) as usize)
+        .map(|x| tile(x, marks.get(&x.key).is_some_and(|m| m.0)))
+        .collect())
+}
+
 // ------------------------------------------------------------------- apply ---
 
 async fn apply(pool: &'static SqlitePool, cmd: ArcadeCmd) -> Result<()> {

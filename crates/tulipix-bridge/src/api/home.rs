@@ -38,6 +38,8 @@ pub struct HomeCounts {
     pub tools_running: i64,
     pub tools_queued: i64,
     pub finances_due: i64,
+    /// Papers scanned in and not yet filed.
+    pub papers_unfiled: i64,
 }
 
 /// One in-progress item. `kind` is "book" | "podcast" | "audiobook" | "video",
@@ -139,12 +141,16 @@ pub struct HomeState {
     pub continue_filter: String,
     pub continue_rows: Vec<HomeContinue>,
     pub recent_photos: Vec<HomeTile>,
+    /// Photos shot on today's month and day in an earlier year, newest
+    /// first; `sub` is the year.
+    pub on_this_day: Vec<HomeTile>,
     pub recent_videos: Vec<HomeTile>,
     pub recent_books: Vec<HomeTile>,
     pub remotes: Vec<HomeRemote>,
     pub recent_songs: Vec<HomeTile>,
     pub hero: HomeHero,
-    /// Which layout is chosen: "classic" | "welcome" | "cinema" | "stream".
+    /// Which layout is chosen: "classic" | "welcome" | "cinema" | "stream" |
+    /// "media" | "play" | "calm" | "today".
     pub layout: String,
     /// The card keys Settings left switched on. A layout draws only these.
     pub cards: Vec<String>,
@@ -194,10 +200,11 @@ pub async fn home_dispatch(cmd: HomeCmd) -> Result<HomeState> {
 }
 
 async fn snapshot() -> Result<HomeState> {
-    let (counts, rows, photos, videos, books, remotes, songs, events, money) = tokio::join!(
+    let (counts, rows, photos, day, videos, books, remotes, songs, events, money) = tokio::join!(
         counts(),
         continue_rows(),
         recent_photos(),
+        on_this_day(),
         recent_videos(),
         recent_books(),
         remotes(),
@@ -239,6 +246,7 @@ async fn snapshot() -> Result<HomeState> {
         continue_rows: shown,
         continue_filter: filter,
         recent_photos: photos,
+        on_this_day: day,
         recent_videos: videos,
         recent_books: books,
         remotes,
@@ -371,6 +379,7 @@ async fn counts() -> HomeCounts {
         tools_running: 0,
         tools_queued: 0,
         finances_due: 0,
+        papers_unfiled: 0,
     };
     if let Ok(p) = crate::db::photos_pool().await {
         c.photos = n(p, "SELECT COUNT(*) FROM items WHERE section = 'photos' AND missing_since IS NULL").await;
@@ -424,6 +433,10 @@ async fn counts() -> HomeCounts {
         c.tools_running = n(p, "SELECT COUNT(*) FROM jobs WHERE state = 'running'").await;
         c.tools_queued = n(p, "SELECT COUNT(*) FROM jobs WHERE state = 'queued'").await;
     }
+    if let Ok(p) = crate::db::papers_pool().await {
+        // The Papers inbox's own count.
+        c.papers_unfiled = n(p, "SELECT COUNT(*) FROM papers WHERE filed = 0 AND status != 'reading'").await;
+    }
     if let Ok(p) = crate::db::finances_pool().await {
         c.finances_due = n(
             p,
@@ -452,6 +465,30 @@ async fn recent_photos() -> Vec<HomeTile> {
     .unwrap_or_default()
     .into_iter()
     .map(|(id, path)| HomeTile { id, label: file_name(&path), sub: String::new() })
+    .collect()
+}
+
+async fn on_this_day() -> Vec<HomeTile> {
+    let Ok(p) = crate::db::photos_pool().await else { return Vec::new() };
+    // EXIF wall-clock time is stored as if it were UTC, so no 'localtime'
+    // here -- the day it reads is the day on the camera.
+    let now = chrono::Local::now();
+    sqlx::query_as::<_, (i64, String, String)>(
+        "SELECT items.id, COALESCE(items.abs_path, ''), strftime('%Y', pm.taken_at, 'unixepoch') \
+         FROM items JOIN photo_meta pm ON pm.item_id = items.id \
+         WHERE items.section = 'photos' AND items.missing_since IS NULL \
+         AND strftime('%m-%d', pm.taken_at, 'unixepoch') = ? \
+         AND strftime('%Y', pm.taken_at, 'unixepoch') < ? \
+         ORDER BY pm.taken_at DESC LIMIT ?",
+    )
+    .bind(now.format("%m-%d").to_string())
+    .bind(now.format("%Y").to_string())
+    .bind(SHELF)
+    .fetch_all(p)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(id, path, year)| HomeTile { id, label: file_name(&path), sub: year })
     .collect()
 }
 

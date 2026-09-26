@@ -96,7 +96,14 @@ pub async fn ingest_meta(pool: &SqlitePool, item_id: i64) -> Result<()> {
     .fetch_optional(pool)
     .await?;
     let Some(path) = path else { return Ok(()) };
-    let facts = probe(Path::new(&path)).unwrap_or_default();
+    // ffprobe is a child process waited on synchronously: on the blocking pool,
+    // so a library's worth of them does not hold the async workers every other
+    // section's calls run on.
+    let facts = tokio::task::spawn_blocking(move || probe(Path::new(&path)))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
     write_meta(pool, item_id, &facts).await
 }
 

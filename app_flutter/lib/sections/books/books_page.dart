@@ -108,7 +108,9 @@ class _BooksPageState extends State<BooksPage> {
 
   void _nextSlide() {
     final slides = _c.state?.slider.length ?? 0;
-    if (slides < 2 || !mounted) return;
+    // Offstage, the carousel holds still rather than rebuilding the page
+    // every five seconds for nobody.
+    if (slides < 2 || !mounted || !TickerMode.valuesOf(context).enabled) return;
     setState(() => _slide = (_slide + 1) % slides);
   }
 

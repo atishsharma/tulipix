@@ -1,6 +1,6 @@
 //! The video transport: what to play, and the settings it plays under.
 //!
-//! Nothing here spawns a process any more. mpv used to draw its own top-level
+//! By default nothing here spawns a process: mpv used to draw its own top-level
 //! window, and 200 lines of this file were the cost of that choice — a JSON IPC
 //! socket to read the clock back through, `PR_SET_PDEATHSIG` so a crashed app
 //! did not leave an orphan film playing, and a `kill -9` to close it. Flutter
@@ -58,6 +58,9 @@ pub fn stop() {
     if let Ok(mut g) = pending().lock() {
         *g = None;
     }
+    // The standalone window, if Settings → Playback → Video player sent it
+    // there. A no-op when nothing external is running.
+    tulipix_common::stop_video();
     emit(VideosEvent::VideoStop);
 }
 
@@ -143,6 +146,13 @@ fn settings_args() -> Vec<String> {
     if s.flag("playback.audio-exclusive", false) {
         out.push("--audio-exclusive=yes".into());
     }
+    // Every video starts here, in the window and in mpv's own: 100 is too
+    // loud. `player.volume` overrides it.
+    let vol = s.text("player.volume");
+    out.push(format!(
+        "--volume={}",
+        if vol.trim().is_empty() { "40" } else { vol.trim() }
+    ));
     out
 }
 
@@ -187,12 +197,120 @@ pub fn play(
     }
     let mut options = settings_args();
     options.extend(extra_args);
+    let start_at = resume.filter(|r| *r > 1.0).unwrap_or(0.0);
+    if external_player() && spawn_external(generation, &src, start_at, &options) {
+        return;
+    }
     emit(VideosEvent::VideoPlay {
         token: generation as i64,
         src,
-        start_at: resume.filter(|r| *r > 1.0).unwrap_or(0.0),
+        start_at,
         props: props(options),
     });
+}
+
+/// Settings → Playback → Video player. `mpv` opens videos in a standalone mpv
+/// window; anything else, including unset, is the in-app player.
+///
+/// Why offer it: on Linux the Flutter engine draws on its own timer rather
+/// than the display's vsync, so a video in a Flutter texture judders where the
+/// same file in mpv's own window, which paces to the display, does not.
+fn external_player() -> bool {
+    tulipix_core::settings::Settings::load()
+        .unwrap_or_default()
+        .advanced
+        .get("playback.player")
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("mpv"))
+}
+
+/// Play in a standalone mpv window with the same options and resume seek the
+/// in-app player would get, reporting back through [`started`] and [`ended`]
+/// exactly as Dart does, so every caller's hooks and the `watch_progress`
+/// writeback work unchanged. [`stop`] kills it.
+///
+/// False when mpv could not be launched (not installed): the caller falls back
+/// to the in-app player rather than playing nothing.
+fn spawn_external(generation: u32, src: &str, start_at: f64, options: &[String]) -> bool {
+    use std::io::{BufRead, BufReader, Write};
+    use tulipix_common::mpv_ipc;
+    use tulipix_core::proc::NoWindow;
+
+    let sock = mpv_ipc::endpoint("tulipix-video");
+    mpv_ipc::cleanup(&sock);
+    let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
+    cmd.no_window();
+    cmd.arg(src)
+        .arg("--force-window=yes")
+        // Maximized: the window fills the screen but keeps its title bar and
+        // the desktop's panels, rather than going fullscreen.
+        .arg("--window-maximized=yes")
+        .arg("--keep-open=no")
+        .arg(format!("--input-ipc-server={}", sock.display()));
+    if start_at > 0.0 {
+        cmd.arg(format!("--start={start_at}"));
+    }
+    cmd.args(options);
+    tulipix_common::mpv_die_with_parent(&mut cmd);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "external mpv launch failed; using the in-app player");
+            return false;
+        }
+    };
+    let pid = child.id();
+    tulipix_common::VIDEO_PID.store(pid, Ordering::SeqCst);
+    // `ended` awaits the database; the watcher below is a plain thread, so the
+    // runtime is captured here, where the caller's task has one.
+    let rt = tokio::runtime::Handle::try_current().ok();
+    let token = generation as i64;
+
+    std::thread::spawn(move || {
+        let clock = Arc::new(Mutex::new((0f64, 0f64)));
+        let clock2 = clock.clone();
+        let sockp = sock.clone();
+        let reader = std::thread::spawn(move || {
+            let Ok(mut stream) = mpv_ipc::connect(&sockp) else { return };
+            let _ = stream.write_all(
+                b"{\"command\":[\"observe_property\",1,\"time-pos\"]}\n\
+                  {\"command\":[\"observe_property\",2,\"duration\"]}\n",
+            );
+            let mut reported = false;
+            for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                let Some(d) = v["data"].as_f64().filter(|_| v["event"] == "property-change")
+                else {
+                    continue;
+                };
+                let Ok(mut g) = clock2.lock() else { continue };
+                match v["name"].as_str() {
+                    Some("time-pos") => g.0 = d,
+                    Some("duration") => g.1 = d,
+                    _ => {}
+                }
+                if !reported && g.0 > 0.0 {
+                    reported = true;
+                    drop(g);
+                    started(token);
+                }
+            }
+        });
+        let _ = child.wait();
+        let _ = tulipix_common::VIDEO_PID.compare_exchange(
+            pid,
+            0,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        let _ = std::fs::remove_file(&sock);
+        let _ = reader.join();
+        let (pos, dur) = clock.lock().map(|g| *g).unwrap_or((0.0, 0.0));
+        match rt {
+            Some(h) => h.block_on(ended(token, pos, dur)),
+            None => tracing::warn!("external mpv: no runtime, position not saved"),
+        }
+    });
+    true
 }
 
 /// Follow the video that was just opened, for the thing a live stream needs:

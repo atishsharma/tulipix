@@ -58,7 +58,7 @@ class _CinemaHomeState extends State<CinemaHome> {
   void _armHub() {
     _hubSlide?.cancel();
     _hubSlide = Timer.periodic(kCineRotate, (_) {
-      if (mounted) setState(() => _hub += 1);
+      if (mounted && TickerMode.valuesOf(context).enabled) setState(() => _hub += 1);
     });
   }
 
@@ -66,7 +66,7 @@ class _CinemaHomeState extends State<CinemaHome> {
     _slide?.cancel();
     if (widget.state.continueRows.length < 2) return;
     _slide = Timer.periodic(kCineRotate, (_) {
-      if (mounted) {
+      if (mounted && TickerMode.valuesOf(context).enabled) {
         setState(() =>
             _sel = (_sel + 1) % math.max(1, widget.state.continueRows.length));
       }

@@ -79,8 +79,8 @@ const List<({String id, String label, IconData icon, Color tint})>
   ),
 ];
 
-/// The four Home layouts. All four draw the same snapshot; the note is what
-/// each one does with it.
+/// The Home layouts. All draw the same snapshot; the note is what each one
+/// does with it.
 const List<({String id, String label, String note})> kHomeLayouts = [
   (id: 'classic', label: 'Classic', note: 'Counts, Continue, shelves'),
   (
@@ -97,6 +97,26 @@ const List<({String id, String label, String note})> kHomeLayouts = [
     id: 'stream',
     label: 'Stream',
     note: 'One timeline of everything that happened'
+  ),
+  (
+    id: 'media',
+    label: 'Media',
+    note: 'Watching, listening and reading on the first screen'
+  ),
+  (
+    id: 'play',
+    label: 'Play',
+    note: 'Big tiles for films, games and music, arrow keys to move'
+  ),
+  (
+    id: 'calm',
+    label: 'Calm',
+    note: 'One suggestion first, the rest a breath away'
+  ),
+  (
+    id: 'today',
+    label: 'Today',
+    note: 'What needs you, what is half-done, a tile per section'
   ),
 ];
 

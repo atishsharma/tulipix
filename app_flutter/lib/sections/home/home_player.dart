@@ -23,6 +23,7 @@ import '../music/music_controller.dart';
 import '../music/music_viz.dart';
 import '../music/player_widgets.dart' show Marquee, SeekPill;
 import 'home_shared.dart';
+import '../../design/decode.dart';
 
 /// The tab the sound is coming from, by name and by colour: the card says where
 /// to go to change what is on, rather than a generic PLAYING.
@@ -1129,8 +1130,7 @@ class _CinemaPlayerState extends State<CinemaPlayer>
         color: accent.withValues(alpha: 0.18),
         child: art.isEmpty
             ? Icon(Icons.music_note, size: 34, color: accent)
-            : Image.file(File(art),
-                fit: BoxFit.cover,
+            : FileArt(art,
                 errorBuilder: (_, __, ___) =>
                     Icon(Icons.music_note, size: 34, color: accent)),
       );
@@ -1275,8 +1275,7 @@ class _StreamRailPlayerState extends State<StreamRailPlayer>
                             child: (now?.art ?? '').isEmpty
                                 ? Icon(Icons.music_note,
                                     size: 34, color: accent)
-                                : Image.file(File(now!.art),
-                                    fit: BoxFit.cover,
+                                : FileArt(now!.art,
                                     errorBuilder: (_, __, ___) => Icon(
                                         Icons.music_note,
                                         size: 34,
@@ -1501,6 +1500,7 @@ class _WelcomePlayerBarState extends State<WelcomePlayerBar>
                               ? Icon(Icons.music_note, size: 22, color: accent)
                               : Image.file(File(now!.art),
                                   fit: BoxFit.cover,
+                                  cacheWidth: decodePx(context, 50),
                                   errorBuilder: (_, __, ___) => Icon(
                                       Icons.music_note,
                                       size: 22,

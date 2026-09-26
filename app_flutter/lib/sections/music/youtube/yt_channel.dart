@@ -8,7 +8,6 @@
 // wash. It scrolls away with the page rather than holding 190 px of a short
 // window.
 
-import 'dart:io';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -20,6 +19,7 @@ import '../music_dialogs.dart';
 import '../music_widgets.dart';
 import 'yt_card.dart';
 import 'yt_format_sheet.dart';
+import '../../../design/decode.dart';
 
 /// Cards per page, and videos per yt-dlp block (`CHANNEL_PAGE` in Rust): one
 /// page is one fetch, kept small so a channel does not keep yt-dlp busy.
@@ -159,10 +159,8 @@ class _Banner extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           if (st.ytChannelBanner.isNotEmpty)
-            Image.file(
-              File(st.ytChannelBanner),
-              fit: BoxFit.cover,
-              alignment: Alignment.center,
+            FileArt(
+              st.ytChannelBanner,
               errorBuilder: (_, __, ___) => const SizedBox.shrink(),
             )
           else

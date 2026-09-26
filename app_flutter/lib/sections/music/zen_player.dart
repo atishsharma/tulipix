@@ -9,7 +9,6 @@
 // playing does not stop being the thing playing when you go and look at your
 // photos.
 
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -23,6 +22,7 @@ import 'music_viz.dart';
 import 'music_widgets.dart';
 import 'player_bar.dart' show Transport;
 import 'player_widgets.dart';
+import '../../design/decode.dart';
 
 class ZenPlayer extends StatelessWidget {
   const ZenPlayer({super.key, required this.controller});
@@ -135,9 +135,8 @@ class ZenPlayer extends StatelessWidget {
               // art and the page sits over it.
               if (now.art.isNotEmpty)
                 Positioned.fill(
-                  child: Image.file(
-                    File(now.art),
-                    fit: BoxFit.cover,
+                  child: FileArt(
+                    now.art,
                     errorBuilder: (_, __, ___) => _noArt(t, accent),
                   ),
                 )

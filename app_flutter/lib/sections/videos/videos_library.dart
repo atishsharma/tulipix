@@ -30,6 +30,7 @@ import '../../shell/section_tabs.dart';
 import '../../src/rust/api/videos.dart';
 import 'videos_controller.dart';
 import 'videos_widgets.dart';
+import '../../design/decode.dart';
 
 const double _pad = 32;
 
@@ -2171,9 +2172,8 @@ class _Pic extends StatelessWidget {
   final String path;
 
   @override
-  Widget build(BuildContext context) => Image.file(
-        File(path),
-        fit: BoxFit.cover,
+  Widget build(BuildContext context) => FileArt(
+        path,
         gaplessPlayback: true,
         // A picture deleted under us is a missing picture, not a crash.
         errorBuilder: (_, __, ___) => ColoredBox(color: context.tokens.nTile),

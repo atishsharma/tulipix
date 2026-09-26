@@ -9,6 +9,7 @@
 // Still scaffolding above the sidebar: no custom caption row, no command
 // palette. The lock screen wraps everything (shell/lock/lock_screen.dart).
 
+import 'dart:io' show Platform;
 import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
@@ -126,6 +127,35 @@ class _TulipixAppState extends State<TulipixApp> {
   bool _harmonise = false;
 
   final ShellController _shell = ShellController.instance;
+
+  /// Sections opened at least once this run; only these are built.
+  final Set<Section> _built = {};
+
+  /// Each built page's widget, reused while its `visible` is unchanged.
+  ///
+  /// This builder runs on every shell notify — a section switch, a sidebar
+  /// count, the 30 s tick — and a fresh `XPage(visible: …)` each time made
+  /// every opened page rebuild its whole tree to show one of them. Handed the
+  /// identical widget, Flutter skips the subtree; theme and skin changes still
+  /// reach it through the inherited widgets it depends on.
+  ///
+  /// Home's layouts and Places read a little shell state straight off the
+  /// controller in `build` — which sections are on, the logo, the name, the
+  /// profile picture — and
+  /// relied on this rebuild to see it change, so that is part of the key.
+  final Map<Section, (String, Widget)> _pages = {};
+
+  Widget _page(Section s, Section at) {
+    final st = _shell.state;
+    final key = '${s == at}|${_shell.sections.join(',')}'
+        '|${st?.logoChoice}|${st?.user.secondary}'
+        '|${st?.user.avatarPath}|${st?.user.avatarEmoji}|${_shell.pictureEpoch}';
+    final hit = _pages[s];
+    if (hit != null && hit.$1 == key) return hit.$2;
+    final page = _pageFor(s, at);
+    _pages[s] = (key, page);
+    return page;
+  }
 
   /// Closing the window has to close the listening socket, and stop the audio.
   /// The process exit would do both too, but not before the OS has had a moment
@@ -251,6 +281,8 @@ class _TulipixAppState extends State<TulipixApp> {
           ? Icons.star_outline
           : Icons.dark_mode;
 
+  static final _perfOverlay = Platform.environment['TULIPIX_PERF'] == '1';
+
   @override
   Widget build(BuildContext context) {
     // Base tokens from the theme, the language's skin over them, and the
@@ -263,6 +295,9 @@ class _TulipixAppState extends State<TulipixApp> {
     return MaterialApp(
       title: 'Tulipix',
       debugShowCheckedModeBanner: false,
+      // TULIPIX_PERF=1: Flutter's UI/raster frame-time bars, for telling app
+      // jank (red bars) from frames that were on time and still judder.
+      showPerformanceOverlay: _perfOverlay,
       theme: appTheme(tokens, skin),
       // "Honour OS font scale" off: text at 100 % whatever the desktop asks.
       builder: (context, child) => _fontScale
@@ -298,6 +333,7 @@ class _TulipixAppState extends State<TulipixApp> {
                       animation: _shell,
                       builder: (context, _) {
                         final at = _shell.section;
+                        if (_shell.state != null) _built.add(at);
                         return Stack(children: [
                           // The language's backdrop under the whole shell — the
                           // aura, the plate. Always a child, empty under Standard:
@@ -426,12 +462,24 @@ class _TulipixAppState extends State<TulipixApp> {
                                           // is what lets Settings → Sections
                                           // take effect where you can see it
                                           // rather than at the next launch.
+                                          //
+                                          // And a shown section is only built
+                                          // the first time it is opened: at
+                                          // launch that is the landing page
+                                          // alone, not twenty pages each
+                                          // loading its snapshot before the
+                                          // first frame settles. Once built
+                                          // it stays, as above. Nothing is
+                                          // built before the first snapshot
+                                          // says where to land.
                                           for (final (i, s)
                                               in _shell.sections.indexed)
                                             TickerMode(
                                               key: ValueKey(s),
                                               enabled: i == _shell.stackIndex,
-                                              child: _pageFor(s, at),
+                                              child: _built.contains(s)
+                                                  ? _page(s, at)
+                                                  : const SizedBox.shrink(),
                                             ),
                                         ],
                                       ),
